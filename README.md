@@ -62,9 +62,11 @@ documented in [PERFORMANCE_REVIEW.md](PERFORMANCE_REVIEW.md)).
 
 ## Privacy
 
-Open-source builds have **no network behavior** except what you invoke
-(installing the OpenRGB bundle, fetching weather for an LCD widget you
-added). There is no update phone-home and no telemetry. The "support bundle"
+Open-source builds make **one network request**: a startup check of this
+repo's GitHub Releases (`api.github.com`) so the app can offer one-click
+updates — turn it off in Settings and it makes none. Everything else is
+only what you invoke (installing the OpenRGB bundle, fetching weather for
+an LCD widget you added). There is no telemetry. The "support bundle"
 button writes a diagnostic file to your Desktop for you to attach to an
 issue — nothing is uploaded. (Private builds distributed by the maintainer
 embed an update feed at build time; the source tree contains no endpoint.)

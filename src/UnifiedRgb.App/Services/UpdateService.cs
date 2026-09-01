@@ -23,12 +23,16 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
         }
     }
 
-    public async Task CheckAsync()
+    public async Task CheckAsync(bool allowGitHub = true)
     {
         // Dev builds run from the build tree; self-replacing them would fight
         // the next compile. Updates only apply to deployed copies.
         string exe = Environment.ProcessPath ?? "";
         if (exe.Contains(@"\bin\Debug\", StringComparison.OrdinalIgnoreCase)) return;
+
+        // Public builds check GitHub Releases; that's the one outbound request
+        // an unconfigured build makes, and the user can turn it off.
+        if (!Backend.Configured && !allowGitHub) return;
 
         var latest = await UpdateClient.GetLatestAsync();
         if (latest == null || !Version.TryParse(latest.Version, out var server)) return;
@@ -80,7 +84,8 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             var latest = await UpdateClient.GetLatestAsync();   // one fetch: hash + marker version
             setText("downloading 0%");
             string? err = await UpdateClient.DownloadAsync(temp,
-                pct => Application.Current.Dispatcher.Invoke(() => setText($"downloading {pct}%")));
+                pct => Application.Current.Dispatcher.Invoke(() => setText($"downloading {pct}%")),
+                latest?.DownloadUrl);   // GitHub asset when that's the source; feed otherwise
             if (err != null) { setText(err); _running = false; return; }
 
             // Integrity: the publisher registered the build's SHA-256; refuse

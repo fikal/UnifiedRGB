@@ -35,9 +35,18 @@ public sealed partial class MainViewModel
 
     async void CheckForUpdate()
     {
-        try { await Updates.CheckAsync(); }
+        try { await Updates.CheckAsync(_store.Settings.GithubUpdateCheck); }
         catch (Exception ex) { Log.Error("update", ex); }
     }
+
+    /// <summary>Settings toggle for the public-build GitHub release check.
+    /// Only shown when no private feed is configured (feed builds don't use it).</summary>
+    public bool GithubUpdateCheck
+    {
+        get => _store.Settings.GithubUpdateCheck;
+        set { _store.Settings.GithubUpdateCheck = value; _store.SaveSettings(); OnChanged(); }
+    }
+    public bool ShowGithubUpdateToggle => !Backend.Configured;
 
     public async void InstallUpdate()
     {

@@ -39,6 +39,9 @@ public sealed class SettingsData
     public string? StartupProfile { get; set; }
     public bool StartMinimized { get; set; }        // open straight to the tray on launch
     public bool FirstRunDone { get; set; }           // the welcome wizard has been shown once
+    /// <summary>Public builds: check GitHub Releases for a newer build at
+    /// startup (the only outbound request such a build makes). Opt-out.</summary>
+    public bool GithubUpdateCheck { get; set; } = true;
     public double[]? WindowBounds { get; set; }     // left, top, width, height
     public bool WindowMaximized { get; set; }
     public string[]? CustomColors { get; set; }     // user swatches (hex), global
