@@ -68,8 +68,10 @@ updates — turn it off in Settings and it makes none. Everything else is
 only what you invoke (installing the OpenRGB bundle, fetching weather for
 an LCD widget you added). There is no telemetry. The "support bundle"
 button writes a diagnostic file to your Desktop for you to attach to an
-issue — nothing is uploaded. (Private builds distributed by the maintainer
-embed an update feed at build time; the source tree contains no endpoint.)
+issue — nothing is uploaded; the button also opens a prefilled GitHub
+issue for you to drop the file into. (The source also supports a private
+update feed selected by build-time props; official builds don't use one —
+it exists so forks can run their own.)
 
 ## Building
 
