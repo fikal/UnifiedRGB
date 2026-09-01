@@ -1,31 +1,91 @@
+<div align="center">
+
 # UnifiedRGB
 
-One tray app for RGB lighting, fan curves, and the pump LCD — fast enough to
-forget it's running. Native Windows (WPF, .NET 10), no vendor bloatware, no
-accounts, no telemetry.
+**All your RGB. One app. Zero bloat.**
 
-## What it does
+Keyboards, mice, motherboard, GPU, DRAM, fans, and the pump LCD — driven
+natively from a single tray app that idles at ~0% CPU. No vendor launchers,
+no accounts, no telemetry.
 
-- **Lighting** across keyboards, mice, motherboard ARGB headers, GPUs, DRAM,
-  and Lian Li fans (wireless SL-INF and the wired SL-Infinity hub) — with an
-  opt-in bridge to a bundled [OpenRGB](https://openrgb.org) instance for
-  everything else.
-- **~65 effects**: rainbows, meteors, audio-reactive (event-driven WASAPI
-  loopback), key-reactive ripple, screen ambient (whole-screen ambilight),
-  Wallpaper Engine capture, Razer Chroma game sync (no Razer software
-  required), circadian Time Warmth, multi-color palette effects with a
-  built-in palette library (imports coolors.co URLs).
-- **Cooling**: temperature-driven fan curves (CPU/GPU/hottest source) via
-  LibreHardwareMonitor + PawnIO, live gauges, a drag-to-edit curve editor,
-  and a thermal failsafe that hands fans back to the BIOS.
-- **Pump LCD designer** (Thermalright 240×320): drag-and-drop clock/temps/
-  network/weather widgets, GIF backgrounds, scenes with a sequencer.
-- **Quality of life**: profiles, per-app auto-switching, night mode with an
-  idle gate, global hotkeys, a first-run wizard.
+[![Release](https://img.shields.io/github/v/release/fikal/UnifiedRGB)](https://github.com/fikal/UnifiedRGB/releases/latest)
+[![Build](https://img.shields.io/github/actions/workflow/status/fikal/UnifiedRGB/build.yml?branch=main)](https://github.com/fikal/UnifiedRGB/actions)
+[![License: GPL v2](https://img.shields.io/badge/license-GPLv2-blue)](LICENSE)
 
-Performance is a feature: the whole app idles under 5% of one core with the
-window open and allocates almost nothing in steady state (the journey there is
-documented in [PERFORMANCE_REVIEW.md](PERFORMANCE_REVIEW.md)).
+<img src="docs/img/keyboard.png" width="850" alt="Per-key lighting on a Corsair Strafe MK.2 with a live preview">
+
+</div>
+
+## Download
+
+Grab `UnifiedRGB-vX.Y.Z.exe` from the
+[latest release](https://github.com/fikal/UnifiedRGB/releases/latest) — a
+single self-contained exe, nothing else to install. It checks this repo for
+new releases at startup and updates itself in one click (verified against
+the published SHA-256; opt out in Settings).
+
+> The binary is unsigned, so SmartScreen will warn on first run
+> (**More info → Run anyway**). Verify the SHA-256 from the release notes if
+> in doubt.
+
+## The tour
+
+### Every effect, every device, or per-zone down to the LED
+
+~65 effects: rainbows, meteors, plasma, aurora, candle flicker, rain,
+audio-reactive bars and pulses (event-driven WASAPI loopback — reacts the
+instant sound does), key-reactive ripple, whole-screen ambient, Wallpaper
+Engine capture, Razer Chroma game sync (no Razer software required), a
+circadian Time Warmth that cools by day and warms at night, and multi-color
+palette effects. Apply to one device, one fan ring, or everything at once.
+
+<img src="docs/img/lianli-zones.png" width="850" alt="Lian Li SL-Infinity fans running Rainbow Wave with per-ring zone control">
+
+Lian Li fans are zone-addressable: click a fan, a ring, or the whole array —
+each part can run its own effect simultaneously.
+
+### Pick colors like you mean it
+
+A full wheel with brightness, hex and RGB entry, custom swatches — and a
+**Palette Library** with curated presets, your own saved palettes, and
+one-paste import from [coolors.co](https://coolors.co) URLs or raw hex lists.
+
+<img src="docs/img/palette-library.png" width="850" alt="Palette Library with presets, save-current, and coolors.co import">
+
+<img src="docs/img/lianli-audio.png" width="850" alt="Color wheel, brightness, hex/RGB entry and swatches on the effect panel">
+
+### A real dashboard on your pump LCD
+
+Drag-and-drop designer for Thermalright 240×320 pump displays: CPU/GPU
+temps, clock faces, date, fan RPM, network throughput, weather, free text —
+over image or GIF backgrounds, with multiple screens and a scene sequencer.
+
+<img src="docs/img/lcd-designer.png" width="850" alt="LCD designer with drag-and-drop widgets over a custom background">
+
+### Fan curves that respect your other tools
+
+Temperature-driven curves following CPU, GPU, or whichever is hotter — with
+live gauges, per-fan profiles, a drag-to-edit curve editor, and a thermal
+failsafe that hands fans back to the BIOS if anything goes wrong. Fans left
+on Auto are never touched, so BIOS profiles and GPU tools stay in control.
+
+<img src="docs/img/cooling.png" width="850" alt="Cooling panel with temperature gauges, fan list, and curve editor">
+
+### Quality of life, everywhere
+
+Profiles with global hotkeys (`Ctrl+Alt+1…9`, they work in games) ·
+per-app auto-switching · night mode with an idle gate · master brightness ·
+per-device disable · first-run wizard · starts with Windows, lives in the
+tray.
+
+### Fast is a feature
+
+The whole app idles under 5% of one core with the window open, allocates
+almost nothing in steady state, and drops to a whisper when minimized. Every
+driver dedups frames at the write boundary so your USB bus isn't spammed
+with identical packets. The optimization journey — with before/after
+measurements — is documented in
+[PERFORMANCE_REVIEW.md](PERFORMANCE_REVIEW.md).
 
 ## Supported hardware (native drivers)
 
@@ -41,7 +101,10 @@ documented in [PERFORMANCE_REVIEW.md](PERFORMANCE_REVIEW.md)).
 | Lian Li SL-Infinity wired hub | HID |
 | Sayo devices | HID |
 | Thermalright pump LCD (240×320) | HID |
-| Everything OpenRGB supports | opt-in bundled OpenRGB over its SDK socket |
+| Everything OpenRGB supports | opt-in bundled [OpenRGB](https://openrgb.org) over its SDK socket |
+
+Natively-driven hardware is never handed to the OpenRGB bridge — it exists
+for everything else.
 
 ## ⚠️ Read before running
 
@@ -66,12 +129,11 @@ Open-source builds make **one network request**: a startup check of this
 repo's GitHub Releases (`api.github.com`) so the app can offer one-click
 updates — turn it off in Settings and it makes none. Everything else is
 only what you invoke (installing the OpenRGB bundle, fetching weather for
-an LCD widget you added). There is no telemetry. The "support bundle"
-button writes a diagnostic file to your Desktop for you to attach to an
-issue — nothing is uploaded; the button also opens a prefilled GitHub
-issue for you to drop the file into. (The source also supports a private
-update feed selected by build-time props; official builds don't use one —
-it exists so forks can run their own.)
+an LCD widget you added). There is no telemetry. The "Report a problem"
+button writes a diagnostic file to your Desktop and opens a prefilled GitHub
+issue for you to drop it into — nothing is uploaded automatically. (The
+source also supports a private update feed selected by build-time props;
+official builds don't use one — it exists so forks can run their own.)
 
 ## Building
 
@@ -93,7 +155,8 @@ Chroma-via-DLL path is opt-in from Settings.
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Device support PRs are especially
-welcome — bring protocol notes with your driver.
+welcome — bring protocol notes with your driver. Found a bug? The in-app
+**Report a problem** button collects everything we need.
 
 ## License
 
