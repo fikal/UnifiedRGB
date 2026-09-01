@@ -5,19 +5,10 @@ using UnifiedRgb.Core;
 namespace UnifiedRgb.App.Services;
 
 /// <summary>The support pipeline's app side: the one-button diagnostic+log
-/// bundle upload, the elevated-collect helper handoff, and the admin inbox
-/// operations (list / save-to-file / delete). Extracted from the view model;
-/// the VM keeps only bindable state and thin wrappers.</summary>
+/// bundle collection and the elevated-collect helper handoff. Extracted from
+/// the view model; the VM keeps only bindable state and thin wrappers.</summary>
 public sealed class SupportService
 {
-    public static bool IsAdminMachine => File.Exists(AppPaths.AdminKeyFile);
-
-    static string? ReadAdminKey()
-    {
-        try { return File.ReadAllText(AppPaths.AdminKeyFile).Trim(); }
-        catch { return null; }
-    }
-
     static string AppVersion =>
         typeof(SupportService).Assembly.GetName().Version?.ToString() ?? "?";
 
@@ -128,43 +119,4 @@ public sealed class SupportService
         finally { try { File.Delete(tmp); } catch { } }
     }
 
-    /*-----------------------------------------------------*\
-    | Admin inbox (developer machine only)                  |
-    \*-----------------------------------------------------*/
-
-    public async Task<(bool Ok, string Message, List<SupportUpload.ReportSummary> Reports)> ListAsync()
-    {
-        if (ReadAdminKey() is not string key)
-            return (false, "can't read admin.key", new());
-        return await SupportUpload.ListReportsAsync(key);
-    }
-
-    /// <summary>Fetch a report, save its full text under reports\, and return
-    /// the one-line description + path for the clipboard.</summary>
-    public async Task<(bool Ok, string Message, string ClipboardLine)> SaveReportAsync(
-        SupportUpload.ReportSummary r)
-    {
-        if (ReadAdminKey() is not string key) return (false, "can't read admin.key", "");
-        var (ok, msg, text) = await SupportUpload.GetReportTextAsync(key, r.Id);
-        if (!ok) return (false, msg, "");
-
-        string dir = AppPaths.Config("reports");
-        Directory.CreateDirectory(dir);
-        string file = Path.Combine(dir, $"report-{r.Id}-{Sanitize(r.User)}.txt");
-        File.WriteAllText(file, text);
-        string line =
-            $"UnifiedRGB support report from {r.User}@{r.Machine}, " +
-            $"{r.CreatedUtc.ToLocalTime():yyyy-MM-dd HH:mm} local, kind={r.Kind}, app {r.AppVersion} — " +
-            $"full text: {file}";
-        return (true, $"saved ({text.Length:n0} chars) + path on clipboard — paste it to Claude", line);
-    }
-
-    public async Task<(bool Ok, string Message)> DeleteAsync(string id)
-    {
-        if (ReadAdminKey() is not string key) return (false, "can't read admin.key");
-        return await SupportUpload.DeleteReportAsync(key, id);
-    }
-
-    static string Sanitize(string s) =>
-        string.Concat(s.Select(c => char.IsLetterOrDigit(c) ? c : '-'));
 }

@@ -18,10 +18,6 @@ public static class AppPaths
     public static string Config(string file) => Path.Combine(ConfigDir, file);
     public static string Local(string file) => Path.Combine(LocalDir, file);
 
-    /// <summary>The admin key that unlocks the support inbox — exists only on
-    /// the developer's machine, never ships in builds.</summary>
-    public static string AdminKeyFile => Config("admin.key");
-
     static AppPaths()
     {
         try { Directory.CreateDirectory(ConfigDir); } catch { }

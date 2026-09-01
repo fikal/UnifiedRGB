@@ -1440,51 +1440,16 @@
                     <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
 
                     <TextBlock Text="Support" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                    <TextBlock Text="Something not working? Describe it and hit Send. A hardware report and log go straight to the developer."
+                    <TextBlock Text="Something not working? Describe it and hit Report. A diagnostic bundle is saved to your Desktop and a GitHub issue opens prefilled — drag the file in and post it."
                                Opacity="0.6" TextWrapping="Wrap" Margin="0,0,0,8"/>
                     <TextBox Text="{Binding SupportNote, UpdateSourceTrigger=PropertyChanged}" MinHeight="60"
                              TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"
                              ToolTip="What did you do, and what happened?"/>
                     <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                        <Button Content="Send" Style="{StaticResource Accent}" Padding="28,8" Click="SendSupport_Click"/>
+                        <Button Content="Report a problem" Style="{StaticResource Accent}" Padding="28,8" Click="SendSupport_Click"/>
                     </StackPanel>
                     <TextBlock Text="{Binding UploadStatus}" Opacity="0.7" Margin="0,8,0,0"/>
                     <TextBlock Text="{Binding LogFilePath}" Opacity="0.4" FontSize="11" Margin="0,10,0,0"/>
-
-                    <!-- Admin inbox: only on the machine holding admin.key -->
-                    <StackPanel Visibility="{Binding IsSupportAdmin, Converter={StaticResource BoolToVis}}">
-                        <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
-                        <Grid Margin="0,0,0,8">
-                            <TextBlock Text="Support inbox (admin)" FontSize="15" FontWeight="SemiBold"
-                                       VerticalAlignment="Center"/>
-                            <Button Content="Refresh" HorizontalAlignment="Right" Padding="10,5"
-                                    Click="AdminRefresh_Click"/>
-                        </Grid>
-                        <ListBox Height="190" ItemsSource="{Binding AdminReports}"
-                                 VirtualizingPanel.VirtualizationMode="Recycling"
-                                 SelectedItem="{Binding SelectedAdminReport}"
-                                 Background="Transparent" BorderThickness="0" Foreground="#FFE6E6E6"
-                                 IsTextSearchEnabled="False"
-                                 ItemContainerStyle="{StaticResource RowList}"
-                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                            <ListBox.ItemTemplate>
-                                <DataTemplate>
-                                    <StackPanel>
-                                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold"/>
-                                        <TextBlock Text="{Binding NoteLine}" Opacity="0.6" FontSize="11"
-                                                   Margin="0,2,0,0" TextTrimming="CharacterEllipsis"/>
-                                    </StackPanel>
-                                </DataTemplate>
-                            </ListBox.ItemTemplate>
-                        </ListBox>
-                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                            <Button Content="Copy report" Style="{StaticResource Accent}" Click="AdminCopy_Click"
-                                    ToolTip="Saves the report to a file and copies its path. Paste that to Claude."/>
-                            <Button Content="Remove" Style="{StaticResource Danger}" Margin="8,0,0,0" Click="AdminDelete_Click"
-                                    ToolTip="Permanently removes this report from the inbox"/>
-                        </StackPanel>
-                        <TextBlock Text="{Binding AdminStatus}" Opacity="0.7" Margin="0,8,0,0"/>
-                    </StackPanel>
                 </StackPanel>
             </ScrollViewer>
           </Grid>

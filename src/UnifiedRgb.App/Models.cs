@@ -56,15 +56,6 @@ public sealed class LeftItem
     public override string ToString() => Name;
 }
 
-/// <summary>Display wrapper for a support-report summary in the admin inbox.</summary>
-public sealed class AdminReportRow(SupportUpload.ReportSummary r)
-{
-    public SupportUpload.ReportSummary R { get; } = r;
-    public string Title => $"{R.CreatedUtc.ToLocalTime():ddd MM/dd h:mm tt} · {R.Kind} · {R.User}@{R.Machine}";
-    public string NoteLine => string.IsNullOrWhiteSpace(R.Note)
-        ? "(no note)" : R.Note!.Replace('\r', ' ').Replace('\n', ' ');
-}
-
 /// <summary>A controllable motherboard fan in the Cooling panel: a mode
 /// (Auto / a curve preset / Custom / Manual), an editable curve, and a temp
 /// source. Changing any of these drives the fan live through the hub; the

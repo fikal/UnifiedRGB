@@ -75,67 +75,6 @@ public sealed partial class MainViewModel
         }
     }
 
-    /*-----------------------------------------------------*\
-    | Admin inbox — only on the machine that holds the      |
-    | admin key file (never compiled into the app).         |
-    \*-----------------------------------------------------*/
-    public bool IsSupportAdmin => Services.SupportService.IsAdminMachine;
-
-    public ObservableCollection<AdminReportRow> AdminReports { get; } = new();
-
-    AdminReportRow? _selectedAdminReport;
-    public AdminReportRow? SelectedAdminReport
-    {
-        get => _selectedAdminReport;
-        set { _selectedAdminReport = value; OnChanged(); }
-    }
-
-    string _adminStatus = "";
-    public string AdminStatus { get => _adminStatus; set { _adminStatus = value; OnChanged(); } }
-
-    public async void RefreshAdminReports()
-    {
-        AdminStatus = "loading...";
-        try
-        {
-            var (_, msg, reports) = await Support.ListAsync();
-            AdminReports.Clear();
-            foreach (var r in reports) AdminReports.Add(new AdminReportRow(r));
-            AdminStatus = msg;
-        }
-        catch (Exception ex) { Log.Error("admin", ex); AdminStatus = $"list failed: {ex.Message}"; }
-    }
-
-    /// <summary>Save the selected report to a file and put a description +
-    /// path on the clipboard (whole reports truncate when pasted into chat).</summary>
-    public async void CopySelectedAdminReport()
-    {
-        if (SelectedAdminReport == null) { AdminStatus = "pick a report first"; return; }
-        AdminStatus = "fetching...";
-        try
-        {
-            var (ok, msg, clip) = await Support.SaveReportAsync(SelectedAdminReport.R);
-            if (ok) Clipboard.SetText(clip);
-            AdminStatus = msg;
-        }
-        catch (Exception ex) { Log.Error("admin", ex); AdminStatus = $"copy failed: {ex.Message}"; }
-    }
-
-    /// <summary>Permanently remove the selected report from the inbox.</summary>
-    public async void DeleteSelectedAdminReport()
-    {
-        if (SelectedAdminReport == null) { AdminStatus = "pick a report first"; return; }
-        var row = SelectedAdminReport;
-        AdminStatus = "removing...";
-        try
-        {
-            var (ok, msg) = await Support.DeleteAsync(row.R.Id);
-            if (ok) { AdminReports.Remove(row); SelectedAdminReport = null; }
-            AdminStatus = msg;
-        }
-        catch (Exception ex) { Log.Error("admin", ex); AdminStatus = $"remove failed: {ex.Message}"; }
-    }
-
     /// <summary>Speed lives in the main column for preset effects; the custom
     /// pattern hosts its own speed control in the pattern column.</summary>
     public bool ShowSpeedInMain => IsEffectRunning && !IsCustomPattern

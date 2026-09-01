@@ -429,12 +429,6 @@ public partial class MainWindow : Window
 
     void SendSupport_Click(object sender, RoutedEventArgs e) => _vm.SendToSupport();
 
-    void AdminRefresh_Click(object sender, RoutedEventArgs e) => _vm.RefreshAdminReports();
-
-    void AdminCopy_Click(object sender, RoutedEventArgs e) => _vm.CopySelectedAdminReport();
-
-    void AdminDelete_Click(object sender, RoutedEventArgs e) => _vm.DeleteSelectedAdminReport();
-
     void Update_Click(object sender, RoutedEventArgs e) => _vm.InstallUpdate();
 
     void Min_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
