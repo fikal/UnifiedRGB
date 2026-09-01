@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
     <ProjectReference Include="..\UnifiedRgb.Core\UnifiedRgb.Core.csproj" />
@@ -21,7 +21,7 @@
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <!-- Elevation required at launch (UAC): see app.manifest for why. -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.0.17</Version>
+    <Version>1.0.18</Version>
     <!-- Single-file publishes must embed the WPF native DLLs (wpfgfx etc.);
          without this the exe alone crashes on startup before managed code. -->
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
