@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\UnifiedRgb.Core\UnifiedRgb.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Keep the WPF namespaces unambiguous; tray code uses explicit aliases. -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.22621.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <!-- WinForms only for NotifyIcon (tray) - no other WinForms UI. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <!-- Elevation required at launch (UAC): see app.manifest for why. -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>1.0.17</Version>
+    <!-- Single-file publishes must embed the WPF native DLLs (wpfgfx etc.);
+         without this the exe alone crashes on startup before managed code. -->
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!-- Memory footprint: precompile framework code so the JIT allocates less
+         at runtime. (InvariantGlobalization was tried and reverted: WPF's
+         XAML language system requires the real en-US culture and crashes
+         with "Cannot find non-neutral culture" without it.) -->
+    <PublishReadyToRun>true</PublishReadyToRun>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\app.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Ship the Chroma interop shim beside the app so the "Enable Chroma sync"
+         feature can install it. Copied to output; harmless until the user opts
+         in. Absent in dev checkouts until native\chroma-shim\build.bat is run. -->
+    <None Include="..\..\native\chroma-shim\RzChromaSDK64.dll"
+          Condition="Exists('..\..\native\chroma-shim\RzChromaSDK64.dll')"
+          Link="RzChromaSDK64.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

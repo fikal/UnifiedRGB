@@ -1,0 +1,54 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Windows-only by nature (HID, SMBus, NvAPI, WASAPI, registry);
+         the windows TFM makes the platform analyzer reflect reality. -->
+    <TargetFramework>net10.0-windows10.0.22621.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Signed PawnIO module (namazso/PawnIO.Modules 0.2.10) providing the
+         ioctl_read_smn primitive; our own code does the Zen temperature decode. -->
+    <EmbeddedResource Include="Modules\AMDFamily17.bin" />
+    <EmbeddedResource Include="Modules\SmbusPIIX4.bin" />
+    <EmbeddedResource Include="Modules\SmbusI801.bin" />
+    <EmbeddedResource Include="Modules\LpcIO.bin" />
+    <EmbeddedResource Include="Modules\IsaBridgeEC.bin" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Fan control across arbitrary motherboards is a deep per-board problem
+         (each chip + vendor takeover mechanism differs); LibreHardwareMonitor
+         already solves it. Scoped to the motherboard at runtime so its RAM/
+         disk/HID subsystems never spin up. -->
+    <!-- 0.9.7-pre: this line matters for security — it replaces LHM's bundled
+         WinRing0 kernel driver with PawnIO, so the whole app rides ONE signed,
+         module-constrained driver (verified via driverquery: 0.9.6 loaded
+         WinRing0_1_2_0 alongside PawnIO; 0.9.7-pre loads PawnIO only). -->
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.7-pre726" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <PackageReference Include="Vortice.DXGI" Version="3.8.3" />
+    <!-- Motherboard scope never reads disks or RAM SPD, so these transitive
+         deps never load — strip them from the output to keep it lean. If a
+         future scope needs them, remove these excludes. -->
+    <PackageReference Include="DiskInfoToolkit" Version="2.1.3" ExcludeAssets="all" PrivateAssets="all" />
+    <PackageReference Include="RAMSPDToolkit-NDD" Version="1.6.0" ExcludeAssets="all" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="UnifiedRgb.Tests" />
+  </ItemGroup>
+
+  <!-- Private-feed builds inject their update/support backend at build time:
+         dotnet publish -p:RgbBackendUrl=https://... -p:RgbBackendKey=...
+       Nothing is hardcoded in the tree; builds without these properties have
+       NO backend (updates skip, support bundles save locally). -->
+  <ItemGroup Condition="'$(RgbBackendUrl)' != '' and '$(RgbBackendKey)' != ''">
+    <AssemblyMetadata Include="RgbBackendUrl" Value="$(RgbBackendUrl)" />
+    <AssemblyMetadata Include="RgbBackendKey" Value="$(RgbBackendKey)" />
+  </ItemGroup>
+
+</Project>

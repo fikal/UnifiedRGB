@@ -1,0 +1,74 @@
+<Window x:Class="UnifiedRgb.App.WizardWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Welcome to UnifiedRGB" WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ResizeMode="NoResize" SizeToContent="Height" Width="560"
+        WindowStartupLocation="CenterScreen" ShowInTaskbar="False"
+        MouseLeftButtonDown="Drag_Down">
+    <Border Background="#FF1B1D24" CornerRadius="12" Padding="24"
+            BorderBrush="#FF2A2E38" BorderThickness="1">
+        <StackPanel>
+            <Grid Margin="0,0,0,4">
+                <StackPanel>
+                    <TextBlock Text="Welcome to UnifiedRGB" FontSize="19" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="StepLabel" Opacity="0.55" FontSize="12" Margin="0,2,0,0"/>
+                </StackPanel>
+                <Button Content="✕" HorizontalAlignment="Right" VerticalAlignment="Top" Padding="8,3" Click="Skip_Click"/>
+            </Grid>
+
+            <!-- Step 1: devices -->
+            <StackPanel x:Name="Step1" Margin="0,14,0,0">
+                <TextBlock Text="Here's the RGB hardware we found on your PC:" Opacity="0.75" Margin="0,0,0,10"/>
+                <Border Background="#FF14161C" CornerRadius="8" Padding="4" MinHeight="120">
+                    <ItemsControl x:Name="DeviceList">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="#FF20232B" CornerRadius="8" Padding="12,8" Margin="4">
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
+                                        <TextBlock Text="{Binding Subtitle}" Opacity="0.55" FontSize="12"/>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </Border>
+                <TextBlock x:Name="NoDevices" TextWrapping="Wrap" Opacity="0.6" Margin="2,10,0,0" Visibility="Collapsed"
+                           Text="No RGB devices detected yet. Check they're connected and that vendor software (iCUE, Synapse…) isn't holding them, then Rescan."/>
+                <Button Content="Rescan" HorizontalAlignment="Left" Padding="12,5" Margin="0,10,0,0" Click="Rescan_Click"/>
+            </StackPanel>
+
+            <!-- Step 2: sensor driver -->
+            <StackPanel x:Name="Step2" Margin="0,14,0,0" Visibility="Collapsed">
+                <TextBlock x:Name="SensorHead" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                <TextBlock x:Name="SensorBody" Opacity="0.7" TextWrapping="Wrap"/>
+                <StackPanel x:Name="PawnRow" Orientation="Horizontal" Margin="0,12,0,0">
+                    <Button x:Name="InstallBtn" Content="Install PawnIO" Style="{StaticResource Accent}" Padding="14,6" Click="InstallPawn_Click"/>
+                    <ProgressBar x:Name="PawnBar" IsIndeterminate="True" Width="90" Height="4" Margin="12,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"/>
+                    <TextBlock x:Name="PawnStatus" Opacity="0.7" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                </StackPanel>
+            </StackPanel>
+
+            <!-- Step 3: starter look -->
+            <StackPanel x:Name="Step3" Margin="0,14,0,0" Visibility="Collapsed">
+                <TextBlock Text="Pick a starting look — you can change everything later:" Opacity="0.75" Margin="0,0,0,10"/>
+                <WrapPanel>
+                    <Button Content="Rainbow Wave" Padding="16,8" Margin="0,0,8,8" Tag="rainbow" Click="Look_Click"/>
+                    <Button Content="Solid White" Padding="16,8" Margin="0,0,8,8" Tag="white" Click="Look_Click"/>
+                    <Button Content="Lights off" Padding="16,8" Margin="0,0,8,8" Tag="off" Click="Look_Click"/>
+                    <Button Content="I'll set it up myself" Padding="16,8" Margin="0,0,8,8" Tag="skip" Click="Look_Click"/>
+                </WrapPanel>
+                <TextBlock x:Name="LookStatus" Opacity="0.6" FontSize="12" Margin="2,4,0,0"/>
+            </StackPanel>
+
+            <!-- Nav -->
+            <Grid Margin="0,20,0,0">
+                <Button x:Name="BackBtn" Content="Back" HorizontalAlignment="Left" Padding="14,6" Click="Back_Click" Visibility="Collapsed"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button x:Name="SkipBtn" Content="Skip setup" Padding="12,6" Margin="0,0,8,0" Click="Skip_Click"/>
+                    <Button x:Name="NextBtn" Content="Next" Style="{StaticResource Accent}" Padding="18,6" Click="Next_Click"/>
+                </StackPanel>
+            </Grid>
+        </StackPanel>
+    </Border>
+</Window>

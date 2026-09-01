@@ -1,0 +1,464 @@
+using UnifiedRgb.Core.Native;
+
+namespace UnifiedRgb.Core.Devices;
+
+/// <summary>Gigabyte RGB Fusion 2.0 motherboard, ITE IT5711 controller
+/// (048D:5711) — X870E AORUS MASTER X3D.
+///
+/// The AIO fan rings are per-LED addressable (8 inner-ring LEDs each, GRB
+/// order). Header 2 drives fans 1+2 in parallel (splitter); header 4 drives
+/// fan 3. Those two zones stream per-LED so the effects engine can animate
+/// them. The remaining outputs (spare ARGB headers, LED_C, I/O cover, chipset)
+/// are single-color and use the static-effect path.
+///
+/// Protocol ported from OpenRGB's GigabyteRGBFusion2USBController: 64-byte HID
+/// feature reports, report ID 0xCC, on the usage-page 0xFF89 / usage 0x00CC
+/// collection.</summary>
+public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable
+{
+    readonly object _writeLock = new();
+
+    const ushort VID = 0x048D;
+    static readonly ushort[] Pids = { 0x5711, 0x8297 };   // X870E gen / RGB Fusion 2 gen (X570 etc.)
+    const ushort RGB_USAGE_PAGE = 0xFF89;
+    const ushort RGB_USAGE = 0x00CC;
+    const int BUF = 64;
+    const byte REPORT_ID = 0xCC;
+    const byte EFFECT_STATIC = 1;
+
+    enum ZoneKind { Fan, Static }
+    // Id: header number (1-4) for Fan zones; effect LED index for Static zones.
+    // Order: RGB=0, GRB=1, BGR=2 wire order for fan streaming.
+    sealed record ZoneDef(string Name, int Count, ZoneKind Kind, int Id, string Order = "GRB");
+
+    // Header number -> static-effect LED index (for headers without an
+    // addressable device configured).
+    static readonly int[] HeaderEffectIdx = { 0, 5, 6, 7, 8 };
+
+    /// <summary>Fan zones come from hardware.json (which ARGB headers host
+    /// addressable devices, LED counts, wire order); the remaining headers and
+    /// fixed outputs are single-color static zones.</summary>
+    int MaxHeaders => _pid == 0x5711 ? 4 : 2;
+
+    ZoneDef[] BuildZoneDefs()
+    {
+        var cfg = HardwareConfig.Load();
+        var defs = new List<ZoneDef>();
+        var fanHeaders = new HashSet<int>();
+        foreach (var h in cfg.GigabyteArgbHeaders.Where(h => h.Header >= 1 && h.Header <= MaxHeaders && h.Leds is >= 1 and <= 256))
+        {
+            if (!fanHeaders.Add(h.Header)) continue;
+            defs.Add(new ZoneDef(string.IsNullOrWhiteSpace(h.Name) ? $"ARGB Header {h.Header}" : h.Name,
+                                 h.Leds, ZoneKind.Fan, h.Header, h.ColorOrder));
+        }
+        for (int header = 1; header <= MaxHeaders; header++)
+            if (!fanHeaders.Contains(header))
+                defs.Add(new ZoneDef($"ARGB Header {header}", 1, ZoneKind.Static, HeaderEffectIdx[header]));
+        if (_pid == 0x5711)
+        {
+            defs.Add(new ZoneDef("LED_C (12V RGB)", 1, ZoneKind.Static, 4));
+            defs.Add(new ZoneDef("I/O Cover",       1, ZoneKind.Static, 9));
+            defs.Add(new ZoneDef("Chipset Accent",  1, ZoneKind.Static, 10));
+        }
+        else
+        {
+            // IT8297 boards (X570 GAMING X layout): LED_CPU + 12V RGB headers.
+            defs.Add(new ZoneDef("LED_CPU",         1, ZoneKind.Static, 2));
+            defs.Add(new ZoneDef("LED_C1/C2 (12V)", 1, ZoneKind.Static, 4));
+        }
+        return defs.ToArray();
+    }
+
+
+    readonly HidNative.HidHandle _hid;
+    readonly int[] _zoneOffset;
+    readonly int _ledCount;
+    readonly Rgb?[] _lastStatic = new Rgb?[16];
+    bool _directInit;
+    int _effectDisabled;
+
+    readonly ushort _pid;
+    public string Name { get; }
+    public string Vendor => "Gigabyte";
+    public DeviceType Type => DeviceType.Motherboard;
+    public int LedCount => _ledCount;
+    public IReadOnlyList<RgbZone> Zones { get; }
+
+    readonly LedPos[] _positions;
+    readonly ZoneDef[] ZoneDefs;
+    public IReadOnlyList<LedPos>? LedPositions => _positions;
+    public float? PreviewAspect => 1.35f;  // roughly the board outline
+
+    /// <summary>Positions follow the configured zones: each fan zone is a ring
+    /// (rings spread horizontally), static zones scatter around the board.</summary>
+    LedPos[] BuildPositions()
+    {
+        var list = new List<LedPos>();
+        int fanZones = ZoneDefs.Count(z => z.Kind == ZoneKind.Fan);
+        int fanIdx = 0, staticIdx = 0;
+        var staticSpots = new LedPos[]
+        {
+            new(0.10f, 0.10f), new(0.90f, 0.10f), new(0.50f, 0.88f),
+            new(0.08f, 0.40f), new(0.50f, 0.15f), new(0.92f, 0.40f), new(0.30f, 0.90f),
+        };
+        foreach (var def in ZoneDefs)
+        {
+            if (def.Kind == ZoneKind.Fan)
+            {
+                float cx = fanZones <= 1 ? 0.5f : 0.28f + 0.44f * (fanIdx / (float)(fanZones - 1));
+                fanIdx++;
+                for (int i = 0; i < def.Count; i++)
+                {
+                    double a = i / (double)def.Count * Math.PI * 2 - Math.PI / 2;
+                    list.Add(new((float)(cx + 0.20 * Math.Cos(a)), (float)(0.5 + 0.20 * Math.Sin(a))));
+                }
+            }
+            else
+            {
+                list.Add(staticSpots[Math.Min(staticIdx, staticSpots.Length - 1)]);
+                staticIdx++;
+            }
+        }
+        return list.ToArray();
+    }
+
+    GigabyteIt5711(HidNative.HidHandle hid, ushort pid)
+    {
+        _hid = hid;
+        _pid = pid;
+        Name = pid == 0x5711 ? "Gigabyte X870E AORUS MASTER X3D" : "Gigabyte Motherboard (IT8297)";
+        ZoneDefs = BuildZoneDefs();          // fresh from hardware.json each open
+        _positions = BuildPositions();
+        _zoneOffset = new int[ZoneDefs.Length];
+        var zones = new RgbZone[ZoneDefs.Length];
+        int off = 0;
+        for (int i = 0; i < ZoneDefs.Length; i++)
+        {
+            _zoneOffset[i] = off;
+            zones[i] = new RgbZone { Name = ZoneDefs[i].Name, Offset = off, Count = ZoneDefs[i].Count,
+                                     IsFan = ZoneDefs[i].Kind == ZoneKind.Fan };
+            off += ZoneDefs[i].Count;
+        }
+        Zones = zones;
+        _ledCount = off;
+        ResetController();
+    }
+
+    public static GigabyteIt5711? TryOpen()
+    {
+        foreach (ushort pid in Pids)
+        {
+            var r = HidNative.OpenFirst("GigabyteIt5711", VID, pid,
+                h => h.UsagePage == RGB_USAGE_PAGE && h.Usage == RGB_USAGE,
+                fallbackPick: h => h.UsagePage == RGB_USAGE_PAGE);
+            if (r != null) return new GigabyteIt5711(r.Value.Handle, pid);
+        }
+        return null;
+    }
+
+    bool Cc(byte a, byte b = 0, byte c = 0)
+    {
+        var buf = new byte[BUF];
+        buf[0] = REPORT_ID; buf[1] = a; buf[2] = b; buf[3] = c;
+        return _hid.SetFeature(buf);
+    }
+
+    void ResetController()
+    {
+        for (byte reg = 0x20; reg <= 0x27; reg++) Cc(reg);
+        if (_pid == 0x5711)
+            for (byte reg = 0x90; reg <= 0x92; reg++) Cc(reg);
+        ApplyEffect();
+    }
+
+    void ApplyEffect() => Cc(0x28, 0xFF, _pid == 0x5711 ? (byte)0x07 : (byte)0x00);
+
+    static (byte Argb, int Mask) HeaderInfo(int header) => header switch
+    {
+        2 => (0x59, 0x02),
+        3 => (0x62, 0x08),
+        4 => (0x63, 0x10),
+        _ => (0x58, 0x01),
+    };
+
+    static byte LedCountEnum(int c) => c <= 32 ? (byte)0 : c <= 64 ? (byte)1 : c <= 256 ? (byte)2 : c <= 512 ? (byte)3 : (byte)4;
+
+    void SetLedCount(int c0, int c1, int c2, int c3)
+    {
+        byte d1 = LedCountEnum(c0), d2 = LedCountEnum(c1), d3 = LedCountEnum(c2), d4 = LedCountEnum(c3);
+        Cc(0x34, (byte)((d2 << 4) | d1), (byte)((d4 << 4) | d3));
+    }
+
+    /*-----------------------------------------------------*\
+    | Direct (per-LED) mode: set the fan-header LED counts   |
+    | and disable their builtin effects, once.               |
+    \*-----------------------------------------------------*/
+    void EnsureDirectMode()
+    {
+        if (_directInit) return;
+        var counts = new int[4];
+        int mask = 0;
+        foreach (var def in ZoneDefs)
+            if (def.Kind == ZoneKind.Fan) { counts[def.Id - 1] = def.Count; mask |= HeaderInfo(def.Id).Mask; }
+        SetLedCount(counts[0], counts[1], counts[2], counts[3]);
+        Thread.Sleep(20);
+        _effectDisabled |= mask;
+        Cc(0x32, (byte)_effectDisabled);
+        Thread.Sleep(20);
+        _directInit = true;
+    }
+
+    /// <summary>Resolve a wire-order string to three channel selectors ONCE per
+    /// stream call — the old per-LED-per-frame string switch ran ~60x/s per LED.</summary>
+    static (int A, int B, int C) OrderIdx(string order) => order switch
+    {
+        "RGB" => (0, 1, 2),
+        "BGR" => (2, 1, 0),
+        "RBG" => (0, 2, 1),
+        "GBR" => (1, 2, 0),
+        "BRG" => (2, 0, 1),
+        _ => (1, 0, 2),              // GRB (typical ARGB fans)
+    };
+
+    static byte Chan(Rgb c, int idx) => idx == 0 ? c.R : idx == 1 ? c.G : c.B;
+
+    /// <summary>Stream per-LED colors to a fan header in the configured wire
+    /// order, no count/effect re-setup — fast enough for animation. Reads
+    /// directly out of the caller's list at an offset (no slice copy).</summary>
+    readonly byte[] _streamPkt = new byte[BUF];   // reused: this runs per frame at 60fps
+
+    void StreamHeaderColors(int header, IReadOnlyList<Rgb> src, int srcStart, int count, string order = "GRB")
+    {
+        var (argb, _) = HeaderInfo(header);
+        var (ia, ib, ic) = OrderIdx(order);
+        int k = 0;
+        while (k < count)
+        {
+            int n = Math.Min(19, count - k);
+            var pkt = _streamPkt;
+            Array.Clear(pkt);
+            pkt[0] = REPORT_ID; pkt[1] = argb;
+            int byteOff = k * 3;
+            pkt[2] = (byte)(byteOff & 0xFF); pkt[3] = (byte)((byteOff >> 8) & 0xFF);
+            pkt[4] = (byte)(n * 3);
+            for (int i = 0; i < n; i++)
+            {
+                int s = srcStart + k + i;
+                var c = s >= 0 && s < src.Count ? src[s] : Rgb.Black;
+                int o = 5 + i * 3;
+                pkt[o] = Chan(c, ia); pkt[o + 1] = Chan(c, ib); pkt[o + 2] = Chan(c, ic);
+            }
+            _hid.SetFeature(pkt);
+            k += n;
+        }
+    }
+
+    /// <summary>colors[i] = color for LED i (see zone layout). Fan zones stream
+    /// per-LED; single-color zones use the static effect.
+    /// Statics + apply go FIRST: effect-register zones only take effect on the
+    /// apply packet, so committing them before the (milliseconds-long) fan
+    /// streaming keeps the chipset/IO accents in phase with the fans during
+    /// animated effects instead of trailing by a write cycle.</summary>
+    public void SetColors(IReadOnlyList<Rgb> colors)
+    {
+        lock (_writeLock)
+        {
+            EnsureDirectMode();
+            bool anyStatic = false;
+            for (int z = 0; z < ZoneDefs.Length; z++)
+                if (ZoneDefs[z].Kind != ZoneKind.Fan)
+                    anyStatic |= UpdateZone(z, colors, _zoneOffset[z]);
+            if (anyStatic) ApplyEffect();
+            for (int z = 0; z < ZoneDefs.Length; z++)
+                if (ZoneDefs[z].Kind == ZoneKind.Fan)
+                    UpdateZone(z, colors, _zoneOffset[z]);
+        }
+    }
+
+    /// <summary>Update only the zones fully contained in [offset, offset+count),
+    /// leaving all other zones on the hardware untouched.</summary>
+    public void SetZone(int offset, IReadOnlyList<Rgb> colors)
+    {
+        int end = offset + colors.Count;
+        lock (_writeLock)
+        {
+            EnsureDirectMode();
+            bool anyStatic = false;
+            for (int z = 0; z < ZoneDefs.Length; z++)
+            {
+                int zo = _zoneOffset[z];
+                if (zo >= offset && zo + ZoneDefs[z].Count <= end && ZoneDefs[z].Kind != ZoneKind.Fan)
+                    anyStatic |= UpdateZone(z, colors, zo - offset);
+            }
+            if (anyStatic) ApplyEffect();
+            for (int z = 0; z < ZoneDefs.Length; z++)
+            {
+                int zo = _zoneOffset[z];
+                if (zo >= offset && zo + ZoneDefs[z].Count <= end && ZoneDefs[z].Kind == ZoneKind.Fan)
+                    UpdateZone(z, colors, zo - offset);
+            }
+        }
+    }
+
+    // Per-zone dedup for FAN zones: a static color on an ARGB header used to
+    // re-stream feature reports at 60 fps forever (statics were deduped, fans
+    // were not — the exact gap the IRgbDevice contract warns about).
+    readonly Dictionary<int, Rgb[]> _lastFan = new();
+
+    /// <summary>Returns true when a static zone actually changed (needs apply).</summary>
+    bool UpdateZone(int z, IReadOnlyList<Rgb> src, int srcStart)
+    {
+        var def = ZoneDefs[z];
+        if (def.Kind == ZoneKind.Fan)
+        {
+            if (!_lastFan.TryGetValue(def.Id, out var last) || last.Length != def.Count)
+                _lastFan[def.Id] = last = new Rgb[def.Count];
+            else
+            {
+                bool same = true;
+                for (int i = 0; i < def.Count; i++)
+                {
+                    int s = srcStart + i;
+                    var c = s >= 0 && s < src.Count ? src[s] : Rgb.Black;
+                    if (last[i] != c) { same = false; break; }
+                }
+                if (same) return false;
+            }
+            for (int i = 0; i < def.Count; i++)
+            {
+                int s = srcStart + i;
+                last[i] = s >= 0 && s < src.Count ? src[s] : Rgb.Black;
+            }
+            StreamHeaderColors(def.Id, src, srcStart, def.Count, def.Order);
+            return false;
+        }
+        if (srcStart < 0 || srcStart >= src.Count || _lastStatic[def.Id] == src[srcStart]) return false;
+        _lastStatic[def.Id] = src[srcStart];
+        SendZoneEffect(def.Id, src[srcStart]);
+        return true;
+    }
+
+    void SendZoneEffect(int led, Rgb c) => SendZoneEffect(led, c, null);
+
+    /// <summary>timing: optional (offset, value) overrides on the effect packet
+    /// — used by the CLI fade probe to find the field that disables the
+    /// firmware's smooth transition between static colors.</summary>
+    public void SendZoneEffect(int led, Rgb c, (int Offset, byte Value)[]? timing)
+    {
+        var pkt = new byte[BUF];
+        pkt[0] = REPORT_ID;
+        pkt[1] = (byte)(led < 8 ? 0x20 + led : 0x90 + (led - 8));
+        uint zone0 = 1u << led;
+        pkt[2] = (byte)(zone0 & 0xFF);
+        pkt[3] = (byte)((zone0 >> 8) & 0xFF);
+        pkt[11] = EFFECT_STATIC;
+        pkt[12] = 0xFF;
+        pkt[14] = c.B;
+        pkt[15] = c.G;
+        pkt[16] = c.R;
+        if (timing != null)
+            foreach (var (off, val) in timing)
+                if (off is > 3 and < BUF) pkt[off] = val;
+        _hid.SetFeature(pkt);
+    }
+
+    /// <summary>CLI probe support: commit pending zone effects.</summary>
+    public void ApplyNow() { lock (_writeLock) ApplyEffect(); }
+
+    /*-----------------------------------------------------*\
+    | Diagnostics (CLI): direct-stream + header scan.        |
+    \*-----------------------------------------------------*/
+    public void SetHeaderLeds(int header, IReadOnlyList<Rgb> colors, bool grbOrder = true)
+    {
+        var (argb, mask) = HeaderInfo(header);
+        var counts = new int[4];
+        counts[header - 1] = colors.Count;
+        SetLedCount(counts[0], counts[1], counts[2], counts[3]);
+        Thread.Sleep(20);
+        _effectDisabled |= mask;
+        Cc(0x32, (byte)_effectDisabled);
+        Thread.Sleep(20);
+
+        int k = 0, count = colors.Count;
+        while (k < count)
+        {
+            int n = Math.Min(19, count - k);
+            var pkt = new byte[BUF];
+            pkt[0] = REPORT_ID; pkt[1] = argb;
+            int byteOff = k * 3;
+            pkt[2] = (byte)(byteOff & 0xFF); pkt[3] = (byte)((byteOff >> 8) & 0xFF);
+            pkt[4] = (byte)(n * 3);
+            for (int i = 0; i < n; i++)
+            {
+                var c = colors[k + i];
+                int o = 5 + i * 3;
+                if (grbOrder) { pkt[o] = c.G; pkt[o + 1] = c.R; pkt[o + 2] = c.B; }
+                else          { pkt[o] = c.R; pkt[o + 1] = c.G; pkt[o + 2] = c.B; }
+            }
+            _hid.SetFeature(pkt);
+            k += n;
+        }
+        ApplyEffect();
+    }
+
+    public void TestAllHeaders(int ledsPerHeader, Rgb[] colorPerHeader)
+    {
+        SetLedCount(ledsPerHeader, ledsPerHeader, ledsPerHeader, ledsPerHeader);
+        Thread.Sleep(20);
+        _effectDisabled = 0x01 | 0x02 | 0x08 | 0x10;
+        Cc(0x32, (byte)_effectDisabled);
+        Thread.Sleep(30);
+        for (int h = 1; h <= 4; h++)
+        {
+            var flat = Enumerable.Repeat(colorPerHeader[h - 1], ledsPerHeader).ToList();
+            StreamHeaderColors(h, flat, 0, flat.Count);
+        }
+        ApplyEffect();
+    }
+
+    public sealed record HeaderScan(int Header, int Segments, int[] SegmentLeds, int TotalLeds);
+
+    public string DiagnosticInfo()
+    {
+        var rpt = new byte[BUF]; rpt[0] = REPORT_ID;
+        Cc(0x60);
+        bool ok = _hid.GetFeature(rpt);
+        string product = System.Text.Encoding.ASCII.GetString(rpt, 12, 28).TrimEnd('\0', ' ');
+        return ok
+            ? $"read=OK product='{product}' device_num={rpt[2]} strip_detect={rpt[3]} " +
+              $"support_cmd_flag=0x{rpt[11]:X2} led_count_hi={rpt[8]} led_count_lo={rpt[9]}"
+            : "GetFeature FAILED";
+    }
+
+    public List<HeaderScan> ScanArgbHeaders()
+    {
+        var results = new List<HeaderScan>();
+        var rpt = new byte[BUF]; rpt[0] = REPORT_ID;
+        Cc(0x60);
+        if (!_hid.GetFeature(rpt)) return results;
+
+        bool gen2 = rpt[2] == 0 && (rpt[11] & 0x01) != 0 && rpt[3] == 0x01;
+        if (!gen2) return results;
+
+        int[] delta = { 4, 5, 0, 1 };
+        const byte GEN2_LED_BASE_SCAN = 0x38;
+        for (int slot = 0; slot < 4; slot++)
+        {
+            byte scanCmd = (byte)(GEN2_LED_BASE_SCAN + delta[slot]);
+            Cc(scanCmd);
+            Thread.Sleep(700);
+            Cc((byte)(scanCmd + 2));
+            var feat = new byte[BUF]; feat[0] = REPORT_ID;
+            if (!_hid.GetFeature(feat)) continue;
+            int segCount = feat[1];
+            if (segCount is <= 0 or > 15) continue;
+            var segs = new int[segCount];
+            int total = 0;
+            for (int k = 0; k < segCount; k++) { int cnt = feat[2 + k * 2] | (feat[3 + k * 2] << 8); segs[k] = cnt; total += cnt; }
+            if (total > 0) results.Add(new HeaderScan(slot + 1, segCount, segs, total));
+        }
+        return results;
+    }
+
+    public void Dispose() => _hid.Dispose();
+}

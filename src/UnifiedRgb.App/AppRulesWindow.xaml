@@ -1,0 +1,79 @@
+<Window x:Class="UnifiedRgb.App.AppRulesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="App rules" WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ResizeMode="NoResize" SizeToContent="Height" Width="560"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        MouseLeftButtonDown="Drag_Down">
+    <Border x:Name="RootPanel" Background="#FF1B1D24" CornerRadius="12" Padding="22"
+            BorderBrush="#FF2A2E38" BorderThickness="1"
+            AllowDrop="True" PreviewDragOver="Root_PreviewDragOver">
+        <StackPanel>
+            <Grid Margin="0,0,0,4">
+                <TextBlock Text="App rules" FontSize="18" FontWeight="SemiBold"/>
+                <Button Content="✕" HorizontalAlignment="Right" Padding="8,3" Click="Close_Click"/>
+            </Grid>
+            <TextBlock Opacity="0.6" TextWrapping="Wrap" Margin="0,0,0,14"
+                       Text="When a listed program is focused, its profile applies. Switch away and your lighting comes back. If more than one rule matches, the top one wins. Drag rows to reorder."/>
+
+            <!-- Existing rules -->
+            <ItemsControl x:Name="RulesList" ItemsSource="{Binding AutoRules}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border Background="#FF262932" CornerRadius="8" Padding="8,8,12,8" Margin="0,0,0,6"
+                                BorderThickness="0,2,0,2" BorderBrush="Transparent"
+                                AllowDrop="True" DragOver="Rule_DragOver" DragLeave="Rule_DragLeave" Drop="Rule_Drop"
+                                PreviewMouseLeftButtonDown="Row_Down" PreviewMouseMove="Row_Move"
+                                Cursor="SizeAll">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="⠿" Opacity="0.45" FontSize="15" VerticalAlignment="Center"
+                                           Margin="2,0,10,0" ToolTip="Drag to reorder. The top rule wins."/>
+                                <TextBlock Grid.Column="1" Text="{Binding Process}" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="2" Text="→" Opacity="0.6" VerticalAlignment="Center" Margin="10,0"/>
+                                <ComboBox Grid.Column="3" Width="150" SelectedItem="{Binding Profile}"
+                                          ItemsSource="{Binding DataContext.ProfileNames, RelativeSource={RelativeSource AncestorType=Window}}"
+                                          SelectionChanged="Rule_Persist"/>
+                                <Button Grid.Column="4" Content="Remove" Style="{StaticResource Danger}"
+                                        Padding="10,4" Margin="10,0,0,0" Click="RemoveRule_Click"/>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <TextBlock x:Name="NoRulesText" Text="No rules yet. Add one below." Opacity="0.5" FontSize="12" Margin="2,0,0,6"/>
+
+            <Border Background="#22FFFFFF" Height="1" Margin="0,12,0,14"/>
+
+            <!-- Add a rule -->
+            <TextBlock Text="ADD A RULE" FontSize="11" FontWeight="SemiBold" Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,0,0,8"/>
+            <StackPanel Orientation="Horizontal">
+                <ComboBox x:Name="RunningApps" Width="230" DisplayMemberPath="Display"
+                          SelectionChanged="RunningApp_Selected"
+                          ToolTip="Programs with a window, running right now"/>
+                <Button Content="⟳" Padding="9,4" Margin="6,0,0,0" Click="RefreshApps_Click" ToolTip="Refresh the list"/>
+                <Button Content="Browse…" Padding="10,4" Margin="6,0,0,0" Click="BrowseExe_Click"
+                        ToolTip="Pick a game/program .exe instead"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                <TextBox x:Name="ProcName" Width="230" ToolTip="Process name (you can also type it manually)"/>
+                <TextBlock Text="→" Opacity="0.6" VerticalAlignment="Center" Margin="10,0"/>
+                <ComboBox x:Name="ProfilePick" Width="150"
+                          ItemsSource="{Binding ProfileNames}"
+                          ToolTip="Profile to apply while that program is focused"/>
+                <Button x:Name="AddBtn" Content="Add rule" Style="{StaticResource Accent}" Padding="14,4"
+                        Margin="10,0,0,0" Click="AddRule_Click"/>
+            </StackPanel>
+            <TextBlock x:Name="AddHint" Opacity="0.5" FontSize="11" Margin="2,8,0,0"
+                       Text="Pick a running app (or Browse to an .exe), choose a profile, hit Add rule."/>
+
+            <TextBlock Text="{Binding AutomationStatus}" Foreground="#FF7FB4FF" FontSize="12" Margin="0,14,0,0" TextWrapping="Wrap"/>
+        </StackPanel>
+    </Border>
+</Window>

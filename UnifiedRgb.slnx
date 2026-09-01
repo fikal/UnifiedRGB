@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/UnifiedRgb.App/UnifiedRgb.App.csproj" />
+    <Project Path="src/UnifiedRgb.Cli/UnifiedRgb.Cli.csproj" />
+    <Project Path="src/UnifiedRgb.Core/UnifiedRgb.Core.csproj" />
+    <Project Path="src/UnifiedRgb.Diag/UnifiedRgb.Diag.csproj" />
+    <Project Path="src/UnifiedRgb.Tests/UnifiedRgb.Tests.csproj" />
+  </Folder>
+</Solution>

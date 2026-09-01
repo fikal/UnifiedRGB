@@ -1,0 +1,24 @@
+name: build
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      # Public CI builds carry NO backend (see AppPaths.Backend): update
+      # checks skip and support bundles save locally. That is by design.
+      - name: Build
+        run: dotnet build src/UnifiedRgb.App -c Release
+
+      - name: Tests
+        run: dotnet run --project src/UnifiedRgb.Tests -c Release

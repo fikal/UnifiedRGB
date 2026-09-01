@@ -1,0 +1,1489 @@
+<Window x:Class="UnifiedRgb.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:UnifiedRgb.App"
+        xmlns:controls="clr-namespace:UnifiedRgb.App.Controls"
+        Title="UnifiedRgb" Height="700" Width="1240" Icon="Assets/app.ico"
+        Background="#FF16171B" WindowStartupLocation="CenterScreen">
+
+    <WindowChrome.WindowChrome>
+        <!-- 1px glass strip keeps the DWM shadow without extending glass over
+             the whole window (full-glass + our per-frame preview = drag judder). -->
+        <WindowChrome CaptionHeight="42" ResizeBorderThickness="8"
+                      GlassFrameThickness="0,0,0,1" UseAeroCaptionButtons="False"/>
+    </WindowChrome.WindowChrome>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="42"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- ===================== Title bar ===================== -->
+        <Grid Grid.Row="0" Background="#FF101116">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,0,0">
+                <Border Width="12" Height="12" CornerRadius="6">
+                    <Border.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                            <GradientStop Color="#FFFF0060" Offset="0"/>
+                            <GradientStop Color="#FF8A2BFF" Offset="0.5"/>
+                            <GradientStop Color="#FF00A0FF" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Border.Background>
+                </Border>
+                <TextBlock Text="UnifiedRGB" FontWeight="SemiBold" FontSize="13"
+                           Foreground="#FFD8DAE2" Margin="9,0,0,0" VerticalAlignment="Center"/>
+                <TextBlock Text="{Binding AppVersion}" FontSize="11" Foreground="#FF6A6E7A"
+                           Margin="7,1,0,0" VerticalAlignment="Center"/>
+                <Button Content="{Binding UpdateText}" Style="{StaticResource Accent}"
+                        FontSize="11" Padding="10,4" Margin="14,0,0,0" VerticalAlignment="Center"
+                        WindowChrome.IsHitTestVisibleInChrome="True" Click="Update_Click"
+                        Visibility="{Binding UpdateAvailable, Converter={StaticResource BoolToVis}}"
+                        ToolTip="Download the new build and restart"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                        WindowChrome.IsHitTestVisibleInChrome="True">
+                <Button Style="{StaticResource CaptionButton}" Content="&#xE713;" FontSize="13"
+                        Cursor="Hand" Click="Settings_Click" ToolTip="Settings"/>
+                <Button x:Name="BtnMin" Style="{StaticResource CaptionButton}"
+                        Content="&#xE921;" Click="Min_Click"/>
+                <Button x:Name="BtnMax" Style="{StaticResource CaptionButton}"
+                        Content="&#xE922;" Click="Max_Click"/>
+                <Button Style="{StaticResource CaptionClose}"
+                        Content="&#xE8BB;" Click="Close_Click"/>
+            </StackPanel>
+        </Grid>
+
+    <Grid Grid.Row="1" Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="290"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- ===================== Device list ===================== -->
+        <Border Style="{StaticResource Card}" Grid.Column="0" Grid.Row="0" Margin="0,0,12,0">
+            <DockPanel>
+                <DockPanel.Resources>
+                    <DataTemplate x:Key="LeftItemTemplate">
+                        <StackPanel>
+                            <StackPanel.Style>
+                                <Style TargetType="StackPanel">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsDisabled}" Value="True">
+                                            <Setter Property="Opacity" Value="0.45"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </StackPanel.Style>
+                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                            <TextBlock Text="{Binding Subtitle}" Opacity="0.7" FontSize="11" Margin="0,3,0,0"/>
+                        </StackPanel>
+                    </DataTemplate>
+                </DockPanel.Resources>
+
+                <Grid DockPanel.Dock="Top" Margin="0,0,0,8">
+                    <TextBlock Text="Setup" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                    <Button Content="Rescan" HorizontalAlignment="Right" Padding="10,5"
+                            Command="{Binding RescanCommand}"/>
+                </Grid>
+                <!-- SYSTEM: pinned at the bottom, always reachable -->
+                <StackPanel DockPanel.Dock="Bottom">
+                    <Border Height="1" Background="#FF2A2E38" Margin="2,8,2,8"/>
+                    <TextBlock Text="SYSTEM" FontSize="11" FontWeight="SemiBold"
+                               Foreground="#FF9AA3B2" Opacity="0.8" Margin="2,0,0,6"/>
+                    <ListBox x:Name="SystemNav" ItemsSource="{Binding SystemItems}" SelectedItem="{Binding SelectedLeftItem}"
+                             Background="Transparent" BorderThickness="0" Foreground="#FFE6E6E6"
+                             IsTextSearchEnabled="False" ItemContainerStyle="{StaticResource RowList}"
+                             ItemTemplate="{StaticResource LeftItemTemplate}"
+                             PreviewMouseLeftButtonUp="LeftNav_Click"
+                             ScrollViewer.VerticalScrollBarVisibility="Disabled"/>
+                </StackPanel>
+
+                <TextBlock DockPanel.Dock="Top" Text="DEVICES" FontSize="11" FontWeight="SemiBold"
+                           Foreground="#FF9AA3B2" Opacity="0.8" Margin="2,0,0,6"/>
+                <ListBox x:Name="DeviceNav" ItemsSource="{Binding DeviceItems}" SelectedItem="{Binding SelectedLeftItem}"
+                         Background="Transparent" BorderThickness="0" Foreground="#FFE6E6E6"
+                         IsTextSearchEnabled="False" ItemContainerStyle="{StaticResource RowList}"
+                         ItemTemplate="{StaticResource LeftItemTemplate}"
+                         PreviewMouseLeftButtonUp="LeftNav_Click"
+                         ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+            </DockPanel>
+        </Border>
+
+        <!-- ============ Right panel: Lighting OR Pump LCD designer ============ -->
+        <Border Style="{StaticResource Card}" Grid.Column="1" Grid.Row="0">
+          <Grid>
+            <!-- ===================== Lighting ===================== -->
+            <DockPanel Visibility="{Binding ShowLighting, Converter={StaticResource BoolToVis}}">
+                <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
+                    <TextBlock Text="{Binding SelectedDevice.Name}" FontSize="20" FontWeight="SemiBold"
+                               VerticalAlignment="Center"/>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                        <!-- Height pinned to the Zone combo's 34px so the row reads
+                             identically whether or not the combo is present. -->
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,14,0"
+                                    Visibility="{Binding ShowLianSpeed, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="Fan speed" VerticalAlignment="Center" Opacity="0.7" Margin="0,0,8,0"/>
+                            <Slider Width="120" Minimum="0.3" Maximum="4" Value="{Binding LianSpeedScale}"
+                                    VerticalAlignment="Center"
+                                    ToolTip="Drag until the fan animation keeps pace with your other lights (right = slower)."/>
+                            <TextBlock Text="{Binding LianSpeedText}" VerticalAlignment="Center" Opacity="0.7"
+                                       Margin="8,0,0,0" MinWidth="34"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,14,0"
+                                    Visibility="{Binding ShowLianUniChannel, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="Channel" VerticalAlignment="Center" Opacity="0.7" Margin="0,0,8,0"/>
+                            <ComboBox Width="110" VerticalAlignment="Center"
+                                      ItemsSource="{Binding LianUniChannelOptions}"
+                                      DisplayMemberPath="Label" SelectedValuePath="Channel"
+                                      SelectedValue="{Binding LianUniChannel}"
+                                      ToolTip="Which controller connector your fans are plugged into (only connectors with fans are listed)."/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,14,0"
+                                    Visibility="{Binding ShowLianUni, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="Fans" VerticalAlignment="Center" Opacity="0.7" Margin="0,0,8,0"/>
+                            <ComboBox Width="60" VerticalAlignment="Center"
+                                      ItemsSource="{Binding LianUniFanOptions}"
+                                      SelectedItem="{Binding LianUniFanCount}"
+                                      ToolTip="How many fans are daisy-chained on this channel (up to 4)."/>
+                        </StackPanel>
+                        <Button Content="Arrange fans…" Height="34" Padding="10,0" Margin="0,0,14,0"
+                                Visibility="{Binding ShowArrangeFans, Converter={StaticResource BoolToVis}}"
+                                Click="ArrangeFans_Click"
+                                ToolTip="Drag the fans into the order they sit in your case; split them into groups"/>
+                        <Button Content="Disable" Style="{StaticResource Danger}" Height="34" Padding="10,0"
+                                Margin="0,0,14,0" Click="DisableDevice_Click"
+                                ToolTip="Stop controlling this device so other RGB software can own it. Profiles keep its saved colors and effects."/>
+                        <Button Content="Headers…" Height="34" Padding="10,0" Margin="0,0,14,0"
+                                Visibility="{Binding IsGigabyteSelected, Converter={StaticResource BoolToVis}}"
+                                Click="ConfigureHeaders_Click"
+                                ToolTip="Configure which ARGB headers have addressable fans"/>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
+                                    Visibility="{Binding ShowZonePicker, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="Zone" Opacity="0.7" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <ComboBox Width="210" ItemsSource="{Binding Targets}"
+                                      SelectedItem="{Binding SelectedTarget}" DisplayMemberPath="Name"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Grid>
+
+                <!-- Night-off banner: scheduled lights-off looked like "nothing works" -->
+                <Border DockPanel.Dock="Top" Background="#2B3B63" CornerRadius="8" Padding="12,8" Margin="0,0,0,12"
+                        Visibility="{Binding NightLightsOff, Converter={StaticResource BoolToVis}}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="🌙" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <TextBlock Text="Night mode has the lights off. Changing anything wakes them."
+                                   VerticalAlignment="Center" Opacity="0.9"/>
+                        <Button Content="Wake lights" Style="{StaticResource Accent}" Padding="12,4"
+                                Margin="12,0,0,0" Click="WakeLights_Click"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- Mode pills: favorites + Custom Pattern; the library lives
+                     behind All effects (star an effect there to pin it here) -->
+                <DockPanel DockPanel.Dock="Top" Margin="0,0,0,4">
+                    <Button x:Name="AllEffectsBtn" DockPanel.Dock="Right" Content="All effects…"
+                            VerticalAlignment="Top" Padding="12,7" Margin="8,0,0,0" Click="AllEffects_Click"
+                            ToolTip="Browse every effect by category - star the ones you want as pills"/>
+                    <ListBox x:Name="PillsList" ItemsSource="{Binding VisibleEffects}"
+                             SelectionChanged="Pills_SelectionChanged"
+                             Background="Transparent" BorderThickness="0"
+                             ItemContainerStyle="{StaticResource Pill}"
+                             IsTextSearchEnabled="False" PreviewKeyDown="Pills_PreviewKeyDown"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <ListBox.ItemsPanel>
+                            <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                        </ListBox.ItemsPanel>
+                        <ListBox.ItemTemplate>
+                            <DataTemplate><TextBlock Text="{Binding Name}"/></DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </DockPanel>
+                <Popup x:Name="EffectsPopup" StaysOpen="False" AllowsTransparency="True"
+                       Placement="Bottom" PlacementTarget="{Binding ElementName=AllEffectsBtn}">
+                    <Border Background="#FF1B1D24" CornerRadius="10" Padding="16" Margin="0,4,8,8"
+                            BorderBrush="#FF2E3140" BorderThickness="1" MaxWidth="620">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.5" Color="Black"/>
+                        </Border.Effect>
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="440">
+                            <StackPanel>
+                                <TextBlock Text="Click an effect to use it · star it to pin it to the bar"
+                                           Opacity="0.5" FontSize="11" Margin="0,0,0,10"/>
+                                <ItemsControl x:Name="EffectMenuList">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Margin="0,0,0,10">
+                                                <TextBlock Text="{Binding Name}" FontSize="11" FontWeight="SemiBold"
+                                                           Foreground="#FF9AA3B2" Opacity="0.8" Margin="2,0,0,6"/>
+                                                <ItemsControl ItemsSource="{Binding Items}">
+                                                    <ItemsControl.ItemsPanel>
+                                                        <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                                                    </ItemsControl.ItemsPanel>
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <Border Background="#FF262932" CornerRadius="15"
+                                                                    Margin="0,0,6,6" Padding="2">
+                                                                <StackPanel Orientation="Horizontal">
+                                                                    <Button Click="EffectPick_Click" Cursor="Hand">
+                                                                        <Button.Template>
+                                                                            <ControlTemplate TargetType="Button">
+                                                                                <Border x:Name="bd" Background="Transparent"
+                                                                                        CornerRadius="13" Padding="10,4">
+                                                                                    <TextBlock Text="{Binding Name}" Foreground="#FFECEFF4"/>
+                                                                                </Border>
+                                                                                <ControlTemplate.Triggers>
+                                                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                                                        <Setter TargetName="bd" Property="Background" Value="#FF313644"/>
+                                                                                    </Trigger>
+                                                                                </ControlTemplate.Triggers>
+                                                                            </ControlTemplate>
+                                                                        </Button.Template>
+                                                                    </Button>
+                                                                    <Button Click="EffectStar_Click" Cursor="Hand"
+                                                                            Visibility="{Binding CanStar, Converter={StaticResource BoolToVis}}"
+                                                                            ToolTip="Favorite = shows as a pill">
+                                                                        <Button.Template>
+                                                                            <ControlTemplate TargetType="Button">
+                                                                                <Border x:Name="bd" Background="Transparent"
+                                                                                        CornerRadius="13" Padding="5,4,9,4">
+                                                                                    <TextBlock Text="{Binding Star}" FontSize="13"
+                                                                                               Foreground="{Binding StarBrush}"/>
+                                                                                </Border>
+                                                                                <ControlTemplate.Triggers>
+                                                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                                                        <Setter TargetName="bd" Property="Background" Value="#FF313644"/>
+                                                                                    </Trigger>
+                                                                                </ControlTemplate.Triggers>
+                                                                            </ControlTemplate>
+                                                                        </Button.Template>
+                                                                    </Button>
+                                                                </StackPanel>
+                                                            </Border>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Border>
+                </Popup>
+                <Border DockPanel.Dock="Top" Background="#18FFFFFF" Height="1" Margin="0,4,0,16"/>
+
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="300"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Settings for the current mode -->
+                    <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" Margin="0,0,20,0">
+                        <StackPanel Margin="0,0,6,0">
+                            <!-- Current effect + favorite star (favorites are the pills) -->
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                <TextBlock Text="{Binding CurrentEffectName}" FontSize="17" FontWeight="SemiBold"
+                                           VerticalAlignment="Center"/>
+                                <Button Click="TitleStar_Click" Cursor="Hand" VerticalAlignment="Center" Margin="8,1,0,0"
+                                        Visibility="{Binding ShowCurrentEffectStar, Converter={StaticResource BoolToVis}}"
+                                        ToolTip="Favorite = shows as a pill">
+                                    <Button.Template>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border x:Name="bd" Background="Transparent" CornerRadius="9" Padding="6,2">
+                                                <TextBlock Text="{Binding CurrentEffectStar}" FontSize="16"
+                                                           Foreground="{Binding CurrentEffectStarBrush}"/>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="bd" Property="Background" Value="#FF313644"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Button.Template>
+                                </Button>
+                            </StackPanel>
+                            <!-- Color controls (static, tinted effects, custom pattern) -->
+                            <StackPanel Visibility="{Binding ShowColorControls, Converter={StaticResource BoolToVis}}">
+                                <local:ColorWheel Width="190" Height="190" HorizontalAlignment="Left"
+                                                  SelectedColor="{Binding WheelColor, Mode=TwoWay}"/>
+                                <TextBlock Text="Brightness" Opacity="0.7" Margin="0,10,0,0"/>
+                                <Slider Minimum="0" Maximum="255" Value="{Binding Brightness}" Margin="0,2,0,8"/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="46"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" CornerRadius="7" Background="{Binding PreviewBrush}" Margin="0,0,8,0"/>
+                                    <TextBox Grid.Column="1" Text="{Binding Hex, UpdateSourceTrigger=PropertyChanged}"
+                                             FontFamily="Consolas" FontSize="14"/>
+                                </Grid>
+                                <!-- Same width as the swatch+hex row above: aligned on both edges -->
+                                <Grid Margin="0,8,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <DockPanel Grid.Column="0" Margin="0,0,10,0">
+                                        <TextBlock Text="R" Foreground="#FFFF5555" FontWeight="SemiBold"
+                                                   DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,7,0"/>
+                                        <TextBox HorizontalContentAlignment="Center"
+                                                 Text="{Binding R, UpdateSourceTrigger=LostFocus}"/>
+                                    </DockPanel>
+                                    <DockPanel Grid.Column="1" Margin="0,0,10,0">
+                                        <TextBlock Text="G" Foreground="#FF58D858" FontWeight="SemiBold"
+                                                   DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,7,0"/>
+                                        <TextBox HorizontalContentAlignment="Center"
+                                                 Text="{Binding G, UpdateSourceTrigger=LostFocus}"/>
+                                    </DockPanel>
+                                    <DockPanel Grid.Column="2">
+                                        <TextBlock Text="B" Foreground="#FF6E96FF" FontWeight="SemiBold"
+                                                   DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,7,0"/>
+                                        <TextBox HorizontalContentAlignment="Center"
+                                                 Text="{Binding B, UpdateSourceTrigger=LostFocus}"/>
+                                    </DockPanel>
+                                </Grid>
+                                <ItemsControl ItemsSource="{Binding Swatches}" Margin="0,10,0,0">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Button Width="28" Height="28" Margin="3"
+                                                    Background="{Binding Converter={StaticResource RgbToBrush}}"
+                                                    Command="{Binding DataContext.PickSwatchCommand,
+                                                              RelativeSource={RelativeSource AncestorType=Window}}"
+                                                    CommandParameter="{Binding}"/>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <!-- Custom colors -->
+                                <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                    <TextBlock Text="Custom" Opacity="0.7" VerticalAlignment="Center"/>
+                                    <Button Content="+ add current" Padding="8,4" Margin="10,0,0,0"
+                                            Command="{Binding AddCustomColorCommand}"/>
+                                    <TextBlock Text="right-click removes" Opacity="0.4" FontSize="11"
+                                               VerticalAlignment="Center" Margin="10,0,0,0"/>
+                                </StackPanel>
+                                <ItemsControl ItemsSource="{Binding CustomColors}" Margin="0,6,0,0">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Button Width="28" Height="28" Margin="3"
+                                                    Background="{Binding Converter={StaticResource RgbToBrush}}"
+                                                    Command="{Binding DataContext.PickSwatchCommand,
+                                                              RelativeSource={RelativeSource AncestorType=Window}}"
+                                                    CommandParameter="{Binding}">
+                                                <Button.InputBindings>
+                                                    <MouseBinding Gesture="RightClick"
+                                                                  Command="{Binding DataContext.RemoveCustomColorCommand,
+                                                                            RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  CommandParameter="{Binding}"/>
+                                                </Button.InputBindings>
+                                            </Button>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+
+                            <!-- Palette editor (Taichi, Gradient, Confetti…): here the palette
+                                 IS the color UI, so it leads the column. The wheel and its
+                                 hex/RGB friends live in a pop-up behind "+ color" - keeps the
+                                 panel short instead of burying the palette under a full picker. -->
+                            <StackPanel Visibility="{Binding ShowEffectPalette, Converter={StaticResource BoolToVis}}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="Colors" Opacity="0.7" VerticalAlignment="Center"/>
+                                    <Button x:Name="AddColorBtn" Content="+ color" Click="AddPaletteColor_Click"
+                                            Margin="12,0,0,0" Padding="8,4"/>
+                                    <Button Content="Library…" Click="PaletteLibrary_Click"
+                                            Margin="8,0,0,0" Padding="8,4"/>
+                                </StackPanel>
+                                <ItemsControl ItemsSource="{Binding PatternPalette}" Margin="0,10,0,0">
+                                    <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Button Width="34" Height="34" Margin="0,0,7,7"
+                                                    Background="{Binding Converter={StaticResource RgbToBrush}}"
+                                                    ToolTip="Click to remove this color"
+                                                    Command="{Binding DataContext.RemovePaletteColorCommand,
+                                                              RelativeSource={RelativeSource AncestorType=Window}}"
+                                                    CommandParameter="{Binding}"/>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock Text="click a swatch to remove it"
+                                           Opacity="0.4" FontSize="11" Margin="0,2,0,0"/>
+
+                                <!-- Compact picker pop-up: wheel + brightness + hex + presets,
+                                     one Add per pick. Click anywhere else to dismiss. -->
+                                <Popup x:Name="AddColorPopup" StaysOpen="False" AllowsTransparency="True"
+                                       PlacementTarget="{Binding ElementName=AddColorBtn}" Placement="Bottom"
+                                       PopupAnimation="Fade">
+                                    <Border Background="#FF1F222B" CornerRadius="10" Padding="14" Margin="10"
+                                            BorderBrush="#FF2A2E38" BorderThickness="1">
+                                        <Border.Effect>
+                                            <DropShadowEffect BlurRadius="16" ShadowDepth="3" Opacity="0.5" Color="Black"/>
+                                        </Border.Effect>
+                                        <StackPanel Width="196">
+                                            <local:ColorWheel Width="164" Height="164" HorizontalAlignment="Center"
+                                                              SelectedColor="{Binding WheelColor, Mode=TwoWay}"/>
+                                            <TextBlock Text="Brightness" Opacity="0.7" Margin="0,8,0,0"/>
+                                            <Slider Minimum="0" Maximum="255" Value="{Binding Brightness}" Margin="0,2,0,6"/>
+                                            <!-- Compact preview + hex (the global TextBox padding is
+                                                 too tall for a pop-up) -->
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="28"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <Border CornerRadius="5" Width="22" Height="22" HorizontalAlignment="Left"
+                                                        VerticalAlignment="Center" Background="{Binding PreviewBrush}"/>
+                                                <TextBox Grid.Column="1" Text="{Binding Hex, UpdateSourceTrigger=PropertyChanged}"
+                                                         FontFamily="Consolas" FontSize="12" Padding="6,3"
+                                                         VerticalContentAlignment="Center"/>
+                                            </Grid>
+                                            <!-- 7 swatches per row at 28px/cell = exactly 196: no
+                                                 clipped right edge -->
+                                            <ItemsControl ItemsSource="{Binding Swatches}" Margin="0,8,0,0">
+                                                <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Button Width="24" Height="24" Margin="2"
+                                                                Background="{Binding Converter={StaticResource RgbToBrush}}"
+                                                                Command="{Binding DataContext.PickSwatchCommand,
+                                                                          RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                CommandParameter="{Binding}"/>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                            <Button Content="Add color" Style="{StaticResource Accent}" Margin="0,10,0,0"
+                                                    HorizontalAlignment="Stretch" Padding="12,6"
+                                                    Command="{Binding AddPaletteColorCommand}"/>
+                                        </StackPanel>
+                                    </Border>
+                                </Popup>
+                            </StackPanel>
+
+                            <!-- Apply (static only) + All devices (any mode) -->
+                            <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                                <Button Content="Apply" Style="{StaticResource Accent}"
+                                        Command="{Binding ApplyToTargetCommand}" Margin="0,0,8,0"
+                                        Visibility="{Binding IsStaticMode, Converter={StaticResource BoolToVis}}"/>
+                                <Button Content="All devices" Command="{Binding ApplyToAllCommand}"
+                                        ToolTip="Put this exact mode (color or effect, with its settings) on every device"/>
+                            </StackPanel>
+
+                            <!-- Speed (preset animated modes; "Punch" for audio) -->
+                            <StackPanel Visibility="{Binding ShowSpeedInMain, Converter={StaticResource BoolToVis}}"
+                                        Margin="0,14,0,0">
+                                <TextBlock Text="{Binding SpeedLabel}" Opacity="0.7" Margin="0,0,0,2"/>
+                                <Slider Minimum="0.1" Maximum="4" Value="{Binding EffectSpeed}"
+                                        ToolTip="How hard the lights react to sound. Low = only the peaks, high = always moving."/>
+                            </StackPanel>
+
+                            <!-- Direction: reverse any animated effect -->
+                            <CheckBox Content="Reverse direction" IsChecked="{Binding EffectReverse}"
+                                      Visibility="{Binding ShowDirection, Converter={StaticResource BoolToVis}}"
+                                      Margin="0,10,0,0"
+                                      ToolTip="Run the effect backwards (sweeps, spins and color flow go the other way)."/>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Custom pattern column (its own panel, no scrolling) -->
+                    <StackPanel Grid.Column="1" Width="240" Margin="0,0,20,0"
+                                Visibility="{Binding IsCustomPattern, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="Pattern" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,10"/>
+                        <TextBlock Text="Speed" Opacity="0.7" Margin="0,0,0,2"/>
+                        <Slider Minimum="0.1" Maximum="4" Value="{Binding EffectSpeed}"/>
+                        <TextBlock Text="Pattern color" Opacity="0.7" Margin="0,12,0,4"/>
+                        <ComboBox ItemsSource="{Binding PatternColorModes}" SelectedItem="{Binding SelectedPatternColor}"/>
+                        <TextBlock Text="Motion" Opacity="0.7" Margin="0,12,0,4"/>
+                        <ComboBox ItemsSource="{Binding PatternMotions}" SelectedItem="{Binding SelectedPatternMotion}"/>
+                        <TextBlock Text="Density" Opacity="0.7" Margin="0,12,0,2"/>
+                        <Slider Minimum="1" Maximum="5" Value="{Binding PatternDensity}"/>
+                        <CheckBox Content="Reverse direction" IsChecked="{Binding PatternReverse}" Margin="0,10,0,0"/>
+                        <StackPanel Visibility="{Binding IsPaletteMode, Converter={StaticResource BoolToVis}}"
+                                    Margin="0,14,0,0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="Palette" Opacity="0.7" VerticalAlignment="Center"/>
+                                <Button Content="+ color" Command="{Binding AddPaletteColorCommand}"
+                                        Margin="12,0,0,0" Padding="8,4"/>
+                                <Button Content="Library…" Click="PaletteLibrary_Click"
+                                        Margin="8,0,0,0" Padding="8,4"/>
+                            </StackPanel>
+                            <TextBlock Text="adds the wheel color · click a swatch to remove"
+                                       Opacity="0.4" FontSize="11" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                            <ItemsControl ItemsSource="{Binding PatternPalette}" Margin="0,8,0,0">
+                                <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Width="28" Height="28" Margin="3"
+                                                Background="{Binding Converter={StaticResource RgbToBrush}}"
+                                                Command="{Binding DataContext.RemovePaletteColorCommand,
+                                                          RelativeSource={RelativeSource AncestorType=Window}}"
+                                                CommandParameter="{Binding}"/>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- Key Ripple settings (its own panel, like the pattern's) -->
+                    <StackPanel Grid.Column="1" Width="240" Margin="0,0,20,0"
+                                Visibility="{Binding IsKeyRipple, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="Ripple" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,10"/>
+                        <TextBlock Text="Ring color" Opacity="0.7" Margin="0,0,0,4"/>
+                        <ComboBox ItemsSource="{Binding PatternColorModes}" SelectedItem="{Binding SelectedRippleColor}"/>
+                        <TextBlock Text="Rainbow = every press a new hue · Gradient = cycles your palette · Solid = the wheel color"
+                                   Opacity="0.4" FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap"/>
+                        <StackPanel Visibility="{Binding IsRipplePalette, Converter={StaticResource BoolToVis}}"
+                                    Margin="0,14,0,0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="Palette" Opacity="0.7" VerticalAlignment="Center"/>
+                                <Button Content="+ color" Command="{Binding AddPaletteColorCommand}"
+                                        Margin="12,0,0,0" Padding="8,4"/>
+                                <Button Content="Library…" Click="PaletteLibrary_Click"
+                                        Margin="8,0,0,0" Padding="8,4"/>
+                            </StackPanel>
+                            <TextBlock Text="adds the wheel color · click a swatch to remove"
+                                       Opacity="0.4" FontSize="11" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                            <ItemsControl ItemsSource="{Binding PatternPalette}" Margin="0,8,0,0">
+                                <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Width="28" Height="28" Margin="3"
+                                                Background="{Binding Converter={StaticResource RgbToBrush}}"
+                                                Command="{Binding DataContext.RemovePaletteColorCommand,
+                                                          RelativeSource={RelativeSource AncestorType=Window}}"
+                                                CommandParameter="{Binding}"/>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- Live device preview (keyboard replica / fan disc only) -->
+                    <Grid Grid.Column="2" Visibility="{Binding ShowGenericPreview, Converter={StaticResource BoolToVis}}"
+                          VerticalAlignment="Top">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <local:LedPreview x:Name="PreviewView" MaxHeight="420" MinHeight="260" Height="420"/>
+                        <TextBlock Grid.Row="1" Text="Live preview · click paints an LED · right-click clears it"
+                                   Opacity="0.45" FontSize="11" HorizontalAlignment="Center" Margin="0,8,0,0"/>
+                    </Grid>
+
+                    <!-- Lian Li fan editor: pick a fan, click a part on the model -->
+                    <StackPanel Grid.Column="2" VerticalAlignment="Top"
+                                Visibility="{Binding ShowLianEditor, Converter={StaticResource BoolToVis}}">
+                        <ListBox ItemsSource="{Binding LianFanNames}" SelectedIndex="{Binding LianFan}"
+                                 Background="Transparent" BorderThickness="0" HorizontalAlignment="Center"
+                                 ItemContainerStyle="{StaticResource Pill}" IsTextSearchEnabled="False"
+                                 Margin="0,0,0,12">
+                            <ListBox.ItemsPanel>
+                                <ItemsPanelTemplate><StackPanel Orientation="Horizontal"/></ItemsPanelTemplate>
+                            </ListBox.ItemsPanel>
+                        </ListBox>
+                        <controls:LianLiFanView x:Name="LianFanView" Width="400" Height="380"
+                                                HorizontalAlignment="Center"/>
+                        <ItemsControl ItemsSource="{Binding LianParts}" HorizontalAlignment="Center" Margin="0,10,0,0">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate><StackPanel Orientation="Horizontal"/></ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Button Content="{Binding Name}" Tag="{Binding Tag}" Padding="12,4" Margin="3,0"
+                                            Click="LianPart_Click"/>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <ItemsControl ItemsSource="{Binding LianGroupNames}" HorizontalAlignment="Center" Margin="0,6,0,0"
+                                      Visibility="{Binding HasLianGroups, Converter={StaticResource BoolToVis}}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate><StackPanel Orientation="Horizontal"/></ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Button Content="{Binding}" Padding="12,4" Margin="3,0" Click="LianGroup_Click"/>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <TextBlock Text="{Binding LianSelectionLabel}" FontWeight="SemiBold" FontSize="14"
+                                   HorizontalAlignment="Center" Margin="0,10,0,0"/>
+                        <TextBlock Text="Works both ways: click a part then pick a mode, or pick a mode then click the part to put it there. Each part runs its own effect at the same time."
+                                   Opacity="0.45" FontSize="11" HorizontalAlignment="Center" Margin="0,4,0,0"
+                                   TextWrapping="Wrap" MaxWidth="380" TextAlignment="Center"/>
+                    </StackPanel>
+                </Grid>
+            </DockPanel>
+
+            <!-- ===================== Pump LCD designer ===================== -->
+            <DockPanel Visibility="{Binding ShowLcdPanel, Converter={StaticResource BoolToVis}}">
+                <TextBlock DockPanel.Dock="Top" Text="Pump LCD" FontSize="20" FontWeight="SemiBold"
+                           Margin="0,0,0,12"/>
+
+                <!-- CPU temp needs elevation -->
+                <Border DockPanel.Dock="Top" Background="#33FFB020" CornerRadius="7" Padding="10,7" Margin="0,0,0,12"
+                        Visibility="{Binding CpuTempUnavailable, Converter={StaticResource BoolToVis}}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="CPU temp needs admin rights (PawnIO sensor driver)."
+                                   VerticalAlignment="Center" Opacity="0.9"/>
+                        <Button Content="Restart as admin" Command="{Binding RelaunchElevatedCommand}"
+                                Style="{StaticResource Accent}" Margin="12,0,0,0" Padding="10,4"/>
+                    </StackPanel>
+                </Border>
+
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- WYSIWYG editor canvas (landscape 320x240, drag to place) -->
+                    <StackPanel Grid.Column="0" Margin="0,0,20,0">
+                        <Border CornerRadius="10" Background="#FF0C0E14" Padding="6" HorizontalAlignment="Left">
+                            <Grid Width="320" Height="240" ClipToBounds="True">
+                                <Rectangle>
+                                    <Rectangle.Fill>
+                                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                            <GradientStop Color="#FF0C1028" Offset="0"/>
+                                            <GradientStop Color="#FF3C0C3C" Offset="1"/>
+                                        </LinearGradientBrush>
+                                    </Rectangle.Fill>
+                                </Rectangle>
+                                <!-- Background at its explicit rect — the SAME rect the
+                                     panel renders, so the preview is truthful. Drag empty
+                                     canvas to move it; corner grip resizes. -->
+                                <Canvas ClipToBounds="True">
+                                    <Image Source="{Binding LcdBackground}" Stretch="Fill"
+                                           Canvas.Left="{Binding LcdBgX}" Canvas.Top="{Binding LcdBgY}"
+                                           Width="{Binding LcdBgW}" Height="{Binding LcdBgH}"/>
+                                </Canvas>
+                                <ListBox x:Name="DesignCanvas" Background="Transparent" BorderThickness="0"
+                                         ItemsSource="{Binding LcdElements}" SelectedItem="{Binding SelectedElement}"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                         ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                                         PreviewMouseLeftButtonDown="Design_Down"
+                                         PreviewMouseMove="Design_Move"
+                                         PreviewMouseLeftButtonUp="Design_Up">
+                                    <ListBox.ItemsPanel>
+                                        <ItemsPanelTemplate><Canvas/></ItemsPanelTemplate>
+                                    </ListBox.ItemsPanel>
+                                    <ListBox.ItemContainerStyle>
+                                        <Style TargetType="ListBoxItem">
+                                            <Setter Property="Canvas.Left" Value="{Binding X}"/>
+                                            <Setter Property="Canvas.Top" Value="{Binding Y}"/>
+                                            <Setter Property="Template">
+                                                <Setter.Value>
+                                                    <ControlTemplate TargetType="ListBoxItem">
+                                                        <Border x:Name="bd" BorderThickness="1" BorderBrush="Transparent">
+                                                            <ContentPresenter/>
+                                                        </Border>
+                                                        <ControlTemplate.Triggers>
+                                                            <Trigger Property="IsSelected" Value="True">
+                                                                <Setter TargetName="bd" Property="BorderBrush" Value="#CC4C6FFF"/>
+                                                            </Trigger>
+                                                        </ControlTemplate.Triggers>
+                                                    </ControlTemplate>
+                                                </Setter.Value>
+                                            </Setter>
+                                        </Style>
+                                    </ListBox.ItemContainerStyle>
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid>
+                                                <!-- Drawn elements (analog clock) show a live face image;
+                                                     everything else is typeset text. -->
+                                                <TextBlock Text="{Binding Display}"
+                                                           FontFamily="Segoe UI"
+                                                           FontSize="{Binding FontSize}"
+                                                           FontWeight="{Binding Bold, Converter={StaticResource BoolWeight}}"
+                                                           Foreground="{Binding ColorHex, Converter={StaticResource HexBrush}}"
+                                                           Visibility="{Binding IsClock, Converter={StaticResource BoolToVisInv}}"/>
+                                                <Image Source="{Binding ClockImage}"
+                                                       Width="{Binding ClockSize}" Height="{Binding ClockSize}"
+                                                       Visibility="{Binding IsClock, Converter={StaticResource BoolToVis}}"/>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                                <Canvas>
+                                    <Border Width="14" Height="14" Background="#CC4C6FFF" CornerRadius="3"
+                                            Canvas.Left="{Binding LcdBgGripX}" Canvas.Top="{Binding LcdBgGripY}"
+                                            Cursor="SizeNWSE" ToolTip="Drag to resize the background"
+                                            Visibility="{Binding LcdHasBackground, Converter={StaticResource BoolToVis}}"
+                                            MouseLeftButtonDown="BgGrip_Down" MouseMove="BgGrip_Move"
+                                            MouseLeftButtonUp="BgGrip_Up"/>
+                                </Canvas>
+                            </Grid>
+                        </Border>
+                        <TextBlock Text="Drag items to place them · click to select" Opacity="0.45"
+                                   FontSize="11" Margin="2,8,0,0"/>
+                    </StackPanel>
+
+                    <!-- Right side: one tab per task, so only the tools for the
+                         job at hand are on screen -->
+                    <TabControl x:Name="LcdTabs" Grid.Column="1" Background="Transparent"
+                                BorderThickness="0" Padding="0">
+                        <TabControl.Resources>
+                            <Style TargetType="TabItem">
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="TabItem">
+                                            <Border x:Name="bd" CornerRadius="8" Padding="18,7" Margin="0,0,8,12"
+                                                    Background="#FF262932" Cursor="Hand">
+                                                <TextBlock x:Name="txt" Text="{TemplateBinding Header}"
+                                                           FontWeight="SemiBold" Foreground="#FFECEFF4" Opacity="0.7"/>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsSelected" Value="True">
+                                                    <Setter TargetName="bd" Property="Background" Value="#FF4C6FFF"/>
+                                                    <Setter TargetName="txt" Property="Opacity" Value="1"/>
+                                                </Trigger>
+                                                <MultiTrigger>
+                                                    <MultiTrigger.Conditions>
+                                                        <Condition Property="IsMouseOver" Value="True"/>
+                                                        <Condition Property="IsSelected" Value="False"/>
+                                                    </MultiTrigger.Conditions>
+                                                    <Setter TargetName="bd" Property="Background" Value="#FF313644"/>
+                                                </MultiTrigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </TabControl.Resources>
+
+                        <!-- ============ DESIGN: what's on the screen ============ -->
+                        <TabItem Header="Design">
+                          <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel Margin="0,2,14,0" MaxWidth="560" HorizontalAlignment="Left">
+                                <TextBlock Text="ADD TO SCREEN" FontSize="11" FontWeight="SemiBold"
+                                           Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,0,0,8"/>
+                                <WrapPanel>
+                                    <Button Content="+ Time"     Command="{Binding AddTimeCommand}" Margin="0,0,8,8"/>
+                                    <Button Content="+ Date"     Command="{Binding AddDateCommand}" Margin="0,0,8,8"/>
+                                    <Button Content="+ CPU Temp" Command="{Binding AddTempCommand}" Margin="0,0,8,8"/>
+                                    <Button Content="+ GPU Temp" Command="{Binding AddGpuTempCommand}" Margin="0,0,8,8"/>
+                                    <Button Content="+ Fan RPM"  Command="{Binding AddFanRpmCommand}" Margin="0,0,8,8"/>
+                                    <Button Content="+ Net"      Command="{Binding AddNetSpeedCommand}" Margin="0,0,8,8"/>
+                                    <Button Content="+ Clock"    Command="{Binding AddClockCommand}" Margin="0,0,8,8"/>
+                                    <Button Content="+ Weather"  Command="{Binding AddWeatherCommand}" Margin="0,0,8,8"/>
+                                    <Button Content="+ Text"     Command="{Binding AddTextCommand}" Margin="0,0,8,8"/>
+                                </WrapPanel>
+
+                                <TextBlock Text="ELEMENT" FontSize="11" FontWeight="SemiBold"
+                                           Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,14,0,8"/>
+                                <TextBlock Text="Click an item on the screen to change its size and color."
+                                           Opacity="0.5" TextWrapping="Wrap"
+                                           Visibility="{Binding HasElement, Converter={StaticResource BoolToVisInv}}"/>
+                        <StackPanel Visibility="{Binding HasElement, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="{Binding SelectedElement.Label}" FontSize="16" FontWeight="SemiBold"/>
+
+                            <StackPanel Visibility="{Binding IsCustomText, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="Text" Opacity="0.7" Margin="0,14,0,4"/>
+                                <TextBox Text="{Binding SelectedElement.Text, UpdateSourceTrigger=PropertyChanged}"/>
+                            </StackPanel>
+
+                            <TextBlock Text="Size" Opacity="0.7" Margin="0,14,0,2"/>
+                            <Slider Minimum="10" Maximum="120" Value="{Binding SelectedElement.FontSize}"/>
+
+                            <CheckBox Content="Bold" IsChecked="{Binding SelectedElement.Bold}" Margin="0,10,0,0"/>
+
+                            <TextBlock Text="Color" Opacity="0.7" Margin="0,14,0,6"/>
+                            <StackPanel Orientation="Horizontal">
+                                <local:ColorWheel Width="150" Height="150"
+                                                  SelectedColor="{Binding SelectedElementColor, Mode=TwoWay}"/>
+                                <StackPanel Margin="18,0,0,0" VerticalAlignment="Center">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Border Width="34" Height="34" CornerRadius="8" VerticalAlignment="Center"
+                                                Background="{Binding SelectedElement.ColorHex, Converter={StaticResource HexBrush}}"/>
+                                        <TextBox Width="92" Margin="10,0,0,0" FontFamily="Consolas"
+                                                 VerticalAlignment="Center" HorizontalContentAlignment="Center"
+                                                 Text="{Binding SelectedElement.ColorHex, UpdateSourceTrigger=PropertyChanged}"/>
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                        <TextBlock Text="R" Foreground="#FFFF5555" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                        <TextBox Width="56" Margin="6,0,10,0" HorizontalContentAlignment="Center"
+                                                 Text="{Binding ElemR, UpdateSourceTrigger=LostFocus}"/>
+                                        <TextBlock Text="G" Foreground="#FF58D858" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                        <TextBox Width="56" Margin="6,0,10,0" HorizontalContentAlignment="Center"
+                                                 Text="{Binding ElemG, UpdateSourceTrigger=LostFocus}"/>
+                                        <TextBlock Text="B" Foreground="#FF6E96FF" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                        <TextBox Width="56" Margin="6,0,0,0" HorizontalContentAlignment="Center"
+                                                 Text="{Binding ElemB, UpdateSourceTrigger=LostFocus}"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </StackPanel>
+                            <ItemsControl ItemsSource="{Binding Swatches}" Margin="0,8,0,0">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Width="26" Height="26" Margin="3"
+                                                Background="{Binding Converter={StaticResource RgbToBrush}}"
+                                                Command="{Binding DataContext.PickElementColorCommand,
+                                                          RelativeSource={RelativeSource AncestorType=Window}}"
+                                                CommandParameter="{Binding}"/>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <!-- Custom colors -->
+                            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                <TextBlock Text="Custom" Opacity="0.7" VerticalAlignment="Center"/>
+                                <Button Content="+ add current" Padding="8,4" Margin="10,0,0,0"
+                                        Command="{Binding AddCustomElementColorCommand}"/>
+                                <TextBlock Text="right-click removes" Opacity="0.4" FontSize="11"
+                                           VerticalAlignment="Center" Margin="10,0,0,0"/>
+                            </StackPanel>
+                            <ItemsControl ItemsSource="{Binding CustomColors}" Margin="0,6,0,0">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Width="26" Height="26" Margin="3"
+                                                Background="{Binding Converter={StaticResource RgbToBrush}}"
+                                                Command="{Binding DataContext.PickElementColorCommand,
+                                                          RelativeSource={RelativeSource AncestorType=Window}}"
+                                                CommandParameter="{Binding}">
+                                            <Button.InputBindings>
+                                                <MouseBinding Gesture="RightClick"
+                                                              Command="{Binding DataContext.RemoveCustomColorCommand,
+                                                                        RelativeSource={RelativeSource AncestorType=Window}}"
+                                                              CommandParameter="{Binding}"/>
+                                            </Button.InputBindings>
+                                        </Button>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <Button Content="Delete element" Command="{Binding DeleteElementCommand}"
+                                    HorizontalAlignment="Left" Margin="0,18,0,0"/>
+                        </StackPanel>
+
+                            </StackPanel>
+                          </ScrollViewer>
+                        </TabItem>
+
+                        <!-- ============ BACKGROUND: the image behind everything ============ -->
+                        <TabItem Header="Background">
+                          <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel Margin="0,2,14,0" MaxWidth="520" HorizontalAlignment="Left">
+                                <TextBlock Opacity="0.6" TextWrapping="Wrap"
+                                           Text="The image behind everything on the screen. GIFs animate on the pump."/>
+
+                                <TextBlock Text="IMAGE" FontSize="11" FontWeight="SemiBold"
+                                           Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,16,0,8"/>
+                                <WrapPanel>
+                                    <Button Content="Choose image…" Command="{Binding ChooseBackgroundCommand}" Margin="0,0,8,0"/>
+                                    <Button Content="Clear" Command="{Binding ClearBackgroundCommand}" Margin="0,0,8,0"
+                                            Visibility="{Binding LcdHasBackground, Converter={StaticResource BoolToVis}}"/>
+                                    <TextBlock Text="{Binding LcdBackgroundName}" Opacity="0.6" FontSize="11"
+                                               VerticalAlignment="Center"/>
+                                </WrapPanel>
+
+                                <StackPanel Visibility="{Binding LcdHasBackground, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="SIZE &amp; PLACEMENT" FontSize="11" FontWeight="SemiBold"
+                                               Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,16,0,8"/>
+                                    <WrapPanel>
+                                        <TextBox Text="{Binding LcdBgW, StringFormat=0, UpdateSourceTrigger=LostFocus}" Width="52"
+                                                 HorizontalContentAlignment="Center" ToolTip="Width (px)"/>
+                                        <TextBlock Text="×" Opacity="0.6" VerticalAlignment="Center" Margin="6,0"/>
+                                        <TextBox Text="{Binding LcdBgH, StringFormat=0, UpdateSourceTrigger=LostFocus}" Width="52"
+                                                 HorizontalContentAlignment="Center" ToolTip="Height (px)"/>
+                                        <CheckBox Content="Lock aspect" IsChecked="{Binding LcdBgAspectLock}" Margin="12,0,0,0"
+                                                  VerticalAlignment="Center"
+                                                  ToolTip="Keep the image's shape when resizing (no squash/stretch)"/>
+                                        <Button Content="Fill" Click="BgFill_Click" Padding="10,4" Margin="14,0,0,0"
+                                                ToolTip="Cover the whole screen (crops the overflow)"/>
+                                        <Button Content="Fit" Click="BgFit_Click" Padding="10,4" Margin="6,0,0,0"
+                                                ToolTip="Show the whole image (bars around it)"/>
+                                        <Button Content="Center" Click="BgCenter_Click" Padding="10,4" Margin="6,0,0,0"/>
+                                    </WrapPanel>
+                                    <TextBlock Text="On the preview: drag the image to move it, drag the blue corner grip to resize."
+                                               Opacity="0.4" FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </StackPanel>
+                          </ScrollViewer>
+                        </TabItem>
+
+                        <!-- ============ SCREENS (scenes in code): saved layouts ============ -->
+                        <TabItem Header="Screens">
+                          <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel Margin="0,2,14,0" MaxWidth="480" HorizontalAlignment="Left">
+                                <TextBlock Opacity="0.6" TextWrapping="Wrap"
+                                           Text="A screen is a saved layout for the pump display. Load one to edit it, or save what you have now."/>
+
+                                <TextBlock Text="LOAD" FontSize="11" FontWeight="SemiBold"
+                                           Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,16,0,8"/>
+                                <StackPanel Orientation="Horizontal">
+                                    <ComboBox Width="180" ItemsSource="{Binding SceneNames}"
+                                              SelectedItem="{Binding SelectedSceneName}"
+                                              ToolTip="Pick a screen to load it"/>
+                                    <Button Content="Delete" Style="{StaticResource Danger}" Padding="10,4"
+                                            Margin="8,0,0,0" Click="DeleteScene_Click"/>
+                                </StackPanel>
+
+                                <TextBlock Text="SAVE" FontSize="11" FontWeight="SemiBold"
+                                           Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,16,0,8"/>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBox Width="180" Text="{Binding SceneNameInput, UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="Name for the screen"/>
+                                    <Button Content="Save screen" Style="{StaticResource Accent}" Padding="12,4"
+                                            Margin="8,0,0,0" Click="SaveScene_Click"/>
+                                </StackPanel>
+                                <TextBlock Text="New name = new screen. Empty name = update the loaded one."
+                                           Opacity="0.45" FontSize="11" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                            </StackPanel>
+                          </ScrollViewer>
+                        </TabItem>
+
+                        <!-- ============ SHOW: timed screen + lights changes ============ -->
+                        <TabItem Header="Show">
+                          <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel Margin="0,2,14,0" MaxWidth="700" HorizontalAlignment="Left">
+                                <TextBlock Opacity="0.6" TextWrapping="Wrap" Margin="0,0,0,14"
+                                           Text="A show changes your screen and lights on a timer. It loops until you stop it."/>
+
+                                <TextBlock Text="SHOW" FontSize="11" FontWeight="SemiBold"
+                                           Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,0,0,8"/>
+                                <StackPanel Orientation="Horizontal">
+                                    <ComboBox Width="180" ItemsSource="{Binding Sequences}"
+                                              SelectedItem="{Binding SelectedSequence}"/>
+                                    <TextBox Width="140" Margin="8,0,0,0"
+                                             Text="{Binding SceneNameInput, UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="Name for a new show"/>
+                                    <Button Content="New" Padding="12,0" Height="32" VerticalAlignment="Center"
+                                            Margin="8,0,0,0" Click="NewSequence_Click"
+                                            ToolTip="Create a show with the typed name"/>
+                                    <Button Content="Delete" Style="{StaticResource Danger}" Padding="12,0" Height="32"
+                                            VerticalAlignment="Center" Margin="6,0,0,0" Click="DeleteSequence_Click"/>
+                                </StackPanel>
+
+                                <TextBlock Text="STEPS" FontSize="11" FontWeight="SemiBold"
+                                           Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,16,0,4"/>
+                                <TextBlock Opacity="0.5" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,8"
+                                           Text="Each step waits, then changes the screen, the lights, or both. Pick (no change) to leave that part alone."/>
+
+                                <ItemsControl ItemsSource="{Binding SequenceActions}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="#FF262932" CornerRadius="8" Padding="10,7" Margin="0,0,0,6">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Text="wait" Opacity="0.7" VerticalAlignment="Center"/>
+                                                    <!-- Explicit dark fill (the app TextBox color matches the step
+                                                         card); no fixed Height - the style's padding needs ~34px and
+                                                         a shorter box clips the digits out of view -->
+                                                    <TextBox Width="44" Margin="6,0,4,0" VerticalAlignment="Center"
+                                                             HorizontalContentAlignment="Center"
+                                                             Background="#FF15171D"
+                                                             Text="{Binding DelaySeconds, UpdateSourceTrigger=LostFocus, StringFormat=0.#}"/>
+                                                    <TextBlock Text="sec" Opacity="0.7" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                                                    <TextBlock Text="screen" Opacity="0.7" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                                    <ComboBox Width="130" VerticalAlignment="Center"
+                                                              ItemsSource="{Binding DataContext.SceneChoices, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                              SelectedItem="{Binding Scene, TargetNullValue=(no change)}"
+                                                              ToolTip="What the pump screen shows on this step"/>
+                                                    <TextBlock Text="lights" Opacity="0.7" VerticalAlignment="Center" Margin="12,0,6,0"/>
+                                                    <ComboBox Width="130" VerticalAlignment="Center"
+                                                              ItemsSource="{Binding DataContext.ProfileChoices, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                              SelectedItem="{Binding Profile, TargetNullValue=(no change)}"
+                                                              ToolTip="What the lights do on this step"/>
+                                                    <Button Content="&#x2191;" Width="28" Height="28" Padding="0" VerticalAlignment="Center"
+                                                            Margin="10,0,0,0" Click="ActionUp_Click" ToolTip="Move up"/>
+                                                    <Button Content="&#x2193;" Width="28" Height="28" Padding="0" VerticalAlignment="Center"
+                                                            Margin="4,0,0,0" Click="ActionDown_Click" ToolTip="Move down"/>
+                                                    <Button Content="&#x2715;" Style="{StaticResource Danger}" Width="28" Height="28" Padding="0"
+                                                            VerticalAlignment="Center" Margin="6,0,0,0"
+                                                            Click="ActionRemove_Click" ToolTip="Remove this step"/>
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                    <Button Content="+ Add step" Padding="12,0" Height="32" VerticalAlignment="Center" Click="AddAction_Click"/>
+                                    <Button Content="{Binding RunButtonText}" Style="{StaticResource Accent}"
+                                            Padding="18,0" Height="32" VerticalAlignment="Center" Margin="10,0,0,0" Click="RunSequence_Click"/>
+                                    <CheckBox Content="Start with the app" IsChecked="{Binding SequenceActiveAtStartup}"
+                                              VerticalAlignment="Center" Margin="14,0,0,0"
+                                              ToolTip="This show starts by itself when UnifiedRGB opens"/>
+                                </StackPanel>
+                                <TextBlock Text="{Binding SequenceStatus}" Opacity="0.6" FontSize="11" Margin="0,6,0,0"/>
+
+                                <Border Background="#FF1E212A" CornerRadius="8" Padding="12,10" Margin="0,14,0,0">
+                                    <TextBlock Opacity="0.65" FontSize="12" TextWrapping="Wrap"
+                                               Text="Try it: save two profiles with different colors. Add a step for each one (wait 1 sec, lights = that profile). Hit Run and your lights flash back and forth."/>
+                                </Border>
+                            </StackPanel>
+                          </ScrollViewer>
+                        </TabItem>
+                    </TabControl>
+                </Grid>
+            </DockPanel>
+
+            <!-- ===================== Cooling (temps + fans) ===================== -->
+            <DockPanel Visibility="{Binding ShowCoolingPanel, Converter={StaticResource BoolToVis}}">
+                <TextBlock DockPanel.Dock="Top" Text="Cooling" FontSize="20" FontWeight="SemiBold"
+                           Margin="0,0,0,4"/>
+                <TextBlock DockPanel.Dock="Top" Opacity="0.5" FontSize="12" Margin="0,0,0,12"
+                           Text="Pick a fan and give it a profile. Curves follow the CPU, GPU, or whichever is hotter. Fans on Auto are never touched, so other tools (BIOS, GPU Tweak) stay in control."/>
+                <Border DockPanel.Dock="Top" Background="#40FF4C4C" CornerRadius="8" Padding="12,8" Margin="0,0,0,12"
+                        Visibility="{Binding ShowFanFailsafe, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="Too hot! Fan control turned itself off and every fan is back on its automatic curve."
+                               TextWrapping="Wrap" FontSize="12"/>
+                </Border>
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                  <StackPanel MaxWidth="980" HorizontalAlignment="Left">
+
+                    <!-- Headline: per-unit cards — temp gauge + load + voltage -->
+                    <StackPanel Orientation="Horizontal" Margin="0,2,0,14">
+                        <Border Background="#FF1E212A" CornerRadius="10" Padding="14,10" Margin="0,0,14,0">
+                            <StackPanel Orientation="Horizontal">
+                                <controls:TempGauge Label="CPU" Temp="{Binding CpuGauge}" Accent="#FF4CA8FF"/>
+                                <StackPanel VerticalAlignment="Center" Margin="18,0,8,0" MinWidth="92">
+                                    <TextBlock Text="LOAD" FontSize="10" FontWeight="SemiBold" Foreground="#FF9AA3B2" Opacity="0.8"/>
+                                    <TextBlock Text="{Binding CpuLoadText}" FontSize="24" FontWeight="SemiBold"
+                                               Foreground="#FF4CA8FF" Margin="0,1,0,0"/>
+                                    <TextBlock Text="VOLTAGE" FontSize="10" FontWeight="SemiBold" Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,10,0,0"/>
+                                    <TextBlock Text="{Binding CpuVoltText}" FontSize="24" FontWeight="SemiBold" Margin="0,1,0,0"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                        <Border Background="#FF1E212A" CornerRadius="10" Padding="14,10">
+                            <StackPanel Orientation="Horizontal">
+                                <controls:TempGauge Label="GPU" Temp="{Binding GpuGauge}" Accent="#FF51E087"/>
+                                <StackPanel VerticalAlignment="Center" Margin="18,0,8,0" MinWidth="92">
+                                    <TextBlock Text="LOAD" FontSize="10" FontWeight="SemiBold" Foreground="#FF9AA3B2" Opacity="0.8"/>
+                                    <TextBlock Text="{Binding GpuLoadText}" FontSize="24" FontWeight="SemiBold"
+                                               Foreground="#FF51E087" Margin="0,1,0,0"/>
+                                    <TextBlock Text="VOLTAGE" FontSize="10" FontWeight="SemiBold" Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,10,0,0"/>
+                                    <TextBlock Text="{Binding GpuVoltText}" FontSize="24" FontWeight="SemiBold" Margin="0,1,0,0"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="330"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- LEFT: fan list -->
+                    <StackPanel Grid.Column="0" Margin="0,0,14,0">
+                        <TextBlock Text="FANS" FontSize="11" FontWeight="SemiBold"
+                                   Foreground="#FF9AA3B2" Opacity="0.8" Margin="2,8,0,8"/>
+                        <ListBox ItemsSource="{Binding CoolingFans}" SelectedItem="{Binding EditingFan}"
+                                 Background="Transparent" BorderThickness="0" IsTextSearchEnabled="False"
+                                 HorizontalContentAlignment="Stretch" PreviewKeyDown="Pills_PreviewKeyDown">
+                            <ListBox.ItemContainerStyle>
+                                <Style TargetType="ListBoxItem">
+                                    <Setter Property="Margin" Value="0,0,0,6"/>
+                                    <Setter Property="Cursor" Value="Hand"/>
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="ListBoxItem">
+                                                <Border x:Name="bd" Background="#FF262932" CornerRadius="8"
+                                                        BorderThickness="1.5" BorderBrush="Transparent">
+                                                    <ContentPresenter/>
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="bd" Property="Background" Value="#FF2C303B"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsSelected" Value="True">
+                                                        <Setter TargetName="bd" Property="BorderBrush" Value="#FF4C6FFF"/>
+                                                        <Setter TargetName="bd" Property="Background" Value="#FF2A2E3A"/>
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                            </ListBox.ItemContainerStyle>
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="12,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel>
+                                            <TextBox Text="{Binding Label, UpdateSourceTrigger=LostFocus}"
+                                                     ToolTip="Click to rename" Background="Transparent" BorderThickness="0"
+                                                     Padding="0" Foreground="#FFE6E6E6" CaretBrush="White" FontWeight="SemiBold"
+                                                     KeyDown="CoolingLabel_KeyDown"/>
+                                            <TextBlock Text="{Binding ModeSummary}" FontSize="11" Opacity="0.55" Margin="0,2,0,0"/>
+                                        </StackPanel>
+                                        <TextBlock Grid.Column="1" Text="{Binding Rpm}" FontSize="15" FontWeight="SemiBold"
+                                                   VerticalAlignment="Center" Margin="10,0,0,0"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        <TextBlock Text="{Binding CoolingEmptyHint}" TextWrapping="Wrap" Opacity="0.5" FontSize="12" Margin="2,0,0,6">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasControllableFans}" Value="False">
+                                            <Setter Property="Visibility" Value="Visible"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+
+                        <!-- GPU fans: read-only -->
+                        <ItemsControl ItemsSource="{Binding CoolingGpuRows}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="#FF20232B" CornerRadius="8" Padding="12,7" Margin="0,0,0,6">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{Binding Label}" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding Value}" FontSize="13" FontWeight="SemiBold"
+                                                       VerticalAlignment="Center"/>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <!-- Wired SL-Infinity fans: read-only RPM -->
+                        <ItemsControl ItemsSource="{Binding CoolingLianUniRows}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="#FF20232B" CornerRadius="8" Padding="12,7" Margin="0,0,0,6">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{Binding Label}" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding Value}" FontSize="13" FontWeight="SemiBold"
+                                                       VerticalAlignment="Center"/>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <CheckBox IsChecked="{Binding LianHandoffOnExit}" FontSize="12" Margin="2,8,8,0"
+                                  Visibility="{Binding ShowLianHandoff, Converter={StaticResource BoolToVis}}"
+                                  ToolTip="While UnifiedRGB is not running, the wireless fans follow their sync wire (plugged into SYS_FAN1), so a hardware curve stays in charge. The app takes back control at launch. Tip: set SYS_FAN1's fan-fail warning to Ignore in BIOS - the wireless controller reports no RPM to the header.">
+                            <TextBlock Text="On exit, hand these fans to System Fan 1"
+                                       TextWrapping="Wrap" MaxWidth="330"/>
+                        </CheckBox>
+                    </StackPanel>
+
+                    <!-- RIGHT: the fan control editor for the selected fan -->
+                    <Border Grid.Column="1" Background="#FF1E212A" CornerRadius="8" Padding="16"
+                            VerticalAlignment="Top"
+                            Visibility="{Binding HasEditingFan, Converter={StaticResource BoolToVis}}">
+                        <StackPanel>
+                            <Grid Margin="0,0,0,12">
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding EditingFan.Label}" FontSize="15" FontWeight="SemiBold"/>
+                                    <TextBlock Text="{Binding EditingFan.Rpm}" Opacity="0.55" Margin="10,0,0,0"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                    <Button Content="Identify" Padding="10,4" Click="IdentifyFan_Click"
+                                            ToolTip="Runs this fan at 100% for four seconds so you can spot it in the case, then puts it back"/>
+                                    <Button Content="Apply to all" Padding="10,4" Margin="8,0,0,0" Click="ApplyToAllFans_Click"
+                                            ToolTip="Copy this fan's profile, curve and temperature source to every fan"/>
+                                </StackPanel>
+                            </Grid>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="140"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <!-- Profile list (L-CONNECT style radio column) -->
+                                <StackPanel Grid.Column="0" Margin="0,2,12,0">
+                                    <ListBox ItemsSource="{x:Static local:FanRowModel.AllModes}"
+                                             SelectedItem="{Binding EditingFan.Mode}"
+                                             Background="Transparent" BorderThickness="0" IsTextSearchEnabled="False"
+                                             PreviewKeyDown="Pills_PreviewKeyDown">
+                                        <ListBox.ItemContainerStyle>
+                                            <Style TargetType="ListBoxItem">
+                                                <Setter Property="Cursor" Value="Hand"/>
+                                                <Setter Property="Template">
+                                                    <Setter.Value>
+                                                        <ControlTemplate TargetType="ListBoxItem">
+                                                            <StackPanel Orientation="Horizontal" Background="Transparent" Margin="2,5">
+                                                                <Ellipse x:Name="dot" Width="12" Height="12" StrokeThickness="1.5"
+                                                                         Stroke="#FF5C84FF" Fill="Transparent" VerticalAlignment="Center"/>
+                                                                <TextBlock x:Name="txt" Text="{TemplateBinding Content}"
+                                                                           Margin="9,0,0,0" Opacity="0.7" VerticalAlignment="Center"/>
+                                                            </StackPanel>
+                                                            <ControlTemplate.Triggers>
+                                                                <Trigger Property="IsSelected" Value="True">
+                                                                    <Setter TargetName="dot" Property="Fill" Value="#FF5C84FF"/>
+                                                                    <Setter TargetName="txt" Property="Opacity" Value="1"/>
+                                                                    <Setter TargetName="txt" Property="FontWeight" Value="SemiBold"/>
+                                                                </Trigger>
+                                                                <Trigger Property="IsMouseOver" Value="True">
+                                                                    <Setter TargetName="txt" Property="Opacity" Value="1"/>
+                                                                </Trigger>
+                                                            </ControlTemplate.Triggers>
+                                                        </ControlTemplate>
+                                                    </Setter.Value>
+                                                </Setter>
+                                            </Style>
+                                        </ListBox.ItemContainerStyle>
+                                    </ListBox>
+                                    <StackPanel Margin="2,10,0,0"
+                                                Visibility="{Binding EditingFan.IsCurve, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="Follows" Opacity="0.55" FontSize="11" Margin="0,0,0,5"/>
+                                        <ComboBox ItemsSource="{x:Static local:FanRowModel.Sources}"
+                                                  SelectedItem="{Binding EditingFan.SourceName}" Width="118"
+                                                  HorizontalAlignment="Left"
+                                                  ToolTip="Which temperature this fan's curve follows"/>
+                                    </StackPanel>
+                                </StackPanel>
+
+                                <!-- Curve graph / manual slider / auto hint -->
+                                <Grid Grid.Column="1" MinHeight="252">
+                                    <StackPanel Visibility="{Binding EditingFan.IsCurve, Converter={StaticResource BoolToVis}}">
+                                        <controls:FanCurveEditor x:Name="FanCurveGraph" Height="252"/>
+                                        <TextBlock Text="Drag a point to reshape · double-click to add · right-click to remove"
+                                                   FontSize="11" Opacity="0.5" Margin="2,7,0,0"/>
+                                    </StackPanel>
+                                    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
+                                                Visibility="{Binding EditingFan.IsManual, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="Fixed duty" Opacity="0.6" HorizontalAlignment="Center"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                            <Slider Width="260" Minimum="{Binding EditingFan.MinDuty}" Maximum="100" VerticalAlignment="Center"
+                                                    IsSnapToTickEnabled="True" TickFrequency="5"
+                                                    Value="{Binding EditingFan.DutyPercent, UpdateSourceTrigger=PropertyChanged}"/>
+                                            <TextBlock Text="{Binding EditingFan.DutyPercent, StringFormat={}{0}%}"
+                                                       FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" Margin="14,0,0,0" MinWidth="40"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                    <TextBlock Text="This fan follows the motherboard's own (BIOS) curve."
+                                               Opacity="0.45" VerticalAlignment="Center" HorizontalAlignment="Center"
+                                               Visibility="{Binding EditingFan.IsAuto, Converter={StaticResource BoolToVis}}"/>
+                                </Grid>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+                    </Grid>
+                  </StackPanel>
+                </ScrollViewer>
+            </DockPanel>
+
+            <!-- ===================== Disabled device ===================== -->
+            <StackPanel Visibility="{Binding ShowDisabledPane, Converter={StaticResource BoolToVis}}"
+                        VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="440">
+                <TextBlock Text="{Binding SelectedLeftItem.Name}" FontSize="20" FontWeight="SemiBold"
+                           HorizontalAlignment="Center"/>
+                <TextBlock Text="This device is disabled. Other RGB software can control it. Its colors stay saved in your profiles."
+                           Opacity="0.6" TextWrapping="Wrap" TextAlignment="Center" Margin="0,12,0,0"/>
+                <Button Content="Enable device" Style="{StaticResource Accent}"
+                        HorizontalAlignment="Center" Margin="0,20,0,0" Click="EnableDevice_Click"/>
+            </StackPanel>
+
+            <!-- ===================== Settings (gear) ===================== -->
+            <ScrollViewer Visibility="{Binding IsSettingsOpen, Converter={StaticResource BoolToVis}}"
+                          VerticalScrollBarVisibility="Auto">
+                <StackPanel MaxWidth="560" HorizontalAlignment="Left">
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,18">
+                        <Button Content="&#x2190;  Back" Padding="10,6"
+                                Click="SettingsBack_Click" ToolTip="Back to devices"/>
+                        <TextBlock Text="Settings" FontSize="20" FontWeight="SemiBold"
+                                   VerticalAlignment="Center" Margin="14,0,0,0"/>
+                    </StackPanel>
+
+                    <TextBlock Text="Profiles" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                    <StackPanel Orientation="Horizontal">
+                        <ComboBox Width="200" ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfile}"
+                                  DisplayMemberPath="Name"/>
+                        <TextBox Width="160" Text="{Binding ProfileName, UpdateSourceTrigger=PropertyChanged}"
+                                 Margin="10,0,0,0" VerticalAlignment="Center" ToolTip="Profile name"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                        <Button Content="Save" Style="{StaticResource Accent}" Command="{Binding SaveProfileCommand}"
+                                ToolTip="Update the selected profile with the current lighting (a changed name renames it)"/>
+                        <Button Content="Save as new" Margin="8,0,0,0" Click="SaveProfileAsNew_Click"
+                                ToolTip="Create a new profile with this name"/>
+                        <Button Content="Load" Margin="8,0,0,0" Command="{Binding LoadProfileCommand}"/>
+                        <Button Content="Delete" Style="{StaticResource Danger}" Margin="8,0,0,0"
+                                Command="{Binding DeleteProfileCommand}"/>
+                    </StackPanel>
+                    <CheckBox Content="Apply selected profile at startup" IsChecked="{Binding IsStartupProfile}"
+                              Margin="0,14,0,0"/>
+                    <TextBlock Opacity="0.55" FontSize="12" Margin="0,10,0,0"
+                               Text="Global hotkeys (work in games): Ctrl+Alt+1…9 apply profile 1…9"/>
+
+                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
+
+                    <TextBlock Text="Startup" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                    <CheckBox Content="Start with Windows (elevated, in the tray)" IsChecked="{Binding StartWithWindows}"/>
+                    <CheckBox Content="Start minimized to the tray" IsChecked="{Binding StartMinimized}" Margin="0,10,0,0"/>
+
+                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
+
+                    <TextBlock Text="Extra devices" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                    <TextBlock Text="For hardware UnifiedRGB doesn't drive natively yet: a managed OpenRGB runs invisibly in the background and its devices show up in your list. Natively-driven hardware is never handed to it."
+                               Opacity="0.6" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                    <CheckBox Content="Use OpenRGB for extra devices" IsChecked="{Binding UseOpenRgb}"/>
+                    <TextBlock Text="{Binding OpenRgbStatus}" Opacity="0.7" Margin="0,8,0,0"/>
+
+                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
+
+                    <TextBlock Text="Sensor driver" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                    <TextBlock Text="PawnIO is a small signed driver that unlocks CPU temperature, RAM lighting and motherboard fan monitoring/control. Without it those show as dashes."
+                               Opacity="0.6" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="{Binding PawnIoStatusText}" VerticalAlignment="Center" Opacity="0.8"/>
+                        <Button Content="Install PawnIO" Style="{StaticResource Accent}" Padding="14,6" Margin="14,0,0,0"
+                                Click="InstallPawnIo_Click"
+                                IsEnabled="{Binding PawnIoInstallEnabled}"
+                                Visibility="{Binding PawnIoMissing, Converter={StaticResource BoolToVis}}"/>
+                        <ProgressBar IsIndeterminate="True" Width="90" Height="4" Margin="12,0,0,0"
+                                     VerticalAlignment="Center"
+                                     Visibility="{Binding PawnIoInstalling, Converter={StaticResource BoolToVis}}"/>
+                    </StackPanel>
+                    <TextBlock Text="{Binding PawnIoInstallStatus}" Opacity="0.7" Margin="0,8,0,0"/>
+
+                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
+
+                    <TextBlock Text="Wallpaper &amp; game sync (Chroma)" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                    <TextBlock Text="Let Wallpaper Engine and Chroma-enabled games light your devices. This installs a small interoperability file. If you have Razer Synapse, your Razer gear keeps working (we back up and pass through to it)."
+                               Opacity="0.6" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                    <StackPanel Orientation="Horizontal"
+                                Visibility="{Binding ChromaShimAvailable, Converter={StaticResource BoolToVis}}">
+                        <CheckBox Content="Enable Chroma sync" IsChecked="{Binding ChromaSyncEnabled}"
+                                  VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding ChromaSyncStatus}" Opacity="0.7" VerticalAlignment="Center" Margin="14,0,0,0"/>
+                    </StackPanel>
+                    <TextBlock Text="After enabling, restart Wallpaper Engine, then pick the Chroma Sync effect on a device."
+                               Opacity="0.45" FontSize="11" Margin="0,6,0,0" TextWrapping="Wrap"
+                               Visibility="{Binding ChromaShimAvailable, Converter={StaticResource BoolToVis}}"/>
+
+                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
+
+                    <TextBlock Text="Brightness" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="Master brightness" Opacity="0.7" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                        <Slider Width="220" Minimum="0.1" Maximum="1" VerticalAlignment="Center"
+                                IsSnapToTickEnabled="True" TickFrequency="0.05"
+                                Value="{Binding MasterBrightness, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock Text="{Binding MasterBrightnessText}" VerticalAlignment="Center" Margin="12,0,0,0" MinWidth="40"/>
+                    </StackPanel>
+                    <TextBlock Opacity="0.55" FontSize="12" Margin="0,10,0,0"
+                               Text="Global hotkey (works in games): Ctrl+Alt+↑/↓ master brightness"/>
+
+                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
+
+                    <TextBlock Text="Automation" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                    <CheckBox Content="Lights off while the PC is locked (back on when you return)"
+                              IsChecked="{Binding LockLightsOff}"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                        <CheckBox Content="Night mode: lights off from" IsChecked="{Binding NightMode}" VerticalAlignment="Center"/>
+                        <ComboBox SelectedItem="{Binding NightStart}" Width="86" Margin="8,0,6,0"
+                                  ItemsSource="{x:Static local:MainViewModel.TimeOptions}"/>
+                        <TextBlock Text="to" Opacity="0.7" VerticalAlignment="Center"/>
+                        <ComboBox SelectedItem="{Binding NightEnd}" Width="86" Margin="6,0,0,0"
+                                  ItemsSource="{x:Static local:MainViewModel.TimeOptions}"/>
+                    </StackPanel>
+                    <CheckBox IsChecked="{Binding NightIdleOnly}" Margin="24,6,0,0"
+                              Visibility="{Binding NightMode, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="Only when I'm away - turn off after 10 minutes idle"
+                                   TextWrapping="Wrap" MaxWidth="490"/>
+                    </CheckBox>
+                    <CheckBox IsChecked="{Binding AppSwitchEnabled}" Margin="0,12,0,0">
+                        <TextBlock Text="Switch profiles by app."
+                                   TextWrapping="Wrap" MaxWidth="510"/>
+                    </CheckBox>
+                    <ItemsControl ItemsSource="{Binding AutoRules}" Margin="24,8,0,0">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock FontSize="12" Opacity="0.75" Margin="0,0,0,3">
+                                    <Run Text="{Binding Process}" FontWeight="SemiBold"/><Run Text=" → "/><Run Text="{Binding Profile}"/>
+                                </TextBlock>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <Button Content="Manage app rules…" Padding="12,5" Margin="24,6,0,0" HorizontalAlignment="Left"
+                            Click="ManageRules_Click"/>
+                    <TextBlock Text="{Binding AutomationStatus}" Foreground="#FF7FB4FF" FontSize="12"
+                               Margin="24,8,0,0" TextWrapping="Wrap"/>
+
+                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
+
+                    <TextBlock Text="Support" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                    <TextBlock Text="Something not working? Describe it and hit Send. A hardware report and log go straight to the developer."
+                               Opacity="0.6" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                    <TextBox Text="{Binding SupportNote, UpdateSourceTrigger=PropertyChanged}" MinHeight="60"
+                             TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"
+                             ToolTip="What did you do, and what happened?"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                        <Button Content="Send" Style="{StaticResource Accent}" Padding="28,8" Click="SendSupport_Click"/>
+                    </StackPanel>
+                    <TextBlock Text="{Binding UploadStatus}" Opacity="0.7" Margin="0,8,0,0"/>
+                    <TextBlock Text="{Binding LogFilePath}" Opacity="0.4" FontSize="11" Margin="0,10,0,0"/>
+
+                    <!-- Admin inbox: only on the machine holding admin.key -->
+                    <StackPanel Visibility="{Binding IsSupportAdmin, Converter={StaticResource BoolToVis}}">
+                        <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
+                        <Grid Margin="0,0,0,8">
+                            <TextBlock Text="Support inbox (admin)" FontSize="15" FontWeight="SemiBold"
+                                       VerticalAlignment="Center"/>
+                            <Button Content="Refresh" HorizontalAlignment="Right" Padding="10,5"
+                                    Click="AdminRefresh_Click"/>
+                        </Grid>
+                        <ListBox Height="190" ItemsSource="{Binding AdminReports}"
+                                 VirtualizingPanel.VirtualizationMode="Recycling"
+                                 SelectedItem="{Binding SelectedAdminReport}"
+                                 Background="Transparent" BorderThickness="0" Foreground="#FFE6E6E6"
+                                 IsTextSearchEnabled="False"
+                                 ItemContainerStyle="{StaticResource RowList}"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold"/>
+                                        <TextBlock Text="{Binding NoteLine}" Opacity="0.6" FontSize="11"
+                                                   Margin="0,2,0,0" TextTrimming="CharacterEllipsis"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                            <Button Content="Copy report" Style="{StaticResource Accent}" Click="AdminCopy_Click"
+                                    ToolTip="Saves the report to a file and copies its path. Paste that to Claude."/>
+                            <Button Content="Remove" Style="{StaticResource Danger}" Margin="8,0,0,0" Click="AdminDelete_Click"
+                                    ToolTip="Permanently removes this report from the inbox"/>
+                        </StackPanel>
+                        <TextBlock Text="{Binding AdminStatus}" Opacity="0.7" Margin="0,8,0,0"/>
+                    </StackPanel>
+                </StackPanel>
+            </ScrollViewer>
+          </Grid>
+        </Border>
+    </Grid>
+    </Grid>
+</Window>
