@@ -42,14 +42,19 @@ public static class SensorHub
     public sealed record BoardTemp(string Name, double? TempC);
     public sealed record BoardFan(string Name, int? Rpm, bool CanControl);
 
-    // Latest snapshot (volatile-ish: reference/primitive writes are atomic).
-    public static double? CpuTempC { get; private set; }
-    public static int? GpuTempC { get; private set; }
-    public static double? CpuLoadPct { get; private set; }
-    public static int? GpuLoadPct { get; private set; }
+    // Latest snapshot. Nullable<double>/<int> are 16/8-byte structs, so a plain
+    // auto-property could tear between the timer thread's write and a render-
+    // thread read (HasValue = true, Value = 0 for one frame at the null->value
+    // transition). Each value is published as a BOXED reference instead:
+    // reference writes are atomic, and one box per 1.5 s tick is nothing.
+    static object? _cpuTemp, _gpuTemp, _cpuLoad, _gpuLoad, _cpuVolt, _gpuVolt;
+    public static double? CpuTempC { get => (double?)Volatile.Read(ref _cpuTemp); private set => Volatile.Write(ref _cpuTemp, value); }
+    public static int? GpuTempC { get => (int?)Volatile.Read(ref _gpuTemp); private set => Volatile.Write(ref _gpuTemp, value); }
+    public static double? CpuLoadPct { get => (double?)Volatile.Read(ref _cpuLoad); private set => Volatile.Write(ref _cpuLoad, value); }
+    public static int? GpuLoadPct { get => (int?)Volatile.Read(ref _gpuLoad); private set => Volatile.Write(ref _gpuLoad, value); }
     /// <summary>CPU Vcore from the board's voltage rails (best-name match).</summary>
-    public static double? CpuVoltage { get; private set; }
-    public static double? GpuVoltage { get; private set; }
+    public static double? CpuVoltage { get => (double?)Volatile.Read(ref _cpuVolt); private set => Volatile.Write(ref _cpuVolt, value); }
+    public static double? GpuVoltage { get => (double?)Volatile.Read(ref _gpuVolt); private set => Volatile.Write(ref _gpuVolt, value); }
     /// <summary>One RPM per GPU fan (modern coolers have 2-3); null = no data.</summary>
     public static int[]? GpuFanRpms { get; private set; }
     public static BoardTemp[] BoardTemps { get; private set; } = Array.Empty<BoardTemp>();

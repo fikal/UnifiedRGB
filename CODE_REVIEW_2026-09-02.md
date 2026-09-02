@@ -256,16 +256,22 @@ session. Build clean (zero warnings), 98/98 tests, both shim bitnesses built and
 - [x] **Pipe server: unlimited instances.** One reader thread per connected host (Wallpaper Engine
       + a game no longer fight over a single instance / `ERROR_PIPE_BUSY`).
 
-**Still open (decided, not forgotten)**
-- Shim Create/Set semantics (send only on `SetEffect` when an id is given) — change it with
-  Wallpaper Engine on screen; the current double-send is what's hardware-verified.
-- `GigabyteIt5711.Cc`/`SendZoneEffect` 64-byte per-frame reports (needs the write lock plumbed
-  through the CLI probe path first); `LianLiUniHub.SetFanSpeed/SetFanMoboSync` unused API;
-  `SensorHub` `double?` snapshot atomicity; Authenticode check in `PawnIoInstaller`; a `SwatchGrid`
-  control for the five remaining swatch grids (they differ in command/size, not worth a DP matrix).
-- **Runtime verification of this pass was build + tests only** (an elevated instance from the first
-  pass held the output folder and could not be stopped from the session); launch and click through
-  Lighting → Pump LCD → Cooling → Settings once before the next release.
+**Third pass — the last open items**
+- [x] Shim standalone mode follows the SDK contract: a null effect id applies NOW, a non-null id
+      is stored and applied on `SetEffect` (no more double-send). Proxy mode still taps at Create.
+      *Verify with Wallpaper Engine once: it's installed here but wasn't running.*
+- [x] `GigabyteIt5711.Cc`/`SendZoneEffect` reuse one control-report buffer under the write lock
+      (the lock is taken re-entrantly, so the CLI probe path is covered too).
+- [x] `LianLiUniHub.SetFanSpeed/SetFanMoboSync` removed (never called; documented in git history).
+- [x] `SensorHub` CPU/GPU temp, load and voltage published as boxed references — no torn
+      `Nullable` reads between the timer thread and render threads.
+- [x] `PawnIoInstaller` verifies the downloaded installer with WinVerifyTrust and pins the signer
+      to PawnIO's author (`CN=namazso.eu`, the same certificate as the installed PawnIOLib.dll);
+      per-attempt file name; a wait timeout no longer reads as "install failed".
+- [x] `Controls/SwatchGrid` replaces the five spelled-out swatch grids (`Colors`, `SwatchSize`,
+      `SwatchMargin`, `PickCommand`, optional `RemoveCommand`).
+- [x] **Runtime verification of the refactor pass:** Ryan launched the rebuilt app and clicked through
+      Lighting, Pump LCD, Cooling and Settings — all devices detected, zero WARN/ERR in the log.
 
 ## Already solid — protect these
 

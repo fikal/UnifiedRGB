@@ -51,8 +51,11 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice
     /// are the channels worth offering in the UI.</summary>
     public IReadOnlyList<int> PopulatedChannels => _populated;
 
-    /// <summary>The live hub, so the cooling engine (SensorHub) can read RPM and
-    /// drive fan speed on it without threading a reference through detection.</summary>
+    /// <summary>The live hub, so the cooling engine (SensorHub) can read RPM on it
+    /// without threading a reference through detection. (Speed on this hub is
+    /// motherboard-controlled via its fan cable; the L-Connect SetFanSpeed /
+    /// SetFanMotherboardSync feature reports were mapped but never used and are
+    /// gone - see git history if a wired-hub speed feature ever lands.)</summary>
     public static LianLiUniHub? Instance { get; private set; }
     int[]? _lastSpeeds;      // last per-group tach read, refreshed on the driver tick
 
@@ -268,34 +271,6 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice
         System.Threading.Volatile.Write(ref _lastRpmTouch, Environment.TickCount64);
         var s = _lastSpeeds;
         return s != null && group >= 0 && group < s.Length ? s[group] : 0;
-    }
-
-    /// <summary>Set the fan speed for one connector as a duty percentage. L-Connect's
-    /// SetFanSpeed: feature report [E0, 0x20|group, 0, duty]. Case fans only (no
-    /// pump on this hub), so the caller's floor keeps them from stalling.</summary>
-    public void SetFanSpeed(int group, int dutyPercent)
-    {
-        group = Math.Clamp(group, 0, Groups - 1);
-        int duty = Math.Clamp(dutyPercent, 0, 100);
-        var buf = new byte[Math.Max(_featLen, 4)];
-        buf[0] = TxId; buf[1] = (byte)(0x20 | (group & 0xF)); buf[2] = 0x00; buf[3] = (byte)duty;
-        lock (_lock) { _hid.SetFeature(buf); }
-        System.Threading.Thread.Sleep(20);
-    }
-
-    /// <summary>Switch a connector between motherboard/auto sync and manual speed
-    /// (L-Connect SetFanMotherboardSync). SetFanSpeed is ignored while a group is
-    /// synced, so manual control must first flip sync OFF. Feature report
-    /// [E0, 0x10, 0x62, mask|value]: high nibble bit = "this group is being set",
-    /// low bit = sync on/off.</summary>
-    public void SetFanMoboSync(int group, bool sync)
-    {
-        group = Math.Clamp(group, 0, Groups - 1);
-        var buf = new byte[Math.Max(_featLen, 6)];
-        buf[0] = TxId; buf[1] = 0x10; buf[2] = 0x62;
-        buf[3] = (byte)((1 << (group + 4)) | ((sync ? 1 : 0) << group));
-        lock (_lock) { _hid.SetFeature(buf); }
-        System.Threading.Thread.Sleep(20);
     }
 
     /*----- probe: one colour per fan, inner + outer, so the count can be tuned -----*/

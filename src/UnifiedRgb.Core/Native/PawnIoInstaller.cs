@@ -26,16 +26,33 @@ public static class PawnIoInstaller
         try
         {
             status?.Invoke("downloading PawnIO installer...");
-            string path = Path.Combine(Path.GetTempPath(), "PawnIO_setup.exe");
+            // Per-attempt name: a fixed %TEMP% path could be swapped between our
+            // check and the run by anything else on the machine.
+            string path = Path.Combine(Path.GetTempPath(), $"PawnIO_setup-{Guid.NewGuid():N}.exe");
             using (var http = new HttpClient { Timeout = TimeSpan.FromMinutes(3) })
                 await File.WriteAllBytesAsync(path, await http.GetByteArrayAsync(Url));
+
+            // We are about to RUN this elevated and it installs a kernel driver.
+            // TLS proves who served the bytes; Authenticode proves who signed them.
+            // Publisher pinned to PawnIO's author (matches the installed
+            // PawnIOLib.dll's signer, checked 2026-09-02).
+            if (!Authenticode.IsSignedBy(path, "CN=namazso.eu", out var signer))
+            {
+                Log.Warn("pawnio", $"installer signature check FAILED: {signer} - refusing to run it");
+                status?.Invoke("PawnIO installer failed its signature check — not installed");
+                try { File.Delete(path); } catch { }
+                return false;
+            }
+            Log.Info("pawnio", $"installer signature OK ({signer})");
 
             status?.Invoke("installing PawnIO...");
             var silent = Process.Start(new ProcessStartInfo
             {
                 FileName = path, Arguments = "-install -silent", UseShellExecute = true,
             });
-            if (silent != null) await silent.WaitForExitAsync().WaitAsync(TimeSpan.FromMinutes(2));
+            // A wait timeout is not a failure - the installer may still be running.
+            try { if (silent != null) await silent.WaitForExitAsync().WaitAsync(TimeSpan.FromMinutes(2)); }
+            catch (TimeoutException) { Log.Warn("pawnio", "silent installer still running after 2 min"); }
 
             if (!IsInstalled)
             {
@@ -46,7 +63,8 @@ public static class PawnIoInstaller
                 {
                     FileName = path, Arguments = "-install", UseShellExecute = true,
                 });
-                if (visible != null) await visible.WaitForExitAsync().WaitAsync(TimeSpan.FromMinutes(10));
+                try { if (visible != null) await visible.WaitForExitAsync().WaitAsync(TimeSpan.FromMinutes(10)); }
+                catch (TimeoutException) { Log.Warn("pawnio", "installer window still open after 10 min"); }
             }
 
             bool ok = IsInstalled;

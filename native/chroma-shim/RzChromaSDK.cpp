@@ -239,6 +239,27 @@ static bool TakeFrame(const RZEFFECTID& id, Frame& out)
     out = it->second; return true;
 }
 
+// Standalone delivery per the SDK contract: a NULL effect id applies the effect
+// NOW; a non-NULL id only STORES it until SetEffect(id). The old path sent at
+// Create AND again at Set, so an effect a host created and never Set flashed
+// anyway, and every Set repainted twice.
+static RZRESULT Deliver(const Frame& f, RZEFFECTID* id)
+{
+    if (!id)
+    {
+        if (!f.colors.empty()) SendFrame(f.type, f.rows, f.cols, f.colors.data());
+        return RZRESULT_SUCCESS;
+    }
+    *id = SynthId(f.colors.empty() ? nullptr : &f);
+    return RZRESULT_SUCCESS;
+}
+
+static void LogCreate(const char* what, int effect, PRZPARAM param, RZEFFECTID* id)
+{
+    static std::atomic<int> n{0};
+    if (n++ < 6) ShimLog("%s effect=%d param=%p id=%s", what, effect, param, id ? "yes (deferred to SetEffect)" : "null (apply now)");
+}
+
 extern "C" {
 
 __declspec(dllexport) RZRESULT Init()            { ShimLog("Init()"); EnsureReal(); ShimLog(g_real ? "  proxy: real DLL loaded" : "  standalone (no real DLL)"); return g_r.Init ? g_r.Init() : RZRESULT_SUCCESS; }
@@ -253,9 +274,9 @@ __declspec(dllexport) RZRESULT CreateKeyboardEffect(int effect, PRZPARAM param, 
     try
     {
         EnsureReal();
-        CaptureKeyboard(effect, param);
-        if (g_r.Keyboard) return g_r.Keyboard(effect, param, id);      // proxy: real gear lights
-        // standalone: synthesize an id carrying the frame for SetEffect
+        // Proxy: tap the bytes at Create (Razer's own SDK owns the Set timing).
+        if (g_r.Keyboard) { CaptureKeyboard(effect, param); return g_r.Keyboard(effect, param, id); }
+        LogCreate("CreateKeyboardEffect", effect, param, id);
         Frame f{};
         if (effect == KB::CUSTOM || effect == KB::CUSTOM_KEY || effect == KB::CUSTOM2)
         {
@@ -266,8 +287,7 @@ __declspec(dllexport) RZRESULT CreateKeyboardEffect(int effect, PRZPARAM param, 
         }
         else if (effect == KB::STATIC && param)
         { f.type = 1; f.rows = 1; f.cols = 1; f.colors.assign(1, *(COLORREF*)param); }
-        if (id) *id = SynthId(f.colors.empty() ? nullptr : &f);
-        return RZRESULT_SUCCESS;
+        return Deliver(f, id);
     }
     catch (...) { return RZRESULT_FAILED; }
 }
@@ -277,13 +297,12 @@ __declspec(dllexport) RZRESULT CreateChromaLinkEffect(int effect, PRZPARAM param
     try
     {
         EnsureReal();
-        CaptureChromaLink(effect, param);
-        if (g_r.ChromaLink) return g_r.ChromaLink(effect, param, id);
+        if (g_r.ChromaLink) { CaptureChromaLink(effect, param); return g_r.ChromaLink(effect, param, id); }
+        LogCreate("CreateChromaLinkEffect", effect, param, id);
         Frame f{};
         if (effect == CL::CUSTOM && param) { f.type = 2; f.rows = 1; f.cols = 5; f.colors.resize(5); memcpy(f.colors.data(), param, 20); }
         else if (effect == CL::STATIC && param) { f.type = 2; f.rows = 1; f.cols = 1; f.colors.assign(1, *(COLORREF*)param); }
-        if (id) *id = SynthId(f.colors.empty() ? nullptr : &f);
-        return RZRESULT_SUCCESS;
+        return Deliver(f, id);
     }
     catch (...) { return RZRESULT_FAILED; }
 }

@@ -1,3 +1,4 @@
+using System.IO;
 using System.Collections.ObjectModel;
 using System.Text;
 using UnifiedRgb.Core;
@@ -267,6 +268,22 @@ void Equal<T>(T expected, T actual, string name)
     Check(UnifiedRgb.Core.Native.PawnIO.ReadEmbeddedModule("SmbusPIIX4.bin") is { Length: > 100 }, "PIIX4 module embedded");
     Check(UnifiedRgb.Core.Native.PawnIO.ReadEmbeddedModule("SmbusI801.bin") is { Length: > 100 }, "I801 module embedded");
     Check(UnifiedRgb.Core.Native.PawnIO.ReadEmbeddedModule("nope.bin") == null, "unknown module is null, not a throw");
+}
+
+/*---------------- Authenticode (installer signature gate) ----------------*/
+{
+    // Our own (unsigned) assembly must never pass, whatever subject is asked for.
+    string self = typeof(UnifiedRgb.Core.Rgb).Assembly.Location;
+    Check(!UnifiedRgb.Core.Native.Authenticode.IsSignedBy(self, "CN=namazso.eu", out var why) && why.Length > 0,
+        $"unsigned assembly rejected ({why})");
+    // A signed system binary passes the trust check but fails the publisher pin.
+    string kernel32 = Path.Combine(Environment.SystemDirectory, "kernel32.dll");
+    Check(!UnifiedRgb.Core.Native.Authenticode.IsSignedBy(kernel32, "CN=namazso.eu", out var who) && who.Contains("expected"),
+        $"wrong publisher rejected ({who})");
+    // The real PawnIO library, when installed on this machine, satisfies the pin.
+    string pawn = @"C:\Program Files\PawnIO\PawnIOLib.dll";
+    if (File.Exists(pawn))
+        Check(UnifiedRgb.Core.Native.Authenticode.IsSignedBy(pawn, "CN=namazso.eu", out var ok), $"PawnIOLib.dll accepted ({ok})");
 }
 
 Console.WriteLine($"{passed} passed, {failed} failed");

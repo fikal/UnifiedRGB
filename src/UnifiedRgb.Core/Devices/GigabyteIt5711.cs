@@ -17,6 +17,9 @@ namespace UnifiedRgb.Core.Devices;
 public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable
 {
     readonly object _writeLock = new();
+    // Control-report buffer for Cc/SendZoneEffect, reused under _writeLock the
+    // way _streamPkt is (they ran per frame while a static zone was animated).
+    readonly byte[] _ctlPkt = new byte[BUF];
 
     const ushort VID = 0x048D;
     static readonly ushort[] Pids = { 0x5711, 0x8297 };   // X870E gen / RGB Fusion 2 gen (X570 etc.)
@@ -158,9 +161,13 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable
 
     bool Cc(byte a, byte b = 0, byte c = 0)
     {
-        var buf = new byte[BUF];
-        buf[0] = REPORT_ID; buf[1] = a; buf[2] = b; buf[3] = c;
-        return _hid.SetFeature(buf);
+        lock (_writeLock)   // re-entrant: the streaming callers already hold it
+        {
+            var buf = _ctlPkt;
+            Array.Clear(buf);
+            buf[0] = REPORT_ID; buf[1] = a; buf[2] = b; buf[3] = c;
+            return _hid.SetFeature(buf);
+        }
     }
 
     void ResetController()
@@ -345,21 +352,25 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable
     /// firmware's smooth transition between static colors.</summary>
     public void SendZoneEffect(int led, Rgb c, (int Offset, byte Value)[]? timing)
     {
-        var pkt = new byte[BUF];
-        pkt[0] = REPORT_ID;
-        pkt[1] = (byte)(led < 8 ? 0x20 + led : 0x90 + (led - 8));
-        uint zone0 = 1u << led;
-        pkt[2] = (byte)(zone0 & 0xFF);
-        pkt[3] = (byte)((zone0 >> 8) & 0xFF);
-        pkt[11] = EFFECT_STATIC;
-        pkt[12] = 0xFF;
-        pkt[14] = c.B;
-        pkt[15] = c.G;
-        pkt[16] = c.R;
-        if (timing != null)
-            foreach (var (off, val) in timing)
-                if (off is > 3 and < BUF) pkt[off] = val;
-        _hid.SetFeature(pkt);
+        lock (_writeLock)   // the CLI probe calls this unlocked; the frame path already holds it
+        {
+            var pkt = _ctlPkt;
+            Array.Clear(pkt);
+            pkt[0] = REPORT_ID;
+            pkt[1] = (byte)(led < 8 ? 0x20 + led : 0x90 + (led - 8));
+            uint zone0 = 1u << led;
+            pkt[2] = (byte)(zone0 & 0xFF);
+            pkt[3] = (byte)((zone0 >> 8) & 0xFF);
+            pkt[11] = EFFECT_STATIC;
+            pkt[12] = 0xFF;
+            pkt[14] = c.B;
+            pkt[15] = c.G;
+            pkt[16] = c.R;
+            if (timing != null)
+                foreach (var (off, val) in timing)
+                    if (off is > 3 and < BUF) pkt[off] = val;
+            _hid.SetFeature(pkt);
+        }
     }
 
     /// <summary>CLI probe support: commit pending zone effects.</summary>
