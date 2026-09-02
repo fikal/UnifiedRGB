@@ -66,10 +66,14 @@ catch {
 # $ErrorActionPreference does not cover native commands: check each git step,
 # or a rejected push would let `gh release create` tag the REMOTE tip - the
 # previous commit, without the version stamp.
+# -q on both: git reports progress and the push summary on STDERR, and under
+# Windows PowerShell 5.1 a native command's stderr becomes a terminating error
+# when the script's output is redirected (e.g. `.elease.ps1 2>&1`) - which
+# aborted a run right after a SUCCESSFUL push, before the release was created.
 git add $csproj
-git commit -m "v$Version"
+git commit -q -m "v$Version"
 if ($LASTEXITCODE -ne 0) { throw "git commit failed" }
-git push
+git push -q
 if ($LASTEXITCODE -ne 0) { throw "git push failed - release NOT created (stamp is committed locally)" }
 $head = (git rev-parse HEAD).Trim()
 
