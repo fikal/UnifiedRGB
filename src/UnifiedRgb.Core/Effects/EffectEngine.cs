@@ -26,6 +26,11 @@ public sealed class EffectEngine
         internal Rgb[] BaseFrame = Array.Empty<Rgb>();
         internal Thread? Worker;
         internal volatile bool Running;
+
+        /// <summary>False once the engine stopped this channel - including the
+        /// failure breaker's self-stop, which the owner otherwise never learns
+        /// about and keeps tinting a dead channel.</summary>
+        public bool IsRunning => Running;
     }
 
     readonly object _lock = new();

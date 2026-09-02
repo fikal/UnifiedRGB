@@ -43,6 +43,10 @@
     <None Include="..\..\native\chroma-shim\RzChromaSDK64.dll"
           Condition="Exists('..\..\native\chroma-shim\RzChromaSDK64.dll')"
           Link="RzChromaSDK64.dll" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 32-bit shim for 32-bit Chroma games (RzChromaSDK.dll beside the 64-bit one). -->
+    <None Include="..\..\native\chroma-shim\RzChromaSDK.dll"
+          Condition="Exists('..\..\native\chroma-shim\RzChromaSDK.dll')"
+          Link="RzChromaSDK.dll" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

@@ -2,14 +2,15 @@ using UnifiedRgb.Core.Native;
 
 namespace UnifiedRgb.Core.Devices;
 
-/// <summary>Thermalright AIO pump LCD (Frozen Warframe, 0416:5302). A 480x480
-/// screen that displays JPEG frames (this is NOT an RGB device).
+/// <summary>Thermalright AIO pump LCD (Frozen Warframe, 0416:5302). A 240x320
+/// panel fed raw RGB565 frames (this is NOT an RGB device).
 ///
-/// Protocol decoded from TRCC (see memory: trcc-lcd-protocol). HID reports are
-/// 513 bytes (report id 0 + 512 data). A frame is a 20-byte header followed by
-/// JPEG bytes, chunked across 512-byte writes:
-///   header = DA DB DC DD | 02 00 00 00 | W(LE16) | H(LE16) | 02 | 00 00 00 |
-///            jpegLen(LE32)
+/// Protocol decoded from TRCC and verified on hardware (ShowFrame IS the spec -
+/// this summary just mirrors it). HID reports are 513 bytes (report id 0 + 512
+/// data). A frame is a 20-byte header followed by the 153,600 RGB565 bytes,
+/// chunked across 512-byte writes:
+///   header = DA DB DC DD | 02 00 01 00 | W(LE16) | H(LE16) | 02 | 00 00 00 |
+///            payloadLen(LE32)
 /// Handshake DA DB DC DD 00*8 01 00*7 returns the model id.</summary>
 public sealed class ThermalrightLcd : IDisposable
 {

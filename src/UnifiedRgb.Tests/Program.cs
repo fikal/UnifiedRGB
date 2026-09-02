@@ -1,7 +1,10 @@
+using System.Collections.ObjectModel;
 using System.Text;
 using UnifiedRgb.Core;
+using UnifiedRgb.Core.Effects;
 using UnifiedRgb.Core.Input;
 using UnifiedRgb.Core.Net;
+using UnifiedRgb.Core.Sensors;
 
 /*-----------------------------------------------------------*\
 | UnifiedRGB test runner — zero dependencies (the product's   |
@@ -219,6 +222,51 @@ void Equal<T>(T expected, T actual, string name)
         Check(comp.Length < anim.Length / 3,
             $"fan animation compresses hard ({anim.Length}B -> {comp.Length}B, want < {anim.Length / 3})");
     }
+}
+
+/*---------------- LivePalette (render-thread palette view) ----------------*/
+{
+    var src = new ObservableCollection<Rgb> { new(1, 1, 1), new(2, 2, 2), new(3, 3, 3) };
+    var live = new LivePalette(src);
+    Equal(3, live.Count, "LivePalette tracks initial count");
+    Equal(new Rgb(2, 2, 2), live[1], "LivePalette indexes the snapshot");
+    var snap = live.Snapshot;
+    src.Clear();
+    Equal(0, live.Count, "LivePalette follows Clear()");
+    Equal(3, snap.Length, "an older snapshot is immutable");
+    Equal(new Rgb(255, 255, 255), live[0], "empty palette reads white, never throws");
+    src.Add(new Rgb(9, 9, 9));
+    Equal(new Rgb(9, 9, 9), live[5], "out-of-range index clamps to the last color (stale Count from a longer snapshot)");
+    Equal(new Rgb(9, 9, 9), live[0], "in-range index after rebuild");
+}
+
+/*---------------- ChromaFeed frame publish ----------------*/
+{
+    ChromaFeed.PushGrid(new[] { new Rgb(10, 0, 0), new Rgb(0, 10, 0), new Rgb(0, 0, 10) }, 1, 3);
+    Check(ChromaFeed.Active, "PushGrid marks the feed active");
+    Equal(new Rgb(10, 0, 0), ChromaFeed.Sample(0.05f, 0.5f), "Sample left cell");
+    Equal(new Rgb(0, 0, 10), ChromaFeed.Sample(0.95f, 0.5f), "Sample right cell");
+    Equal(new Rgb(0, 0, 10), ChromaFeed.Sample(5f, -3f), "Sample clamps out-of-range coordinates");
+    ChromaFeed.PushGrid(new[] { new Rgb(7, 7, 7) }, 6, 22);   // dims larger than the grid: rejected
+    Equal(new Rgb(10, 0, 0), ChromaFeed.Sample(0.05f, 0.5f), "undersized grid is rejected (dims/grid published atomically)");
+    ChromaFeed.PushGrid(new[] { new Rgb(7, 7, 7) }, 1, 1);
+    Equal(new Rgb(7, 7, 7), ChromaFeed.Sample(0.9f, 0.9f), "1x1 static frame samples everywhere");
+}
+
+/*---------------- FanCurve hardening ----------------*/
+{
+    var curve = new FanCurve { Points = null! };
+    Equal(0, curve.Points.Count, "null Points (hand-edited fan-config.json) becomes empty");
+    Equal(0, curve.DutyAt(50), "empty curve yields 0 duty instead of throwing");
+    var json = System.Text.Json.JsonSerializer.Deserialize<FanCurve>("{\"Preset\":\"x\",\"Points\":null}");
+    Check(json != null && json.Points.Count == 0, "JSON null Points round-trips to empty");
+}
+
+/*---------------- Embedded PawnIO modules ----------------*/
+{
+    Check(UnifiedRgb.Core.Native.PawnIO.ReadEmbeddedModule("SmbusPIIX4.bin") is { Length: > 100 }, "PIIX4 module embedded");
+    Check(UnifiedRgb.Core.Native.PawnIO.ReadEmbeddedModule("SmbusI801.bin") is { Length: > 100 }, "I801 module embedded");
+    Check(UnifiedRgb.Core.Native.PawnIO.ReadEmbeddedModule("nope.bin") == null, "unknown module is null, not a throw");
 }
 
 Console.WriteLine($"{passed} passed, {failed} failed");

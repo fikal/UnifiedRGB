@@ -91,8 +91,21 @@ public sealed class DeviceManager : IDisposable
 
     public void Dispose()
     {
-        foreach (var d in _devices) d.Dispose();
-        _devices.Clear();
-        _family.Clear();
+        // One driver throwing (native teardown after a yanked dongle) must not
+        // strand the others' handles, and the lists must clear regardless -
+        // otherwise Rescan's DetectAll appends fresh devices onto dead ones.
+        try
+        {
+            foreach (var d in _devices)
+            {
+                try { d.Dispose(); }
+                catch (Exception ex) { Log.Error("detect", $"{d.Name} dispose threw: {ex.Message}"); }
+            }
+        }
+        finally
+        {
+            _devices.Clear();
+            _family.Clear();
+        }
     }
 }

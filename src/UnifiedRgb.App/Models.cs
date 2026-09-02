@@ -51,8 +51,7 @@ public sealed class LeftItem
     public IRgbDevice? Device { get; init; }
     public bool IsDisabled { get; init; }
     public bool IsCooling { get; init; }
-    public bool IsHeader { get; init; }
-    public bool IsLcd => Device == null && !IsDisabled && !IsCooling && !IsHeader;
+    public bool IsLcd => Device == null && !IsDisabled && !IsCooling;
     public override string ToString() => Name;
 }
 
@@ -213,91 +212,27 @@ public sealed class FanRowModel : System.ComponentModel.INotifyPropertyChanged
     }
 }
 
-/// <summary>One row in the Cooling panel; IsSection renders as a group label.
-/// Rows with a RenameKey are user-renamable (fan rows): the label edits in
-/// place and the custom name persists via the onRename callback. Value
-/// mutates in place each refresh so an in-progress rename isn't torn down
-/// by the refresh timer.</summary>
+/// <summary>One read-only row in the Cooling panel (GPU/Uni-hub readouts);
+/// IsSection renders as a group label. Value mutates in place each refresh.
+/// (The rename/manual-control surface this class once carried was never
+/// constructed or bound - fan rows are FanRowModel.)</summary>
 public sealed class SensorRow : System.ComponentModel.INotifyPropertyChanged
 {
     public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
     void Notify(string n) => PropertyChanged?.Invoke(this, new(n));
 
-    readonly Action<string, string>? _onRename;
-    readonly Action<bool, int>? _onSetManual;
-    readonly Action<int>? _onSetDuty;
-    readonly Action? _onIdentify;
-
-    public SensorRow(string label, string value, bool isSection = false,
-        string? renameKey = null, string? defaultLabel = null, Action<string, string>? onRename = null,
-        Action<bool, int>? onSetManual = null, Action<int>? onSetDuty = null, Action? onIdentify = null)
+    public SensorRow(string label, string value, bool isSection = false)
     {
         _label = label; _value = value; IsSection = isSection;
-        RenameKey = renameKey; DefaultLabel = defaultLabel ?? label; _onRename = onRename;
-        _onSetManual = onSetManual; _onSetDuty = onSetDuty; _onIdentify = onIdentify;
     }
-
-    /// <summary>Blast this fan briefly so the user can spot it in the case.</summary>
-    public void Identify() => _onIdentify?.Invoke();
 
     public bool IsSection { get; }
-    public string? RenameKey { get; }
-    public string DefaultLabel { get; }
-    public bool CanRename => RenameKey != null;
-
-    /*--- manual fan control (rows wired to a controllable header) ---*/
-    public bool IsControllable => _onSetManual != null;
-
-    bool _isManual;
-    public bool IsManual
-    {
-        get => _isManual;
-        set
-        {
-            if (_isManual == value) return;
-            _isManual = value;
-            Notify(nameof(IsManual));
-            _onSetManual?.Invoke(value, _duty);
-        }
-    }
-
-    int _duty = 50;
-    public int DutyPercent
-    {
-        get => _duty;
-        set
-        {
-            int v = Math.Clamp(value, 30, 100);
-            if (_duty == v) { if (v != value) Notify(nameof(DutyPercent)); return; }
-            _duty = v;
-            Notify(nameof(DutyPercent));
-            if (_isManual) _onSetDuty?.Invoke(v);
-        }
-    }
-
-    /// <summary>Refresh-path state sync from the hub (authoritative — e.g.
-    /// the thermal failsafe unchecks Manual): no callbacks fired.</summary>
-    public void SyncControl(bool manual, int? duty)
-    {
-        if (_isManual != manual) { _isManual = manual; Notify(nameof(IsManual)); }
-        if (duty is int d && _duty != d) { _duty = d; Notify(nameof(DutyPercent)); }
-    }
 
     string _label;
     public string Label
     {
         get => _label;
-        set
-        {
-            // Blank = back to the default name.
-            var v = string.IsNullOrWhiteSpace(value) ? DefaultLabel : value.Trim();
-            if (v != _label)
-            {
-                _label = v;
-                if (RenameKey != null) _onRename?.Invoke(RenameKey, v);
-            }
-            Notify(nameof(Label));   // always: snaps the editor back to the stored text
-        }
+        set { if (_label == value) return; _label = value; Notify(nameof(Label)); }
     }
 
     string _value;

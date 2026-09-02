@@ -29,7 +29,6 @@ public sealed class GigabyteEcio
 
     readonly IteSuperIo _chip;
     readonly object _lock = new();
-    bool? _initialVendorState;
 
     public GigabyteEcio(IteSuperIo secondaryChip) => _chip = secondaryChip;
 
@@ -117,7 +116,6 @@ public sealed class GigabyteEcio
         {
             int cur = ReadByte(FanControlArea + EnableRegister);
             if (cur < 0) return false;
-            _initialVendorState ??= cur != 0;
             if ((cur != 0) != enabled)
             {
                 if (!WriteByte(FanControlArea + EnableRegister, (byte)(enabled ? 1 : 0))) return false;

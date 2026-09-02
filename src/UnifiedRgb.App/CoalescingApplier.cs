@@ -24,6 +24,23 @@ public sealed class CoalescingApplier
     readonly object _mapLock = new();
     readonly Dictionary<object, Lane> _lanes = new();
 
+    /// <summary>Block until every lane has run dry (or the timeout passes).
+    /// Call before disposing devices: a queued static write landing on a freed
+    /// handle was a "device write failed" on every Rescan and at exit.</summary>
+    public void Drain(int timeoutMs)
+    {
+        long deadline = Environment.TickCount64 + timeoutMs;
+        while (Environment.TickCount64 < deadline)
+        {
+            bool busy = false;
+            lock (_mapLock)
+                foreach (var lane in _lanes.Values)
+                    lock (lane.Lock) if (lane.Running) { busy = true; break; }
+            if (!busy) return;
+            Thread.Sleep(5);
+        }
+    }
+
     /// <summary>Queue a device write. Coalescing is latest-wins PER KEY (one
     /// key per device/zone); laneKey picks the worker — writes on different
     /// lanes run in parallel, writes on one lane run in order.</summary>

@@ -11,3 +11,6 @@ native/chroma-shim/*.exp
 
 # maintainer-only publishing tool (not part of the public tree)
 src/UnifiedRgb.Publisher/
+
+# x86 shim resource compile output (build.bat regenerates it)
+native/chroma-shim/version32.res

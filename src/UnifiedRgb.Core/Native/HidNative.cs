@@ -45,57 +45,33 @@ public static class HidNative
     static List<HidInfo> Find(ushort vid, ushort pid, bool all)
     {
         var results = new List<HidInfo>();
-        string idFragment = $"vid_{vid:x4}&pid_{pid:x4}";
-
         HidD_GetHidGuid(out Guid hidGuid);
-        IntPtr devs = SetupDiGetClassDevs(ref hidGuid, null, IntPtr.Zero,
-            DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
-        if (devs == INVALID_HANDLE_VALUE) return results;
-
-        try
+        foreach (var path in SetupDiEnum.InterfacePaths(hidGuid, all ? null : $"vid_{vid:x4}&pid_{pid:x4}"))
         {
-            var ifData = new SP_DEVICE_INTERFACE_DATA { cbSize = Marshal.SizeOf<SP_DEVICE_INTERFACE_DATA>() };
-            for (int i = 0; SetupDiEnumDeviceInterfaces(devs, IntPtr.Zero, ref hidGuid, i, ref ifData); i++)
-            {
-                SetupDiGetDeviceInterfaceDetail(devs, ref ifData, IntPtr.Zero, 0, out int needed, IntPtr.Zero);
-                if (needed == 0) continue;
-                IntPtr detail = Marshal.AllocHGlobal(needed);
-                try
-                {
-                    Marshal.WriteInt32(detail, IntPtr.Size == 8 ? 8 : 6);
-                    if (!SetupDiGetDeviceInterfaceDetail(devs, ref ifData, detail, needed, out _, IntPtr.Zero))
-                        continue;
-                    string path = Marshal.PtrToStringAuto(detail + 4) ?? "";
-                    if (!all && !path.Contains(idFragment, StringComparison.OrdinalIgnoreCase)) continue;
+            // Metadata-only open (no R/W access) works even for devices
+            // another driver holds exclusively — right for enumeration.
+            using var h = CreateFile(path, 0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
+            if (h.IsInvalid) continue;
+            if (!HidD_GetPreparsedData(h, out IntPtr ppd)) continue;
+            HidP_GetCaps(ppd, out HIDP_CAPS caps);
+            HidD_FreePreparsedData(ppd);
 
-                    // Metadata-only open (no R/W access) works even for devices
-                    // another driver holds exclusively — right for enumeration.
-                    using var h = CreateFile(path, 0,
-                        FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
-                    if (h.IsInvalid) continue;
-                    if (!HidD_GetPreparsedData(h, out IntPtr ppd)) continue;
-                    HidP_GetCaps(ppd, out HIDP_CAPS caps);
-                    HidD_FreePreparsedData(ppd);
+            var attrs = new HIDD_ATTRIBUTES { Size = Marshal.SizeOf<HIDD_ATTRIBUTES>() };
+            HidD_GetAttributes(h, ref attrs);
+            // Fresh buffer per string + cut at the FIRST null: a reused
+            // buffer keeps the tail of the previous (longer) string
+            // past the terminator, producing mangled device names.
+            var buf = new byte[256];
+            string product = HidD_GetProductString(h, buf, buf.Length) ? CleanString(buf) : "";
+            Array.Clear(buf);
+            string vendor = HidD_GetManufacturerString(h, buf, buf.Length) ? CleanString(buf) : "";
 
-                    var attrs = new HIDD_ATTRIBUTES { Size = Marshal.SizeOf<HIDD_ATTRIBUTES>() };
-                    HidD_GetAttributes(h, ref attrs);
-                    // Fresh buffer per string + cut at the FIRST null: a reused
-                    // buffer keeps the tail of the previous (longer) string
-                    // past the terminator, producing mangled device names.
-                    var buf = new byte[256];
-                    string product = HidD_GetProductString(h, buf, buf.Length) ? CleanString(buf) : "";
-                    Array.Clear(buf);
-                    string vendor = HidD_GetManufacturerString(h, buf, buf.Length) ? CleanString(buf) : "";
-
-                    results.Add(new HidInfo(path, caps.UsagePage, caps.Usage,
-                        caps.OutputReportByteLength, caps.InputReportByteLength,
-                        attrs.VendorID, attrs.ProductID, caps.FeatureReportByteLength,
-                        product, vendor));
-                }
-                finally { Marshal.FreeHGlobal(detail); }
-            }
+            results.Add(new HidInfo(path, caps.UsagePage, caps.Usage,
+                caps.OutputReportByteLength, caps.InputReportByteLength,
+                attrs.VendorID, attrs.ProductID, caps.FeatureReportByteLength,
+                product, vendor));
         }
-        finally { SetupDiDestroyDeviceInfoList(devs); }
         return results;
     }
 
@@ -125,8 +101,11 @@ public static class HidNative
         readonly ManualResetEvent _rdEvent = new(false), _wrEvent = new(false);
         readonly IntPtr _rdOv, _wrOv;
         readonly object _rdLock = new(), _wrLock = new();
+        volatile bool _disposed;
         static readonly int OvSize = 2 * IntPtr.Size + 8 + IntPtr.Size;   // OVERLAPPED
         const int ERROR_IO_PENDING = 997;
+
+        public bool IsDisposed => _disposed;
 
         public HidHandle(SafeFileHandle handle)
         {
@@ -154,7 +133,7 @@ public static class HidNative
         bool Transfer(bool write, byte[] buf, int timeoutMs, out int transferred)
         {
             transferred = 0;
-            if (_handle.IsClosed) return false;
+            if (_disposed || _handle.IsClosed) return false;
             var evt = write ? _wrEvent : _rdEvent;
             var ov = write ? _wrOv : _rdOv;
 
@@ -181,7 +160,12 @@ public static class HidNative
                 if (!evt.WaitOne(timeoutMs))
                 {
                     CancelIoEx(_handle, ov);
-                    evt.WaitOne(1000);          // let the cancellation complete before unpinning
+                    // Let the cancellation complete before unpinning. If the
+                    // driver still hasn't completed the IRP after a second,
+                    // block on it: returning here would unpin a buffer (and
+                    // reuse an OVERLAPPED) the kernel may still write into.
+                    if (!evt.WaitOne(1000))
+                        return GetOverlappedResult(_handle, ov, out transferred, true) && transferred >= 0;
                 }
                 return GetOverlappedResult(_handle, ov, out transferred, false) && transferred >= 0;
             }
@@ -189,24 +173,33 @@ public static class HidNative
         }
 
         /// <summary>Send a HID feature report (report[0] = report ID).</summary>
-        public bool SetFeature(byte[] report) => HidD_SetFeature(_handle, report, report.Length);
+        public bool SetFeature(byte[] report) => !_disposed && HidD_SetFeature(_handle, report, report.Length);
 
         /// <summary>Read a HID feature report (report[0] = report ID on entry).</summary>
-        public bool GetFeature(byte[] report) => HidD_GetFeature(_handle, report, report.Length);
+        public bool GetFeature(byte[] report) => !_disposed && HidD_GetFeature(_handle, report, report.Length);
 
         /// <summary>Read a HID INPUT report via control GET_REPORT (report[0] =
         /// report ID on entry). Used for command→response devices that answer on
         /// the control pipe rather than pushing on the interrupt IN pipe.</summary>
-        public bool GetInputReport(byte[] report) => HidD_GetInputReport(_handle, report, report.Length);
+        public bool GetInputReport(byte[] report) => !_disposed && HidD_GetInputReport(_handle, report, report.Length);
 
+        /// <summary>Idempotent, and taken under both transfer locks so an
+        /// in-flight overlapped Write/Read finishes (bounded by its timeout)
+        /// before the handle, events and OVERLAPPED blocks go away — a Rescan
+        /// used to free them under a worker mid-transfer.</summary>
         public void Dispose()
         {
-            try { CancelIoEx(_handle, IntPtr.Zero); } catch { }
-            _handle.Dispose();
-            _rdEvent.Dispose();
-            _wrEvent.Dispose();
-            Marshal.FreeHGlobal(_rdOv);
-            Marshal.FreeHGlobal(_wrOv);
+            lock (_wrLock) lock (_rdLock)
+            {
+                if (_disposed) return;
+                _disposed = true;
+                try { CancelIoEx(_handle, IntPtr.Zero); } catch { }
+                _handle.Dispose();
+                _rdEvent.Dispose();
+                _wrEvent.Dispose();
+                Marshal.FreeHGlobal(_rdOv);
+                Marshal.FreeHGlobal(_wrOv);
+            }
         }
     }
 
@@ -214,11 +207,6 @@ public static class HidNative
     const uint FILE_SHARE_READ = 1, FILE_SHARE_WRITE = 2;
     const uint OPEN_EXISTING = 3;
     const uint FILE_FLAG_OVERLAPPED = 0x40000000;
-    const int DIGCF_PRESENT = 2, DIGCF_DEVICEINTERFACE = 0x10;
-    static readonly IntPtr INVALID_HANDLE_VALUE = new(-1);
-
-    [StructLayout(LayoutKind.Sequential)]
-    struct SP_DEVICE_INTERFACE_DATA { public int cbSize; public Guid guid; public int flags; public IntPtr reserved; }
 
     [StructLayout(LayoutKind.Sequential)]
     struct HIDP_CAPS
@@ -233,23 +221,18 @@ public static class HidNative
     [StructLayout(LayoutKind.Sequential)]
     struct HIDD_ATTRIBUTES { public int Size; public ushort VendorID; public ushort ProductID; public ushort VersionNumber; }
 
-    [DllImport("hid.dll")] static extern bool HidD_GetAttributes(SafeFileHandle h, ref HIDD_ATTRIBUTES attrs);
-    [DllImport("hid.dll")] static extern bool HidD_GetProductString(SafeFileHandle h, byte[] buf, int len);
-    [DllImport("hid.dll")] static extern bool HidD_GetManufacturerString(SafeFileHandle h, byte[] buf, int len);
+    // HidD_* return a 1-byte BOOLEAN, not a 4-byte BOOL: marshal as U1 so the
+    // undefined upper bits of the return register can't turn a failure into true.
+    [DllImport("hid.dll")] [return: MarshalAs(UnmanagedType.U1)] static extern bool HidD_GetAttributes(SafeFileHandle h, ref HIDD_ATTRIBUTES attrs);
+    [DllImport("hid.dll")] [return: MarshalAs(UnmanagedType.U1)] static extern bool HidD_GetProductString(SafeFileHandle h, byte[] buf, int len);
+    [DllImport("hid.dll")] [return: MarshalAs(UnmanagedType.U1)] static extern bool HidD_GetManufacturerString(SafeFileHandle h, byte[] buf, int len);
     [DllImport("hid.dll")] static extern void HidD_GetHidGuid(out Guid guid);
-    [DllImport("hid.dll")] static extern bool HidD_SetFeature(SafeFileHandle h, byte[] buf, int len);
-    [DllImport("hid.dll")] static extern bool HidD_GetFeature(SafeFileHandle h, byte[] buf, int len);
-    [DllImport("hid.dll")] static extern bool HidD_GetInputReport(SafeFileHandle h, byte[] buf, int len);
-    [DllImport("hid.dll")] static extern bool HidD_GetPreparsedData(SafeFileHandle h, out IntPtr data);
-    [DllImport("hid.dll")] static extern bool HidD_FreePreparsedData(IntPtr data);
+    [DllImport("hid.dll")] [return: MarshalAs(UnmanagedType.U1)] static extern bool HidD_SetFeature(SafeFileHandle h, byte[] buf, int len);
+    [DllImport("hid.dll")] [return: MarshalAs(UnmanagedType.U1)] static extern bool HidD_GetFeature(SafeFileHandle h, byte[] buf, int len);
+    [DllImport("hid.dll")] [return: MarshalAs(UnmanagedType.U1)] static extern bool HidD_GetInputReport(SafeFileHandle h, byte[] buf, int len);
+    [DllImport("hid.dll")] [return: MarshalAs(UnmanagedType.U1)] static extern bool HidD_GetPreparsedData(SafeFileHandle h, out IntPtr data);
+    [DllImport("hid.dll")] [return: MarshalAs(UnmanagedType.U1)] static extern bool HidD_FreePreparsedData(IntPtr data);
     [DllImport("hid.dll")] static extern int HidP_GetCaps(IntPtr data, out HIDP_CAPS caps);
-    [DllImport("setupapi.dll", CharSet = CharSet.Auto)]
-    static extern IntPtr SetupDiGetClassDevs(ref Guid gClass, string? enumerator, IntPtr hwnd, int flags);
-    [DllImport("setupapi.dll")]
-    static extern bool SetupDiEnumDeviceInterfaces(IntPtr devs, IntPtr devInfo, ref Guid gClass, int idx, ref SP_DEVICE_INTERFACE_DATA ifData);
-    [DllImport("setupapi.dll", CharSet = CharSet.Auto)]
-    static extern bool SetupDiGetDeviceInterfaceDetail(IntPtr devs, ref SP_DEVICE_INTERFACE_DATA ifData, IntPtr detail, int size, out int needed, IntPtr devInfo);
-    [DllImport("setupapi.dll")] static extern bool SetupDiDestroyDeviceInfoList(IntPtr devs);
     [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     static extern SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr sec, uint disp, uint flags, IntPtr template);
     [DllImport("kernel32.dll", SetLastError = true)]

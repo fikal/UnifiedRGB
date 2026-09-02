@@ -129,8 +129,7 @@ public sealed class AutomationService : IDisposable
 
             // Live feedback: without this the feature is a black box
             // ("i dont know how this works").
-            bool self = proc != null &&
-                proc.Equals(Process.GetCurrentProcess().ProcessName, StringComparison.OrdinalIgnoreCase);
+            bool self = proc != null && proc.Equals(SelfName, StringComparison.OrdinalIgnoreCase);
             _vm.AutomationStatus =
                 desired.mode == Mode.Night ? $"Night mode: lights off until {s.NightEnd}"
                 : inNight && _nightOverride ? "Night mode paused (you woke the lights). Resumes tomorrow night."
@@ -174,6 +173,9 @@ public sealed class AutomationService : IDisposable
                     _vm.RestoreState(_returnPoint);
                     Log.Info("auto", "restored your lighting");
                 }
+                // No return point (the user relit things mid-override): the LCD
+                // still has to come back - RestoreState was the only path that did it.
+                else _vm.SetPumpLcdOn(true);
                 break;
         }
         }
@@ -181,7 +183,16 @@ public sealed class AutomationService : IDisposable
         _mode = next;
         _activeRuleProfile = next == Mode.App ? profile : null;
         _vm.NightLightsOff = next == Mode.Night;   // drives the wake banner
+        _vm.LightsSuppressed = next is Mode.Locked or Mode.Night;   // scene sequences hold while off
     }
+
+    // Resolved once: Process.GetCurrentProcess().ProcessName per 2 s tick took
+    // a full process-table snapshot (100-500 KB) and leaked the Process object.
+    static readonly string SelfName = System.IO.Path.GetFileNameWithoutExtension(Environment.ProcessPath ?? "");
+
+    // Foreground pid -> name, so an unchanged foreground window costs no
+    // GetProcessById (another full process-table snapshot) per tick.
+    static uint _lastPid; static string? _lastName;
 
     static bool InNightWindow(SettingsData s)
     {
@@ -215,6 +226,7 @@ public sealed class AutomationService : IDisposable
             if (h == IntPtr.Zero) return null;
             GetWindowThreadProcessId(h, out uint pid);
             if (pid == 0) return null;
+            if (pid == _lastPid && _lastName != null) return _lastName;
             string name;
             using (var p = Process.GetProcessById((int)pid)) name = p.ProcessName;
 
@@ -238,9 +250,10 @@ public sealed class AutomationService : IDisposable
                 }, IntPtr.Zero);
                 if (hosted != null) name = hosted;
             }
+            _lastPid = pid; _lastName = name;
             return name;
         }
-        catch { return null; }
+        catch { _lastPid = 0; _lastName = null; return null; }
     }
 
     public void Dispose()

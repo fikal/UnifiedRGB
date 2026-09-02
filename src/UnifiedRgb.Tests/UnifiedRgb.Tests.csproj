@@ -11,4 +11,12 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
+  <!-- `dotnet test` on a plain console project reports success having run
+       nothing. Run the harness from the VSTest target so a CI or a habit that
+       reaches for `dotnet test` still gets the real pass/fail (Exec fails the
+       build on a non-zero exit code = the failure count). -->
+  <Target Name="RunHarnessOnDotnetTest" AfterTargets="VSTest">
+    <Exec Command="dotnet &quot;$(TargetPath)&quot;" />
+  </Target>
+
 </Project>

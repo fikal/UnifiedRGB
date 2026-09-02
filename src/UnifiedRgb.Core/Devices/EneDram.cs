@@ -35,6 +35,19 @@ public sealed class EneDram : IRgbDevice
     // AUDA0/AUMA0 second-gen controllers use v2 at 0x8100).
     static readonly string[] V1Versions = { "LED-0116", "DIMM_LED-0102" };
 
+    /// <summary>The SMBus (PawnIO kernel handle + machine-wide mutex) is shared
+    /// by every stick found in one DetectAll and released by the LAST stick's
+    /// Dispose. Before this, no stick owned it: each Rescan leaked a driver
+    /// handle and a global mutex (PawnIO has no finalizer).</summary>
+    sealed class BusLease
+    {
+        public readonly PawnSmbus Bus;
+        public int Refs;
+        public BusLease(PawnSmbus bus) => Bus = bus;
+        public void Release() { if (Interlocked.Decrement(ref Refs) == 0) Bus.Dispose(); }
+    }
+
+    readonly BusLease _lease;
     readonly PawnSmbus _bus;
     readonly byte _addr;
     readonly ushort _directReg;
@@ -53,9 +66,11 @@ public sealed class EneDram : IRgbDevice
     public IReadOnlyList<LedPos>? LedPositions => _positions;
     public float? PreviewAspect => 5f;   // LEDs run along the stick's top edge
 
-    EneDram(PawnSmbus bus, byte addr, string name, string version, int ledCount)
+    EneDram(BusLease lease, byte addr, string name, string version, int ledCount)
     {
-        _bus = bus;
+        _lease = lease;
+        Interlocked.Increment(ref lease.Refs);
+        _bus = lease.Bus;
         _addr = addr;
         _ledCount = ledCount;
         _directReg = V1Versions.Contains(version) ? REG_COLORS_DIRECT_V1 : REG_COLORS_DIRECT_V2;
@@ -129,6 +144,7 @@ public sealed class EneDram : IRgbDevice
         }
 
         int stick = 0;
+        var lease = new BusLease(bus);
         foreach (byte addr in CandidateAddresses)
         {
             if (!TestForEne(bus, addr)) { Thread.Sleep(1); continue; }
@@ -146,7 +162,7 @@ public sealed class EneDram : IRgbDevice
             if (ledCount is <= 0 or > 64) ledCount = 8;
 
             stick++;
-            found.Add(new EneDram(bus, addr, $"ENE DRAM #{stick} (0x{addr:X2})", version, ledCount));
+            found.Add(new EneDram(lease, addr, $"ENE DRAM #{stick} (0x{addr:X2})", version, ledCount));
             Thread.Sleep(1);
         }
 
@@ -259,5 +275,5 @@ public sealed class EneDram : IRgbDevice
         }
     }
 
-    public void Dispose() { /* shared bus is owned by the first stick's lifetime; harmless to leak until exit */ }
+    public void Dispose() => _lease.Release();
 }

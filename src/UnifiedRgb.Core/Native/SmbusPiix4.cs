@@ -1,5 +1,3 @@
-using System.Reflection;
-
 namespace UnifiedRgb.Core.Native;
 
 /// <summary>System SMBus access through a signed PawnIO module. The namazso
@@ -23,7 +21,11 @@ public abstract class PawnSmbus : IDisposable
     private protected PawnSmbus(PawnIO io)
     {
         _io = io;
-        _smbusMutex = new Mutex(false, @"Global\Access_SMBUS.HTP.Method");
+        // Another vendor tool can pre-create this mutex with a DACL that
+        // refuses us; don't orphan the freshly loaded kernel module (no
+        // finalizer) when that happens.
+        try { _smbusMutex = new Mutex(false, @"Global\Access_SMBUS.HTP.Method"); }
+        catch { io.Dispose(); throw; }
     }
 
     /// <summary>Open whichever chipset module matches this machine.</summary>
@@ -123,17 +125,7 @@ public abstract class PawnSmbus : IDisposable
         catch (AbandonedMutexException) { return true; }
     }
 
-    static byte[]? ReadEmbedded(string file)
-    {
-        var asm = Assembly.GetExecutingAssembly();
-        var name = asm.GetManifestResourceNames().FirstOrDefault(n => n.EndsWith(file, StringComparison.OrdinalIgnoreCase));
-        if (name == null) return null;
-        using var s = asm.GetManifestResourceStream(name);
-        if (s == null) return null;
-        using var ms = new MemoryStream();
-        s.CopyTo(ms);
-        return ms.ToArray();
-    }
+    static byte[]? ReadEmbedded(string file) => PawnIO.ReadEmbeddedModule(file);
 
     public void Dispose()
     {

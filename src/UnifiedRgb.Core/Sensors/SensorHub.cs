@@ -103,7 +103,22 @@ public static class SensorHub
         }
     }
 
+    static int _ticking;
+
+    /// <summary>System.Threading.Timer fires on the pool regardless of whether
+    /// the previous callback finished, so a stalled NvAPI/LHM read (sleep/resume,
+    /// driver reset) used to overlap two sweeps: concurrent LHM Update(), a
+    /// double-counted hot tick, torn CPU-load deltas. Skip the tick instead —
+    /// and never let an exception out of a Timer callback (process-fatal).</summary>
     static void Tick()
+    {
+        if (Interlocked.CompareExchange(ref _ticking, 1, 0) != 0) return;
+        try { TickCore(); }
+        catch (Exception ex) { Log.Occasional("sensors-tick", "sensors", () => $"tick failed: {ex.Message}"); }
+        finally { Volatile.Write(ref _ticking, 0); }
+    }
+
+    static void TickCore()
     {
         bool anyManual;
         lock (_gate) anyManual = _manualFans.Count > 0 || _fanCurves.Count > 0;
@@ -185,18 +200,22 @@ public static class SensorHub
             }
         }
 
-        // Failsafe: any control + a hot CPU or GPU (two consecutive ticks, so
-        // a single junk reading can't trip it) = hand everything back to auto.
-        // 92°C CPU is past normal boost even for X3D parts; 90°C GPU likewise.
+        // Failsafe: any control + a hot CPU or GPU (three consecutive ticks,
+        // ~4.5 s, so a junk reading or a transient spike can't trip it) = hand
+        // everything back to auto for this session. Zen 4/5 parts deliberately
+        // run all-core loads at a 95°C Tctl target (Tjmax 89 on the 7000-X3D
+        // parts), so the CPU line sits ABOVE that: 96 means the CPU's own
+        // limiter is losing. The saved curves are KEPT — the failsafe protects
+        // the hardware, it shouldn't erase the user's configuration.
         bool tooHot = (CpuTempC is double c && c >= FailsafeCpuC)
                    || (GpuTempC is int g && g >= FailsafeGpuC);
         if (anyManual && tooHot)
         {
-            if (++_hotTicks >= 2)
+            if (++_hotTicks >= FailsafeTicks)
             {
                 FailsafeTripped = true;
-                Log.Warn("fans", $"FAILSAFE: CPU {CpuTempC:0.0}°C / GPU {GpuTempC}°C with fan control active — restoring all fans to auto");
-                RestoreAllFans("thermal failsafe");
+                Log.Warn("fans", $"FAILSAFE: CPU {CpuTempC:0.0}°C / GPU {GpuTempC}°C with fan control active — restoring all fans to auto (saved curves kept)");
+                RestoreAllFans("thermal failsafe", keepConfig: true);
             }
         }
         else _hotTicks = 0;
@@ -325,8 +344,9 @@ public static class SensorHub
     | BoardFans.                                             |
     \*-----------------------------------------------------*/
     public const int MinDutyPct = 30;          // pump-safe floor, no soft-off
-    const double FailsafeCpuC = 92;
+    const double FailsafeCpuC = 96;
     const double FailsafeGpuC = 90;
+    const int FailsafeTicks = 3;
 
     /// <summary>Virtual fan index for the GPU's coolers (driven together —
     /// they're one assembly). Routes to NvAPI instead of LHM.</summary>
@@ -522,11 +542,12 @@ public static class SensorHub
         // Wireless fans: failsafe means FULL BLAST (there is no BIOS curve to
         // fall back to); a plain restore-all returns them to the 40% baseline.
         // App exit (keepConfig) leaves their latched duty untouched.
+        bool failsafe = reason.Contains("failsafe");
         try
         {
-            if (!keepConfig && Lian is { } lw)
+            if ((!keepConfig || failsafe) && Lian is { } lw)
             {
-                int duty = reason.Contains("failsafe") ? 100 : 40;
+                int duty = failsafe ? 100 : 40;
                 for (int s = 0; s < lw.FanCount; s++) lw.SetFanDuty(s, duty);
             }
         }

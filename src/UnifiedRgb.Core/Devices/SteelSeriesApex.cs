@@ -62,6 +62,7 @@ public sealed class SteelSeriesApex : IRgbDevice, IKeyMappedDevice
     readonly LedPos[] _positions;
     readonly object _writeLock = new();
     Rgb[]? _last;
+    byte[]? _featureBuf;   // reused per frame (was a fresh 643-byte report per changed frame)
 
     public string Name { get; }
     public string Vendor => "SteelSeries";
@@ -156,10 +157,17 @@ public sealed class SteelSeriesApex : IRgbDevice, IKeyMappedDevice
     {
         lock (_writeLock)
         {
-            if (_last != null && colors.Count == _last.Length && colors.SequenceEqual(_last)) return;
+            // Index-loop dedup (no boxed enumerators) - same shape as Strafe/EneDram.
+            if (_last != null && colors.Count == _last.Length)
+            {
+                bool same = true;
+                for (int i = 0; i < _last.Length; i++) if (_last[i] != colors[i]) { same = false; break; }
+                if (same) return;
+            }
 
             int n = Math.Min(Keys.Length, colors.Count);
-            var buf = new byte[_featureLen];
+            var buf = _featureBuf ??= new byte[_featureLen];
+            Array.Clear(buf);
             buf[1] = PKT_DIRECT;
             buf[2] = (byte)n;
             for (int i = 0; i < n; i++)
@@ -171,7 +179,8 @@ public sealed class SteelSeriesApex : IRgbDevice, IKeyMappedDevice
                 buf[o + 3] = colors[i].B;
             }
             _hid.SetFeature(buf);
-            _last = colors.ToArray();
+            if (_last == null || _last.Length != colors.Count) _last = new Rgb[colors.Count];
+            for (int i = 0; i < colors.Count; i++) _last[i] = colors[i];
         }
     }
 

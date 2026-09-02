@@ -44,7 +44,7 @@ public sealed partial class MainViewModel
     public bool GithubUpdateCheck
     {
         get => _store.Settings.GithubUpdateCheck;
-        set { _store.Settings.GithubUpdateCheck = value; _store.SaveSettings(); OnChanged(); }
+        set => SetSetting(_store.Settings.GithubUpdateCheck, value, v => _store.Settings.GithubUpdateCheck = v);
     }
     public bool ShowGithubUpdateToggle => !Backend.Configured;
 

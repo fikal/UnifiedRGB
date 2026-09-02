@@ -14,11 +14,17 @@ namespace UnifiedRgb.Core.Native;
 [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
 class MMDeviceEnumeratorComObject { }
 
+// Every method carries [PreserveSig]: without it the CLR turns a failing
+// HRESULT into a COMException and hands back an unrelated trailing "retval"
+// as the int, so the `>= 0` checks below could never see a refusal and the
+// event->polling fallback in Start() was unreachable.
 [ComImport, Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"),
  InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 interface IMMDeviceEnumerator
 {
+    [PreserveSig]
     int EnumAudioEndpoints(int dataFlow, int stateMask, out IntPtr devices);
+    [PreserveSig]
     int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice device);
     // (GetDevice / notification methods follow; unused)
 }
@@ -27,6 +33,7 @@ interface IMMDeviceEnumerator
  InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 interface IMMDevice
 {
+    [PreserveSig]
     int Activate(ref Guid iid, int clsCtx, IntPtr activationParams,
                  [MarshalAs(UnmanagedType.IUnknown)] out object iface);
     // (OpenPropertyStore / GetId / GetState follow; unused)
@@ -36,18 +43,30 @@ interface IMMDevice
  InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 interface IAudioClient
 {
+    [PreserveSig]
     int Initialize(int shareMode, int streamFlags, long bufferDuration,
                    long periodicity, IntPtr format, IntPtr audioSessionGuid);
+    [PreserveSig]
     int GetBufferSize(out uint bufferFrames);
+    [PreserveSig]
     int GetStreamLatency(out long latency);
+    [PreserveSig]
     int GetCurrentPadding(out uint padding);
+    [PreserveSig]
     int IsFormatSupported(int shareMode, IntPtr format, out IntPtr closestMatch);
+    [PreserveSig]
     int GetMixFormat(out IntPtr format);
+    [PreserveSig]
     int GetDevicePeriod(out long defaultPeriod, out long minPeriod);
+    [PreserveSig]
     int Start();
+    [PreserveSig]
     int Stop();
+    [PreserveSig]
     int Reset();
+    [PreserveSig]
     int SetEventHandle(IntPtr handle);
+    [PreserveSig]
     int GetService(ref Guid iid, [MarshalAs(UnmanagedType.IUnknown)] out object service);
 }
 
@@ -55,9 +74,12 @@ interface IAudioClient
  InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 interface IAudioCaptureClient
 {
+    [PreserveSig]
     int GetBuffer(out IntPtr data, out uint frames, out uint flags,
                   out ulong devicePosition, out ulong qpcPosition);
+    [PreserveSig]
     int ReleaseBuffer(uint frames);
+    [PreserveSig]
     int GetNextPacketSize(out uint frames);
 }
 
@@ -99,6 +121,25 @@ public sealed class WasapiLoopback : IDisposable
         IMMDevice? device = null;
         try
         {
+            try { StartCore(enumerator, out device); }
+            catch { Dispose(); throw; }   // a half-built client must not outlive the failure
+        }
+        finally
+        {
+            if (device != null) Marshal.ReleaseComObject(device);
+            Marshal.ReleaseComObject(enumerator);
+        }
+
+        _running = true;
+        _thread = new Thread(Poll) { IsBackground = true, Name = "wasapi-loopback" };
+        _thread.Start();
+        Log.Info("audio", $"loopback capture started ({_sampleRate} Hz, {_channels} ch, " +
+                          $"{(_isFloat ? "f32" : "i16")}, {(_wakeEvent != null ? "event-driven" : "polling")})");
+    }
+
+    void StartCore(IMMDeviceEnumerator enumerator, out IMMDevice device)
+    {
+        {
             Check(enumerator.GetDefaultAudioEndpoint(ERender, EMultimedia, out device), "endpoint");
 
             var iid = IidAudioClient;
@@ -138,17 +179,6 @@ public sealed class WasapiLoopback : IDisposable
             _capture = (IAudioCaptureClient)capObj;
             Check(_client.Start(), "start");
         }
-        finally
-        {
-            if (device != null) Marshal.ReleaseComObject(device);
-            Marshal.ReleaseComObject(enumerator);
-        }
-
-        _running = true;
-        _thread = new Thread(Poll) { IsBackground = true, Name = "wasapi-loopback" };
-        _thread.Start();
-        Log.Info("audio", $"loopback capture started ({_sampleRate} Hz, {_channels} ch, " +
-                          $"{(_isFloat ? "f32" : "i16")}, {(_wakeEvent != null ? "event-driven" : "polling")})");
     }
 
     void ParseFormat(IntPtr fmt)
@@ -177,15 +207,18 @@ public sealed class WasapiLoopback : IDisposable
                 while (_running && _capture!.GetNextPacketSize(out uint packet) == 0 && packet > 0)
                 {
                     Check(_capture.GetBuffer(out var data, out uint frames, out uint flags, out _, out _), "get buffer");
-                    if (frames > 0)
+                    try
                     {
-                        if (_mono.Length < frames) _mono = new float[frames];
-                        bool silent = (flags & 0x2) != 0;   // AUDCLNT_BUFFERFLAGS_SILENT
-                        if (silent) Array.Clear(_mono, 0, (int)frames);
-                        else MixToMono(data, (int)frames);
-                        _onSamples(_mono, (int)frames, _sampleRate);
+                        if (frames > 0)
+                        {
+                            if (_mono.Length < frames) _mono = new float[frames];
+                            bool silent = (flags & 0x2) != 0;   // AUDCLNT_BUFFERFLAGS_SILENT
+                            if (silent) Array.Clear(_mono, 0, (int)frames);
+                            else MixToMono(data, (int)frames);
+                            _onSamples(_mono, (int)frames, _sampleRate);
+                        }
                     }
-                    _capture.ReleaseBuffer(frames);
+                    finally { _capture.ReleaseBuffer(frames); }   // a consumer throw must not wedge the stream (OUT_OF_ORDER)
                 }
             }
             catch (Exception ex)

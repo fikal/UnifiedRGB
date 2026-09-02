@@ -27,7 +27,9 @@ public sealed class EffectAssignment
 
 public sealed class Profile
 {
-    public required string Name { get; set; }
+    // Not `required`: System.Text.Json throws for a missing required member, so
+    // ONE hand-edited/old entry without a Name used to fail the whole list.
+    public string Name { get; set; } = "";
     public Dictionary<string, string[]> DeviceFrames { get; set; } = new();  // deviceName -> hex per LED
     public string[]? CustomColors { get; set; }                              // user swatches (hex)
     public List<EffectAssignment>? Effects { get; set; }                     // running effects per target
@@ -124,22 +126,38 @@ public sealed class ProfileStore
     public ProfileStore()
     {
         Directory.CreateDirectory(Dir);
-        try
-        {
-            if (File.Exists(ProfilesPath))
-                Profiles = JsonSerializer.Deserialize<List<Profile>>(File.ReadAllText(ProfilesPath)) ?? new();
-        }
-        catch { Profiles = new(); }
-        try
-        {
-            if (File.Exists(SettingsPath))
-                Settings = JsonSerializer.Deserialize<SettingsData>(File.ReadAllText(SettingsPath)) ?? new();
-        }
-        catch { Settings = new(); }
+        Profiles = LoadJson<List<Profile>>(ProfilesPath, "profiles.json") ?? new();
+        Settings = LoadJson<SettingsData>(SettingsPath, "settings.json") ?? new();
     }
 
-    public void SaveProfiles() => SafeFile.WriteAllText(ProfilesPath, JsonSerializer.Serialize(Profiles, JsonOpts));
-    public void SaveSettings() => SafeFile.WriteAllText(SettingsPath, JsonSerializer.Serialize(Settings, JsonOpts));
+    /// <summary>Read a JSON store; null when absent or unreadable. An unreadable
+    /// file is COPIED aside first (`*.corrupt-yyyyMMdd-HHmmss`) and logged: the
+    /// old path silently substituted defaults, and the next routine save then
+    /// overwrote the user's profiles/settings for good.</summary>
+    internal static T? LoadJson<T>(string path, string what) where T : class
+    {
+        if (!File.Exists(path)) return null;
+        try { return JsonSerializer.Deserialize<T>(File.ReadAllText(path)); }
+        catch (Exception ex)
+        {
+            string backup = path + $".corrupt-{DateTime.Now:yyyyMMdd-HHmmss}";
+            try { File.Copy(path, backup, overwrite: true); } catch { backup = "(backup failed)"; }
+            Log.Warn("store", $"{what} unreadable ({ex.Message}) - starting from defaults; original kept at {backup}");
+            return null;
+        }
+    }
+
+    public void SaveProfiles() => Save(ProfilesPath, Profiles, "profiles.json");
+    public void SaveSettings() => Save(SettingsPath, Settings, "settings.json");
+
+    /// <summary>Saves are called from property setters, timers and Dispose; a
+    /// locked file (AV scan, sync client) must log, not surface as an error
+    /// dialog or abort the shutdown sequence.</summary>
+    static void Save<T>(string path, T data, string what)
+    {
+        try { SafeFile.WriteAllText(path, JsonSerializer.Serialize(data, JsonOpts)); }
+        catch (Exception ex) { Log.Warn("store", $"{what} save failed: {ex.Message}"); }
+    }
 
     /// <summary>Capture the given frames into a named profile (replacing any
     /// same-named profile) and persist. Devices absent right now (disabled or

@@ -9,8 +9,7 @@ namespace UnifiedRgb.App.Services;
 /// the view model; the VM keeps only bindable state and thin wrappers.</summary>
 public sealed class SupportService
 {
-    static string AppVersion =>
-        typeof(SupportService).Assembly.GetName().Version?.ToString() ?? "?";
+    static string AppVersion => AppInfo.VersionString;
 
     /// <summary>Full hardware survey + session log + note, as one upload.
     /// Collection shells out to WMI, so call from off the UI thread context;

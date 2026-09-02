@@ -32,7 +32,7 @@ the published SHA-256; opt out in Settings).
 
 ### Every effect, every device, or per-zone down to the LED
 
-~65 effects: rainbows, meteors, plasma, aurora, candle flicker, rain,
+~55 effects: rainbows, meteors, plasma, aurora, candle flicker, rain,
 audio-reactive bars and pulses (event-driven WASAPI loopback — reacts the
 instant sound does), key-reactive ripple, whole-screen ambient, Wallpaper
 Engine capture, Razer Chroma game sync (no Razer software required), a
@@ -149,8 +149,11 @@ The CLI harness (`dotnet run --project src/UnifiedRgb.Cli`) lists detected
 devices and can set colors headlessly — useful when bringing up a new driver.
 
 Optional: the Razer Chroma interop shim (`native/chroma-shim`) builds with
-`build.bat` (needs the VS C++ toolset). The app runs fine without it; the
-Chroma-via-DLL path is opt-in from Settings.
+`build.bat` (needs the VS C++ toolset) in both bitnesses - `RzChromaSDK64.dll`
+for Wallpaper Engine and 64-bit games, `RzChromaSDK.dll` for 32-bit games.
+Release builds bundle both inside the single-file exe; a dev checkout without
+them simply hides the Chroma section. The Chroma-via-DLL path is opt-in from
+Settings either way.
 
 ## Contributing
 

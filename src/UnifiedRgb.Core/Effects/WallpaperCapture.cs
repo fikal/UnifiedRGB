@@ -100,8 +100,8 @@ public static class WallpaperCapture
     static void EnsureDevice()
     {
         if (_d3d != null) return;
-        D3D11.D3D11CreateDevice((IDXGIAdapter?)null, DriverType.Hardware,
-            DeviceCreationFlags.BgraSupport, (Vortice.Direct3D.FeatureLevel[]?)null,
+        D3D11.D3D11CreateDevice(null!, DriverType.Hardware,
+            DeviceCreationFlags.BgraSupport, null!,
             out ID3D11Device? dev, out ID3D11DeviceContext? ctx);
         if (dev == null || ctx == null) throw new InvalidOperationException("D3D11 device create failed");
         _d3d = dev; _ctx = ctx;
@@ -173,7 +173,10 @@ public static class WallpaperCapture
         using var frame = _pool.TryGetNextFrame();
         if (frame == null) return;
 
-        using var srcTex = GetTexture(frame.Surface);
+        // The projected surface is IClosable: dispose it per frame instead of
+        // leaving 20 finalizable RCWs/s to the GC.
+        using var surface = frame.Surface;
+        using var srcTex = GetTexture(surface);
         var desc = srcTex.Description;
 
         // Lazily (re)create a 1:1 staging copy of the source, CPU-readable.

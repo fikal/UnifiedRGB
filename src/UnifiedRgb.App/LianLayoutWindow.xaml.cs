@@ -38,6 +38,10 @@ public partial class LianLayoutWindow : Window
             _slots.Add(new FanSlot { Chain = order[s], NewGroup = breaks.Contains(s) });
         RefreshBreakables();
         RowsList.ItemsSource = _slots;
+        // A click without a drag left _pressSlot set: the title bar stopped
+        // moving the window and the next mouse-down anywhere could start
+        // dragging the stale row. (AppRulesWindow already had this reset.)
+        PreviewMouseLeftButtonUp += (_, _) => { _pressSlot = null; _pressRow = null; };
     }
 
     void RefreshBreakables()

@@ -31,7 +31,6 @@ public sealed class GigabyteIsaBridge : IDisposable
     ulong _orgState;
     ulong _enableState;   // exactly the windows that exist
     int _slot = -1;
-    bool? _initialVendor;
 
     GigabyteIsaBridge(PawnIO io) => _io = io;
 
@@ -155,7 +154,6 @@ public sealed class GigabyteIsaBridge : IDisposable
         {
             int cur = Access(_slot, FanControlArea + EnableRegister, false, 0);
             if (cur < 0) return false;
-            _initialVendor ??= cur != 0;
             if ((cur != 0) == enabled) return true;
             return Access(_slot, FanControlArea + EnableRegister, true, (byte)(enabled ? 1 : 0)) >= 0;
         }, false);

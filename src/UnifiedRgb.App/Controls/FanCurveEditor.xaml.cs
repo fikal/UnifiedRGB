@@ -135,6 +135,7 @@ public partial class FanCurveEditor : UserControl
         dot.MouseLeftButtonDown += Handle_MouseDown;
         dot.MouseMove += Handle_MouseMove;
         dot.MouseLeftButtonUp += Handle_MouseUp;
+        dot.LostMouseCapture += Handle_LostCapture;
         dot.MouseRightButtonUp += Handle_RightClick;
         Plot.Children.Add(dot);
     }
@@ -219,10 +220,20 @@ public partial class FanCurveEditor : UserControl
 
     void Handle_MouseUp(object sender, MouseButtonEventArgs e)
     {
-        if (sender is Ellipse dot) dot.ReleaseMouseCapture();
+        if (sender is Ellipse dot) dot.ReleaseMouseCapture();   // -> Handle_LostCapture ends the drag
         bool wasDragging = _dragIndex >= 0;
         _dragIndex = -1;
         if (wasDragging) Rebuild();   // one clean rebuild at release
+    }
+
+    /// <summary>Alt+Tab / a popup mid-drag takes the capture without a MouseUp;
+    /// without this the next hover kept dragging the handle with no button down.
+    /// The normal release path runs through here too (ReleaseMouseCapture fires it).</summary>
+    void Handle_LostCapture(object sender, MouseEventArgs e)
+    {
+        if (_dragIndex < 0) return;
+        _dragIndex = -1;
+        Rebuild();
     }
 
     void Handle_RightClick(object sender, MouseButtonEventArgs e)

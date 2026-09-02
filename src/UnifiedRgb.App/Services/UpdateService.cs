@@ -14,14 +14,7 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
     static string PendingMarker => Path.Combine(Path.GetTempPath(), "unifiedrgb-update-pending.txt");
     static string SwapResult => Path.Combine(Path.GetTempPath(), "unifiedrgb-swap-result.txt");
 
-    static Version LocalVersion
-    {
-        get
-        {
-            var v = typeof(UpdateService).Assembly.GetName().Version ?? new Version(0, 0, 0);
-            return new Version(v.Major, v.Minor, v.Build);
-        }
-    }
+    static Version LocalVersion => AppInfo.Version;
 
     public async Task CheckAsync(bool allowGitHub = true)
     {
@@ -35,7 +28,12 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
         if (!Backend.Configured && !allowGitHub) return;
 
         var latest = await UpdateClient.GetLatestAsync();
-        if (latest == null || !Version.TryParse(latest.Version, out var server)) return;
+        if (latest == null || !Version.TryParse(latest.Version, out var serverRaw)) return;
+        // Normalize to 3 parts like LocalVersion and the downloaded-binary check:
+        // a 4-part tag (v1.0.18.0) compared "newer" against 1.0.18 (undefined
+        // revision = -1), then InstallAsync refused the identical binary as "not
+        // newer" - a permanent install button that never installed.
+        var server = new Version(serverRaw.Major, serverRaw.Minor, Math.Max(0, serverRaw.Build));
         var local = LocalVersion;
 
         // A pending marker from a previous install attempt that still finds us
@@ -78,10 +76,21 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
         try
         {
             string target = Environment.ProcessPath!;
-            // Unique per attempt: a stale swap script from a prior attempt must
-            // never move a file a newer attempt is still downloading into.
-            string temp = Path.Combine(Path.GetTempPath(), $"UnifiedRGB-update-{Environment.ProcessId}.exe");
-            var latest = await UpdateClient.GetLatestAsync();   // one fetch: hash + marker version
+            string targetDir = Path.GetDirectoryName(target)!;
+            // Staged NEXT TO the exe, not in %TEMP%, with per-attempt random
+            // names. We run elevated; %TEMP% is writable by every medium-IL
+            // process of the same user, and cmd re-reads a .bat from disk on
+            // every `goto` - a fixed-name script there was a same-user path to
+            // elevated code execution during the 3-minute swap window, and the
+            // verified payload could be swapped after the hash check. In the
+            // exe's own folder the files inherit whatever protects the exe (and
+            // if that folder is user-writable there was never a boundary). Same
+            // volume also makes the final `move` a rename. Unique names keep a
+            // stale script from a prior attempt off a newer attempt's download.
+            string stamp = $"{Environment.ProcessId}-{Guid.NewGuid():N}";
+            string temp = Path.Combine(targetDir, $"UnifiedRGB-update-{stamp}.exe");
+            var latest = await UpdateClient.GetLatestAsync();
+            string? sha = latest != null ? await UpdateClient.ResolveShaAsync(latest) : null;
             setText("downloading 0%");
             string? err = await UpdateClient.DownloadAsync(temp,
                 pct => Application.Current.Dispatcher.Invoke(() => setText($"downloading {pct}%")),
@@ -90,12 +99,12 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
 
             // Integrity: the publisher registered the build's SHA-256; refuse
             // a download that doesn't match (corruption or tampering).
-            if (!string.IsNullOrEmpty(latest?.Sha256))
+            if (!string.IsNullOrEmpty(sha))
             {
                 string got = await Task.Run(() => UpdateClient.HashFile(temp));
-                if (!string.Equals(got, latest!.Sha256, StringComparison.OrdinalIgnoreCase))
+                if (!string.Equals(got, sha, StringComparison.OrdinalIgnoreCase))
                 {
-                    Log.Error("update", $"download hash mismatch: expected {latest.Sha256}, got {got}");
+                    Log.Error("update", $"download hash mismatch: expected {sha}, got {got}");
                     try { File.Delete(temp); } catch { }
                     setText("update failed integrity check — try again");
                     _running = false;
@@ -153,40 +162,79 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             // PID — we're mid-update, the process asked to be replaced — and
             // keeps retrying. "gave-up" after that = folder permissions.
             Log.Info("update", $"installing {latest?.Version} over {target}");
-            string bat = Path.Combine(Path.GetTempPath(), "unifiedrgb-update.bat");
+            string bat = Path.Combine(targetDir, $"unifiedrgb-update-{stamp}.bat");
+            // taskkill is filtered to OUR image name: after a minute the PID may
+            // already belong to an unrelated process (Windows recycles PIDs fast).
+            string imageName = Path.GetFileName(target);
+            // Re-verify the payload right before every move attempt - closes the
+            // window between the managed hash check and the swap.
+            string verify = string.IsNullOrEmpty(sha) ? "" :
+                $"certutil -hashfile \"{temp}\" SHA256 | findstr /i /c:\"{sha}\" >nul || goto tampered";
             File.WriteAllText(bat, $"""
                 @echo off
                 set n=0
                 :loop
                 set /a n+=1
                 if %n% gtr 90 goto fail
-                if %n% equ 30 taskkill /f /pid {Environment.ProcessId} >nul 2>&1
+                if %n% equ 30 taskkill /f /pid {Environment.ProcessId} /fi "IMAGENAME eq {imageName}" >nul 2>&1
                 timeout /t 2 /nobreak >nul
+                {verify}
                 move /y "{temp}" "{target}" >nul 2>&1
                 if errorlevel 1 goto loop
                 echo ok %n%>"{SwapResult}"
                 start "" "{target}"
+                goto done
+                :tampered
+                echo tampered %n%>"{SwapResult}"
+                del "{temp}" >nul 2>&1
                 goto done
                 :fail
                 echo gave-up %n%>"{SwapResult}"
                 :done
                 del "%~f0"
                 """);
-            // Marker: next launch verifies the swap actually took (CheckAsync).
-            try
+
+            void StartSwap()
             {
-                if (latest != null) File.WriteAllText(PendingMarker, latest.Version);
+                // Marker: next launch verifies the swap actually took (CheckAsync).
+                try { if (latest != null) File.WriteAllText(PendingMarker, latest.Version); } catch { }
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "cmd.exe",
+                    Arguments = $"/c \"{bat}\"",
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                });
             }
-            catch { }
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            void Abandon()
             {
-                FileName = "cmd.exe",
-                Arguments = $"/c \"{bat}\"",
-                CreateNoWindow = true,
-                UseShellExecute = false,
-            });
+                try { File.Delete(temp); } catch { }
+                try { File.Delete(bat); } catch { }
+                _running = false;
+                setText($"Update v{latest?.Version} — install");
+                Log.Info("update", "install cancelled at the close prompt - nothing swapped");
+            }
+
             setText("restarting...");
-            Application.Current.MainWindow?.Close();   // runs the save prompt if needed
+            var win = Application.Current.MainWindow;
+            if (win == null) { StartSwap(); return; }
+            // Start the swap script only once the window has ACTUALLY closed.
+            // Closing runs the save prompt; before this the script was already
+            // running when the user hit Cancel there, and 60 s later taskkill
+            // took the app down with their unsaved work. Our Closing handler is
+            // subscribed after the window's own, so it sees e.Cancel.
+            System.ComponentModel.CancelEventHandler? onClosing = null;
+            EventHandler? onClosed = null;
+            onClosing = (_, e) =>
+            {
+                if (!e.Cancel) return;
+                win.Closing -= onClosing; win.Closed -= onClosed;
+                Abandon();
+            };
+            onClosed = (_, _) => { win.Closing -= onClosing; win.Closed -= onClosed; StartSwap(); };
+            win.Closing += onClosing;
+            win.Closed += onClosed;
+            win.Close();
         }
         catch
         {

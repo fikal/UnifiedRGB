@@ -20,8 +20,11 @@ public sealed class FanCurve
     /// <summary>The lowest duty this fan may run (30 for board headers — the
     /// pump-safe floor; 0 for the GPU, whose coolers are fan-stop capable).</summary>
     public int Floor { get; set; } = 30;
-    /// <summary>Ordered low->high by temperature; kept sorted by Set/ctor.</summary>
-    public List<CurvePoint> Points { get; set; } = new();
+    /// <summary>Ordered low->high by temperature; kept sorted by Set/ctor.
+    /// Null-tolerant on set: a hand-edited fan-config.json with "Points": null
+    /// used to NRE inside the SensorHub timer.</summary>
+    public List<CurvePoint> Points { get => _points; set => _points = value ?? new(); }
+    List<CurvePoint> _points = new();
 
     public FanCurve() { }
 

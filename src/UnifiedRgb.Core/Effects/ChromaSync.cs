@@ -17,9 +17,18 @@ public static class ChromaFeed
     const string PipeName = "UnifiedRgbChroma";
 
     static readonly object _lock = new();
-    static volatile Rgb[]? _grid;      // row-major
-    static volatile int _rows = 1, _cols = 1;
+    // ONE reference publishes grid+dims together. Grid/rows/cols used to be
+    // three separate fields; the REST server pushes 1x1 frames (static) and
+    // r x c frames (custom) from concurrent pool threads, so a reader could
+    // index a 1-element grid with 6x22 dims for a whole frame interval.
+    // Keyboard (type 1) and ChromaLink (type 2) frames are kept apart: a host
+    // that sends both per frame (Wallpaper Engine does) used to overwrite one
+    // grid with the other, so Sample() alternated between a 132-cell and a
+    // 5-cell picture - visible flicker. The keyboard grid wins while fresh.
+    sealed record Frame(Rgb[] Grid, int Rows, int Cols, long Stamp);
+    static volatile Frame? _kb, _cl;
     static long _lastFrame;
+    const int PreferKeyboardMs = 1000;
     static Thread? _server;
 
     /// <summary>A frame arrived within the last few seconds.</summary>
@@ -41,20 +50,29 @@ public static class ChromaFeed
     /// modern games use instead of the C++ DLL). Same grid the pipe feeds.</summary>
     public static void PushGrid(Rgb[] grid, int rows, int cols)
     {
-        if (grid.Length == 0 || rows <= 0 || cols <= 0) return;
-        _grid = grid; _rows = rows; _cols = cols;
-        Interlocked.Exchange(ref _lastFrame, Environment.TickCount64);
+        if (grid.Length == 0 || rows <= 0 || cols <= 0 || grid.Length < rows * cols) return;
+        Publish(1, grid, rows, cols);
+    }
+
+    static void Publish(int type, Rgb[] grid, int rows, int cols)
+    {
+        long now = Environment.TickCount64;
+        var f = new Frame(grid, rows, cols, now);
+        if (type == 2) _cl = f; else _kb = f;
+        Interlocked.Exchange(ref _lastFrame, now);
     }
 
     /// <summary>Color at normalized (x, y). Averages the ChromaLink 5-strip or
     /// samples the keyboard grid cell; falls back to black when idle.</summary>
     public static Rgb Sample(float x, float y)
     {
-        var g = _grid;
-        if (g == null || !Active) return default;
-        int gx = Math.Clamp((int)(x * _cols), 0, _cols - 1);
-        int gy = Math.Clamp((int)(y * _rows), 0, _rows - 1);
-        return g[gy * _cols + gx];
+        if (!Active) return default;
+        var f = _kb;
+        if (f == null || Environment.TickCount64 - f.Stamp > PreferKeyboardMs) f = _cl ?? f;
+        if (f == null) return default;
+        int gx = Math.Clamp((int)(x * f.Cols), 0, f.Cols - 1);
+        int gy = Math.Clamp((int)(y * f.Rows), 0, f.Rows - 1);
+        return f.Grid[gy * f.Cols + gx];
     }
 
     // We run elevated (high integrity); Wallpaper Engine runs as a normal user
@@ -64,6 +82,7 @@ public static class ChromaFeed
     const string PipeSddl = "D:(A;;GRGW;;;WD)(A;;GRGW;;;AN)S:(ML;;NW;;;LW)";
     const uint PIPE_ACCESS_INBOUND = 0x00000001;
     const uint PIPE_TYPE_BYTE = 0, PIPE_WAIT = 0;
+    const uint PIPE_UNLIMITED_INSTANCES = 255;
 
     [StructLayout(LayoutKind.Sequential)]
     struct SECURITY_ATTRIBUTES { public int nLength; public IntPtr lpSecurityDescriptor; public int bInheritHandle; }
@@ -83,29 +102,56 @@ public static class ChromaFeed
         try
         {
             var sa = new SECURITY_ATTRIBUTES { nLength = Marshal.SizeOf<SECURITY_ATTRIBUTES>(), lpSecurityDescriptor = psd, bInheritHandle = 0 };
+            // PIPE_UNLIMITED_INSTANCES: with maxInstances=1 a second host
+            // (Wallpaper Engine + a game) got ERROR_PIPE_BUSY for as long as the
+            // first stayed connected. Every accepted connection gets its own
+            // reader thread; the accept loop immediately creates the next instance.
             var h = CreateNamedPipeW(@"\\.\pipe\" + PipeName, PIPE_ACCESS_INBOUND,
-                PIPE_TYPE_BYTE | PIPE_WAIT, 1, 0, 1 << 20, 0, ref sa);
+                PIPE_TYPE_BYTE | PIPE_WAIT, PIPE_UNLIMITED_INSTANCES, 0, 1 << 20, 0, ref sa);
             if (h.IsInvalid) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
-            return new NamedPipeServerStream(PipeDirection.In, false, true, h);
+            // isConnected:false - the handle is a fresh, unconnected pipe; with
+            // `true` a client racing CreateNamedPipe->ConnectNamedPipe made
+            // WaitForConnection throw and tore down that client's connection.
+            return new NamedPipeServerStream(PipeDirection.In, false, false, h);
         }
         finally { LocalFree(psd); }
     }
 
     static void ServerLoop()
     {
-        // Reused across connections and messages (single-threaded loop): the
-        // old per-message `new byte[n*4]` allocated at the host's frame rate
-        // (up to 28 KB/frame at the size ceiling). The published grid itself
-        // must stay a fresh array — it's handed out by reference.
-        var head = new byte[5];
-        byte[] body = Array.Empty<byte>();
+        // Accept loop: one pipe instance per connected host, each served on its
+        // own thread, so a second host never waits for the first to leave.
         while (true)
         {
+            NamedPipeServerStream pipe;
             try
             {
-                using var pipe = CreateServer();
+                pipe = CreateServer();
                 pipe.WaitForConnection();
-                Log.Info("chroma", "host connected to the pipe");
+            }
+            catch (Exception ex)
+            {
+                Log.Occasional("chroma", "feed", $"pipe accept error: {ex.Message}");
+                Thread.Sleep(200);
+                continue;
+            }
+            Log.Info("chroma", "host connected to the pipe");
+            new Thread(() => ServeClient(pipe)) { IsBackground = true, Name = "chroma-feed-client" }.Start();
+        }
+    }
+
+    static void ServeClient(NamedPipeServerStream pipe)
+    {
+        // Reused across messages on THIS connection: the old per-message
+        // `new byte[n*4]` allocated at the host's frame rate (up to 28 KB/frame
+        // at the size ceiling). The published grid itself must stay a fresh
+        // array — it's handed out by reference.
+        var head = new byte[5];
+        byte[] body = Array.Empty<byte>();
+        try
+        {
+            using (pipe)
+            {
                 bool firstFrame = true;
                 while (ReadExact(pipe, head, 5))
                 {
@@ -123,14 +169,13 @@ public static class ChromaFeed
                         byte r = body[i * 4], gg = body[i * 4 + 1], b = body[i * 4 + 2];
                         grid[i] = new Rgb(r, gg, b);
                     }
-                    _grid = grid; _rows = rows; _cols = cols;
-                    Interlocked.Exchange(ref _lastFrame, Environment.TickCount64);
+                    Publish(head[0], grid, rows, cols);
                     if (firstFrame) { Log.Info("chroma", $"first frame: type={head[0]} {rows}x{cols}"); firstFrame = false; }
                 }
             }
-            catch (Exception ex) { Log.Occasional("chroma", "feed", $"pipe error: {ex.Message}"); }
-            Thread.Sleep(200);   // client gone; wait for the next connection
         }
+        catch (Exception ex) { Log.Occasional("chroma", "feed", $"pipe error: {ex.Message}"); }
+        Log.Info("chroma", "host disconnected from the pipe");
     }
 
     static bool ReadExact(Stream s, byte[] buf, int len)

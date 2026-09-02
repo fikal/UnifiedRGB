@@ -56,6 +56,18 @@ public sealed partial class MainViewModel
         return list;
     }
 
+    /// <summary>Renamed/removed effects, old name -> successor. Consulted for
+    /// saved profiles AND the favorites migration (only the pills were migrated
+    /// before, so a profile saved under the old name silently lost its effect).</summary>
+    static readonly Dictionary<string, string> EffectAliases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Screen Sync"] = "Wallpaper",
+    };
+
+    EffectChoice? ChoiceByName(string name)
+        => Effects.FirstOrDefault(e => e.Name == name)
+        ?? (EffectAliases.TryGetValue(name, out var alias) ? Effects.FirstOrDefault(e => e.Name == alias) : null);
+
     /// <summary>Stop everything and start the profile's saved assignments.</summary>
     void RestoreEffects(List<EffectAssignment>? saved)
     {
@@ -65,12 +77,11 @@ public sealed partial class MainViewModel
         foreach (var a in saved ?? new())
         {
             var dev = Devices.FirstOrDefault(d => d.Name == a.Device);
-            var choice = Effects.FirstOrDefault(e => e.Name == a.Effect);
+            var choice = ChoiceByName(a.Effect);
             if (dev == null || choice?.Effect == null) continue;
             if (a.Offset < 0 || a.Count <= 0 || a.Offset + a.Count > dev.LedCount) continue;
 
-            string key = $"{dev.Name}|{a.Offset}|{a.Count}";
-            if (!_targetFx.TryGetValue(key, out var fx)) _targetFx[key] = fx = new TargetFx();
+            var fx = FxFor(dev, a.Offset, a.Count);
             fx.Choice = choice;
             fx.Speed = a.Speed;
             fx.Reverse = a.Reverse;
@@ -189,6 +200,10 @@ public sealed partial class MainViewModel
     void LoadProfile(Profile? p)
     {
         if (p == null) return;
+        // Stop the channels FIRST: workers write devices directly, so a final
+        // effect frame could land after the static write below and leave a
+        // range frozen mid-effect until the next write.
+        _engine.StopAll();
         foreach (var d in Devices)
         {
             if (!p.DeviceFrames.TryGetValue(d.Name, out var hex)) continue;
@@ -197,9 +212,7 @@ public sealed partial class MainViewModel
             {
                 try { frame[i] = Rgb.FromHex(hex[i]); } catch { }
             }
-            var dev = d;
-            var snapshot = (Rgb[])frame.Clone();
-            _applier.Post(LaneOf(dev), dev, () => { UnifiedRgb.Core.Master.Scale(snapshot); dev.SetColors(snapshot); });
+            _lighting.PushFrame(d);
         }
         ApplyCustomColors(p.CustomColors);
         RestoreEffects(p.Effects);

@@ -75,7 +75,7 @@ public sealed class KeyRipple : IEffect
     public bool UsesBaseColor => Color == PatternColor.Solid;
 
     public PatternColor Color = PatternColor.Rainbow;
-    public IList<Rgb>? Palette;
+    public IReadOnlyList<Rgb>? Palette;
 
     const double MaxAge = 2.0;
 

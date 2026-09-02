@@ -1,0 +1,17 @@
+LIBRARY RzChromaSDK
+EXPORTS
+    Init
+    InitSDK
+    UnInit
+    CreateEffect
+    CreateKeyboardEffect
+    CreateMouseEffect
+    CreateHeadsetEffect
+    CreateMousepadEffect
+    CreateKeypadEffect
+    CreateChromaLinkEffect
+    SetEffect
+    DeleteEffect
+    RegisterEventNotification
+    UnregisterEventNotification
+    QueryDevice

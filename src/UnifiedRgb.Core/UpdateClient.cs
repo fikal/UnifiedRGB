@@ -13,8 +13,29 @@ public static class UpdateClient
     /// <summary>Where public builds look for releases. Public information.</summary>
     public const string GitHubRepo = "fikal/UnifiedRGB";
 
+    /// <summary>Sha256 is null until <see cref="ResolveShaAsync"/> runs: the
+    /// startup check is ONE request (the release JSON); the .sha256 asset is
+    /// only fetched when an install actually happens.</summary>
     public sealed record LatestBuild(
-        string Version, string? Notes, long Size, string? Sha256, string? DownloadUrl = null);
+        string Version, string? Notes, long Size, string? Sha256, string? DownloadUrl = null, string? ShaUrl = null);
+
+    /// <summary>The published SHA-256 for a build: the .sha256 asset when the
+    /// release has one, else the first 64-hex token in the notes.</summary>
+    public static async Task<string?> ResolveShaAsync(LatestBuild build)
+    {
+        if (build.Sha256 != null) return build.Sha256;
+        if (build.ShaUrl is not null)
+            try
+            {
+                using var shaReq = new HttpRequestMessage(HttpMethod.Get, build.ShaUrl);
+                shaReq.Headers.TryAddWithoutValidation("User-Agent", "UnifiedRGB-updater");
+                using var resp = await Backend.Http.SendAsync(shaReq);
+                var sha = ExtractSha(await resp.Content.ReadAsStringAsync());
+                if (sha != null) return sha;
+            }
+            catch { /* fall through to notes scan */ }
+        return ExtractSha(build.Notes);
+    }
 
     /// <summary>Latest published build, or null when none / unreachable.
     /// Private feed when configured; GitHub Releases otherwise.</summary>
@@ -60,7 +81,7 @@ public static class UpdateClient
                 $"https://api.github.com/repos/{GitHubRepo}/releases/latest");
             req.Headers.TryAddWithoutValidation("User-Agent", "UnifiedRGB-updater");
             req.Headers.TryAddWithoutValidation("Accept", "application/vnd.github+json");
-            var response = await Backend.Http.SendAsync(req);
+            using var response = await Backend.Http.SendAsync(req);
             if (!response.IsSuccessStatusCode)
             {
                 Log.Warn("update", $"github release check: {(int)response.StatusCode}");
@@ -92,19 +113,9 @@ public static class UpdateClient
             string? notes = root.TryGetProperty("body", out var b) && b.ValueKind == JsonValueKind.String
                 ? b.GetString() : null;
 
-            string? sha = null;
-            if (shaUrl is not null)
-                try
-                {
-                    using var shaReq = new HttpRequestMessage(HttpMethod.Get, shaUrl);
-                    shaReq.Headers.TryAddWithoutValidation("User-Agent", "UnifiedRGB-updater");
-                    var shaText = await (await Backend.Http.SendAsync(shaReq)).Content.ReadAsStringAsync();
-                    sha = ExtractSha(shaText);
-                }
-                catch { /* fall through to notes scan */ }
-            sha ??= ExtractSha(notes);
-
-            return new LatestBuild(version, notes, size, sha, exeUrl);
+            // SHA resolved lazily (ResolveShaAsync) so the startup check stays
+            // a single request; the notes scan is kept as the no-asset fallback.
+            return new LatestBuild(version, notes, size, null, exeUrl, shaUrl);
         }
         catch (Exception ex)
         {

@@ -133,8 +133,9 @@ public sealed class Taichi : IEffect, IPaletteEffect
     public IReadOnlyList<Rgb> Palette { get; set; } = System.Array.Empty<Rgb>();
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb baseColor)
     {
-        Rgb a = Palette.Count > 0 ? Palette[0] : baseColor;
-        Rgb b = Palette.Count > 1 ? Palette[1]
+        var pal = Palette;
+        Rgb a = pal.Count > 0 ? pal[0] : baseColor;
+        Rgb b = pal.Count > 1 ? pal[1]
               : new Rgb((byte)(255 - a.R), (byte)(255 - a.G), (byte)(255 - a.B));
         double rot = t * speed * 1.2;
         var angles = Geo.Angle(pos);   // per-channel geometry cache

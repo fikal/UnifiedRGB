@@ -3,6 +3,15 @@ using UnifiedRgb.Core;
 using UnifiedRgb.Core.Audio;
 using UnifiedRgb.Core.Devices;
 
+// Ctrl+C is cooperative: the hardware probes below park fans at raw duties and
+// release the board's vendor fan control, restoring in `finally` blocks - which
+// a hard console termination skips. Every probe delay goes through Sleep(),
+// which throws on Ctrl+C so the finally blocks run before we exit.
+var cancel = new CancellationTokenSource();
+Console.CancelKeyPress += (_, e) => { e.Cancel = true; cancel.Cancel(); Console.WriteLine("\nCtrl+C - restoring hardware state..."); };
+void Sleep(int ms) { if (cancel.Token.WaitHandle.WaitOne(ms)) throw new OperationCanceledException(); }
+try
+{
 // --openrgb [echo]: OpenRGB bridge test. Ensures a server is running (downloads
 // + launches the bundled build if needed), enumerates devices, applies the
 // native-coverage skip rules, and with "echo" verifies the write path by
@@ -84,7 +93,7 @@ if (args.Length >= 1 && args[0] == "--staticfade")
         {
             mobo.SendZoneEffect(10, i % 2 == 0 ? Rgb.Red : Rgb.Blue, t);
             mobo.ApplyNow();
-            Thread.Sleep(1000);
+            Sleep(1000);
         }
     }
     Console.WriteLine("done - which variant snapped instantly?");
@@ -98,7 +107,19 @@ if (args.Length >= 1 && args[0] == "--staticfade")
 // query bricked a Lian Li receiver). Run with the app closed (it owns the LCD).
 if (args.Length >= 1 && args[0] == "--pump")
 {
-    if (System.Diagnostics.Process.GetProcessesByName("UnifiedRgb.App").Length > 0)
+    // The shipped exe is UnifiedRGB-v<x.y.z>.exe, not UnifiedRgb.App: match the
+    // prefix (and skip ourselves - this CLI shares it).
+    bool appRunning;
+    {
+        var procs = System.Diagnostics.Process.GetProcesses();
+        try
+        {
+            appRunning = procs.Any(p => p.Id != Environment.ProcessId
+                && p.ProcessName.StartsWith("UnifiedRgb", StringComparison.OrdinalIgnoreCase));
+        }
+        finally { foreach (var p in procs) p.Dispose(); }
+    }
+    if (appRunning)
     { Console.WriteLine("Close UnifiedRGB first — it owns the pump LCD stream."); return; }
     using var lcd = UnifiedRgb.Core.Devices.ThermalrightLcd.TryOpen();
     if (lcd == null) { Console.WriteLine("pump LCD not found"); return; }
@@ -109,7 +130,7 @@ if (args.Length >= 1 && args[0] == "--pump")
         var r = lcd.RawReply(64);
         samples.Add(r);
         Console.WriteLine($"{i,2}: {Convert.ToHexString(r)}");
-        if (i + 1 < count) Thread.Sleep(1500);
+        if (i + 1 < count) Sleep(1500);
     }
     int len = samples.Min(s => s.Length);
     if (len == 0) { Console.WriteLine("no reply bytes"); return; }
@@ -154,6 +175,7 @@ if (args.Length >= 1 && args[0] == "--fanctl")
         // fans 1-3 (linux it87 "newer autopwm" layout).
         byte[] ctrlRegs = { 0x15, 0x16, 0x17, 0x88, 0x89, 0x8A };
         byte[] dutyRegs = { 0x63, 0x6B, 0x73 };
+        if ((uint)fan >= (uint)ctrlRegs.Length) { Say($"fan index must be 0-{ctrlRegs.Length - 1}"); return; }
         byte ctrl = ctrlRegs[fan];
         int origCtrl = sio.ReadEcRaw(ctrl);
         int origDuty = fan < dutyRegs.Length ? sio.ReadEcRaw(dutyRegs[fan]) : -1;
@@ -165,13 +187,13 @@ if (args.Length >= 1 && args[0] == "--fanctl")
             foreach (byte v in new byte[] { 0x40, 0x7F })
             {
                 sio.WriteEcRaw(ctrl, v);
-                Thread.Sleep(4500);
+                Sleep(4500);
                 Say($"  A: ctrl<-0x{v:X2} -> rpm {Rpm()}  (ctrl reads 0x{sio.ReadEcRaw(ctrl):X2})");
             }
             // Recipe B: 8-bit values with bit7 set (plain 0-255 duty if the
             // reg is a direct duty register on this chip).
             sio.WriteEcRaw(ctrl, 0xFF);
-            Thread.Sleep(4500);
+            Sleep(4500);
             Say($"  B: ctrl<-0xFF -> rpm {Rpm()}  (ctrl reads 0x{sio.ReadEcRaw(ctrl):X2})");
             // Recipe C: bit7 clear in ctrl selects software mode, duty lives
             // in the separate duty reg.
@@ -179,10 +201,10 @@ if (args.Length >= 1 && args[0] == "--fanctl")
             {
                 sio.WriteEcRaw(ctrl, (byte)(origCtrl & 0x7F));
                 sio.WriteEcRaw(dutyRegs[fan], 0x40);
-                Thread.Sleep(4500);
+                Sleep(4500);
                 Say($"  C: ctrl&0x7F + duty<-0x40 -> rpm {Rpm()}  (duty reads 0x{sio.ReadEcRaw(dutyRegs[fan]):X2})");
                 sio.WriteEcRaw(dutyRegs[fan], 0xFF);
-                Thread.Sleep(4500);
+                Sleep(4500);
                 Say($"  C: duty<-0xFF -> rpm {Rpm()}");
             }
 
@@ -201,10 +223,10 @@ if (args.Length >= 1 && args[0] == "--fanctl")
                         if (ec.SetVendorControl(false))
                         {
                             sio.WriteEcRaw(ctrl, 0x40);
-                            Thread.Sleep(4500);
+                            Sleep(4500);
                             Say($"  D: vendor OFF + ctrl<-0x40 -> rpm {Rpm()}");
                             sio.WriteEcRaw(ctrl, 0xFF);
-                            Thread.Sleep(4500);
+                            Sleep(4500);
                             Say($"  D: ctrl<-0xFF -> rpm {Rpm()}");
                         }
                         else Say("  D: vendor-disable write failed");
@@ -213,7 +235,7 @@ if (args.Length >= 1 && args[0] == "--fanctl")
                     {
                         sio.WriteEcRaw(ctrl, (byte)origCtrl);
                         ec.SetVendorControl(true);
-                        Thread.Sleep(1500);
+                        Sleep(1500);
                         Say($"  D: restored + vendor ON -> rpm {Rpm()}");
                     }
                 }
@@ -224,7 +246,7 @@ if (args.Length >= 1 && args[0] == "--fanctl")
         {
             sio.WriteEcRaw(ctrl, (byte)origCtrl);
             if (fan < dutyRegs.Length && origDuty >= 0) sio.WriteEcRaw(dutyRegs[fan], (byte)origDuty);
-            Thread.Sleep(4500);
+            Sleep(4500);
             Say($"restored ctrl 0x{origCtrl:X2}{(origDuty >= 0 ? $", duty 0x{origDuty:X2}" : "")} -> rpm {Rpm()}");
         }
         Say("done");
@@ -258,10 +280,10 @@ if (args.Length >= 1 && args[0] == "--lhmfan")
     if (idx < lhm.Fans.Count && lhm.Fans[idx].CanControl)
     {
         Say($"[{idx}] {lhm.Fans[idx].Name} baseline {Rpm()} RPM");
-        lhm.SetDuty(idx, 100); Thread.Sleep(12000); Say($"  100% -> {Rpm()} RPM");
-        lhm.SetDuty(idx, 20);  Thread.Sleep(12000); Say($"   20% -> {Rpm()} RPM");
-        lhm.SetDuty(idx, 100); Thread.Sleep(12000); Say($"  100% -> {Rpm()} RPM");
-        lhm.Restore(idx);      Thread.Sleep(8000);  Say($"  auto -> {Rpm()} RPM");
+        lhm.SetDuty(idx, 100); Sleep(12000); Say($"  100% -> {Rpm()} RPM");
+        lhm.SetDuty(idx, 20);  Sleep(12000); Say($"   20% -> {Rpm()} RPM");
+        lhm.SetDuty(idx, 100); Sleep(12000); Say($"  100% -> {Rpm()} RPM");
+        lhm.Restore(idx);      Sleep(8000);  Say($"  auto -> {Rpm()} RPM");
     }
     else Say($"index {idx} not controllable");
     Say("done");
@@ -313,10 +335,10 @@ if (args.Length >= 1 && args[0] == "--fanmap")
                 int orig = sio.ReadEcRaw(pwmRegs[i]);
                 if (orig < 0) { Say($"pwm[{i}] 0x{pwmRegs[i]:X2}: read failed"); continue; }
                 sio.WriteEcRaw(pwmRegs[i], 0xFF);
-                Thread.Sleep(4000);
+                Sleep(4000);
                 Say($"pwm[{i}] 0x{pwmRegs[i]:X2} (was 0x{orig:X2}) at 0xFF -> [{Rpms()}]");
                 sio.WriteEcRaw(pwmRegs[i], (byte)orig);
-                Thread.Sleep(2500);
+                Sleep(2500);
             }
             Say($"all regs restored -> [{Rpms()}]");
         }
@@ -324,7 +346,7 @@ if (args.Length >= 1 && args[0] == "--fanmap")
         {
             if (tookOver) bridge!.SetVendorControl(true);
         }
-        Thread.Sleep(2000);
+        Sleep(2000);
         Say($"vendor control restored -> [{Rpms()}]");
         Say("done");
     }
@@ -366,16 +388,16 @@ if (args.Length >= 1 && args[0] == "--gpufan0")
     try
     {
         Console.WriteLine($"set level=0 mode=manual: rc={UnifiedRgb.Core.Native.NvApi.DebugSetFanLevel(g0.Handle, 0, 1)}");
-        Thread.Sleep(8000);
+        Sleep(8000);
         Dump("after 0% (8s)");
         Console.WriteLine($"set level=30 mode=manual: rc={UnifiedRgb.Core.Native.NvApi.DebugSetFanLevel(g0.Handle, 30, 1)}");
-        Thread.Sleep(6000);
+        Sleep(6000);
         Dump("after 30% (6s)");
     }
     finally
     {
         Console.WriteLine($"restore auto: rc={UnifiedRgb.Core.Native.NvApi.DebugSetFanLevel(g0.Handle, 0, 0)}");
-        Thread.Sleep(4000);
+        Sleep(4000);
         Dump("auto");
     }
     return;
@@ -392,16 +414,16 @@ if (args.Length >= 1 && args[0] == "--gpufanctl")
     try
     {
         Console.WriteLine($"set 70%: {UnifiedRgb.Core.Native.NvApi.SetGpuFanDuty(g.Handle, 70)}");
-        Thread.Sleep(6000);
+        Sleep(6000);
         Console.WriteLine($"at 70%: [{Rpms()}]");
         Console.WriteLine($"set 35%: {UnifiedRgb.Core.Native.NvApi.SetGpuFanDuty(g.Handle, 35)}");
-        Thread.Sleep(6000);
+        Sleep(6000);
         Console.WriteLine($"at 35%: [{Rpms()}]");
     }
     finally
     {
         Console.WriteLine($"restore auto: {UnifiedRgb.Core.Native.NvApi.RestoreGpuFanAuto(g.Handle)}");
-        Thread.Sleep(5000);
+        Sleep(5000);
         Console.WriteLine($"auto: [{Rpms()}]");
     }
     return;
@@ -471,7 +493,7 @@ if (args.Length >= 1 && args[0] == "--superio")
                 Say($"         fans  [{string.Join(", ", r.FanRpm.Select(f => f?.ToString() ?? "-"))}] rpm");
                 Say($"         duty  [{string.Join(", ", r.FanDutyPct.Select(d => d?.ToString() ?? "-"))}] %");
             }
-            Thread.Sleep(1200);
+            Sleep(1200);
         }
         Say("done");
     }
@@ -495,7 +517,7 @@ if (args.Length >= 1 && args[0] == "--keys")
         for (int i = 0; i < n; i++)
             if (seen.Add((ev[i].Vk, ev[i].Down)))
                 Console.WriteLine($"  vk=0x{ev[i].Vk:X2} down@{ev[i].Down:0.00}");
-        Thread.Sleep(50);
+        Sleep(50);
     }
     return;
 }
@@ -514,7 +536,7 @@ if (args.Length >= 1 && args[0] == "--audio")
         for (int b = 0; b < AudioAnalyzer.BandCount; b++)
             sb.Append(" .:-=+*#%@"[Math.Clamp((int)(AudioAnalyzer.Band(b) * 9.99), 0, 9)]);
         Console.WriteLine($"[{sb}]  level={AudioAnalyzer.Level:0.00} bass={AudioAnalyzer.Bass:0.00}");
-        Thread.Sleep(150);
+        Sleep(150);
     }
     return;
 }
@@ -594,7 +616,7 @@ if (args.Length == 5 && args[0] == "--argbrange")
     return;
 }
 
-// --lcd <jpegfile>: push a 480x480 JPEG to the Thermalright pump screen.
+// --lcd <rawfile>: push a raw 240x320 RGB565 frame (153,600 bytes) to the pump screen.
 if (args.Length == 2 && args[0] == "--lcd")
 {
     var lcd = ThermalrightLcd.TryOpen();
@@ -606,14 +628,15 @@ if (args.Length == 2 && args[0] == "--lcd")
         byte pm = lcd.Handshake();
         lcd.ShowFrame(raw);
         Console.WriteLine($"  pass {i + 1}: handshake pm={pm}");
-        System.Threading.Thread.Sleep(300);
+        Sleep(300);
     }
     lcd.Dispose();
     return;
 }
 
-// --gpu [RRGGBB]: detect the MSI GPU over NvAPI I2C and set a color.
-if (args.Length >= 1 && args[0] == "--gpu")
+// --gpurgb [RRGGBB]: detect the MSI GPU over NvAPI I2C and set a color.
+// (Was a second "--gpu" handler - unreachable behind the telemetry dump above.)
+if (args.Length >= 1 && args[0] == "--gpurgb")
 {
     var gpu = UnifiedRgb.Core.Devices.MsiGpu.TryOpen();
     if (gpu == null) { Console.WriteLine("MSI GPU not found (NvAPI/I2C probe failed)."); return; }
@@ -662,7 +685,7 @@ if (args.Length >= 1 && args[0] == "--cputemp")
     for (int i = 0; i < 5; i++)
     {
         Console.WriteLine($"  CPU (Tctl): {t.ReadCelsius():0.0} °C");
-        System.Threading.Thread.Sleep(500);
+        Sleep(500);
     }
     return;
 }
@@ -678,7 +701,7 @@ if (args.Length >= 1 && args[0] == "--lcdinfo")
         Console.Write($"reply[{pass}]:");
         for (int i = 0; i < rx.Length; i++) Console.Write($" {i}={rx[i]}");
         Console.WriteLine();
-        System.Threading.Thread.Sleep(700);
+        Sleep(700);
     }
     lcd.Dispose();
     return;
@@ -740,15 +763,25 @@ if (args.Length == 0) return;
 
 if (args.Length == 1)
 {
-    var color = Rgb.FromHex(args[0]);
+    // An unknown --option used to fall through here (after a full device scan)
+    // and die in Rgb.FromHex with a stack trace.
+    if (args[0].StartsWith("--")) { Console.WriteLine($"Unknown option {args[0]}"); Environment.ExitCode = 2; return; }
+    if (!Rgb.TryFromHex(args[0], out var color)) { Console.WriteLine($"Not a color: {args[0]} (want RRGGBB)"); Environment.ExitCode = 2; return; }
     Console.WriteLine($"Setting all devices to {color}...");
     foreach (var d in manager.Devices) d.SetAll(color);
 }
 else if (args.Length == 2 && int.TryParse(args[0], out int idx))
 {
-    var color = Rgb.FromHex(args[1]);
+    if (idx < 0 || idx >= manager.Devices.Count) { Console.WriteLine($"No device [{idx}]"); Environment.ExitCode = 2; return; }
+    if (!Rgb.TryFromHex(args[1], out var color)) { Console.WriteLine($"Not a color: {args[1]} (want RRGGBB)"); Environment.ExitCode = 2; return; }
     Console.WriteLine($"Setting [{idx}] {manager.Devices[idx].Name} to {color}...");
     manager.Devices[idx].SetAll(color);
 }
 
 Console.WriteLine("Done.");
+}
+catch (OperationCanceledException)
+{
+    Console.WriteLine("Cancelled.");
+    Environment.ExitCode = 130;
+}

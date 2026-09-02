@@ -17,8 +17,10 @@ jobs:
 
       # Public CI builds carry NO backend (see AppPaths.Backend): update
       # checks skip and support bundles save locally. That is by design.
+      # Whole solution: the CLI, Diag and Tests projects only compiled via Core
+      # before, so they could rot unnoticed.
       - name: Build
-        run: dotnet build src/UnifiedRgb.App -c Release
+        run: dotnet build UnifiedRgb.slnx -c Release
 
       - name: Tests
         run: dotnet run --project src/UnifiedRgb.Tests -c Release

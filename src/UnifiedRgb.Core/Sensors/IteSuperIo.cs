@@ -1,4 +1,3 @@
-using System.Reflection;
 using UnifiedRgb.Core.Native;
 
 namespace UnifiedRgb.Core.Sensors;
@@ -78,16 +77,16 @@ public sealed class IteSuperIo : IDisposable
     {
         PawnIO? io = null;
         var isa = OpenIsaMutex();
-        bool held = false;
+        bool held = false, keepIsa = false;
         try
         {
             io = PawnIO.LoadModule(blob);
-            if (io == null) { isa?.Dispose(); return null; }
+            if (io == null) return null;
             held = TryAcquire(isa, 1000);
 
             if (Call(io, "ioctl_select_slot", slot) < 0 || !EnterConfig(io, slot))
             {
-                io.Dispose(); isa?.Dispose(); return null;
+                io.Dispose(); return null;
             }
 
             int hi = In1(io, "ioctl_superio_inb", 0x20);
@@ -99,7 +98,7 @@ public sealed class IteSuperIo : IDisposable
                 if (chip != 0xFFFF && chip != 0)
                     Log.Info("superio", $"slot {slot}: id 0x{chip:X4} (not ITE)");
                 ExitConfig(io);
-                io.Dispose(); isa?.Dispose(); return null;
+                io.Dispose(); return null;
             }
 
             // LDN 4 = Environment Controller; its I/O base at 0x60/0x61.
@@ -116,22 +115,28 @@ public sealed class IteSuperIo : IDisposable
             if (bh < 0 || bl < 0 || !bars || baseAddr < 0x100 || baseAddr == 0xFFFF)
             {
                 Log.Info("superio", $"slot {slot}: ITE 0x{chip:X4} but EC unusable (base 0x{baseAddr:X4}, bars={bars})");
-                io.Dispose(); isa?.Dispose(); return null;
+                io.Dispose(); return null;
             }
 
             Log.Info("superio", $"ITE chip 0x{chip:X4} at slot {slot}, EC base 0x{baseAddr:X4}");
+            keepIsa = true;
             return new IteSuperIo(io, chip, baseAddr, slot, isa);
         }
         catch (Exception ex)
         {
             Log.Warn("superio", $"slot {slot} probe failed: {ex.Message}");
             io?.Dispose();
-            isa?.Dispose();
             return null;
         }
         finally
         {
+            // Release BEFORE disposing, and only dispose when the chip isn't
+            // keeping the mutex. Closing an OWNED mutex handle does not release
+            // it: the kernel object stays owned by this thread until the thread
+            // exits, which starved every other hardware monitor (and our own
+            // timer-thread reads) on any board whose probe hit an early return.
             if (held) { try { isa?.ReleaseMutex(); } catch { } }
+            if (!keepIsa) isa?.Dispose();
         }
     }
 
@@ -258,17 +263,20 @@ public sealed class IteSuperIo : IDisposable
             try
             {
                 if (!EnterConfig(_io, _slot)) return list;
-                for (ulong ldn = 0; ldn <= (ulong)maxLdn; ldn++)
+                try
                 {
-                    Call(_io, "ioctl_superio_outb", 0x07, ldn);
-                    int act = In1(_io, "ioctl_superio_inb", 0x30);
-                    int b0h = In1(_io, "ioctl_superio_inb", 0x60);
-                    int b0l = In1(_io, "ioctl_superio_inb", 0x61);
-                    int b1h = In1(_io, "ioctl_superio_inb", 0x62);
-                    int b1l = In1(_io, "ioctl_superio_inb", 0x63);
-                    list.Add(((int)ldn, act, (b0h << 8) | b0l, (b1h << 8) | b1l));
+                    for (ulong ldn = 0; ldn <= (ulong)maxLdn; ldn++)
+                    {
+                        Call(_io, "ioctl_superio_outb", 0x07, ldn);
+                        int act = In1(_io, "ioctl_superio_inb", 0x30);
+                        int b0h = In1(_io, "ioctl_superio_inb", 0x60);
+                        int b0l = In1(_io, "ioctl_superio_inb", 0x61);
+                        int b1h = In1(_io, "ioctl_superio_inb", 0x62);
+                        int b1l = In1(_io, "ioctl_superio_inb", 0x63);
+                        list.Add(((int)ldn, act, (b0h << 8) | b0l, (b1h << 8) | b1l));
+                    }
                 }
-                ExitConfig(_io);
+                finally { ExitConfig(_io); }   // never leave the chip in config mode
             }
             finally { if (held) { try { _isaMutex?.ReleaseMutex(); } catch { } } }
         }
@@ -420,18 +428,7 @@ public sealed class IteSuperIo : IDisposable
         catch { return false; }
     }
 
-    internal static byte[]? ReadEmbedded(string file)
-    {
-        var asm = Assembly.GetExecutingAssembly();
-        var name = asm.GetManifestResourceNames()
-            .FirstOrDefault(n => n.EndsWith(file, StringComparison.OrdinalIgnoreCase));
-        if (name == null) return null;
-        using var s = asm.GetManifestResourceStream(name);
-        if (s == null) return null;
-        using var ms = new MemoryStream();
-        s.CopyTo(ms);
-        return ms.ToArray();
-    }
+    internal static byte[]? ReadEmbedded(string file) => PawnIO.ReadEmbeddedModule(file);
 
     public void Dispose()
     {

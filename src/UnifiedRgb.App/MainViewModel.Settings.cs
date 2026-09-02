@@ -30,6 +30,9 @@ public sealed partial class MainViewModel
         public required Dictionary<string, Rgb[]> Frames { get; init; }
         public required List<EffectAssignment> Effects { get; init; }
         public string? ProfileName { get; init; }
+        /// <summary>Unsaved-changes flag at capture time, so an override round
+        /// trip doesn't quietly drop the close-time save prompt.</summary>
+        public bool Dirty { get; init; }
     }
 
     public LightState CaptureState() => new()
@@ -37,22 +40,24 @@ public sealed partial class MainViewModel
         Frames = Devices.ToDictionary(d => d.Name, d => (Rgb[])FrameFor(d).Clone()),
         Effects = CaptureEffects(),
         ProfileName = SelectedProfile?.Name,
+        Dirty = _dirty,
     };
 
     public void RestoreState(LightState s)
     {
+        _engine.StopAll();   // before the static writes (see LoadProfile)
         foreach (var d in Devices)
         {
             if (!s.Frames.TryGetValue(d.Name, out var saved)) continue;
             var frame = FrameFor(d);
             Array.Copy(saved, frame, Math.Min(saved.Length, frame.Length));
-            var dev = d;
-            var snap = (Rgb[])frame.Clone();
-            _applier.Post(LaneOf(dev), dev, () => { UnifiedRgb.Core.Master.Scale(snap); dev.SetColors(snap); });
+            _lighting.PushFrame(d);
         }
         RestoreEffects(s.Effects);
-        if (s.ProfileName != null)
-            _selectedProfile = Profiles.FirstOrDefault(p => p.Name == s.ProfileName);
+        // Restore the selection exactly - including "no profile selected" (an
+        // app rule's profile used to stay selected over restored ad-hoc lighting).
+        _selectedProfile = s.ProfileName is null ? null : Profiles.FirstOrDefault(p => p.Name == s.ProfileName);
+        _dirty = s.Dirty;
         OnChanged(nameof(SelectedProfile));
         OnChanged(nameof(IsStartupProfile));   // direct field write bypasses the setter
         SyncWheelToSelection();
@@ -65,34 +70,31 @@ public sealed partial class MainViewModel
     public void LightsOff()
     {
         _engine.StopAll();
-        foreach (var d in Devices)
-        {
-            var dev = d;
-            var black = new Rgb[d.LedCount];
-            _applier.Post(LaneOf(dev), dev, () => dev.SetColors(black));
-        }
+        foreach (var d in Devices) _lighting.PushBlack(d);
         // The pump LCD isn't an RGB device, so blank it separately - otherwise
         // sleep/lock leaves the screen lit.
         SetPumpLcdOn(false);
     }
 
-    /// <summary>Turn the pump LCD on (normal render) or off (blank frame). The
-    /// panel isn't in Devices, so sleep/wake drives it through here.</summary>
-    public void SetPumpLcdOn(bool on)
-    {
-        if (_lcd != null) { _lcd.On = on; _lcd.Refresh(); }
-    }
-
     internal SettingsData SettingsData => _store.Settings;
-    internal void PersistSettings() => _store.SaveSettings();
 
     /*--- automation settings surface ---*/
     public ObservableCollection<AutomationRule> AutoRules { get; } = new();
 
+    /// <summary>Settings pass-through setter: assign, persist, notify — the
+    /// pattern nine bindable settings repeated by hand (a no-op when unchanged).</summary>
+    void SetSetting<T>(T current, T value, Action<T> assign, [CallerMemberName] string? name = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(current, value)) return;
+        assign(value);
+        _store.SaveSettings();
+        OnChanged(name);
+    }
+
     public bool LockLightsOff
     {
         get => _store.Settings.LockLightsOff;
-        set { _store.Settings.LockLightsOff = value; _store.SaveSettings(); OnChanged(); }
+        set => SetSetting(_store.Settings.LockLightsOff, value, v => _store.Settings.LockLightsOff = v);
     }
     /// <summary>Half-hour choices for the night window dropdowns.</summary>
     public static string[] TimeOptions { get; } =
@@ -101,29 +103,29 @@ public sealed partial class MainViewModel
     public bool NightMode
     {
         get => _store.Settings.NightMode;
-        set { _store.Settings.NightMode = value; _store.SaveSettings(); OnChanged(); }
+        set => SetSetting(_store.Settings.NightMode, value, v => _store.Settings.NightMode = v);
     }
     public string NightStart
     {
         get => _store.Settings.NightStart;
-        set { _store.Settings.NightStart = value; _store.SaveSettings(); OnChanged(); }
+        set => SetSetting(_store.Settings.NightStart, value, v => _store.Settings.NightStart = v);
     }
     public string NightEnd
     {
         get => _store.Settings.NightEnd;
-        set { _store.Settings.NightEnd = value; _store.SaveSettings(); OnChanged(); }
+        set => SetSetting(_store.Settings.NightEnd, value, v => _store.Settings.NightEnd = v);
     }
     /// <summary>Night mode waits for ~10 min of inactivity instead of firing at
     /// the start time - so an evening session isn't cut off mid-use.</summary>
     public bool NightIdleOnly
     {
         get => _store.Settings.NightIdleOnly;
-        set { _store.Settings.NightIdleOnly = value; _store.SaveSettings(); OnChanged(); }
+        set => SetSetting(_store.Settings.NightIdleOnly, value, v => _store.Settings.NightIdleOnly = v);
     }
     public bool AppSwitchEnabled
     {
         get => _store.Settings.AppSwitchEnabled;
-        set { _store.Settings.AppSwitchEnabled = value; _store.SaveSettings(); OnChanged(); }
+        set => SetSetting(_store.Settings.AppSwitchEnabled, value, v => _store.Settings.AppSwitchEnabled = v);
     }
 
     public IReadOnlyList<string> ProfileNames => Profiles.Select(p => p.Name).ToList();
@@ -185,6 +187,10 @@ public sealed partial class MainViewModel
 
     /// <summary>Set by the automation service; the banner button calls it.</summary>
     public Action? WakeLightsHook { get; set; }
+    /// <summary>Set by the automation while the lights are deliberately off
+    /// (locked session / night window). Scene sequences hold their steps so a
+    /// timed profile can't relight the case at 3 AM.</summary>
+    public bool LightsSuppressed { get; set; }
     public void WakeLights() => WakeLightsHook?.Invoke();
 
     /*--- PawnIO driver presence (a field machine lacked it: no CPU temp, no
@@ -221,6 +227,7 @@ public sealed partial class MainViewModel
                 s => System.Windows.Application.Current.Dispatcher.Invoke(() => PawnIoInstallStatus = s));
             OnChanged(nameof(PawnIoMissing));
             OnChanged(nameof(PawnIoStatusText));
+            Cooling.NotifyPawnIoChanged();
             if (!PawnIoMissing)
             {
                 // CPU temp and the ITE board-fan fallback both need PawnIO, which
@@ -259,28 +266,38 @@ public sealed partial class MainViewModel
     /// driven, so the bundled instance stops touching it at all.</summary>
     async void StartOpenRgbBridge()
     {
-        OpenRgbStatus = "starting...";
-        bool ok = await Task.Run(() => OpenRgbManager.EnsureRunningAsync(
-            s => Application.Current.Dispatcher.Invoke(() => OpenRgbStatus = s)));
-        if (!ok) { return; }
-
-        Rescan();
-        // A server that vanished between "up" and now = OpenRGB crashed while
-        // scanning this machine's hardware. Say so honestly instead of
-        // "0 extra devices", and point at the report that names the culprit.
-        if (!OpenRgbManager.IsServerUp())
+        // async void: an escaping exception is a DispatcherUnhandledException
+        // dialog, so the whole flow is guarded like the other async voids.
+        try
         {
-            OpenRgbStatus = "OpenRGB crashed while scanning your hardware. Hit Send in Support so we can see which device.";
-            return;
-        }
-        int bridged = Devices.Count(d => d is OpenRgbDevice);
-        OpenRgbStatus = BridgeStatusText(bridged);
+            OpenRgbStatus = "starting...";
+            bool ok = await Task.Run(() => OpenRgbManager.EnsureRunningAsync(
+                s => Application.Current.Dispatcher.Invoke(() => OpenRgbStatus = s)));
+            if (!ok) { return; }
 
-        if (await OpenRgbManager.ReleaseNativelyDrivenAsync(OpenRgbLink.LastSkipped))
-        {
             Rescan();
-            bridged = Devices.Count(d => d is OpenRgbDevice);
+            // A server that vanished between "up" and now = OpenRGB crashed while
+            // scanning this machine's hardware. Say so honestly instead of
+            // "0 extra devices", and point at the report that names the culprit.
+            if (!OpenRgbManager.IsServerUp())
+            {
+                OpenRgbStatus = "OpenRGB crashed while scanning your hardware. Hit Send in Support so we can see which device.";
+                return;
+            }
+            int bridged = Devices.Count(d => d is OpenRgbDevice);
             OpenRgbStatus = BridgeStatusText(bridged);
+
+            if (await OpenRgbManager.ReleaseNativelyDrivenAsync(OpenRgbLink.LastSkipped))
+            {
+                Rescan();
+                bridged = Devices.Count(d => d is OpenRgbDevice);
+                OpenRgbStatus = BridgeStatusText(bridged);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error("openrgb", ex);
+            OpenRgbStatus = $"OpenRGB bridge failed: {ex.Message}";
         }
     }
 

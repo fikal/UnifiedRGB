@@ -46,28 +46,34 @@ public sealed class OpenRgbClient : IDisposable
     public static OpenRgbClient Connect(string host = "127.0.0.1", int port = 6742, int timeoutMs = 2000)
     {
         var c = new OpenRgbClient();
-        if (!c._tcp.ConnectAsync(host, port).Wait(timeoutMs))
+        try
         {
-            // Dispose the socket on the timeout path: launch retries connect up
-            // to 14 times, and each miss used to strand a TcpClient + an
-            // in-flight ConnectAsync until finalization.
-            try { c._tcp.Dispose(); } catch { }
-            throw new TimeoutException($"no OpenRGB server on {host}:{port}");
+            // Every failure path disposes the socket: launch retries connect up
+            // to 14 times, and a miss (timeout, refused, handshake read timeout)
+            // used to strand a TcpClient + an in-flight ConnectAsync until
+            // finalization.
+            if (!c._tcp.ConnectAsync(host, port).Wait(timeoutMs))
+                throw new TimeoutException($"no OpenRGB server on {host}:{port}");
+            c._tcp.NoDelay = true;
+            c._s = c._tcp.GetStream();
+            c._s.ReadTimeout = 5000;
+            c._s.WriteTimeout = 5000;
+
+            // Version exchange, then identify ourselves.
+            c.Send(0, PktProtocolVersion, BitConverter.GetBytes(OurProtocolVersion));
+            var (_, _, payload) = c.ReadUntil(PktProtocolVersion);
+            c.ServerVersion = payload.Length >= 4 ? BitConverter.ToUInt32(payload) : 0;
+
+            byte[] name = Encoding.ASCII.GetBytes("UnifiedRGB\0");
+            c.Send(0, PktSetClientName, name);
+            Log.Info("openrgb", $"connected (server protocol {c.ServerVersion})");
+            return c;
         }
-        c._tcp.NoDelay = true;
-        c._s = c._tcp.GetStream();
-        c._s.ReadTimeout = 5000;
-        c._s.WriteTimeout = 5000;
-
-        // Version exchange, then identify ourselves.
-        c.Send(0, PktProtocolVersion, BitConverter.GetBytes(OurProtocolVersion));
-        var (_, _, payload) = c.ReadUntil(PktProtocolVersion);
-        c.ServerVersion = payload.Length >= 4 ? BitConverter.ToUInt32(payload) : 0;
-
-        byte[] name = Encoding.ASCII.GetBytes("UnifiedRGB\0");
-        c.Send(0, PktSetClientName, name);
-        Log.Info("openrgb", $"connected (server protocol {c.ServerVersion})");
-        return c;
+        catch
+        {
+            try { c.Dispose(); } catch { }
+            throw;
+        }
     }
 
     /// <summary>Quick probe: is a server listening?</summary>
@@ -252,6 +258,10 @@ public sealed class OpenRgbClient : IDisposable
             {
                 mh = ReadI32(p, ref o);
                 mw = ReadI32(p, ref o);
+                // Remote-supplied dimensions: a negative or absurd product must
+                // fail this device's parse, not attempt a multi-GB allocation.
+                if (mw < 0 || mh < 0 || (long)mw * mh > 65536)
+                    throw new InvalidDataException($"zone '{zname}': implausible matrix {mw}x{mh}");
                 matrix = new uint[mw * mh];
                 for (int i = 0; i < matrix.Length; i++) matrix[i] = (uint)ReadI32(p, ref o);
             }

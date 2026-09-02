@@ -9,30 +9,6 @@
         <local:InverseBoolToVisConverter x:Key="BoolToVisInv"/>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
 
-        <Style TargetType="TabItem">
-            <Setter Property="Foreground" Value="#FFB8BCC8"/>
-            <Setter Property="FontSize" Value="14"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="TabItem">
-                        <Border x:Name="b" Padding="16,7" Margin="0,0,6,0" CornerRadius="7" Background="#FF262932">
-                            <ContentPresenter ContentSource="Header" HorizontalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="b" Property="Background" Value="#FF2E313C"/>
-                            </Trigger>
-                            <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="b" Property="Background" Value="#FF4C6FFF"/>
-                                <Setter Property="Foreground" Value="White"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
         <!-- No FontFamily here: app-level implicit styles reach INSIDE control
              templates (window-level ones don't), and a forced Segoe UI turns
              the caption buttons' MDL2 glyphs into tofu. Segoe UI is the WPF
@@ -460,24 +436,10 @@
                                 <Setter TargetName="b" Property="Background" Value="#FF4C6FFF"/>
                                 <Setter TargetName="glowSel" Property="Opacity" Value="0.45"/>
                             </Trigger>
-                            <DataTrigger Binding="{Binding IsHeader}" Value="True">
-                                <Setter TargetName="b" Property="Background" Value="Transparent"/>
-                                <Setter TargetName="b" Property="Padding" Value="10,2"/>
-                            </DataTrigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
-            <Style.Triggers>
-                <!-- Section headers (left nav): plain labels, not selectable.
-                     Items without an IsHeader property never match. -->
-                <DataTrigger Binding="{Binding IsHeader}" Value="True">
-                    <Setter Property="IsEnabled" Value="False"/>
-                    <Setter Property="Focusable" Value="False"/>
-                    <Setter Property="Cursor" Value="Arrow"/>
-                    <Setter Property="Margin" Value="0,10,0,0"/>
-                </DataTrigger>
-            </Style.Triggers>
         </Style>
 
         <!-- Mode-selector pill chips: subtle grow on hover, neon glow when selected.

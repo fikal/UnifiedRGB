@@ -42,6 +42,38 @@ public interface IEffect
 /// <summary>An effect that paints from a user-chosen list of colors rather than
 /// a single base color (e.g. Taichi's two halves). The app shows the palette
 /// editor and gives each target its own palette instance.</summary>
+/// <summary>Render-thread-safe read view over an editable palette. The UI
+/// mutates an ObservableCollection (Clear + Add per color); render threads used
+/// to read Count then [i] straight off that list and threw mid-rebuild (one
+/// dropped frame + a WARN per palette edit, per running channel). This keeps an
+/// immutable array snapshot refreshed on every change; the indexer clamps so a
+/// Count read from one snapshot can never index out of a newer, shorter one.</summary>
+public sealed class LivePalette : IReadOnlyList<Rgb>
+{
+    volatile Rgb[] _items;
+
+    public LivePalette(System.Collections.ObjectModel.ObservableCollection<Rgb> source)
+    {
+        _items = source.ToArray();
+        source.CollectionChanged += (_, _) => _items = source.ToArray();
+    }
+
+    /// <summary>The current snapshot - read it ONCE per frame for consistent Count/[i].</summary>
+    public Rgb[] Snapshot => _items;
+    public int Count => _items.Length;
+    public Rgb this[int index]
+    {
+        get
+        {
+            var a = _items;
+            if (a.Length == 0) return new Rgb(255, 255, 255);
+            return a[(uint)index < (uint)a.Length ? index : a.Length - 1];
+        }
+    }
+    public IEnumerator<Rgb> GetEnumerator() => ((IEnumerable<Rgb>)_items).GetEnumerator();
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => _items.GetEnumerator();
+}
+
 public interface IPaletteEffect
 {
     IReadOnlyList<Rgb> Palette { get; set; }

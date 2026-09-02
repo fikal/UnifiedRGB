@@ -26,6 +26,16 @@ public static class ChromaShimInstaller
     static string ActiveDll => System.IO.Path.Combine(BinDir, "RzChromaSDK64.dll");
     static string SourceDll => System.IO.Path.Combine(AppContext.BaseDirectory, "RzChromaSDK64.dll");
 
+    // Both bitnesses live side by side in the SDK's bin folder: 64-bit hosts
+    // (Wallpaper Engine, most games) load RzChromaSDK64.dll, 32-bit games load
+    // RzChromaSDK.dll. The 32-bit shim is optional at build time.
+    static readonly (string Dll, string Backup, string Source)[] Shims =
+    {
+        ("RzChromaSDK64.dll", "RzChromaSDK64_real.dll", "RzChromaSDK64.dll"),
+        ("RzChromaSDK.dll",   "RzChromaSDK_real.dll",   "RzChromaSDK.dll"),
+    };
+    static string SourceOf(string name) => System.IO.Path.Combine(AppContext.BaseDirectory, name);
+
     public static bool ShimAvailable => System.IO.File.Exists(SourceDll);
 
     /// <summary>Is OUR shim currently the active DLL?</summary>
@@ -49,25 +59,28 @@ public static class ChromaShimInstaller
         string? firstErr = null;
         bool any = false;
         foreach (var dir in BinDirs)
-        {
-            try
+            foreach (var (dll, backupName, sourceName) in Shims)
             {
-                string active = System.IO.Path.Combine(dir, "RzChromaSDK64.dll");
-                string backup = System.IO.Path.Combine(dir, "RzChromaSDK64_real.dll");
-                System.IO.Directory.CreateDirectory(dir);
-                if (System.IO.File.Exists(active) && !IsOurs(active))
+                string source = SourceOf(sourceName);
+                if (!System.IO.File.Exists(source)) continue;   // 32-bit shim not built into this release
+                try
                 {
-                    // A genuine Razer DLL: preserve it as the proxy's forward target.
-                    if (System.IO.File.Exists(backup)) System.IO.File.Delete(backup);
-                    System.IO.File.Move(active, backup);
-                    Log.Info("chroma", $"backed up real Razer SDK in {dir}");
+                    string active = System.IO.Path.Combine(dir, dll);
+                    string backup = System.IO.Path.Combine(dir, backupName);
+                    System.IO.Directory.CreateDirectory(dir);
+                    if (System.IO.File.Exists(active) && !IsOurs(active))
+                    {
+                        // A genuine Razer DLL: preserve it as the proxy's forward target.
+                        if (System.IO.File.Exists(backup)) System.IO.File.Delete(backup);
+                        System.IO.File.Move(active, backup);
+                        Log.Info("chroma", $"backed up real Razer SDK {dll} in {dir}");
+                    }
+                    System.IO.File.Copy(source, active, overwrite: true);
+                    if (dll == "RzChromaSDK64.dll") any = true;
+                    Log.Info("chroma", $"shim installed -> {active}");
                 }
-                System.IO.File.Copy(SourceDll, active, overwrite: true);
-                any = true;
-                Log.Info("chroma", $"shim installed -> {active}");
+                catch (Exception ex) { firstErr ??= ex.Message; }
             }
-            catch (Exception ex) { firstErr ??= ex.Message; }
-        }
         return any ? null : firstErr;
     }
 
@@ -78,12 +91,20 @@ public static class ChromaShimInstaller
         try
         {
             foreach (var dir in BinDirs)
-            {
-                string active = System.IO.Path.Combine(dir, "RzChromaSDK64.dll");
-                string backup = System.IO.Path.Combine(dir, "RzChromaSDK64_real.dll");
-                if (System.IO.File.Exists(active) && IsOurs(active)) System.IO.File.Delete(active);
-                if (System.IO.File.Exists(backup)) System.IO.File.Move(backup, active);   // restore Razer's
-            }
+                foreach (var (dll, backupName, _) in Shims)
+                {
+                    string active = System.IO.Path.Combine(dir, dll);
+                    string backup = System.IO.Path.Combine(dir, backupName);
+                    if (System.IO.File.Exists(active) && IsOurs(active)) System.IO.File.Delete(active);
+                    if (System.IO.File.Exists(backup))
+                    {
+                        // Razer Synapse may have reinstalled its own DLL over our shim
+                        // since we backed it up; then the backup is stale and Move
+                        // would throw (aborting the other directory's cleanup).
+                        if (System.IO.File.Exists(active)) System.IO.File.Delete(backup);
+                        else System.IO.File.Move(backup, active);   // restore Razer's
+                    }
+                }
             Log.Info("chroma", "shim removed");
             return null;
         }

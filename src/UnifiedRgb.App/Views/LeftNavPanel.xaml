@@ -1,0 +1,53 @@
+<UserControl x:Class="UnifiedRgb.App.Views.LeftNavPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:UnifiedRgb.App"
+             xmlns:controls="clr-namespace:UnifiedRgb.App.Controls">
+    <!-- DEVICES (scrolls) + SYSTEM (pinned at the bottom) navigation -->
+            <DockPanel>
+                <DockPanel.Resources>
+                    <DataTemplate x:Key="LeftItemTemplate">
+                        <StackPanel>
+                            <StackPanel.Style>
+                                <Style TargetType="StackPanel">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsDisabled}" Value="True">
+                                            <Setter Property="Opacity" Value="0.45"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </StackPanel.Style>
+                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                            <TextBlock Text="{Binding Subtitle}" Opacity="0.7" FontSize="11" Margin="0,3,0,0"/>
+                        </StackPanel>
+                    </DataTemplate>
+                </DockPanel.Resources>
+
+                <Grid DockPanel.Dock="Top" Margin="0,0,0,8">
+                    <TextBlock Text="Setup" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                    <Button Content="Rescan" HorizontalAlignment="Right" Padding="10,5"
+                            Command="{Binding RescanCommand}"/>
+                </Grid>
+                <!-- SYSTEM: pinned at the bottom, always reachable -->
+                <StackPanel DockPanel.Dock="Bottom">
+                    <Border Height="1" Background="#FF2A2E38" Margin="2,8,2,8"/>
+                    <TextBlock Text="SYSTEM" FontSize="11" FontWeight="SemiBold"
+                               Foreground="#FF9AA3B2" Opacity="0.8" Margin="2,0,0,6"/>
+                    <ListBox x:Name="SystemNav" ItemsSource="{Binding SystemItems}" SelectedItem="{Binding SelectedLeftItem}"
+                             Background="Transparent" BorderThickness="0" Foreground="#FFE6E6E6"
+                             IsTextSearchEnabled="False" ItemContainerStyle="{StaticResource RowList}"
+                             ItemTemplate="{StaticResource LeftItemTemplate}"
+                             PreviewMouseLeftButtonUp="LeftNav_Click"
+                             ScrollViewer.VerticalScrollBarVisibility="Disabled"/>
+                </StackPanel>
+
+                <TextBlock DockPanel.Dock="Top" Text="DEVICES" FontSize="11" FontWeight="SemiBold"
+                           Foreground="#FF9AA3B2" Opacity="0.8" Margin="2,0,0,6"/>
+                <ListBox x:Name="DeviceNav" ItemsSource="{Binding DeviceItems}" SelectedItem="{Binding SelectedLeftItem}"
+                         Background="Transparent" BorderThickness="0" Foreground="#FFE6E6E6"
+                         IsTextSearchEnabled="False" ItemContainerStyle="{StaticResource RowList}"
+                         ItemTemplate="{StaticResource LeftItemTemplate}"
+                         PreviewMouseLeftButtonUp="LeftNav_Click"
+                         ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+            </DockPanel>
+</UserControl>

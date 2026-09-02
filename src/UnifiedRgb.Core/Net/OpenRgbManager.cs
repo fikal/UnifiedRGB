@@ -154,7 +154,7 @@ public static class OpenRgbManager
         Stop();                    // never stack a second bundled instance on the port
         Directory.CreateDirectory(ConfigDir);
         bool hadConfig = File.Exists(Path.Combine(ConfigDir, "OpenRGB.json"));
-        if (hadConfig) ApplyConflictPolicy();
+        if (hadConfig) { ApplyConflictPolicy(); OpenRgbCrashBisect.ReapplyCulprits(ConfigDir); }
         status?.Invoke("starting OpenRGB...");
         // ShellExecute detaches stdio: with inherited handles the child keeps
         // any console pipe open forever (hangs redirected callers).
@@ -324,7 +324,7 @@ public static class OpenRgbManager
                 }
             }
             if (changed)
-                File.WriteAllText(path, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+                SafeFile.WriteAllText(path, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
             return changed;
         }
         catch (Exception ex)
@@ -406,7 +406,7 @@ public static class OpenRgbManager
             foreach (var (detPrefix, reason) in UnstableDetectors)
                 changed += DisablePrefix(detectors, detPrefix, reason);
             if (changed > 0)
-                File.WriteAllText(path, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+                SafeFile.WriteAllText(path, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         }
         catch (Exception ex) { Log.Warn("openrgb", $"conflict policy failed: {ex.Message}"); }
         return changed;

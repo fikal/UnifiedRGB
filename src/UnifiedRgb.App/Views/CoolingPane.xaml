@@ -1,0 +1,265 @@
+<UserControl x:Class="UnifiedRgb.App.Views.CoolingPane"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:UnifiedRgb.App"
+             xmlns:controls="clr-namespace:UnifiedRgb.App.Controls"
+             DataContext="{Binding Cooling}">
+    <!-- ===================== Cooling (temps + fans) ===================== -->
+    <!-- DataContext = MainViewModel.Cooling; only the pane's visibility reads the
+         main view model (navigation), through the window. -->
+            <DockPanel Visibility="{Binding DataContext.ShowCoolingPanel, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}">
+                <TextBlock DockPanel.Dock="Top" Text="Cooling" FontSize="20" FontWeight="SemiBold"
+                           Margin="0,0,0,4"/>
+                <TextBlock DockPanel.Dock="Top" Opacity="0.5" FontSize="12" Margin="0,0,0,12"
+                           Text="Pick a fan and give it a profile. Curves follow the CPU, GPU, or whichever is hotter. Fans on Auto are never touched, so other tools (BIOS, GPU Tweak) stay in control."/>
+                <Border DockPanel.Dock="Top" Background="#40FF4C4C" CornerRadius="8" Padding="12,8" Margin="0,0,0,12"
+                        Visibility="{Binding ShowFanFailsafe, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="Too hot! Fan control turned itself off and every fan is back on its automatic curve."
+                               TextWrapping="Wrap" FontSize="12"/>
+                </Border>
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                  <StackPanel MaxWidth="980" HorizontalAlignment="Left">
+
+                    <!-- Headline: per-unit cards — temp gauge + load + voltage -->
+                    <StackPanel Orientation="Horizontal" Margin="0,2,0,14">
+                        <Border Background="#FF1E212A" CornerRadius="10" Padding="14,10" Margin="0,0,14,0">
+                            <StackPanel Orientation="Horizontal">
+                                <controls:TempGauge Label="CPU" Temp="{Binding CpuGauge}" Accent="#FF4CA8FF"/>
+                                <StackPanel VerticalAlignment="Center" Margin="18,0,8,0" MinWidth="92">
+                                    <TextBlock Text="LOAD" FontSize="10" FontWeight="SemiBold" Foreground="#FF9AA3B2" Opacity="0.8"/>
+                                    <TextBlock Text="{Binding CpuLoadText}" FontSize="24" FontWeight="SemiBold"
+                                               Foreground="#FF4CA8FF" Margin="0,1,0,0"/>
+                                    <TextBlock Text="VOLTAGE" FontSize="10" FontWeight="SemiBold" Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,10,0,0"/>
+                                    <TextBlock Text="{Binding CpuVoltText}" FontSize="24" FontWeight="SemiBold" Margin="0,1,0,0"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                        <Border Background="#FF1E212A" CornerRadius="10" Padding="14,10">
+                            <StackPanel Orientation="Horizontal">
+                                <controls:TempGauge Label="GPU" Temp="{Binding GpuGauge}" Accent="#FF51E087"/>
+                                <StackPanel VerticalAlignment="Center" Margin="18,0,8,0" MinWidth="92">
+                                    <TextBlock Text="LOAD" FontSize="10" FontWeight="SemiBold" Foreground="#FF9AA3B2" Opacity="0.8"/>
+                                    <TextBlock Text="{Binding GpuLoadText}" FontSize="24" FontWeight="SemiBold"
+                                               Foreground="#FF51E087" Margin="0,1,0,0"/>
+                                    <TextBlock Text="VOLTAGE" FontSize="10" FontWeight="SemiBold" Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,10,0,0"/>
+                                    <TextBlock Text="{Binding GpuVoltText}" FontSize="24" FontWeight="SemiBold" Margin="0,1,0,0"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="330"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- LEFT: fan list -->
+                    <StackPanel Grid.Column="0" Margin="0,0,14,0">
+                        <TextBlock Text="FANS" FontSize="11" FontWeight="SemiBold"
+                                   Foreground="#FF9AA3B2" Opacity="0.8" Margin="2,8,0,8"/>
+                        <ListBox ItemsSource="{Binding CoolingFans}" SelectedItem="{Binding EditingFan}"
+                                 Background="Transparent" BorderThickness="0" IsTextSearchEnabled="False"
+                                 HorizontalContentAlignment="Stretch" PreviewKeyDown="Pills_PreviewKeyDown">
+                            <ListBox.ItemContainerStyle>
+                                <Style TargetType="ListBoxItem">
+                                    <Setter Property="Margin" Value="0,0,0,6"/>
+                                    <Setter Property="Cursor" Value="Hand"/>
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="ListBoxItem">
+                                                <Border x:Name="bd" Background="#FF262932" CornerRadius="8"
+                                                        BorderThickness="1.5" BorderBrush="Transparent">
+                                                    <ContentPresenter/>
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="bd" Property="Background" Value="#FF2C303B"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsSelected" Value="True">
+                                                        <Setter TargetName="bd" Property="BorderBrush" Value="#FF4C6FFF"/>
+                                                        <Setter TargetName="bd" Property="Background" Value="#FF2A2E3A"/>
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                            </ListBox.ItemContainerStyle>
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="12,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel>
+                                            <TextBox Text="{Binding Label, UpdateSourceTrigger=LostFocus}"
+                                                     ToolTip="Click to rename" Background="Transparent" BorderThickness="0"
+                                                     Padding="0" Foreground="#FFE6E6E6" CaretBrush="White" FontWeight="SemiBold"
+                                                     KeyDown="CoolingLabel_KeyDown"/>
+                                            <TextBlock Text="{Binding ModeSummary}" FontSize="11" Opacity="0.55" Margin="0,2,0,0"/>
+                                        </StackPanel>
+                                        <TextBlock Grid.Column="1" Text="{Binding Rpm}" FontSize="15" FontWeight="SemiBold"
+                                                   VerticalAlignment="Center" Margin="10,0,0,0"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        <TextBlock Text="{Binding CoolingEmptyHint}" TextWrapping="Wrap" Opacity="0.5" FontSize="12" Margin="2,0,0,6">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasControllableFans}" Value="False">
+                                            <Setter Property="Visibility" Value="Visible"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+
+                        <!-- GPU fans: read-only -->
+                        <ItemsControl ItemsSource="{Binding CoolingGpuRows}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="#FF20232B" CornerRadius="8" Padding="12,7" Margin="0,0,0,6">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{Binding Label}" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding Value}" FontSize="13" FontWeight="SemiBold"
+                                                       VerticalAlignment="Center"/>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <!-- Wired SL-Infinity fans: read-only RPM -->
+                        <ItemsControl ItemsSource="{Binding CoolingLianUniRows}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="#FF20232B" CornerRadius="8" Padding="12,7" Margin="0,0,0,6">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{Binding Label}" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding Value}" FontSize="13" FontWeight="SemiBold"
+                                                       VerticalAlignment="Center"/>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <CheckBox IsChecked="{Binding LianHandoffOnExit}" FontSize="12" Margin="2,8,8,0"
+                                  Visibility="{Binding ShowLianHandoff, Converter={StaticResource BoolToVis}}"
+                                  ToolTip="While UnifiedRGB is not running, the wireless fans follow their sync wire (plugged into SYS_FAN1), so a hardware curve stays in charge. The app takes back control at launch. Tip: set SYS_FAN1's fan-fail warning to Ignore in BIOS - the wireless controller reports no RPM to the header.">
+                            <TextBlock Text="On exit, hand these fans to System Fan 1"
+                                       TextWrapping="Wrap" MaxWidth="330"/>
+                        </CheckBox>
+                    </StackPanel>
+
+                    <!-- RIGHT: the fan control editor for the selected fan -->
+                    <Border Grid.Column="1" Background="#FF1E212A" CornerRadius="8" Padding="16"
+                            VerticalAlignment="Top"
+                            Visibility="{Binding HasEditingFan, Converter={StaticResource BoolToVis}}">
+                        <StackPanel>
+                            <Grid Margin="0,0,0,12">
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding EditingFan.Label}" FontSize="15" FontWeight="SemiBold"/>
+                                    <TextBlock Text="{Binding EditingFan.Rpm}" Opacity="0.55" Margin="10,0,0,0"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                    <Button Content="Identify" Padding="10,4" Click="IdentifyFan_Click"
+                                            ToolTip="Runs this fan at 100% for four seconds so you can spot it in the case, then puts it back"/>
+                                    <Button Content="Apply to all" Padding="10,4" Margin="8,0,0,0" Click="ApplyToAllFans_Click"
+                                            ToolTip="Copy this fan's profile, curve and temperature source to every fan"/>
+                                </StackPanel>
+                            </Grid>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="140"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <!-- Profile list (L-CONNECT style radio column) -->
+                                <StackPanel Grid.Column="0" Margin="0,2,12,0">
+                                    <ListBox ItemsSource="{x:Static local:FanRowModel.AllModes}"
+                                             SelectedItem="{Binding EditingFan.Mode}"
+                                             Background="Transparent" BorderThickness="0" IsTextSearchEnabled="False"
+                                             PreviewKeyDown="Pills_PreviewKeyDown">
+                                        <ListBox.ItemContainerStyle>
+                                            <Style TargetType="ListBoxItem">
+                                                <Setter Property="Cursor" Value="Hand"/>
+                                                <Setter Property="Template">
+                                                    <Setter.Value>
+                                                        <ControlTemplate TargetType="ListBoxItem">
+                                                            <StackPanel Orientation="Horizontal" Background="Transparent" Margin="2,5">
+                                                                <Ellipse x:Name="dot" Width="12" Height="12" StrokeThickness="1.5"
+                                                                         Stroke="#FF5C84FF" Fill="Transparent" VerticalAlignment="Center"/>
+                                                                <TextBlock x:Name="txt" Text="{TemplateBinding Content}"
+                                                                           Margin="9,0,0,0" Opacity="0.7" VerticalAlignment="Center"/>
+                                                            </StackPanel>
+                                                            <ControlTemplate.Triggers>
+                                                                <Trigger Property="IsSelected" Value="True">
+                                                                    <Setter TargetName="dot" Property="Fill" Value="#FF5C84FF"/>
+                                                                    <Setter TargetName="txt" Property="Opacity" Value="1"/>
+                                                                    <Setter TargetName="txt" Property="FontWeight" Value="SemiBold"/>
+                                                                </Trigger>
+                                                                <Trigger Property="IsMouseOver" Value="True">
+                                                                    <Setter TargetName="txt" Property="Opacity" Value="1"/>
+                                                                </Trigger>
+                                                            </ControlTemplate.Triggers>
+                                                        </ControlTemplate>
+                                                    </Setter.Value>
+                                                </Setter>
+                                            </Style>
+                                        </ListBox.ItemContainerStyle>
+                                    </ListBox>
+                                    <StackPanel Margin="2,10,0,0"
+                                                Visibility="{Binding EditingFan.IsCurve, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="Follows" Opacity="0.55" FontSize="11" Margin="0,0,0,5"/>
+                                        <ComboBox ItemsSource="{x:Static local:FanRowModel.Sources}"
+                                                  SelectedItem="{Binding EditingFan.SourceName}" Width="118"
+                                                  HorizontalAlignment="Left"
+                                                  ToolTip="Which temperature this fan's curve follows"/>
+                                    </StackPanel>
+                                </StackPanel>
+
+                                <!-- Curve graph / manual slider / auto hint -->
+                                <Grid Grid.Column="1" MinHeight="252">
+                                    <StackPanel Visibility="{Binding EditingFan.IsCurve, Converter={StaticResource BoolToVis}}">
+                                        <controls:FanCurveEditor x:Name="FanCurveGraph" Height="252"/>
+                                        <TextBlock Text="Drag a point to reshape · double-click to add · right-click to remove"
+                                                   FontSize="11" Opacity="0.5" Margin="2,7,0,0"/>
+                                    </StackPanel>
+                                    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
+                                                Visibility="{Binding EditingFan.IsManual, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="Fixed duty" Opacity="0.6" HorizontalAlignment="Center"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                            <Slider Width="260" Minimum="{Binding EditingFan.MinDuty}" Maximum="100" VerticalAlignment="Center"
+                                                    IsSnapToTickEnabled="True" TickFrequency="5"
+                                                    Value="{Binding EditingFan.DutyPercent, UpdateSourceTrigger=PropertyChanged}"/>
+                                            <TextBlock Text="{Binding EditingFan.DutyPercent, StringFormat={}{0}%}"
+                                                       FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" Margin="14,0,0,0" MinWidth="40"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                    <TextBlock Text="This fan follows the motherboard's own (BIOS) curve."
+                                               Opacity="0.45" VerticalAlignment="Center" HorizontalAlignment="Center"
+                                               Visibility="{Binding EditingFan.IsAuto, Converter={StaticResource BoolToVis}}"/>
+                                </Grid>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+                    </Grid>
+                  </StackPanel>
+                </ScrollViewer>
+            </DockPanel>
+</UserControl>

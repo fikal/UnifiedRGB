@@ -22,9 +22,14 @@ public static class Dialogs
         bool canBlur = owner != null && owner.IsLoaded && owner.IsVisible;
         var root = canBlur ? owner!.Content as UIElement : null;
         var prev = root?.Effect;
+        bool prevPause = LedPreview.GlobalPause;
         if (root != null) root.Effect = new BlurEffect { Radius = 9 };
+        // The previews' timers gate on IsVisible, which stays true behind a
+        // modal: pause them so each tick doesn't re-run the blur over the whole
+        // window for the dialog's lifetime.
+        LedPreview.GlobalPause = true;
         try { dialog.ShowDialog(); }
-        finally { if (root != null) root.Effect = prev; }
+        finally { if (root != null) root.Effect = prev; LedPreview.GlobalPause = prevPause; }
     }
 
     /*-----------------------------------------------------*\

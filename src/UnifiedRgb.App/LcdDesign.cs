@@ -9,6 +9,9 @@ using UnifiedRgb.Core;
 
 namespace UnifiedRgb.App;
 
+// Persisted by NAME (integers still accepted on read) so inserting or
+// reordering a member can never silently remap every saved design and scene.
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum LcdElementKind { Time, Date, CpuTemp, Text, GpuTemp, FanRpm, NetSpeed, AnalogClock, Weather }
 
 /// <summary>One positioned text element on the pump display. Coordinates are the
@@ -117,16 +120,7 @@ public sealed class LcdDesign
 
     static readonly JsonSerializerOptions Opts = new() { WriteIndented = true };
 
-    public static LcdDesign Load()
-    {
-        try
-        {
-            if (File.Exists(Path))
-                return JsonSerializer.Deserialize<LcdDesign>(File.ReadAllText(Path), Opts) ?? Default();
-        }
-        catch { }
-        return Default();
-    }
+    public static LcdDesign Load() => ProfileStore.LoadJson<LcdDesign>(Path, "lcd.json") ?? Default();
 
     public void Save()
     {
@@ -135,7 +129,7 @@ public sealed class LcdDesign
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
             SafeFile.WriteAllText(Path, JsonSerializer.Serialize(this, Opts));
         }
-        catch { }
+        catch (Exception ex) { Log.Warn("lcd", $"lcd.json save failed: {ex.Message}"); }
     }
 }
 
@@ -146,7 +140,7 @@ public interface ICpuTempProvider
     double? ReadCelsius();
 }
 
-/// <summary>Placeholder until the Ring0 sensor reader is wired in.</summary>
+/// <summary>The default when PawnIO isn't available: no CPU temperature.</summary>
 public sealed class NullCpuTempProvider : ICpuTempProvider
 {
     public double? ReadCelsius() => null;

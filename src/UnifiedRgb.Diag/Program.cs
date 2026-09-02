@@ -66,31 +66,42 @@ Console.WriteLine(report);
 | Write the report: next to the exe (always, regardless of    |
 | which account the elevation ran under) + a Desktop copy.    |
 \*-----------------------------------------------------------*/
-try { File.WriteAllText(primaryPath, report); } catch { }
-string? desktopCopy = null;
+// Only report paths that were actually written: exe-adjacent writes fail from
+// Program Files / read-only shares, and the old text claimed success anyway.
+var saved = new List<string>();
+try { File.WriteAllText(primaryPath, report); saved.Add(primaryPath); } catch { }
 try
 {
-    desktopCopy = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), ReportName);
+    string desktopCopy = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), ReportName);
     File.WriteAllText(desktopCopy, report);
+    saved.Add(desktopCopy);
 }
-catch { desktopCopy = null; }
+catch { }
 
 Console.WriteLine();
 Console.WriteLine("==============================================");
-Console.WriteLine($">>> Report saved to: {primaryPath}");
-if (desktopCopy != null) Console.WriteLine($">>> Also copied to:  {desktopCopy}");
+if (saved.Count == 0) Console.WriteLine(">>> COULD NOT SAVE the report anywhere (copy it from the window above).");
+else foreach (var p in saved) Console.WriteLine($">>> Report saved to: {p}");
 Console.WriteLine("==============================================");
-Console.WriteLine();
-Console.WriteLine("Send this report to the developer automatically?");
-Console.Write("Press ENTER to send, or S to skip: ");
-bool send = true;
-try
+if (report.StartsWith("!!! DIAGNOSTIC CRASHED") || saved.Count == 0) Environment.ExitCode = 1;
+
+// Public builds have no support endpoint: the upload prompt could only ever
+// answer "Could not send", so don't ask.
+bool send = false;
+if (Backend.Configured)
 {
-    var key = Console.ReadKey();
     Console.WriteLine();
-    if (key.Key == ConsoleKey.S) send = false;
+    Console.WriteLine("Send this report to the developer automatically?");
+    Console.Write("Press ENTER to send, or S to skip: ");
+    send = true;
+    try
+    {
+        var key = Console.ReadKey();
+        Console.WriteLine();
+        if (key.Key == ConsoleKey.S) send = false;
+    }
+    catch { }
 }
-catch { }
 
 if (send)
 {
@@ -99,9 +110,13 @@ if (send)
     Console.WriteLine(ok ? ">>> Sent - all done, you can close this window."
                          : $">>> Could not send ({msg}). Please send the file above instead.");
 }
-else
+else if (Backend.Configured)
 {
     Console.WriteLine(">>> Skipped - send the file above manually if needed.");
+}
+else
+{
+    Console.WriteLine(">>> Attach the saved file to a GitHub issue (Settings -> Support in the app does the same).");
 }
 Console.WriteLine("Press any key to close.");
 try { Console.ReadKey(); } catch { }

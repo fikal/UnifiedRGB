@@ -73,16 +73,7 @@ public sealed class SceneStore
     static string Path => AppPaths.Config("scenes.json");
     static readonly JsonSerializerOptions Opts = new() { WriteIndented = true };
 
-    public static SceneStore Load()
-    {
-        try
-        {
-            if (File.Exists(Path))
-                return JsonSerializer.Deserialize<SceneStore>(File.ReadAllText(Path), Opts) ?? new();
-        }
-        catch { }
-        return new SceneStore();
-    }
+    public static SceneStore Load() => ProfileStore.LoadJson<SceneStore>(Path, "scenes.json") ?? new SceneStore();
 
     public void Save()
     {

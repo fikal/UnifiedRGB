@@ -11,7 +11,7 @@ namespace UnifiedRgb.App;
 public sealed class ColorWheel : FrameworkElement
 {
     WriteableBitmap? _bitmap;
-    int _bmpSize;
+    int _bmpPx; double _bmpScale;
     bool _dragging;
 
     public static readonly DependencyProperty SelectedColorProperty =
@@ -30,10 +30,15 @@ public sealed class ColorWheel : FrameworkElement
         int size = (int)Math.Min(ActualWidth, ActualHeight);
         if (size < 20) return;
 
-        if (_bitmap == null || _bmpSize != size)
+        // Render at DEVICE pixels: a DIP-sized bitmap drawn into a DIP-sized
+        // rect is upscaled by WPF at 125-200 % DPI and reads soft. Same pattern
+        // as AppRulesWindow.SnapshotOf.
+        double scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
+        int px = Math.Max(20, (int)Math.Round(size * scale));
+        if (_bitmap == null || _bmpPx != px || _bmpScale != scale)
         {
-            _bmpSize = size;
-            _bitmap = RenderWheel(size);
+            _bmpPx = px; _bmpScale = scale;
+            _bitmap = RenderWheel(px, 96.0 * scale);
         }
 
         double ox = (ActualWidth - size) / 2, oy = (ActualHeight - size) / 2;
@@ -45,13 +50,31 @@ public sealed class ColorWheel : FrameworkElement
         double ang = h * Math.PI / 180.0;
         double mx = ox + radius + Math.Cos(ang) * s * (radius - 4);
         double my = oy + radius - Math.Sin(ang) * s * (radius - 4);
-        dc.DrawEllipse(Brushes.Transparent, new Pen(Brushes.White, 2.5), new Point(mx, my), 8, 8);
-        dc.DrawEllipse(Brushes.Transparent, new Pen(Brushes.Black, 1), new Point(mx, my), 9.5, 9.5);
+        dc.DrawEllipse(Brushes.Transparent, MarkerOuter, new Point(mx, my), 8, 8);
+        dc.DrawEllipse(Brushes.Transparent, MarkerInner, new Point(mx, my), 9.5, 9.5);
     }
 
-    static WriteableBitmap RenderWheel(int size)
+    static readonly Pen MarkerOuter = FrozenPen(Brushes.White, 2.5), MarkerInner = FrozenPen(Brushes.Black, 1);
+    static Pen FrozenPen(Brush b, double w) { var p = new Pen(b, w); p.Freeze(); return p; }
+
+    /// <summary>Alt+Tab / a popup mid-drag takes the capture away without a
+    /// MouseUp; without this the next hover kept picking with no button down.</summary>
+    protected override void OnLostMouseCapture(MouseEventArgs e)
     {
-        var bmp = new WriteableBitmap(size, size, 96, 96, PixelFormats.Bgra32, null);
+        base.OnLostMouseCapture(e);
+        _dragging = false;
+    }
+
+    protected override void OnDpiChanged(DpiScale oldDpi, DpiScale newDpi)
+    {
+        base.OnDpiChanged(oldDpi, newDpi);
+        _bitmap = null;   // re-rasterize for the new monitor
+        InvalidateVisual();
+    }
+
+    static WriteableBitmap RenderWheel(int size, double dpi)
+    {
+        var bmp = new WriteableBitmap(size, size, dpi, dpi, PixelFormats.Bgra32, null);
         int stride = size * 4;
         var pixels = new byte[size * stride];
         double radius = size / 2.0;

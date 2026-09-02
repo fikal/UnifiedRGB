@@ -64,14 +64,15 @@ public sealed class Confetti : IEffect, IPaletteEffect
     public double LoopSeconds(double speed) => Fx.Loop((2.0 * Math.PI), speed);
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb _)
     {
-        int n = Math.Max(1, Palette.Count);
+        var pal = Palette;   // one snapshot per frame (see LivePalette)
+        int n = Math.Max(1, pal.Count);
         for (int i = 0; i < buf.Length; i++)
         {
             // Rate/phase/color-pick are per-LED constants — cached tables.
             double s = Math.Sin(t * speed * Fx.SparkleRate(i) * 2.0 + Fx.SparklePhase(i));
             double s2 = s * s;
             double v = s > 0 ? s2 * s2 : 0.0;
-            var col = Palette.Count > 0 ? Palette[(int)(Fx.SparklePick(i) * n) % n] : new Rgb(255, 255, 255);
+            var col = pal.Count > 0 ? pal[(int)(Fx.SparklePick(i) * n) % n] : new Rgb(255, 255, 255);
             buf[i] = ColorUtil.Scale(col, 0.03 + 0.97 * v);
         }
     }

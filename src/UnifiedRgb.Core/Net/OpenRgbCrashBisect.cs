@@ -53,6 +53,16 @@ static class OpenRgbCrashBisect
     /// <summary>Detectors the bisect has convicted on this machine.</summary>
     public static IReadOnlyList<string> Culprits(string configDir) => LoadState(configDir).Culprits;
 
+    /// <summary>Make sure every convicted detector is still off. OpenRGB can
+    /// regenerate its config (truncated file, version upgrade); without this the
+    /// culprit came back enabled, CrashCount had been reset by the clean run,
+    /// and the user ate two crashes plus a ~10-relaunch bisect all over again.</summary>
+    public static void ReapplyCulprits(string configDir)
+    {
+        var culprits = Culprits(configDir);
+        if (culprits.Count > 0) SetDetectors(configDir, culprits, enabled: false);
+    }
+
     /// <summary>Server crashed during detection. Returns true when the bisect
     /// changed the detector config and the caller should relaunch; false =
     /// not armed yet (fail normally — arming needs repeat crashes).</summary>
@@ -156,9 +166,12 @@ static class OpenRgbCrashBisect
             if (!File.Exists(ConfigPath(configDir))) return;
             var root = JsonNode.Parse(File.ReadAllText(ConfigPath(configDir))) ?? new JsonObject();
             if (root["Detectors"]?["detectors"] is not JsonObject det) return;
-            foreach (var n in names) det[n] = enabled;
-            File.WriteAllText(ConfigPath(configDir),
-                root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            bool changed = false;
+            foreach (var n in names)
+                if (det[n]?.GetValue<bool>() != enabled) { det[n] = enabled; changed = true; }
+            if (changed)
+                SafeFile.WriteAllText(ConfigPath(configDir),   // atomic: a torn OpenRGB.json re-enables everything
+                    root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         }
         catch (Exception ex) { Log.Warn("openrgb", $"bisect config write failed: {ex.Message}"); }
     }

@@ -34,6 +34,21 @@ public sealed class PawnIO : IDisposable
         get { try { return pawnio_version(out _) == 0; } catch { return false; } }
     }
 
+    /// <summary>A signed module blob embedded in this assembly (Modules\*.bin),
+    /// matched by file-name suffix. The one copy of what used to be three.</summary>
+    public static byte[]? ReadEmbeddedModule(string file)
+    {
+        var asm = typeof(PawnIO).Assembly;
+        var name = asm.GetManifestResourceNames()
+            .FirstOrDefault(n => n.EndsWith(file, StringComparison.OrdinalIgnoreCase));
+        if (name == null) return null;
+        using var s = asm.GetManifestResourceStream(name);
+        if (s == null) return null;
+        using var ms = new MemoryStream();
+        s.CopyTo(ms);
+        return ms.ToArray();
+    }
+
     /// <summary>Open the driver and load a module blob. Returns null on failure
     /// (driver missing, blob rejected, etc.).</summary>
     public static PawnIO? LoadModule(byte[] blob)

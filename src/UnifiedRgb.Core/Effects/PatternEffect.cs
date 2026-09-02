@@ -133,22 +133,24 @@ public sealed class PatternEffect : IEffect
     /// <summary>Non-cyclic: f 0..1 maps first color -> last color exactly once.</summary>
     Rgb SamplePaletteLinear(double f)
     {
-        int n = Palette.Count;
+        var pal = Palette;
+        int n = pal.Count;
         if (n == 0) return new Rgb(255, 255, 255);
-        if (n == 1) return Palette[0];
+        if (n == 1) return pal[0];
         double x = Math.Clamp(f, 0, 1) * (n - 1);
         int a = Math.Min((int)x, n - 2);
-        return Lerp(Palette[a], Palette[a + 1], x - a);
+        return Lerp(pal[a], pal[a + 1], x - a);
     }
 
     Rgb SamplePalette(double f)
     {
-        int n = Palette.Count;
+        var pal = Palette;
+        int n = pal.Count;
         if (n == 0) return new Rgb(255, 255, 255);
-        if (n == 1) return Palette[0];
+        if (n == 1) return pal[0];
         double x = Frac(f) * n;                               // wrap the gradient
         int a = (int)x % n, b = (a + 1) % n;
-        return Lerp(Palette[a], Palette[b], x - Math.Floor(x));
+        return Lerp(pal[a], pal[b], x - Math.Floor(x));
     }
 
     static double Coord(LedPos p, int axis) => axis switch

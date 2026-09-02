@@ -181,6 +181,13 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice
             if (r.TryGetProperty("fanCount", out var f)) _fans = Math.Clamp(f.GetInt32(), 1, MaxFans);
             if (r.TryGetProperty("channel", out var ch)) _group = Math.Clamp(ch.GetInt32(), 0, Groups - 1);
             if (r.TryGetProperty("tune", out var t)) _tune = t.GetBoolean();
+            if (_inner + _outer == 0)
+            {
+                // Write() divides by LEDs-per-fan; zero would throw on every frame
+                // until the engine's failure breaker silently killed the channel.
+                Log.Warn("LianLiUni", "layout cfg: innerPerFan + outerPerFan is 0 - using the 8/12 defaults");
+                _inner = 8; _outer = 12;
+            }
         }
         catch (Exception ex) { Log.Warn("LianLiUni", $"layout cfg: {ex.Message}"); }
     }

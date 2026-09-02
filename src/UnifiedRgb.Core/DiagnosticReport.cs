@@ -41,9 +41,9 @@ public static class DiagnosticReport
         {
             string[] conflicts = { "icue", "corsair", "signalrgb", "synapse", "razer", "armourycrate",
                                    "aura", "lconnect", "steelseriesgg", "openrgb" };
-            var fighting = Process.GetProcesses()
-                .Where(p => conflicts.Any(k => p.ProcessName.Contains(k, StringComparison.OrdinalIgnoreCase)))
-                .Select(p => p.ProcessName).Distinct().OrderBy(n => n).ToList();
+            var fighting = ProcessNames()
+                .Where(n => conflicts.Any(k => n.Contains(k, StringComparison.OrdinalIgnoreCase)))
+                .Distinct().OrderBy(n => n).ToList();
             if (fighting.Count > 0)
                 issues.Add($"Vendor RGB software running ({string.Join(", ", fighting)}) — it can grab a device before UnifiedRGB and hold it; close it if a device won't respond.");
         }
@@ -86,9 +86,9 @@ public static class DiagnosticReport
         string[] rgbSoftware = { "icue", "corsair", "signalrgb", "openrgb", "armoury", "lightingservice",
                                  "mystic", "dragoncenter", "lconnect", "razer", "synapse", "aura", "trcc",
                                  "lianli", "nzxt", "wraith", "polychrome", "steelseries" };
-        var running = Process.GetProcesses()
-            .Where(p => rgbSoftware.Any(k => p.ProcessName.Contains(k, StringComparison.OrdinalIgnoreCase)))
-            .Select(p => p.ProcessName).Distinct().OrderBy(n => n).ToList();
+        var running = ProcessNames()
+            .Where(n => rgbSoftware.Any(k => n.Contains(k, StringComparison.OrdinalIgnoreCase)))
+            .Distinct().OrderBy(n => n).ToList();
         Say(running.Count == 0 ? "(none detected)" : string.Join(", ", running));
 
         Section("hid devices");
@@ -252,6 +252,15 @@ public static class DiagnosticReport
         catch { return false; }
     }
 
+    /// <summary>Process names with the Process objects disposed (each one holds
+    /// a handle until finalization otherwise; ~750 per snapshot).</summary>
+    static List<string> ProcessNames()
+    {
+        var procs = Process.GetProcesses();
+        try { return procs.Select(p => p.ProcessName).ToList(); }
+        finally { foreach (var p in procs) p.Dispose(); }
+    }
+
     static string Ps(string command)
     {
         try
@@ -262,9 +271,16 @@ public static class DiagnosticReport
                 UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true,
             };
             using var p = Process.Start(psi)!;
-            string output = p.StandardOutput.ReadToEnd();
-            p.WaitForExit(20000);
-            return output.Trim();
+            // Read asynchronously so the timeout is real: ReadToEnd() blocked
+            // until PowerShell exited, so WaitForExit(20000) never got to time
+            // out and a hung Get-WinEvent hung the whole report collection.
+            var output = p.StandardOutput.ReadToEndAsync();
+            if (!p.WaitForExit(20000))
+            {
+                try { p.Kill(entireProcessTree: true); } catch { }
+                return "(timed out after 20 s)";
+            }
+            return output.GetAwaiter().GetResult().Trim();
         }
         catch (Exception ex) { return $"(failed: {ex.Message})"; }
     }

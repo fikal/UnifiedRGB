@@ -90,12 +90,18 @@ public sealed class LedPreview : FrameworkElement
         // per-frame invalidation during a move starves the move loop and
         // makes the window judder. Lighting itself keeps running.
         if (GlobalPause || Source is null || !IsVisible) return;
+        var (oldPos, oldStyle, oldAspect, oldRects) = (_pos, _style, _aspect, _rects);
         (_colors, _pos, _style, _aspect, _rects) = Source();
 
         // Redraw only when the sampled colors changed — a static color or a
-        // slow effect no longer costs a full render pass per tick.
+        // slow effect no longer costs a full render pass per tick. The layout
+        // counts too: a target switch with identical colors but different
+        // geometry (two static-white 8-LED zones) kept drawing - and hit-
+        // testing - the old shape until a color changed. Content compare: the
+        // VM hands out fresh arrays per pull, so references never match.
         int n = _colors.Length;
-        bool same = _shown.Length == n;
+        bool same = _shown.Length == n && _style == oldStyle && _aspect == oldAspect
+                    && SameSeq(_pos, oldPos) && SameSeq(_rects, oldRects);
         if (same)
             for (int i = 0; i < n; i++)
                 if (_shown[i] != _colors[i]) { same = false; break; }
@@ -104,6 +110,14 @@ public sealed class LedPreview : FrameworkElement
         if (_shown.Length != n) _shown = new Rgb[n];
         Array.Copy(_colors, _shown, n);
         InvalidateVisual();
+    }
+
+    static bool SameSeq<T>(T[]? a, T[]? b) where T : struct, IEquatable<T>
+    {
+        if (ReferenceEquals(a, b)) return true;
+        if (a == null || b == null || a.Length != b.Length) return false;
+        for (int i = 0; i < a.Length; i++) if (!a[i].Equals(b[i])) return false;
+        return true;
     }
 
     /*-----------------------------------------------------*\

@@ -32,7 +32,7 @@ clicked in the PR.
 ## Reporting bugs
 
 Use the bug template and attach the diagnostic bundle (Settings → Support →
-the save-bundle button writes it to your Desktop). It contains your hardware
+**Report a problem** writes it to your Desktop). It contains your hardware
 survey and the session log — skim it before attaching if that concerns you.
 
 ## Licensing of contributions
