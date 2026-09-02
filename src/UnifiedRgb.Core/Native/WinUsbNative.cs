@@ -108,6 +108,6 @@ public sealed class WinUsbDevice : IDisposable
     [DllImport("winusb.dll", SetLastError = true)] static extern bool WinUsb_WritePipe(IntPtr iface, byte pipe, byte[] buf, uint len, out uint sent, IntPtr overlapped);
     [DllImport("winusb.dll", SetLastError = true)] static extern bool WinUsb_ReadPipe(IntPtr iface, byte pipe, byte[] buf, uint len, out uint read, IntPtr overlapped);
     [DllImport("winusb.dll", SetLastError = true)] static extern bool WinUsb_SetPipePolicy(IntPtr iface, byte pipe, uint policy, uint valueLen, ref uint value);
-    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr sec, uint disp, uint flags, IntPtr template);
 }

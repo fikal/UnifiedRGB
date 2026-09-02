@@ -54,8 +54,11 @@ public static class HidNative
                 FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
             if (h.IsInvalid) continue;
             if (!HidD_GetPreparsedData(h, out IntPtr ppd)) continue;
-            HidP_GetCaps(ppd, out HIDP_CAPS caps);
+            // NTSTATUS, not BOOL: anything but HIDP_STATUS_SUCCESS leaves caps zeroed
+            // (report lengths 0), which used to slip through as a bogus device.
+            int status = HidP_GetCaps(ppd, out HIDP_CAPS caps);
             HidD_FreePreparsedData(ppd);
+            if (status != HIDP_STATUS_SUCCESS) continue;
 
             var attrs = new HIDD_ATTRIBUTES { Size = Marshal.SizeOf<HIDD_ATTRIBUTES>() };
             HidD_GetAttributes(h, ref attrs);
@@ -207,6 +210,7 @@ public static class HidNative
     const uint FILE_SHARE_READ = 1, FILE_SHARE_WRITE = 2;
     const uint OPEN_EXISTING = 3;
     const uint FILE_FLAG_OVERLAPPED = 0x40000000;
+    const int HIDP_STATUS_SUCCESS = 0x00110000;
 
     [StructLayout(LayoutKind.Sequential)]
     struct HIDP_CAPS
@@ -233,7 +237,7 @@ public static class HidNative
     [DllImport("hid.dll")] [return: MarshalAs(UnmanagedType.U1)] static extern bool HidD_GetPreparsedData(SafeFileHandle h, out IntPtr data);
     [DllImport("hid.dll")] [return: MarshalAs(UnmanagedType.U1)] static extern bool HidD_FreePreparsedData(IntPtr data);
     [DllImport("hid.dll")] static extern int HidP_GetCaps(IntPtr data, out HIDP_CAPS caps);
-    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr sec, uint disp, uint flags, IntPtr template);
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool WriteFile(SafeFileHandle h, byte[] buf, int len, out int written, IntPtr overlapped);

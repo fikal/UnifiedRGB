@@ -16,12 +16,12 @@ public static class Authenticode
     {
         try
         {
-            if (!VerifyTrust(path, out int hr))
+            using var cert = VerifyAndGetSigner(path, out int hr);
+            if (cert == null)
             {
                 detail = $"signature not trusted (0x{hr:X8})";
                 return false;
             }
-            using var cert = new X509Certificate2(X509Certificate.CreateFromSignedFile(path));
             if (!cert.Subject.Contains(expectedSubjectPart, StringComparison.OrdinalIgnoreCase))
             {
                 detail = $"signed by '{cert.Subject}', expected '{expectedSubjectPart}'";
@@ -37,7 +37,11 @@ public static class Authenticode
         }
     }
 
-    static bool VerifyTrust(string path, out int hr)
+    /// <summary>Run WinVerifyTrust and, when the signature is trusted, hand back
+    /// the signer certificate of THAT verified signature (from the trust
+    /// provider's state - not a second, independent parse of the file, which is
+    /// what the obsolete X509Certificate.CreateFromSignedFile did).</summary>
+    static X509Certificate2? VerifyAndGetSigner(string path, out int hr)
     {
         var fileInfo = new WINTRUST_FILE_INFO
         {
@@ -45,28 +49,49 @@ public static class Authenticode
             pcwszFilePath = path,
         };
         IntPtr pFile = Marshal.AllocHGlobal((int)fileInfo.cbStruct);
+        Guid action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+        var data = new WINTRUST_DATA
+        {
+            cbStruct = (uint)Marshal.SizeOf<WINTRUST_DATA>(),
+            dwUIChoice = WTD_UI_NONE,
+            fdwRevocationChecks = WTD_REVOKE_NONE,       // offline-safe; the chain itself still has to validate
+            dwUnionChoice = WTD_CHOICE_FILE,
+            pFile = pFile,
+            dwStateAction = WTD_STATEACTION_VERIFY,      // keep the state so we can read the signer
+            dwProvFlags = WTD_SAFER_FLAG,
+        };
         try
         {
             Marshal.StructureToPtr(fileInfo, pFile, false);
-            var data = new WINTRUST_DATA
-            {
-                cbStruct = (uint)Marshal.SizeOf<WINTRUST_DATA>(),
-                dwUIChoice = WTD_UI_NONE,
-                fdwRevocationChecks = WTD_REVOKE_NONE,       // offline-safe; the chain itself still has to validate
-                dwUnionChoice = WTD_CHOICE_FILE,
-                pFile = pFile,
-                dwStateAction = WTD_STATEACTION_IGNORE,
-                dwProvFlags = WTD_SAFER_FLAG,
-            };
-            Guid action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
             hr = WinVerifyTrust(IntPtr.Zero, ref action, ref data);
-            return hr == 0;
+            if (hr != 0) return null;
+
+            // Provider data -> first signer -> leaf certificate of its chain.
+            IntPtr prov = WTHelperProvDataFromStateData(data.hWVTStateData);
+            if (prov == IntPtr.Zero) return null;
+            IntPtr sgnr = WTHelperGetProvSignerFromChain(prov, 0, false, 0);
+            if (sgnr == IntPtr.Zero) return null;
+            IntPtr provCert = WTHelperGetProvCertFromChain(sgnr, 0);
+            if (provCert == IntPtr.Zero) return null;
+            // CRYPT_PROVIDER_CERT = { DWORD cbStruct; PCCERT_CONTEXT pCert; ... }:
+            // the pointer sits after the DWORD, padded to pointer size.
+            IntPtr certContext = Marshal.ReadIntPtr(provCert, IntPtr.Size);
+            return certContext == IntPtr.Zero ? null : new X509Certificate2(certContext);   // copies the context
         }
-        finally { Marshal.FreeHGlobal(pFile); }
+        finally
+        {
+            if (data.hWVTStateData != IntPtr.Zero)
+            {
+                data.dwStateAction = WTD_STATEACTION_CLOSE;
+                WinVerifyTrust(IntPtr.Zero, ref action, ref data);
+            }
+            Marshal.FreeHGlobal(pFile);
+        }
     }
 
     static readonly Guid WINTRUST_ACTION_GENERIC_VERIFY_V2 = new("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
-    const uint WTD_UI_NONE = 2, WTD_REVOKE_NONE = 0, WTD_CHOICE_FILE = 1, WTD_STATEACTION_IGNORE = 0, WTD_SAFER_FLAG = 0x100;
+    const uint WTD_UI_NONE = 2, WTD_REVOKE_NONE = 0, WTD_CHOICE_FILE = 1, WTD_SAFER_FLAG = 0x100;
+    const uint WTD_STATEACTION_VERIFY = 1, WTD_STATEACTION_CLOSE = 2;
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     struct WINTRUST_FILE_INFO
@@ -97,4 +122,11 @@ public static class Authenticode
 
     [DllImport("wintrust.dll", ExactSpelling = true)]
     static extern int WinVerifyTrust(IntPtr hwnd, ref Guid pgActionID, ref WINTRUST_DATA pWVTData);
+    [DllImport("wintrust.dll", ExactSpelling = true)]
+    static extern IntPtr WTHelperProvDataFromStateData(IntPtr hStateData);
+    [DllImport("wintrust.dll", ExactSpelling = true)]
+    static extern IntPtr WTHelperGetProvSignerFromChain(IntPtr pProvData, uint idxSigner,
+        [MarshalAs(UnmanagedType.Bool)] bool fCounterSigner, uint idxCounterSigner);
+    [DllImport("wintrust.dll", ExactSpelling = true)]
+    static extern IntPtr WTHelperGetProvCertFromChain(IntPtr pSgnr, uint idxCert);
 }

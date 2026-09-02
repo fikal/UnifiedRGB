@@ -31,7 +31,7 @@ static class SetupDiEnum
                     Marshal.WriteInt32(detail, IntPtr.Size == 8 ? 8 : 6);
                     if (!SetupDiGetDeviceInterfaceDetail(devs, ref ifData, detail, needed, out _, IntPtr.Zero))
                         continue;
-                    string? path = Marshal.PtrToStringAuto(detail + 4);
+                    string? path = Marshal.PtrToStringUni(detail + 4);
                     if (string.IsNullOrEmpty(path)) continue;
                     if (fragment != null && !path.Contains(fragment, StringComparison.OrdinalIgnoreCase)) continue;
                     results.Add(path);
@@ -49,11 +49,11 @@ static class SetupDiEnum
     [StructLayout(LayoutKind.Sequential)]
     struct SP_DEVICE_INTERFACE_DATA { public int cbSize; public Guid guid; public int flags; public IntPtr reserved; }
 
-    [DllImport("setupapi.dll", CharSet = CharSet.Auto)]
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode)]
     static extern IntPtr SetupDiGetClassDevs(ref Guid gClass, string? enumerator, IntPtr hwnd, int flags);
     [DllImport("setupapi.dll")]
     static extern bool SetupDiEnumDeviceInterfaces(IntPtr devs, IntPtr devInfo, ref Guid gClass, int idx, ref SP_DEVICE_INTERFACE_DATA ifData);
-    [DllImport("setupapi.dll", CharSet = CharSet.Auto)]
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode)]
     static extern bool SetupDiGetDeviceInterfaceDetail(IntPtr devs, ref SP_DEVICE_INTERFACE_DATA ifData, IntPtr detail, int size, out int needed, IntPtr devInfo);
     [DllImport("setupapi.dll")] static extern bool SetupDiDestroyDeviceInfoList(IntPtr devs);
 }
