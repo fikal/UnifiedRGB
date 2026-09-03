@@ -51,6 +51,17 @@ static class Geo
     public static double[] Angle(LedPos[] pos) => _cache.GetValue(pos, Build).Angle;
     public static double[] Radius(LedPos[] pos) => _cache.GetValue(pos, Build).Radius;
 
+    /// <summary>True when the channel has no vertical extent - a strip (GPU
+    /// ribbon, light bar, a single fan ring) where every LED shares one Y.
+    /// Effects that animate along Y collapse there: whole regions light in
+    /// lockstep because their fall coordinate is constant. Those effects use
+    /// this to fall along the strip's own axis instead.</summary>
+    public static bool IsFlat(LedPos[] pos)
+    {
+        var c = _cache.GetValue(pos, Build);
+        return c.MaxY - c.MinY <= 0.3;
+    }
+
     public static (double Min, double Max) YRange(LedPos[] pos)
     {
         var c = _cache.GetValue(pos, Build);

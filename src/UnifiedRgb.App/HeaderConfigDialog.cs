@@ -35,7 +35,7 @@ public sealed class HeaderConfigDialog
             CaretBrush = fgMain, VerticalAlignment = VerticalAlignment.Center,
         };
 
-        var rows = new List<(CheckBox On, TextBox Name, TextBox Leds, ComboBox Order)>();
+        var rows = new List<(CheckBox On, TextBox Name, TextBox Leds, ComboBox Order, CheckBox Strip)>();
         var grid = new StackPanel();
 
         for (int header = 1; header <= 4; header++)
@@ -74,9 +74,16 @@ public sealed class HeaderConfigDialog
                 vm.TestHeader(h, int.TryParse(leds.Text, out int n) ? Math.Clamp(n, 1, 64) : 12);
             };
 
-            row.Children.Add(on); row.Children.Add(name); row.Children.Add(leds); row.Children.Add(order); row.Children.Add(test);
+            var strip = new CheckBox
+            {
+                Content = "Strip", IsChecked = existing?.Strip == true, Margin = new Thickness(10, 0, 0, 0),
+                Foreground = fgMain, VerticalAlignment = VerticalAlignment.Center, VerticalContentAlignment = VerticalAlignment.Center,
+                ToolTip = "A straight run (GPU ribbon, light bar) instead of fan rings - effects then travel end to end instead of mirroring around its middle.",
+            };
+
+            row.Children.Add(on); row.Children.Add(name); row.Children.Add(leds); row.Children.Add(order); row.Children.Add(strip); row.Children.Add(test);
             grid.Children.Add(row);
-            rows.Add((on, name, leds, order));
+            rows.Add((on, name, leds, order, strip));
         }
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 18, 0, 0) };
@@ -88,7 +95,7 @@ public sealed class HeaderConfigDialog
             var newCfg = new HardwareConfig { GigabyteArgbHeaders = new(), RazerLedCounts = cfg.RazerLedCounts };
             for (int i = 0; i < rows.Count; i++)
             {
-                var (on, name, leds, order) = rows[i];
+                var (on, name, leds, order, strip) = rows[i];
                 if (on.IsChecked != true) continue;
                 newCfg.GigabyteArgbHeaders.Add(new ArgbHeaderConfig
                 {
@@ -96,6 +103,7 @@ public sealed class HeaderConfigDialog
                     Name = string.IsNullOrWhiteSpace(name.Text) ? $"ARGB Header {i + 1}" : name.Text.Trim(),
                     Leds = int.TryParse(leds.Text, out int n) ? Math.Clamp(n, 1, 256) : 8,
                     ColorOrder = order.SelectedItem as string ?? "GRB",
+                    Strip = strip.IsChecked == true,
                 });
             }
             vm.ApplyHeaderConfig(newCfg);

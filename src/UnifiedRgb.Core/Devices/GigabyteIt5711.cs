@@ -32,7 +32,7 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable
     enum ZoneKind { Fan, Static }
     // Id: header number (1-4) for Fan zones; effect LED index for Static zones.
     // Order: RGB=0, GRB=1, BGR=2 wire order for fan streaming.
-    sealed record ZoneDef(string Name, int Count, ZoneKind Kind, int Id, string Order = "GRB");
+    sealed record ZoneDef(string Name, int Count, ZoneKind Kind, int Id, string Order = "GRB", bool Strip = false);
 
     // Header number -> static-effect LED index (for headers without an
     // addressable device configured).
@@ -52,7 +52,7 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable
         {
             if (!fanHeaders.Add(h.Header)) continue;
             defs.Add(new ZoneDef(string.IsNullOrWhiteSpace(h.Name) ? $"ARGB Header {h.Header}" : h.Name,
-                                 h.Leds, ZoneKind.Fan, h.Header, NormalizeOrder(h.ColorOrder, h.Header)));
+                                 h.Leds, ZoneKind.Fan, h.Header, NormalizeOrder(h.ColorOrder, h.Header), h.Strip));
         }
         for (int header = 1; header <= MaxHeaders; header++)
             if (!fanHeaders.Contains(header))
@@ -123,11 +123,21 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable
             {
                 float cx = fanZones <= 1 ? 0.5f : 0.28f + 0.44f * (fanIdx / (float)(fanZones - 1));
                 fanIdx++;
-                for (int i = 0; i < def.Count; i++)
+                if (def.Strip)
                 {
-                    double a = i / (double)def.Count * Math.PI * 2 - Math.PI / 2;
-                    list.Add(new((float)(cx + 0.20 * Math.Cos(a)), (float)(0.5 + 0.20 * Math.Sin(a))));
+                    // A ribbon is a straight run: on a circle its two halves sit at
+                    // the same heights, so every lengthwise effect comes out mirrored
+                    // about the midpoint. One row instead - the zone then normalizes
+                    // to a flat line and the strip-aware effects animate end to end.
+                    for (int i = 0; i < def.Count; i++)
+                        list.Add(new(def.Count <= 1 ? 0.5f : 0.05f + 0.90f * (i / (float)(def.Count - 1)), 0.5f));
                 }
+                else
+                    for (int i = 0; i < def.Count; i++)
+                    {
+                        double a = i / (double)def.Count * Math.PI * 2 - Math.PI / 2;
+                        list.Add(new((float)(cx + 0.20 * Math.Cos(a)), (float)(0.5 + 0.20 * Math.Sin(a))));
+                    }
             }
             else
             {

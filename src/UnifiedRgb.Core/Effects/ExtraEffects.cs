@@ -168,9 +168,12 @@ public sealed class TideFx : IEffect
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb baseColor)
     {
         double level = 0.5 + 0.48 * Math.Sin(t * speed * 0.8);
+        // A strip has no Y span to rise through; its own axis is the water line
+        // (index 0 = the low end, so a vertically mounted ribbon fills upward).
+        bool flat = Geo.IsFlat(pos);
         for (int i = 0; i < buf.Length; i++)
         {
-            double fill = 1.0 - pos[i].Y;                  // water rises from the bottom
+            double fill = flat ? pos[i].X : 1.0 - pos[i].Y;   // water rises from the bottom
             double v = Math.Clamp((level - fill) * 8.0 + 0.5, 0.03, 1.0);
             buf[i] = ColorUtil.Scale(baseColor, v);
         }
@@ -330,8 +333,35 @@ public sealed class MatrixRain : IEffect
     // Per-column fall speeds snapped to {0.2,0.3,0.4,0.5} so each completes whole
     // drops over a 10s loop - every stream lines up at the wrap.
     public double LoopSeconds(double speed) => Fx.Loop(10.0, speed);
+    // Strip fallback: three streams at distinct rates. Tenths that divide the
+    // 10 s loop (2, 3, 5 whole drops) so they still line up at the wrap.
+    static readonly double[] StripRates = { 0.2, 0.3, 0.5 };
+
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb _)
     {
+        // On a strip every LED shares one Y, so the per-column fall below would
+        // light whole regions in lockstep. Fall along the strip's own axis:
+        // drops chase down its length, which is what it can actually show.
+        if (Geo.IsFlat(pos))
+        {
+            Span<double> heads = stackalloc double[StripRates.Length];
+            for (int s = 0; s < heads.Length; s++)
+                heads[s] = Fx.Frac(t * speed * StripRates[s] + Fx.Hash(s, 3));
+            for (int i = 0; i < buf.Length; i++)
+            {
+                double near = 1.0;                     // distance behind the closest head
+                for (int s = 0; s < heads.Length; s++)
+                {
+                    double d = Fx.Frac(heads[s] - pos[i].X);
+                    if (d < near) near = d;
+                }
+                double lit = near < 0.22 ? Math.Pow(1.0 - near / 0.22, 2) : 0.0;
+                buf[i] = near < 0.035
+                    ? new Rgb(190, 255, 190)
+                    : ColorUtil.Scale(new Rgb(0, 255, 70), lit);
+            }
+            return;
+        }
         for (int i = 0; i < buf.Length; i++)
         {
             int col = (int)(pos[i].X * 12);

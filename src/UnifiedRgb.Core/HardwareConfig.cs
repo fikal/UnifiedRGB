@@ -9,6 +9,12 @@ public sealed class ArgbHeaderConfig
     public string Name { get; set; } = "";
     public int Leds { get; set; } = 8;
     public string ColorOrder { get; set; } = "GRB";   // wire order: RGB/GRB/BGR...
+    /// <summary>The header drives a straight run (GPU ribbon, light bar) rather
+    /// than fan rings. Effects place a ring's LEDs on a circle, which mirrors
+    /// every lengthwise animation around a strip's midpoint; a strip is laid
+    /// out as one line so it animates end to end. Default false = ring, so
+    /// existing configs keep the layout they were tuned with.</summary>
+    public bool Strip { get; set; }
 }
 
 /// <summary>User-editable per-machine hardware settings. Defaults describe this

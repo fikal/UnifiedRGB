@@ -184,8 +184,32 @@ public sealed class Rain : IEffect
     public string Name => "Rain";
     public bool UsesBaseColor => true;
     public double LoopSeconds(double speed) => Fx.Loop(2.0, speed);
+    // Strip fallback: rates that divide the 2 s loop (1, 2, 3 whole drops).
+    static readonly double[] StripRates = { 0.5, 1.0, 1.5 };
+
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb baseColor)
     {
+        // A strip has one Y for every LED: the column drops below would pulse
+        // whole regions at once. Let the drops fall along its length instead.
+        if (Geo.IsFlat(pos))
+        {
+            Span<double> heads = stackalloc double[StripRates.Length];
+            for (int s = 0; s < heads.Length; s++)
+                heads[s] = Fx.Frac(t * speed * StripRates[s] + Fx.Hash(s));
+            for (int i = 0; i < buf.Length; i++)
+            {
+                double near = 1.0;
+                for (int s = 0; s < heads.Length; s++)
+                {
+                    double d = Fx.Frac(heads[s] - pos[i].X);
+                    if (d < near) near = d;
+                }
+                double lit = near < 0.25 ? 1.0 - near / 0.25 : 0.0;
+                buf[i] = ColorUtil.Scale(baseColor, 0.03 + 0.97 * lit * lit);
+            }
+            return;
+        }
+
         // 17 column buckets: hoist each column's rate/phase and CURRENT drop
         // head out of the per-LED loop (they were re-hashed per LED per frame).
         Span<double> drop = stackalloc double[17];
