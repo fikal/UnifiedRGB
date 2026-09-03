@@ -4,15 +4,16 @@
 // app over a named pipe.
 //
 // COEXISTENCE (proxy mode): if a backed-up REAL Razer DLL sits beside us as
-// "RzChromaSDK64_real.dll", we load it and forward every call, so a machine
-// with genuine Synapse keeps lighting its Razer gear AND feeds UnifiedRGB.
-// With no real DLL present we run standalone (capture only). Same binary for
-// both cases.
+// "RzChromaSDK64_real.dll" (64-bit) / "RzChromaSDK_real.dll" (32-bit), we load
+// it and forward every call, so a machine with genuine Synapse keeps lighting
+// its Razer gear AND feeds UnifiedRGB. With no real DLL present we run
+// standalone (capture only). Same source for both cases and both bitnesses.
 //
 // Install: back up the real  ...\Razer Chroma SDK\bin\RzChromaSDK64.dll  to
-// RzChromaSDK64_real.dll (if any), then place this file as RzChromaSDK64.dll.
-// This is an interoperability layer (as OpenRGB/Aurora do), attributed to
-// UnifiedRGB - not a Razer product.
+// RzChromaSDK64_real.dll (and RzChromaSDK.dll to RzChromaSDK_real.dll) if any,
+// then place our builds as RzChromaSDK64.dll / RzChromaSDK.dll. This is an
+// interoperability layer (as OpenRGB/Aurora do), attributed to UnifiedRGB -
+// not a Razer product.
 
 #include <windows.h>
 #include <atomic>
@@ -65,6 +66,17 @@ static HMODULE g_self = nullptr;
 static HMODULE g_real = nullptr;
 static std::once_flag g_realOnce;
 
+// The backup name the installer (ChromaShimInstaller.Shims) gives the genuine
+// DLL of OUR bitness. One source builds both shims, and a 32-bit host cannot
+// load the 64-bit backup (ERROR_BAD_EXE_FORMAT), so the name must follow the
+// target: the x86 shim used to look for the 64-bit backup and silently ran
+// standalone, blacking out real Razer gear in every 32-bit Chroma game.
+#ifdef _WIN64
+static const wchar_t* const kRealName = L"RzChromaSDK64_real.dll";
+#else
+static const wchar_t* const kRealName = L"RzChromaSDK_real.dll";
+#endif
+
 typedef RZRESULT (*Fn_v)();
 typedef RZRESULT (*Fn_p)(void*);
 typedef RZRESULT (*Fn_eff)(int, PRZPARAM, RZEFFECTID*);
@@ -93,9 +105,12 @@ static void LoadReal()
     std::wstring p = path;
     size_t slash = p.find_last_of(L"\\/");
     if (slash == std::wstring::npos) return;
-    p = p.substr(0, slash + 1) + L"RzChromaSDK64_real.dll";
+    p = p.substr(0, slash + 1) + kRealName;
     g_real = LoadLibraryW(p.c_str());
-    if (!g_real) return;
+    // Once per host load (call_once). ERROR_FILE_NOT_FOUND (2) here is the
+    // normal standalone case; anything else means a backup exists but won't
+    // load (wrong bitness = 193), which Init()'s "standalone" line would hide.
+    if (!g_real) { ShimLog("real DLL not loaded: %ls err=%lu", p.c_str(), GetLastError()); return; }
     auto G = [](const char* n) { return GetProcAddress(g_real, n); };
     g_r.Init       = (Fn_v)G("Init");
     g_r.InitSDK    = (Fn_p)G("InitSDK");
@@ -139,8 +154,19 @@ static void SendFrame(uint8_t type, uint16_t rows, uint16_t cols, const COLORREF
         ULONGLONG now = GetTickCount64();
         if (now - g_lastConnectTry < 1000) return;
         g_lastConnectTry = now;
-        g_pipe = CreateFileW(L"\\\\.\\pipe\\UnifiedRgbChroma", GENERIC_WRITE, 0, nullptr,
-                             OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+        // Ask for exactly what a pipe client needs (0x100082), not GENERIC_WRITE:
+        // GENERIC_WRITE maps to FILE_GENERIC_WRITE, which also carries
+        // FILE_CREATE_PIPE_INSTANCE and FILE_APPEND_DATA, so the app's pipe DACL
+        // (ChromaSync.PipeSddl, Everyone = GRGW) has to keep granting those.
+        // With this narrower mask a future release can tighten the DACL to this
+        // exact set without breaking installed shims; today's GRGW still grants
+        // a superset. SECURITY_IDENTIFICATION caps what the server may do with
+        // our token at identify-only (it never impersonates us anyway).
+        g_pipe = CreateFileW(L"\\\\.\\pipe\\UnifiedRgbChroma",
+                             FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE, 0, nullptr,
+                             OPEN_EXISTING,
+                             FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                             nullptr);
         if (g_pipe == INVALID_HANDLE_VALUE)
         {
             if (g_lastConnectLog == 0 || now - g_lastConnectLog > 60000)
@@ -361,6 +387,12 @@ BOOL APIENTRY DllMain(HMODULE self, DWORD reason, LPVOID reserved)
         std::lock_guard<std::mutex> lock(g_pipeMtx);
         ClosePipe();
         if (g_pipeEvt) { CloseHandle(g_pipeEvt); g_pipeEvt = nullptr; }
+        // g_real is deliberately NOT FreeLibrary'd: FreeLibrary from DllMain
+        // is documented-unsafe (it runs the real Razer DLL's detach under the
+        // loader lock). Each load/unload cycle of the SDK by the host re-maps
+        // this shim with fresh statics, so LoadReal LoadLibrary's the real DLL
+        // again and leaves one extra reference on it PER cycle. The image stays
+        // mapped once, so no memory growth; the references go at process exit.
     }
     return TRUE;
 }

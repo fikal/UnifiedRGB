@@ -34,8 +34,11 @@ built FileVersion == the version being released.
 - `UpdateClient` still contains a private-feed path selected by build-time
   props / `%APPDATA%\UnifiedRgb\backend.json`. Official builds pass
   neither, so it's inert — it exists so a fork can run its own feed.
-- Tests are a console harness: `dotnet run --project src/UnifiedRgb.Tests`.
-  Plain `dotnet test` exits successfully having run nothing.
+- Tests are a console harness: `dotnet run --project src/UnifiedRgb.Tests`
+  (what `release.ps1` and CI run; the exit code is the failure count). The
+  Tests csproj also hooks `AfterTargets="VSTest"` so a plain `dotnet test`
+  runs the same harness and fails on any failure - that Target is not dead
+  wiring, keep it.
 - The swap script inside the updater is version-frozen in each shipped
   build; its retry/taskkill quirks encode real field failures — see the
   comments in `UpdateService.cs` before "simplifying" it.

@@ -39,7 +39,7 @@ public sealed class GigabyteIsaBridge : IDisposable
     public static GigabyteIsaBridge? TryOpen()
     {
         if (!PawnIO.IsAvailable) return null;
-        var blob = IteSuperIo.ReadEmbedded("IsaBridgeEC.bin");
+        var blob = PawnIO.ReadEmbeddedModule("IsaBridgeEC.bin");
         if (blob == null) { Log.Info("gbec", "IsaBridgeEC.bin not embedded"); return null; }
         var io = PawnIO.LoadModule(blob);
         if (io == null) { Log.Info("gbec", "IsaBridgeEC module load REJECTED"); return null; }
@@ -178,7 +178,7 @@ public sealed class GigabyteIsaBridge : IDisposable
     public static void DumpWindows(int start, int count)
     {
         if (!PawnIO.IsAvailable) { Log.Info("gbec-dump", "PawnIO unavailable"); return; }
-        var blob = IteSuperIo.ReadEmbedded("IsaBridgeEC.bin");
+        var blob = PawnIO.ReadEmbeddedModule("IsaBridgeEC.bin");
         if (blob == null) { Log.Info("gbec-dump", "no module"); return; }
         using var io = PawnIO.LoadModule(blob);
         if (io == null) { Log.Info("gbec-dump", "module load rejected"); return; }

@@ -97,8 +97,11 @@ public sealed class LedPreview : FrameworkElement
         // slow effect no longer costs a full render pass per tick. The layout
         // counts too: a target switch with identical colors but different
         // geometry (two static-white 8-LED zones) kept drawing - and hit-
-        // testing - the old shape until a color changed. Content compare: the
-        // VM hands out fresh arrays per pull, so references never match.
+        // testing - the old shape until a color changed. Content compare
+        // against our own _shown copy: the VM refills ONE colors buffer in
+        // place per pull (and reuses the Pos/Rects instances until the
+        // selection changes), so a reference check on colors would never see
+        // a change.
         int n = _colors.Length;
         bool same = _shown.Length == n && _style == oldStyle && _aspect == oldAspect
                     && SameSeq(_pos, oldPos) && SameSeq(_rects, oldRects);

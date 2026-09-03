@@ -92,11 +92,11 @@ public sealed class EneDram : IRgbDevice
         return bus.ReadByteData(addr, 0x81);
     }
 
+    /// <summary>False when either transaction failed. A failed register select
+    /// must not be masked by a data write that then lands in whatever register
+    /// was selected last.</summary>
     static bool RegWrite(PawnSmbus bus, byte addr, ushort reg, byte val)
-    {
-        bus.WriteWordData(addr, 0x00, Swap(reg));
-        return bus.WriteByteData(addr, 0x01, val);
-    }
+        => bus.WriteWordData(addr, 0x00, Swap(reg)) && bus.WriteByteData(addr, 0x01, val);
 
     bool RegWriteBlock(ushort reg, ReadOnlySpan<byte> data)
     {
@@ -232,9 +232,15 @@ public sealed class EneDram : IRgbDevice
 
             if (!_directOn)
             {
-                RegWrite(_bus, _addr, REG_DIRECT, 0x01);
-                RegWrite(_bus, _addr, REG_APPLY, 0x01);
-                _directOn = true;
+                // Latch only on success: a NAKed enable used to be recorded as
+                // done, leaving the stick on its onboard effect (colour writes
+                // landing, nothing showing) until a rescan, with no log line.
+                bool w1 = RegWrite(_bus, _addr, REG_DIRECT, 0x01);
+                bool w2 = RegWrite(_bus, _addr, REG_APPLY, 0x01);
+                _directOn = w1 && w2;
+                if (!_directOn)
+                    Log.Occasional($"ene:{_addr:X2}", "EneDram",
+                        $"direct-mode enable failed at 0x{_addr:X2} (direct={w1} apply={w2}) - will retry on the next frame");
             }
 
             // Direct colors are R,B,G per LED. BATCHED: the ENE data register
@@ -270,6 +276,9 @@ public sealed class EneDram : IRgbDevice
                 for (int off = 0; off < buf.Length; off += 3)
                     RegWriteBlock((ushort)(_directReg + off), buf.AsSpan(off, 3));
 
+            // Don't dedup a frame written while direct mode is still off: the
+            // next call (engine keepalive or user apply) must repeat the enable.
+            if (!_directOn) return;
             if (_last == null || _last.Length != colors.Count) _last = new Rgb[colors.Count];
             for (int i = 0; i < colors.Count; i++) _last[i] = colors[i];
         }

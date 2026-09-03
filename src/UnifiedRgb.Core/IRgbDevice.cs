@@ -86,16 +86,6 @@ public enum DeviceType
     Other,
 }
 
-/// <summary>Discovers and opens devices of a particular family. Each transport
-/// (HID, WinUSB, SMBus) contributes one or more providers.</summary>
-public interface IDeviceProvider
-{
-    string Name { get; }
-
-    /// <summary>Enumerate and open all present devices this provider supports.</summary>
-    IEnumerable<IRgbDevice> Detect();
-}
-
 /// <summary>Keyboards that can resolve a Windows virtual-key code to the LED
 /// under that physical key — powers the reactive typing effects.</summary>
 public interface IKeyMappedDevice

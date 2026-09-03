@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Net.Http;
-using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace UnifiedRgb.Core.Net;
@@ -173,7 +172,7 @@ public static class OpenRgbManager
             WindowStyle = ProcessWindowStyle.Hidden,
             WorkingDirectory = Path.GetDirectoryName(exe)!,
         });
-        if (_proc != null) HideWindowsOf(_proc.Id, 30_000);
+        if (_proc != null) HideWindowsOf(_proc, 30_000);
         for (int i = 0; i < 60; i++)
         {
             if (IsServerUp())
@@ -187,12 +186,15 @@ public static class OpenRgbManager
                     // crashed on this machine's hardware. Hand it to the
                     // bisect; when armed it narrows the detector list and we
                     // relaunch until the culprit is isolated.
-                    if (OpenRgbCrashBisect.OnCrash(ConfigDir))
+                    bool crash = ExitLooksLikeCrash();
+                    if (crash && OpenRgbCrashBisect.OnCrash(ConfigDir))
                     {
                         status?.Invoke("OpenRGB crashed while scanning — isolating the responsible detector...");
                         return LaunchResult.Relaunch;
                     }
-                    status?.Invoke("OpenRGB crashed while scanning your hardware — hit Send in Support so we can see which device");
+                    status?.Invoke(crash
+                        ? "OpenRGB crashed while scanning your hardware — hit Send in Support so we can see which device"
+                        : $"OpenRGB quit during its scan ({ExitCodeText()}) — not a detector crash; the OpenRGB log in Support has the reason");
                     return LaunchResult.Failed;
                 }
 
@@ -219,18 +221,45 @@ public static class OpenRgbManager
             if (_proc is { HasExited: true })
             {
                 // Died before the port even opened — also a detection crash
-                // (early detectors run before the server socket comes up).
-                if (OpenRgbCrashBisect.OnCrash(ConfigDir))
+                // (early detectors run before the server socket comes up),
+                // unless the exit code says it simply failed to start.
+                bool crash = ExitLooksLikeCrash();
+                if (crash && OpenRgbCrashBisect.OnCrash(ConfigDir))
                 {
                     status?.Invoke("OpenRGB crashed while scanning — isolating the responsible detector...");
                     return LaunchResult.Relaunch;
                 }
-                status?.Invoke("OpenRGB exited during startup");
+                status?.Invoke(crash
+                    ? "OpenRGB exited during startup"
+                    : $"OpenRGB failed to start ({ExitCodeText()}) — not a detector crash; the OpenRGB log in Support has the reason");
                 return LaunchResult.Failed;
             }
         }
         status?.Invoke("OpenRGB did not open its server port");
         return LaunchResult.Failed;
+    }
+
+    /// <summary>Did the bundled server die the way a detector crash dies (access
+    /// violation, fast-fail, abort) rather than quit? Feeding an ordinary exit
+    /// (missing VC++ runtime, AV block, a broken moving-master build, Qt's
+    /// quit-on-last-window) to the bisect would convict an innocent detector
+    /// permanently and hide the real failure.</summary>
+    static bool ExitLooksLikeCrash()
+    {
+        if (_proc is not { HasExited: true }) return true;   // port gone but process alive: hung mid-scan, as before
+        int code;
+        try { code = _proc.ExitCode; } catch { return true; }
+        if (code == 3) return true;                            // CRT abort()
+        uint u = (uint)code;
+        if (u < 0x80000000) return false;                      // ordinary exit code
+        // NTSTATUS: a loader failure (missing/incompatible DLL) is not a crash.
+        return u is not (0xC0000135 or 0xC0000142 or 0xC000007B or 0xC0000139);
+    }
+
+    static string ExitCodeText()
+    {
+        try { return _proc is { HasExited: true } p ? $"exit code 0x{(uint)p.ExitCode:X8}" : "server port closed"; }
+        catch { return "exit code unknown"; }
     }
 
     /// <summary>Wait for the device list to settle. False = the server died
@@ -303,29 +332,10 @@ public static class OpenRgbManager
         try
         {
             Directory.CreateDirectory(ConfigDir);
-            string path = Path.Combine(ConfigDir, "OpenRGB.json");
-            JsonNode root = File.Exists(path)
-                ? JsonNode.Parse(File.ReadAllText(path)) ?? new JsonObject()
-                : new JsonObject();
-            var detectors = root["Detectors"]?["detectors"] as JsonObject;
-            if (detectors == null)
-            {
-                detectors = new JsonObject();
-                root["Detectors"] = new JsonObject { ["detectors"] = detectors };
-            }
-            bool changed = false;
-            foreach (var n in names.SelectMany(n =>
-                         DetectorAliases.TryGetValue(n, out var alias) ? new[] { n, alias } : new[] { n }))
-            {
-                if (detectors[n]?.GetValue<bool>() != false)
-                {
-                    detectors[n] = false;
-                    changed = true;
-                }
-            }
-            if (changed)
-                SafeFile.WriteAllText(path, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-            return changed;
+            var expanded = names.SelectMany(n =>
+                DetectorAliases.TryGetValue(n, out var alias) ? new[] { n, alias } : new[] { n });
+            return OpenRgbDetectorConfig.Edit(ConfigDir,
+                det => OpenRgbDetectorConfig.Set(det, expanded, enabled: false), createIfMissing: true);
         }
         catch (Exception ex)
         {
@@ -384,29 +394,26 @@ public static class OpenRgbManager
         int changed = 0;
         try
         {
-            string path = Path.Combine(ConfigDir, "OpenRGB.json");
-            if (!File.Exists(path)) return 0;
-            JsonNode root = JsonNode.Parse(File.ReadAllText(path)) ?? new JsonObject();
-            if (root["Detectors"]?["detectors"] is not JsonObject detectors) return 0;
-
-            // One enumeration, names only, everything disposed — the old code
-            // called Process.GetProcesses() INSIDE the policy loop (3x) and
-            // never disposed the ~250 returned Process objects per pass.
-            var running = new List<string>();
-            foreach (var p in Process.GetProcesses())
+            OpenRgbDetectorConfig.Edit(ConfigDir, detectors =>
             {
-                try { running.Add(p.ProcessName); } catch { }
-                finally { p.Dispose(); }
-            }
-            foreach (var (procPrefix, detPrefix, reason) in ConflictPolicies)
-            {
-                if (!running.Any(n => n.StartsWith(procPrefix, StringComparison.OrdinalIgnoreCase))) continue;
-                changed += DisablePrefix(detectors, detPrefix, reason);
-            }
-            foreach (var (detPrefix, reason) in UnstableDetectors)
-                changed += DisablePrefix(detectors, detPrefix, reason);
-            if (changed > 0)
-                SafeFile.WriteAllText(path, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+                // One enumeration, names only, everything disposed — the old code
+                // called Process.GetProcesses() INSIDE the policy loop (3x) and
+                // never disposed the ~250 returned Process objects per pass.
+                var running = new List<string>();
+                foreach (var p in Process.GetProcesses())
+                {
+                    try { running.Add(p.ProcessName); } catch { }
+                    finally { p.Dispose(); }
+                }
+                foreach (var (procPrefix, detPrefix, reason) in ConflictPolicies)
+                {
+                    if (!running.Any(n => n.StartsWith(procPrefix, StringComparison.OrdinalIgnoreCase))) continue;
+                    changed += DisablePrefix(detectors, detPrefix, reason);
+                }
+                foreach (var (detPrefix, reason) in UnstableDetectors)
+                    changed += DisablePrefix(detectors, detPrefix, reason);
+                return changed > 0;
+            });
         }
         catch (Exception ex) { Log.Warn("openrgb", $"conflict policy failed: {ex.Message}"); }
         return changed;
@@ -447,19 +454,26 @@ public static class OpenRgbManager
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
+    static int _launchGen;   // bumped per launch so a sweeper for a superseded process stops
+
     /// <summary>Hide every window the process shows during its first moments
     /// (main window, warning dialogs). Hidden windows keep the app alive;
     /// friends never interact with OpenRGB directly anyway.</summary>
-    static void HideWindowsOf(int pid, int forMs)
+    static void HideWindowsOf(Process proc, int forMs)
     {
+        int pid = proc.Id;
+        int gen = Interlocked.Increment(ref _launchGen);
         new Thread(() =>
         {
             // The server's window (if any) appears within the first seconds of
             // launch: sweep fast early, then back way off. The old flat 250 ms
-            // cadence was 120 full EnumWindows sweeps over 30 s.
+            // cadence was 120 full EnumWindows sweeps over 30 s. Stops early
+            // once the process is gone or a newer launch superseded it - the
+            // bisect relaunches up to 14x, and sweepers used to keep walking
+            // every window over dead (reusable) pids for their full 30 s.
             long start = Environment.TickCount64;
             long end = start + forMs;
-            while (Environment.TickCount64 < end)
+            while (Environment.TickCount64 < end && gen == Volatile.Read(ref _launchGen) && !HasExited(proc))
             {
                 EnumWindows((h, _) =>
                 {
@@ -471,6 +485,11 @@ public static class OpenRgbManager
             }
         })
         { IsBackground = true, Name = "openrgb-hide" }.Start();
+    }
+
+    static bool HasExited(Process p)
+    {
+        try { return p.HasExited; } catch { return true; }
     }
 
     /// <summary>Tail of the newest log OpenRGB wrote in our managed config dir.

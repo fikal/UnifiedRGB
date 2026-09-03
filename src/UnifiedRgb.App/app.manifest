@@ -6,7 +6,7 @@
        sensor modules (CPU temp, Super-I/O fans), and raw HID all need admin.
        Requiring it up front beats launching with half the devices missing.
        Autostart stays prompt-free: the logon task runs with highest
-       privileges, and the update swap + diag helper inherit elevation. -->
+       privileges, and the update swap script inherits elevation. -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security>
       <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">

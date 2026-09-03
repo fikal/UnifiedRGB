@@ -12,6 +12,9 @@ static class KeyPolicy
     public static void MouseFirst(KeyEventArgs e)
     {
         if (e.OriginalSource is TextBox) return;
-        if (e.Key != Key.Tab) e.Handled = true;
+        // Key.System = Alt chord (Alt+F4); must reach DefWindowProc - see
+        // Styles.MouseOnly_PreviewKeyDown.
+        if (e.Key is Key.Tab or Key.System) return;
+        e.Handled = true;
     }
 }

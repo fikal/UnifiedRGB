@@ -46,11 +46,19 @@ public static class OpenRgbLink
         {
             _client = OpenRgbClient.Connect(port: OpenRgbManager.Port);
             int count = _client.GetControllerCount();
+            int failures = 0;
             for (int i = 0; i < count; i++)
             {
                 OpenRgbClient.DeviceInfo info;
-                try { info = _client.GetControllerData(i); }
-                catch (Exception ex) { Log.Warn("openrgb", $"device {i}: read failed: {ex.Message}"); continue; }
+                try { info = _client.GetControllerData(i); failures = 0; }
+                catch (Exception ex)
+                {
+                    Log.Warn("openrgb", $"device {i}: read failed: {ex.Message}");
+                    // Each miss can cost the 5 s read timeout, on the UI thread
+                    // (Rescan): a server answering garbage is abandoned, not walked.
+                    if (++failures >= 3) { Log.Warn("openrgb", "3 consecutive device read failures - stopping the enumeration"); break; }
+                    continue;
+                }
 
                 if (IsNativelyCovered(info))
                 {
@@ -65,7 +73,10 @@ public static class OpenRgbLink
                 }
                 nameCounts.TryGetValue(info.Name, out int dup);
                 nameCounts[info.Name] = dup + 1;
-                list.Add(new OpenRgbDevice(_client, info, dup));
+                // One malformed remote device (a zone table that does not add
+                // up) skips that device, not the whole bridge.
+                try { list.Add(new OpenRgbDevice(_client, info, dup)); }
+                catch (Exception ex) { Log.Warn("openrgb", $"device {i} '{info.Name}': skipped ({ex.Message})"); }
             }
             Log.Info("openrgb", $"bridged {list.Count} device(s), skipped {LastSkipped.Count} natively-covered");
         }

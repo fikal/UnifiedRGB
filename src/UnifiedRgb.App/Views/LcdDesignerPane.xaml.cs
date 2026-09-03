@@ -51,15 +51,16 @@ public partial class LcdDesignerPane : UserControl
         if (_drag != null)
         {
             var p = e.GetPosition(lb);
-            _drag.X = Clamp(_startX + (p.X - _dragOrigin.X), 0, 312);
-            _drag.Y = Clamp(_startY + (p.Y - _dragOrigin.Y), 0, 232);
+            // One notification (= one panel render) per move, not X then Y.
+            _drag.MoveTo(Clamp(_startX + (p.X - _dragOrigin.X), 0, 312),
+                         Clamp(_startY + (p.Y - _dragOrigin.Y), 0, 232));
         }
         else if (_bgDrag)
         {
             var p = e.GetPosition(lb);
             // Generous clamp: allow dragging mostly off-screen for framing.
-            VM.LcdBgX = Clamp(_bgStartX + (p.X - _dragOrigin.X), -VM.LcdBgW + 24, 296);
-            VM.LcdBgY = Clamp(_bgStartY + (p.Y - _dragOrigin.Y), -VM.LcdBgH + 24, 216);
+            VM.MoveBg(Clamp(_bgStartX + (p.X - _dragOrigin.X), -VM.LcdBgW + 24, 296),
+                      Clamp(_bgStartY + (p.Y - _dragOrigin.Y), -VM.LcdBgH + 24, 216));
         }
     }
 
@@ -100,13 +101,7 @@ public partial class LcdDesignerPane : UserControl
         if (!_gripDrag) return;
         var p = e.GetPosition(this);
         double dx = p.X - _gripOrigin.X, dy = p.Y - _gripOrigin.Y;
-        if (VM.LcdBgAspectLock)
-            VM.LcdBgW = _gripStartW + dx;              // setter derives H
-        else
-        {
-            VM.LcdBgW = _gripStartW + dx;
-            VM.LcdBgH = _gripStartH + dy;
-        }
+        VM.SetBgSize(_gripStartW + dx, _gripStartH + dy);   // honors the aspect lock; one render per move
         e.Handled = true;
     }
 

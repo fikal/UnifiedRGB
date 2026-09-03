@@ -11,7 +11,13 @@ public sealed class WinUsbDevice : IDisposable
 {
     readonly SafeFileHandle _file;
     readonly IntPtr _iface;
-    volatile bool _disposed;
+    // Transfer locks, as in HidHandle: Dispose takes both, so an in-flight
+    // ReadPipe/WritePipe (bounded by the pipe timeouts) finishes before the
+    // interface is freed under it — the telemetry thread reads the receiver
+    // outside the device lock that a Rescan disposes it under.
+    readonly object _rdLock = new(), _wrLock = new();
+    volatile bool _disposed;   // refuses new transfers; set before the locks are taken
+    bool _freed;               // under both locks: the interface handle is gone
 
     public byte BulkOutPipe { get; }
     public byte BulkInPipe { get; }   // 0 = none found
@@ -58,31 +64,49 @@ public sealed class WinUsbDevice : IDisposable
     }
 
     public bool Write(byte pipe, byte[] buf)
-        => !_disposed && WinUsb_WritePipe(_iface, pipe, buf, (uint)buf.Length, out _, IntPtr.Zero);
+    {
+        lock (_wrLock)
+            return !_disposed && WinUsb_WritePipe(_iface, pipe, buf, (uint)buf.Length, out _, IntPtr.Zero);
+    }
 
     /// <summary>Read up to buf.Length bytes from the bulk IN pipe in 64-byte
     /// chunks; returns bytes read (0 on timeout/no pipe).</summary>
     public int Read(byte[] buf)
     {
-        if (BulkInPipe == 0 || _disposed) return 0;
-        int got = 0;
-        var chunk = new byte[64];
-        while (got < buf.Length)
+        if (BulkInPipe == 0) return 0;
+        lock (_rdLock)
         {
-            if (!WinUsb_ReadPipe(_iface, BulkInPipe, chunk, 64, out uint n, IntPtr.Zero) || n == 0) break;
-            int copy = Math.Min((int)n, buf.Length - got);
-            Array.Copy(chunk, 0, buf, got, copy);
-            got += copy;
+            if (_disposed) return 0;
+            int got = 0;
+            var chunk = new byte[64];
+            while (got < buf.Length && !_disposed)
+            {
+                if (!WinUsb_ReadPipe(_iface, BulkInPipe, chunk, 64, out uint n, IntPtr.Zero) || n == 0) break;
+                int copy = Math.Min((int)n, buf.Length - got);
+                Array.Copy(chunk, 0, buf, got, copy);
+                got += copy;
+            }
+            return got;
         }
-        return got;
     }
 
+    /// <summary>Idempotent. Cancels a parked transfer first, then frees under
+    /// both transfer locks. The cancel is what makes a Rescan/exit wait
+    /// milliseconds rather than the 1-2 s pipe timeouts — but only for a caller
+    /// that does not serialize Dispose behind its own transfer lock (LianLiWireless
+    /// snapshots its receiver under _rxLock and releases it before the bulk
+    /// Write+Read for exactly that reason).</summary>
     public void Dispose()
     {
-        if (_disposed) return;   // WinUsb_Free twice on one interface handle is a double free
         _disposed = true;
-        WinUsb_Free(_iface);
-        _file.Dispose();
+        try { CancelIoEx(_file, IntPtr.Zero); } catch { }
+        lock (_wrLock) lock (_rdLock)
+        {
+            if (_freed) return;   // WinUsb_Free twice on one interface handle is a double free
+            _freed = true;
+            WinUsb_Free(_iface);
+            _file.Dispose();
+        }
     }
 
     /*--------------------------- P/Invoke ---------------------------*/
@@ -110,4 +134,5 @@ public sealed class WinUsbDevice : IDisposable
     [DllImport("winusb.dll", SetLastError = true)] static extern bool WinUsb_SetPipePolicy(IntPtr iface, byte pipe, uint policy, uint valueLen, ref uint value);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr sec, uint disp, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool CancelIoEx(SafeFileHandle h, IntPtr overlapped);
 }

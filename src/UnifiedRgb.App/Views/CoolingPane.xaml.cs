@@ -77,6 +77,15 @@ public partial class CoolingPane : UserControl
             FanCurveGraph.SetLive(null, null);
     }
 
+    /// <summary>The name box handles its own mouse-down (the TextEditor marks it
+    /// handled), so the ListBoxItem never saw the click and the row was not
+    /// selected: the editor on the right kept editing the PREVIOUS fan while the
+    /// caret sat in this one. Focus in the box = this fan is the edited fan.</summary>
+    void CoolingLabel_GotFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        if (sender is TextBox { DataContext: FanRowModel f }) VM.EditingFan = f;
+    }
+
     /// <summary>Cooling fan-label editor: Enter commits, Escape reverts —
     /// both hand focus away so the LostFocus binding settles the text.</summary>
     void CoolingLabel_KeyDown(object sender, KeyEventArgs e)

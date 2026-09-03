@@ -62,9 +62,16 @@ public partial class WizardWindow : Window
         InstallBtn.IsEnabled = false;
         PawnBar.Visibility = Visibility.Visible;
         PawnStatus.Text = "installing…";
-        await _vm.InstallPawnIoAsync();
-        PawnBar.Visibility = Visibility.Collapsed;
-        InstallBtn.IsEnabled = true;
+        // async void: an escaping exception (the post-install rescan can throw)
+        // is the app-wide error dialog, and the step used to stay stuck with the
+        // busy bar up and the button disabled. Same guard as SettingsPane.
+        try { await _vm.InstallPawnIoAsync(); }
+        catch (Exception ex) { UnifiedRgb.Core.Log.Error("pawnio", ex); }
+        finally
+        {
+            PawnBar.Visibility = Visibility.Collapsed;
+            InstallBtn.IsEnabled = true;
+        }
         PawnStatus.Text = _vm.PawnIoMissing ? "not installed — try again or skip" : "installed ✓";
         LoadSensors();
     }

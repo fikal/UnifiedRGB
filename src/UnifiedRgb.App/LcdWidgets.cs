@@ -14,21 +14,38 @@ public static class NetMeter
     static double _down, _up;   // bytes/sec, smoothed a touch to stop the jitter
     static string _text = "↓0 KB/s ↑0 KB/s";
 
-    static (long rx, long tx) Totals()
+    // The adapter list is re-enumerated every 30 s, not per sample:
+    // GetAllNetworkInterfaces walks GetAdaptersAddresses and materialises the
+    // whole address/DNS/gateway graph for every adapter, while the byte
+    // counters come from a per-call GetIfEntry2 on the cached objects
+    // (GetIPv4Statistics is live). A newly-up adapter shows within 30 s.
+    static NetworkInterface[]? _ifaces;
+    static long _ifacesAt;
+    const int IfaceRefreshMs = 30_000;
+
+    /// <summary>Null when a counter read failed (an adapter vanished mid-sample):
+    /// the partial sum would otherwise feed the rate as a negative or huge delta.</summary>
+    static (long rx, long tx)? Totals()
     {
         long rx = 0, tx = 0;
         try
         {
-            foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+            long now = Environment.TickCount64;
+            if (_ifaces == null || now - _ifacesAt > IfaceRefreshMs)
             {
-                if (ni.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel)
-                    continue;
-                if (ni.OperationalStatus != OperationalStatus.Up) continue;
+                _ifaces = NetworkInterface.GetAllNetworkInterfaces()
+                    .Where(ni => ni.NetworkInterfaceType is not (NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel)
+                              && ni.OperationalStatus == OperationalStatus.Up)
+                    .ToArray();
+                _ifacesAt = now;
+            }
+            foreach (var ni in _ifaces)
+            {
                 var s = ni.GetIPv4Statistics();
                 rx += s.BytesReceived; tx += s.BytesSent;
             }
         }
-        catch { }
+        catch { _ifaces = null; return null; }   // re-enumerate on the next sample
         return (rx, tx);
     }
 
@@ -41,7 +58,7 @@ public static class NetMeter
         double dt = _lastTicks == 0 ? 0 : (now - _lastTicks) / 1000.0;
         if (dt is > 0 and < 0.4) return _text;   // too soon to resample; reuse
 
-        var (rx, tx) = Totals();
+        if (Totals() is not (long rx, long tx)) return _text;
         if (_lastTicks != 0 && dt > 0)
         {
             // Counters wrap/reset on adapter changes: a negative delta is
@@ -70,7 +87,10 @@ public static class NetMeter
 /// cached string so a slow or offline fetch never stalls rendering.</summary>
 public static class WeatherService
 {
-    static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(8) };
+    // The reply is one short line; bound the buffer (default 2 GB) so a
+    // misbehaving server or captive portal can't balloon the tray process.
+    static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(8), MaxResponseContentBufferSize = 4096 };
+    const int MaxTextLength = 48;    // "-12°F Light freezing drizzle" is ~30
     static volatile string _current = "--°";
     static volatile bool _started;
 
@@ -92,7 +112,9 @@ public static class WeatherService
             {
                 // %t = temperature, %C = condition text; u = US units (°F).
                 var raw = (await Http.GetStringAsync("https://wttr.in/?format=%t+%C&u")).Trim();
-                if (!string.IsNullOrWhiteSpace(raw) && !raw.Contains("Unknown", StringComparison.OrdinalIgnoreCase))
+                if (raw.Length > MaxTextLength)
+                    UnifiedRgb.Core.Log.Occasional("lcd", "weather", $"unexpected reply ({raw.Length} chars) ignored");
+                else if (!string.IsNullOrWhiteSpace(raw) && !raw.Contains("Unknown", StringComparison.OrdinalIgnoreCase))
                     _current = raw.TrimStart('+');                    // wttr prefixes positive temps with '+'
             }
             catch (Exception ex)

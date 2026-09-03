@@ -36,7 +36,7 @@ public static class SupportUpload
                 appVersion,
             });
             req.Content = new StringContent(payload, Encoding.UTF8, "application/json");
-            var response = await Backend.Http.SendAsync(req);
+            using var response = await Backend.Http.SendAsync(req);
 
             string body = await response.Content.ReadAsStringAsync();
             if (!response.IsSuccessStatusCode)

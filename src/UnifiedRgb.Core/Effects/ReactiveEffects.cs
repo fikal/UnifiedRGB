@@ -18,6 +18,8 @@ public sealed class KeyFade : IEffect
 {
     public string Name => "Key Fade";
     public bool UsesBaseColor => true;
+    public bool Bakeable => false;      // live key input - a baked loop would be a dark still
+    public bool LiveInput => true;
 
     [ThreadStatic] static KeyboardTap.KeyEvent[]? _ev;
 
@@ -31,7 +33,7 @@ public sealed class KeyFade : IEffect
         var ev = _ev ??= new KeyboardTap.KeyEvent[64];
         int n = KeyboardTap.Snapshot(ev);
         double now = KeyboardTap.Now;
-        double rate = 2.5 * Math.Clamp(speed, 0.1, 4);
+        double rate = 2.5 * Math.Clamp(Math.Abs(speed), 0.1, 4);   // fade rate, not direction
 
         var dim = ColorUtil.Scale(baseColor, 0.06);          // resting glow
         for (int i = 0; i < buf.Length; i++) buf[i] = dim;
@@ -73,6 +75,8 @@ public sealed class KeyRipple : IEffect
 {
     public string Name => "Key Ripple";
     public bool UsesBaseColor => Color == PatternColor.Solid;
+    public bool Bakeable => false;      // live key input - a baked loop would be a dark still
+    public bool LiveInput => true;
 
     public PatternColor Color = PatternColor.Rainbow;
     public IReadOnlyList<Rgb>? Palette;
@@ -80,6 +84,10 @@ public sealed class KeyRipple : IEffect
     const double MaxAge = 2.0;
 
     [ThreadStatic] static KeyboardTap.KeyEvent[]? _ev;
+
+    /// <summary>One live press, resolved once per frame: everything about a
+    /// ring except its distance to a given LED.</summary>
+    readonly record struct Ring(float Ox, float Oy, double Radius, double Life2, Rgb Col);
 
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb baseColor)
         => Render(null!, 0, buf, pos, t, speed, baseColor);
@@ -91,36 +99,44 @@ public sealed class KeyRipple : IEffect
         var ev = _ev ??= new KeyboardTap.KeyEvent[64];
         int n = KeyboardTap.Snapshot(ev);
         double now = KeyboardTap.Now;
-        double v0 = 0.65 * Math.Clamp(speed, 0.1, 4);        // ring speed, widths/sec
+        double v0 = 0.65 * Math.Clamp(Math.Abs(speed), 0.1, 4);   // ring speed, widths/sec (not direction)
         double aspect = Math.Max(1.0, device?.PreviewAspect ?? 2.0);
         var km = device as IKeyMappedDevice;
+
+        // Per-press invariants (origin key lookup, radius, life, colour) are
+        // resolved ONCE per frame here; the old loop redid them per LED per
+        // press (an HsvToRgb + dictionary lookup + Pow per LED per press).
+        Span<Ring> rings = stackalloc Ring[ev.Length];
+        int m = 0;
+        for (int e = 0; e < n; e++)
+        {
+            double age = now - ev[e].Down;
+            if (age < 0 || age > MaxAge) continue;
+
+            float ox = 0.5f, oy = 0.5f;
+            if (km != null)
+            {
+                int led = km.LedForVk(ev[e].Vk) - offset;
+                if (led < 0 || led >= pos.Length) continue;
+                ox = pos[led].X; oy = pos[led].Y;
+            }
+            double life = 1.0 - age / MaxAge;
+            rings[m++] = new Ring(ox, oy, age * v0, life * life, RingColor(ev[e].Down, baseColor));
+        }
 
         for (int i = 0; i < buf.Length; i++)
         {
             double cr = 0, cg = 0, cb = 0;
-            for (int e = 0; e < n; e++)
+            for (int e = 0; e < m; e++)
             {
-                double age = now - ev[e].Down;
-                if (age < 0 || age > MaxAge) continue;
-
-                float ox = 0.5f, oy = 0.5f;
-                if (km != null)
-                {
-                    int led = km.LedForVk(ev[e].Vk) - offset;
-                    if (led < 0 || led >= pos.Length) continue;
-                    ox = pos[led].X; oy = pos[led].Y;
-                }
-                double dx = pos[i].X - ox;
-                double dy = (pos[i].Y - oy) / aspect;        // y span is physically smaller
-                double dist = Math.Sqrt(dx * dx + dy * dy);
-                double radius = age * v0;
-                double ring = Math.Exp(-Math.Pow((dist - radius) / 0.045, 2));
-                double life = 1.0 - age / MaxAge;
-                double s = ring * life * life;
+                ref readonly var r = ref rings[e];
+                double dx = pos[i].X - r.Ox;
+                double dy = (pos[i].Y - r.Oy) / aspect;      // y span is physically smaller
+                double q = (Math.Sqrt(dx * dx + dy * dy) - r.Radius) / 0.045;
+                double s = Math.Exp(-q * q) * r.Life2;
                 if (s <= 0.01) continue;
 
-                var col = RingColor(ev[e].Down, baseColor);
-                cr += col.R * s; cg += col.G * s; cb += col.B * s;
+                cr += r.Col.R * s; cg += r.Col.G * s; cb += r.Col.B * s;
             }
             buf[i] = new Rgb(
                 (byte)Math.Min(255, (int)cr),
@@ -135,8 +151,11 @@ public sealed class KeyRipple : IEffect
     {
         if (Color == PatternColor.Solid) return baseColor;
         var pal = Palette;
+        // Wrap BEFORE the int cast: pressTime is process uptime, and a
+        // saturated (int) of it picked the same colour for every ring after
+        // ~25 days up.
         if (Color == PatternColor.Gradient && pal is { Count: > 0 })
-            return pal[(int)(pressTime * 997.0) % pal.Count];
+            return pal[(int)((pressTime * 997.0) % pal.Count)];
         return ColorUtil.HsvToRgb(pressTime * 79.0 % 360.0, 1.0, 1.0);
     }
 }

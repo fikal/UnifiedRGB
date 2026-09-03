@@ -12,8 +12,6 @@ namespace UnifiedRgb.App;
 /// clockwise into the device's RGB565 portrait buffer.</summary>
 public sealed class LcdController : IDisposable
 {
-    static readonly bool RotateClockwise = true;
-
     readonly ThermalrightLcd _lcd;
     byte[]? _latest;
     Thread? _streamThread;
@@ -21,6 +19,11 @@ public sealed class LcdController : IDisposable
 
     string? _bgPath;
     BitmapSource? _bgCache;
+    DateTime _bgStamp;         // write time of the loaded file (re-decoded when it changes)
+    DateTime _bgStatAt;        // the stamp is re-read at most every 2 s, not per render tick
+    double _bgNatW = 1, _bgNatH = 1;   // natural pixel size of the loaded file
+    string? _bgFailedPath;     // last path that failed to decode; retried every 30 s
+    DateTime _bgFailedAt;
 
     public LcdDesign Design { get; set; } = LcdDesign.Default();
     public ICpuTempProvider Temp { get; set; } = new NullCpuTempProvider();
@@ -55,25 +58,34 @@ public sealed class LcdController : IDisposable
     /// back to its built-in screen whenever the stream goes idle for a few
     /// seconds — under the old send-per-tick model that showed as the screen
     /// blinking off for ~a second every 5-8 s. Re-sending the latest frame
-    /// continuously keeps the link warm; the sleep caps identical-frame spam
-    /// at ~25 fps, and a slow (full-speed USB) link self-paces via the
+    /// keeps the link warm: a NEW frame goes out at once (the 40 ms floor caps
+    /// a GIF at ~25 fps), while an UNCHANGED one is re-sent as a ~2 fps
+    /// keepalive — a static design publishes once a second, and 301 HID
+    /// reports per frame at 25 fps was ~7,500 kernel writes/s all day to
+    /// redraw the same image. A slow (full-speed USB) link self-paces via the
     /// blocking writes.</summary>
     void StreamLoop()
     {
         int sent = 0; long msSum = 0;
         var report = DateTime.UtcNow;
+        byte[]? lastSent = null;
         while (!_stop)
         {
             var frame = Volatile.Read(ref _latest);
             if (frame == null) { Thread.Sleep(50); continue; }
+            // Reference identity is enough: RenderDesign always renders into
+            // the buffer that is NOT published, so a new publish is a new
+            // reference (and the screen-off blank is one shared array).
+            bool unchanged = ReferenceEquals(frame, lastSent);
             long t0 = Environment.TickCount64;
             try { _lcd.ShowFrame(frame); }
             catch (Exception ex)
             {
                 UnifiedRgb.Core.Log.Occasional("lcd", "lcd", $"frame send failed: {ex.Message}");
                 Thread.Sleep(500);
-                continue;
+                continue;   // lastSent untouched: a failed frame is retried promptly
             }
+            lastSent = frame;
             long ms = Environment.TickCount64 - t0;
             sent++; msSum += ms;
             if ((DateTime.UtcNow - report).TotalMinutes >= 5)
@@ -83,12 +95,11 @@ public sealed class LcdController : IDisposable
                 sent = 0; msSum = 0; report = DateTime.UtcNow;
             }
             if (ms < 40) Thread.Sleep((int)(40 - ms));
-            // Screen off = the shared blank frame: drop from 25 fps to ~2 fps.
-            // Enough to keep the panel from falling back to its firmware
-            // screen, but not ~720k identical USB transfers per night. Sleep in
-            // short slices so flipping the lights back on stays responsive.
-            if (ReferenceEquals(frame, _blank))
-                for (int i = 0; i < 9 && !_stop && ReferenceEquals(Volatile.Read(ref _latest), _blank); i++)
+            // Keepalive cadence for a frame the panel already shows. Sleep in
+            // short slices so a fresh publish (or the lights flipping back on)
+            // is picked up within 50 ms.
+            if (unchanged)
+                for (int i = 0; i < 9 && !_stop && ReferenceEquals(Volatile.Read(ref _latest), frame); i++)
                     Thread.Sleep(50);
         }
     }
@@ -108,7 +119,20 @@ public sealed class LcdController : IDisposable
         var want = _gif != null ? TimeSpan.FromMilliseconds(100) : TimeSpan.FromSeconds(1);
         if (_timerRef != null && _timerRef.Interval != want) _timerRef.Interval = want;
 
-        Volatile.Write(ref _latest, On ? RenderDesign() : _blank);
+        var frame = _blank;
+        if (On)
+        {
+            try { frame = RenderDesign(); }
+            catch (Exception ex)
+            {
+                // Element/background values come straight from lcd.json or a
+                // shared scene file (a FontSize of 0 or a negative rect throws
+                // in FormattedText/Rect). Unguarded, that would reach the app
+                // handler and pop a modal error dialog every tick.
+                UnifiedRgb.Core.Log.Occasional("lcd-render", "lcd", $"render failed: {ex.Message}");
+            }
+        }
+        Volatile.Write(ref _latest, frame);
         Ticked?.Invoke();
     }
 
@@ -141,7 +165,7 @@ public sealed class LcdController : IDisposable
 
     static string GpuTempText()
     {
-        UnifiedRgb.Core.Sensors.SensorHub.Touch();
+        UnifiedRgb.Core.Sensors.SensorHub.TouchTemps();   // temp only: don't arm the Cooling-pane sweep
         return UnifiedRgb.Core.Sensors.SensorHub.GpuTempC is int g ? $"{g}°C" : "--°C";
     }
 
@@ -217,14 +241,12 @@ public sealed class LcdController : IDisposable
         _rtb.CopyPixels(bgra, LW * 4, 0);
 
         int dw = ThermalrightLcd.Width, dh = ThermalrightLcd.Height;
-        // Rotate into the buffer the stream thread is not holding.
+        // Rotate 90 deg clockwise into the buffer the stream thread is not holding.
         var outp = ReferenceEquals(Volatile.Read(ref _latest), _outA) ? _outB : _outA;
         for (int dy = 0; dy < dh; dy++)
             for (int dx = 0; dx < dw; dx++)
             {
-                int lx, ly;
-                if (RotateClockwise) { lx = dy; ly = dw - 1 - dx; }
-                else                 { lx = dh - 1 - dy; ly = dx; }
+                int lx = dy, ly = dw - 1 - dx;
                 int s = (ly * LW + lx) * 4;
                 byte b = bgra[s], g = bgra[s + 1], r = bgra[s + 2];
                 int v = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
@@ -235,7 +257,8 @@ public sealed class LcdController : IDisposable
         return outp;
     }
 
-    /*-----------------------------------------------------*    | Background: still image, or an animated GIF played at  |
+    /*-----------------------------------------------------*\
+    | Background: still image, or an animated GIF played at  |
     | its own frame delays. GIF frames are composited (each  |
     | over the previous, honoring frame offsets) and scaled  |
     | to the panel once at load, so playback is just picking |
@@ -264,15 +287,49 @@ public sealed class LcdController : IDisposable
         return _bgCache;
     }
 
+    /// <summary>The decoded background for the editor canvas (a GIF's first
+    /// frame), or null when the design has none or it failed to load. This is
+    /// the ONE decode the panel render and the designer share - the designer
+    /// used to hold its own full-resolution copy - cached per (path, write
+    /// time) and loaded on demand, so a background drag re-reads a field.
+    /// Frozen, so any thread may read it.</summary>
+    public BitmapSource? Background
+    {
+        get { EnsureBackgroundLoaded(); return _gif is { Count: > 0 } ? _gif[0].Frame : _bgCache; }
+    }
+
+    /// <summary>Natural pixel size of the background file (a GIF's logical
+    /// screen, not the panel-scaled frames) - the editor's aspect source.</summary>
+    public (double W, double H) BackgroundSize
+    {
+        get { EnsureBackgroundLoaded(); return (_bgNatW, _bgNatH); }
+    }
+
     void EnsureBackgroundLoaded()
     {
         var path = Design.BackgroundImagePath;
-        if (path == _bgPath) return;   // already loaded — no per-frame File.Exists syscall
+        if (path == _bgPath)
+        {
+            // Already loaded — no per-frame File.Exists syscall. A file re-saved
+            // in place (same path) is picked up via its write stamp, re-read at
+            // most every 2 s rather than on every render tick (10 Hz under a GIF).
+            if (path == null) return;
+            var now = DateTime.UtcNow;
+            if (now - _bgStatAt < TimeSpan.FromSeconds(2)) return;
+            _bgStatAt = now;
+            if (StampOf(path) == _bgStamp) return;
+        }
+        // A file that failed to decode is not re-decoded (and re-warned) on
+        // every tick; a slow retry lets a re-saved or reconnected file recover
+        // without re-picking it. (A MISSING file keeps its cheap per-tick
+        // File.Exists so it shows the moment it reappears.)
+        if (path == _bgFailedPath && DateTime.UtcNow - _bgFailedAt < TimeSpan.FromSeconds(30)) return;
         if (string.IsNullOrEmpty(path) || !System.IO.File.Exists(path))
-        { _bgCache = null; _bgPath = null; _gif = null; return; }
+        { _bgCache = null; _bgPath = null; _gif = null; _bgNatW = _bgNatH = 1; return; }
         _bgCache = null; _gif = null;
         try
         {
+            _bgStamp = StampOf(path); _bgStatAt = DateTime.UtcNow;
             if (path.EndsWith(".gif", StringComparison.OrdinalIgnoreCase))
                 LoadGif(path);
             else
@@ -284,14 +341,22 @@ public sealed class LcdController : IDisposable
                 img.EndInit();
                 img.Freeze();
                 _bgCache = img;
+                _bgNatW = Math.Max(1, img.PixelWidth); _bgNatH = Math.Max(1, img.PixelHeight);
             }
             _bgPath = path;
+            _bgFailedPath = null;
         }
         catch (Exception ex)
         {
-            UnifiedRgb.Core.Log.Warn("lcd", $"background load failed: {ex.Message}");
-            _bgCache = null; _bgPath = null; _gif = null;
+            UnifiedRgb.Core.Log.Occasional("lcd-bg", "lcd", $"background load failed: {ex.Message}");
+            _bgCache = null; _bgPath = null; _gif = null; _bgNatW = _bgNatH = 1;
+            _bgFailedPath = path; _bgFailedAt = DateTime.UtcNow;
         }
+    }
+
+    static DateTime StampOf(string path)
+    {
+        try { return System.IO.File.GetLastWriteTimeUtc(path); } catch { return default; }
     }
 
     void LoadGif(string path)
@@ -300,6 +365,7 @@ public sealed class LcdController : IDisposable
             BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
         if (dec.Frames.Count == 0) return;
         int w = dec.Frames[0].PixelWidth, h = dec.Frames[0].PixelHeight;
+        _bgNatW = Math.Max(1, w); _bgNatH = Math.Max(1, h);
         // Composite at panel scale: full-res frames of a large GIF would cost
         // tens of MB for zero visible gain on a 320x240 screen.
         double scale = Math.Min(1.0, Math.Min((double)LW / w, (double)LH / h));
@@ -361,12 +427,17 @@ public sealed class LcdController : IDisposable
         var c = _ftCache.GetOrCreateValue(e);
         if (c.Ft != null && c.Text == text && c.Size == e.FontSize && c.Bold == e.Bold && c.Hex == e.ColorHex)
             return c.Ft;
-        c.Text = text; c.Size = e.FontSize; c.Bold = e.Bold; c.Hex = e.ColorHex;
         var brush = new SolidColorBrush(ParseColor(e.ColorHex));
         brush.Freeze();
-        c.Ft = new FormattedText(text, System.Globalization.CultureInfo.InvariantCulture,
+        // Build first, commit second: a throwing construction (FontSize <= 0
+        // from lcd.json) must leave the cache untouched, or the stale entry
+        // would match the bad inputs on the next tick and render silently at
+        // the previous size after Tick's one rate-limited log line.
+        var ft = new FormattedText(text, System.Globalization.CultureInfo.InvariantCulture,
             FlowDirection.LeftToRight, e.Bold ? TfBold : TfNormal, e.FontSize, brush, 1.0);
-        return c.Ft;
+        c.Text = text; c.Size = e.FontSize; c.Bold = e.Bold; c.Hex = e.ColorHex;
+        c.Ft = ft;
+        return ft;
     }
 
     public static Color ParseColor(string hex)
@@ -383,12 +454,10 @@ public sealed class LcdController : IDisposable
     {
         if (r < 4) return;
         var center = new Point(cx, cy);
-        var ring = new Pen(new SolidColorBrush(color), Math.Max(1.5, r * 0.05));
-        ring.Freeze();
-        dc.DrawEllipse(null, ring, center, r, r);
+        var pens = ClockPensFor(color, r);
+        dc.DrawEllipse(null, pens.Ring, center, r, r);
 
         // Hour ticks (12 of them), longer at the quarters.
-        var tickBrush = new SolidColorBrush(color); tickBrush.Freeze();
         for (int i = 0; i < 12; i++)
         {
             double a = i * Math.PI / 6.0;
@@ -396,32 +465,57 @@ public sealed class LcdController : IDisposable
             double inner = r * (i % 3 == 0 ? 0.74 : 0.82);
             var p1 = new Point(cx + Math.Sin(a) * inner, cy - Math.Cos(a) * inner);
             var p2 = new Point(cx + Math.Sin(a) * outer, cy - Math.Cos(a) * outer);
-            var tp = new Pen(tickBrush, Math.Max(1.0, r * (i % 3 == 0 ? 0.045 : 0.025)));
-            tp.Freeze();
-            dc.DrawLine(tp, p1, p2);
+            dc.DrawLine(i % 3 == 0 ? pens.TickMajor : pens.TickMinor, p1, p2);
         }
 
         double sec = now.Second + now.Millisecond / 1000.0;
         double min = now.Minute + sec / 60.0;
         double hr = (now.Hour % 12) + min / 60.0;
 
-        Hand(dc, center, hr * Math.PI / 6.0, r * 0.50, Math.Max(2.0, r * 0.07), color);   // hour
-        Hand(dc, center, min * Math.PI / 30.0, r * 0.78, Math.Max(1.5, r * 0.05), color); // minute
-        Hand(dc, center, sec * Math.PI / 30.0, r * 0.85, Math.Max(1.0, r * 0.02),          // second
-             Color.FromRgb(255, 80, 80));
+        Hand(dc, center, hr * Math.PI / 6.0, r * 0.50, pens.Hour);
+        Hand(dc, center, min * Math.PI / 30.0, r * 0.78, pens.Minute);
+        Hand(dc, center, sec * Math.PI / 30.0, r * 0.85, pens.Second);
 
-        var hub = new SolidColorBrush(color); hub.Freeze();
-        dc.DrawEllipse(hub, null, center, r * 0.06, r * 0.06);
+        dc.DrawEllipse(pens.Hub, null, center, r * 0.06, r * 0.06);
     }
 
-    static void Hand(DrawingContext dc, Point c, double angle, double len, double thick, Color color)
+    static void Hand(DrawingContext dc, Point c, double angle, double len, Pen pen)
     {
         var tip = new Point(c.X + Math.Sin(angle) * len, c.Y - Math.Cos(angle) * len);
         var tail = new Point(c.X - Math.Sin(angle) * len * 0.18, c.Y + Math.Cos(angle) * len * 0.18);
-        var pen = new Pen(new SolidColorBrush(color), thick) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round };
-        pen.Freeze();
         dc.DrawLine(pen, tail, tip);
     }
+
+    // Everything but the hand angles depends only on (color, radius), so the
+    // ~18 frozen Pens/Brushes are built once per distinct face rather than per
+    // render tick (10 Hz under a GIF, twice that with the editor open). Frozen
+    // Freezables are thread-agnostic; the cache itself is only touched on the
+    // UI thread (panel render and editor preview both run there). Bounded so
+    // a color-wheel drag can't grow it without limit.
+    sealed record ClockPens(Pen Ring, Pen TickMajor, Pen TickMinor, Pen Hour, Pen Minute, Pen Second, Brush Hub);
+    static readonly Dictionary<(Color, double), ClockPens> _clockPens = new();
+
+    static ClockPens ClockPensFor(Color color, double r)
+    {
+        if (_clockPens.TryGetValue((color, r), out var pens)) return pens;
+        if (_clockPens.Count >= 16) _clockPens.Clear();
+        var brush = new SolidColorBrush(color); brush.Freeze();
+        var second = new SolidColorBrush(Color.FromRgb(255, 80, 80)); second.Freeze();
+        pens = new ClockPens(
+            Frozen(new Pen(brush, Math.Max(1.5, r * 0.05))),
+            Frozen(new Pen(brush, Math.Max(1.0, r * 0.045))),
+            Frozen(new Pen(brush, Math.Max(1.0, r * 0.025))),
+            HandPen(brush, Math.Max(2.0, r * 0.07)),
+            HandPen(brush, Math.Max(1.5, r * 0.05)),
+            HandPen(second, Math.Max(1.0, r * 0.02)),
+            brush);
+        _clockPens[(color, r)] = pens;
+        return pens;
+    }
+
+    static Pen Frozen(Pen pen) { pen.Freeze(); return pen; }
+    static Pen HandPen(Brush brush, double thick)
+        => Frozen(new Pen(brush, thick) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round });
 
     /// <summary>A standalone clock face bitmap for the WYSIWYG editor, sized to the
     /// element's ClockSize (diameter). Refreshed each tick alongside the text.</summary>

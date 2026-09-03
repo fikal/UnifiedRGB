@@ -223,6 +223,21 @@ public static class NvApi
         [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)] public NvFanCoolerStatusItem[] Items;
     }
 
+    /// <summary>A versioned, zeroed status with every ByValArray allocated at
+    /// its SizeConst (the marshaler needs them present) — one copy of what was
+    /// hand-built at three call sites.</summary>
+    static NvFanCoolersStatusV1 NewFanCoolersStatus()
+    {
+        var st = new NvFanCoolersStatusV1
+        {
+            Version = (1u << 16) | (uint)Marshal.SizeOf<NvFanCoolersStatusV1>(),
+            Reserved = new uint[8],
+            Items = new NvFanCoolerStatusItem[32],
+        };
+        for (int i = 0; i < st.Items.Length; i++) st.Items[i].Reserved = new uint[8];
+        return st;
+    }
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     delegate int FanCoolersGetStatusFn(IntPtr handle, ref NvFanCoolersStatusV1 status);
     static FanCoolersGetStatusFn? _fanCoolers;
@@ -238,13 +253,7 @@ public static class NvApi
             _fanCoolers ??= Resolve<FanCoolersGetStatusFn>(0x35AED5E8);
             if (_fanCoolers != null)
             {
-                var st = new NvFanCoolersStatusV1
-                {
-                    Version = (1u << 16) | (uint)Marshal.SizeOf<NvFanCoolersStatusV1>(),
-                    Reserved = new uint[8],
-                    Items = new NvFanCoolerStatusItem[32],
-                };
-                for (int i = 0; i < st.Items.Length; i++) st.Items[i].Reserved = new uint[8];
+                var st = NewFanCoolersStatus();
                 if (_fanCoolers(gpu, ref st) == 0 && st.Count is > 0 and <= 32)
                 {
                     var rpms = new int[st.Count];
@@ -325,13 +334,7 @@ public static class NvApi
             if (!TryInit()) return null;
             _fanCoolers ??= Resolve<FanCoolersGetStatusFn>(0x35AED5E8);
             if (_fanCoolers == null) return null;
-            var st = new NvFanCoolersStatusV1
-            {
-                Version = (1u << 16) | (uint)Marshal.SizeOf<NvFanCoolersStatusV1>(),
-                Reserved = new uint[8],
-                Items = new NvFanCoolerStatusItem[32],
-            };
-            for (int i = 0; i < st.Items.Length; i++) st.Items[i].Reserved = new uint[8];
+            var st = NewFanCoolersStatus();
             if (_fanCoolers(gpu, ref st) != 0 || st.Count == 0) return null;
             uint min = 0;
             for (int i = 0; i < st.Count; i++) min = Math.Max(min, st.Items[i].CurrentMinLevel);
@@ -427,13 +430,7 @@ public static class NvApi
                 _fanCoolers ??= Resolve<FanCoolersGetStatusFn>(0x35AED5E8);
                 if (_fanCoolers != null)
                 {
-                    var st = new NvFanCoolersStatusV1
-                    {
-                        Version = (1u << 16) | (uint)Marshal.SizeOf<NvFanCoolersStatusV1>(),
-                        Reserved = new uint[8],
-                        Items = new NvFanCoolerStatusItem[32],
-                    };
-                    for (int i = 0; i < st.Items.Length; i++) st.Items[i].Reserved = new uint[8];
+                    var st = NewFanCoolersStatus();
                     if (_fanCoolers(gpu, ref st) == 0)
                         for (int i = 0; i < st.Count; i++)
                             sb.Append($"status[{i}] id={st.Items[i].CoolerId} rpm={st.Items[i].CurrentRpm} lvl={st.Items[i].CurrentLevel} min={st.Items[i].CurrentMinLevel} max={st.Items[i].CurrentMaxLevel}; ");
@@ -464,27 +461,6 @@ public static class NvApi
             return _fanCtlSet(gpu, ref ctl);
         }
         catch { return -997; }
-    }
-
-    /// <summary>Probe diagnostics: is the volt-rails function exported, and
-    /// what does it return? (CLI use only.)</summary>
-    public static string DebugVoltStatus(IntPtr gpu)
-    {
-        try
-        {
-            if (!TryInit()) return "init failed";
-            var fn = Resolve<GetVoltRailsFn>(0x465F9BCF);
-            if (fn == null) return "not exported";
-            var st = new NvVoltRailsStatus
-            {
-                Version = (1u << 16) | (uint)Marshal.SizeOf<NvVoltRailsStatus>(),
-                ReservedA = new uint[9],
-                ReservedB = new uint[7],
-            };
-            int rc = fn(gpu, ref st);
-            return $"rc={rc} size={Marshal.SizeOf<NvVoltRailsStatus>()} uV={st.CoreMicrovolts}";
-        }
-        catch (Exception ex) { return ex.Message; }
     }
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]

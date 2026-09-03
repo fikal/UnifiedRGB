@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using UnifiedRgb.Core;
 using UnifiedRgb.Core.Effects;
 
@@ -26,16 +27,23 @@ public sealed class EffectRowVM : System.ComponentModel.INotifyPropertyChanged
     public bool IsFavorite
     {
         get => _fav;
-        set { _fav = value; Notify(nameof(IsFavorite)); Notify(nameof(Star)); }
+        // StarBrush too: the glyph flipped but its color stayed (the rows are
+        // cached per menu, so no fresh instance ever repainted it either).
+        set { _fav = value; Notify(nameof(IsFavorite)); Notify(nameof(Star)); Notify(nameof(StarBrush)); }
     }
     /// <summary>Custom Pattern is always a pill - no star to manage.</summary>
     public bool CanStar => Choice.Name != "Custom Pattern";
     public string Star => _fav ? "\u2605" : "\u2606";
     public System.Windows.Media.Brush StarBrush => _fav ? GoldBrush : GrayBrush;
-    public static readonly System.Windows.Media.Brush GoldBrush =
-        new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xC9, 0x4C));
-    public static readonly System.Windows.Media.Brush GrayBrush =
-        new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x6A, 0x70, 0x80));
+    // Shared by every row and the title star: frozen, so no change tracking.
+    public static readonly System.Windows.Media.Brush GoldBrush = FrozenBrush(0xFF, 0xC9, 0x4C);
+    public static readonly System.Windows.Media.Brush GrayBrush = FrozenBrush(0x6A, 0x70, 0x80);
+    static System.Windows.Media.Brush FrozenBrush(byte r, byte g, byte b)
+    {
+        var br = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(r, g, b));
+        br.Freeze();
+        return br;
+    }
     public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
     void Notify(string n) => PropertyChanged?.Invoke(this, new(n));
 }
@@ -134,8 +142,44 @@ public sealed class FanRowModel : System.ComponentModel.INotifyPropertyChanged
             int v = Math.Clamp(value, MinDuty, 100);
             if (_duty == v) { if (v != value) Notify(nameof(DutyPercent)); return; }
             _duty = v; Notify(nameof(DutyPercent)); Notify(nameof(ModeSummary));
-            if (!_applying && _mode == "Manual") UnifiedRgb.Core.Sensors.SensorHub.SetFanDuty(Index, v);
+            if (!_applying && _mode == "Manual") ScheduleDutyApply();
         }
+    }
+
+    // The slider binds with UpdateSourceTrigger=PropertyChanged, so a drag
+    // delivers a value per mouse-move - and each one used to be a synchronous
+    // hardware transaction plus a fan-config.json rewrite (temp file +
+    // File.Replace) on the UI thread, ~70 of each per drag. Coalesce: the
+    // latest value lands once the stream pauses for a moment.
+    DispatcherTimer? _dutyApply;
+    void ScheduleDutyApply()
+    {
+        if (_dutyApply == null)
+        {
+            var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
+            t.Tick += (_, _) =>
+            {
+                t.Stop();
+                if (_mode == "Manual") UnifiedRgb.Core.Sensors.SensorHub.SetFanDuty(Index, _duty);
+            };
+            _dutyApply = t;
+        }
+        _dutyApply.Stop(); _dutyApply.Start();
+    }
+
+    /// <summary>Drop a slider value still waiting to be applied. Exit only:
+    /// the fans are about to be handed back to the BIOS and a late write
+    /// would undo that.</summary>
+    public void CancelPendingDuty() => _dutyApply?.Stop();
+
+    /// <summary>Apply a slider value still waiting on the debounce right now.
+    /// Pane leave / window hide: the value must land, not vanish, or the row
+    /// shows a duty the fan and fan-config.json never received.</summary>
+    public void FlushPendingDuty()
+    {
+        if (_dutyApply?.IsEnabled != true) return;
+        _dutyApply.Stop();
+        if (_mode == "Manual") UnifiedRgb.Core.Sensors.SensorHub.SetFanDuty(Index, _duty);
     }
 
     UnifiedRgb.Core.Sensors.TempSource _source;

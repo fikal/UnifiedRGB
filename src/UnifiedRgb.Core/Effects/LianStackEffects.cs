@@ -61,13 +61,22 @@ public sealed class StackOutline : IEffect
     public string Name => "Outline";
     public bool UsesBaseColor => true;
 
+    // These three effects exist only for the wireless fans, so they are ALWAYS
+    // baked: the loop must be a true period or the fans pop at every wrap
+    // (the inherited 4 s default was 1.4 comet laps - a visible teleport).
+    // One lap of the comet pair at 0.35 laps/s, with the hub breath running
+    // exactly one cycle per lap.
+    const double HeadRate = 0.35;
+    const double BreatheRate = 2.0 * Math.PI * HeadRate;
+    public double LoopSeconds(double speed) => Fx.Loop(1.0 / HeadRate, speed);
+
     public void Render(IRgbDevice device, int offset, Rgb[] buf, LedPos[] pos,
                        double t, double speed, Rgb bc)
     {
         if (!Stack44.Applies(device, offset, buf.Length)) { Render(buf, pos, t, speed, bc); return; }
         int fans = buf.Length / 44;
-        double head = Stack44.Frac(t * speed * 0.35);
-        double breathe = 0.22 + 0.22 * (0.5 + 0.5 * Math.Sin(t * speed * 1.5));
+        double head = Stack44.Frac(t * speed * HeadRate);
+        double breathe = 0.22 + 0.22 * (0.5 + 0.5 * Math.Sin(t * speed * BreatheRate));
         for (int i = 0; i < buf.Length; i++)
         {
             int slot = i / 44, local = i % 44;
@@ -87,7 +96,7 @@ public sealed class StackOutline : IEffect
 
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb bc)
     {
-        double head = Stack44.Frac(t * speed * 0.35);
+        double head = Stack44.Frac(t * speed * HeadRate);
         for (int i = 0; i < buf.Length; i++)
         {
             double d = Stack44.Frac(head - (pos[i].X + pos[i].Y) * 0.5);
@@ -103,12 +112,18 @@ public sealed class Waterfall : IEffect
     public string Name => "Waterfall";
     public bool UsesBaseColor => true;
 
+    // Drops and splashes are all period-1 in their head (0.45 laps/s, constant
+    // salts), so one lap is the true period (default 4 s = 1.8 laps: every
+    // drop jumped a fifth of the rail backwards at the seam).
+    const double DropRate = 0.45;
+    public double LoopSeconds(double speed) => Fx.Loop(1.0 / DropRate, speed);
+
     static double Drops(double y, double t, double speed, int salt)
     {
         double v = 0;
         for (int k = 0; k < 3; k++)
         {
-            double head = Stack44.Frac(t * speed * 0.45 + k / 3.0 + salt * 0.13);
+            double head = Stack44.Frac(t * speed * DropRate + k / 3.0 + salt * 0.13);
             double dd = Stack44.Frac(head - y);              // tail above the droplet
             if (dd < 0.16) v = Math.Max(v, 1.0 - dd / 0.16);
         }
@@ -120,7 +135,7 @@ public sealed class Waterfall : IEffect
         double best = 0;
         for (int k = 0; k < 3; k++)
         {
-            double head = Stack44.Frac(t * speed * 0.45 + k / 3.0 + salt * 0.13);
+            double head = Stack44.Frac(t * speed * DropRate + k / 3.0 + salt * 0.13);
             double d = Math.Abs(head * fans - (slot + 0.5));
             best = Math.Max(best, Math.Clamp(1.0 - d * 2.0, 0, 1));
         }
@@ -162,6 +177,18 @@ public sealed class Orbit : IEffect
     public string Name => "Orbit";
     public bool UsesBaseColor => false;
 
+    // Every rate is a whole number of cycles over one 6 s loop (the RainbowWave
+    // convention; 12 s would sit on the baker's clamp and reopen the seam at
+    // any speed under 1): hue one full turn, ring comet 3 laps, hub dot 5 laps,
+    // rail wash one sine. The inherited 4 s default closed none of them - a
+    // 120 deg hue snap on every LED at each wrap.
+    const double LoopS = 6.0;
+    const double HueRate = 360.0 / LoopS;           // deg/s
+    const double RingRate = 0.5;                    // laps/s (3 per loop)
+    const double HubRate = 5.0 / LoopS;             // laps/s (5 per loop)
+    const double RailRate = 2.0 * Math.PI / LoopS;  // rad/s (1 per loop)
+    public double LoopSeconds(double speed) => Fx.Loop(LoopS, speed);
+
     public void Render(IRgbDevice device, int offset, Rgb[] buf, LedPos[] pos,
                        double t, double speed, Rgb _)
     {
@@ -170,17 +197,17 @@ public sealed class Orbit : IEffect
         for (int i = 0; i < buf.Length; i++)
         {
             int slot = i / 44, local = i % 44;
-            double hue = t * speed * 30.0 + slot * 35.0;
+            double hue = t * speed * HueRate + slot * 35.0;
             if (local >= 28)                                 // rails: slow wash
             {
                 double y = (slot * 8 + ((local - 28) % 8)) / (double)(fans * 8);
-                double v = 0.12 + 0.18 * (0.5 + 0.5 * Math.Sin(t * speed * 1.2 - y * 5.0));
+                double v = 0.12 + 0.18 * (0.5 + 0.5 * Math.Sin(t * speed * RailRate - y * 5.0));
                 buf[i] = ColorUtil.HsvToRgb(hue + y * 90.0, 1.0, v);
             }
             else if (local >= 8)                             // ring comet, staggered per fan
             {
                 double a = (local - 8) / 20.0;
-                double head = Stack44.Frac(t * speed * 0.5 + slot * 0.18);
+                double head = Stack44.Frac(t * speed * RingRate + slot * 0.18);
                 double d = Stack44.Frac(head - a);
                 double v = d < 0.30 ? Math.Pow(1.0 - d / 0.30, 2) : 0.03;
                 buf[i] = ColorUtil.HsvToRgb(hue, 1.0, v);
@@ -188,7 +215,7 @@ public sealed class Orbit : IEffect
             else                                             // hub: counter-rotating dot
             {
                 double a = local / 8.0;
-                double head = Stack44.Frac(-t * speed * 0.8 + slot * 0.11);
+                double head = Stack44.Frac(-t * speed * HubRate + slot * 0.11);
                 double d = Stack44.Frac(head - a);
                 double v = d < 0.35 ? 1.0 - d / 0.35 : 0.04;
                 buf[i] = ColorUtil.HsvToRgb(hue + 180.0, 0.8, v);
@@ -201,7 +228,7 @@ public sealed class Orbit : IEffect
         for (int i = 0; i < buf.Length; i++)
         {
             double ang = Math.Atan2(pos[i].Y - 0.5, pos[i].X - 0.5);
-            double hue = t * speed * 40.0 + ang * 60.0;
+            double hue = t * speed * HueRate + ang * 60.0;   // same rate: closes under LoopSeconds
             buf[i] = ColorUtil.HsvToRgb(hue, 1.0, 0.6);
         }
     }

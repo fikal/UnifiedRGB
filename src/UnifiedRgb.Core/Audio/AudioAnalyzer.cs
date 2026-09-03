@@ -48,9 +48,6 @@ public static class AudioAnalyzer
     /// <summary>Smoothed 0..1 level of band i (0 = lowest frequency).</summary>
     public static float Band(int i) => _bands[Math.Clamp(i, 0, BandCount - 1)];
 
-    /// <summary>Band level resampled to a coarser/finer resolution.</summary>
-    public static float BandAt(double t) => Band((int)(Math.Clamp(t, 0, 0.999) * BandCount));
-
     /// <summary>Overall loudness 0..1 (RMS through the AGC).</summary>
     public static float Level => _level;
 
@@ -73,7 +70,11 @@ public static class AudioAnalyzer
                 var c = new WasapiLoopback(OnSamples);
                 c.Start();
                 _capture = c;
-                _watchdog ??= new Timer(_ => Watchdog(), null, 2000, 2000);
+                // The watchdog only has work while a capture is alive: paused
+                // when the capture stops, re-armed here - not two wakeups a
+                // second for the rest of the process after one audio effect.
+                if (_watchdog == null) _watchdog = new Timer(_ => Watchdog(), null, 2000, 2000);
+                else _watchdog.Change(2000, 2000);
             }
             catch (Exception ex)
             {
@@ -97,6 +98,7 @@ public static class AudioAnalyzer
             if (_capture == null) return;
             _capture.Dispose();
             _capture = null;
+            _watchdog?.Change(Timeout.Infinite, Timeout.Infinite);   // nothing to guard until Touch re-arms
             Array.Clear(_bands);
             _level = _bass = 0;
             Log.Info("audio", idle ? "loopback capture stopped (idle)" : "loopback capture died - will restart");

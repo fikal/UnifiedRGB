@@ -48,7 +48,7 @@ public static class UpdateClient
         {
             using var req = new HttpRequestMessage(HttpMethod.Get, $"{Backend.BaseUrl}/version");
             req.Headers.Add("X-Rgb-Key", Backend.ClientKey!);   // gated by Configured above
-            var response = await Backend.Http.SendAsync(req);
+            using var response = await Backend.Http.SendAsync(req);
             if (!response.IsSuccessStatusCode) return null;
             using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
             var root = doc.RootElement;
@@ -57,7 +57,7 @@ public static class UpdateClient
                 return new LatestBuild(
                     v.GetString()!,
                     root.TryGetProperty("notes", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() : null,
-                    root.TryGetProperty("size", out var s) ? s.GetInt64() : 0,
+                    SizeOf(root),
                     root.TryGetProperty("sha256", out var h) && h.ValueKind == JsonValueKind.String ? h.GetString() : null);
             }
             return null;
@@ -103,7 +103,7 @@ public static class UpdateClient
                     if (exeUrl is null && name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
                     {
                         exeUrl = url;
-                        size = a.TryGetProperty("size", out var asz) ? asz.GetInt64() : 0;
+                        size = SizeOf(a);
                     }
                     else if (shaUrl is null && name.EndsWith(".sha256", StringComparison.OrdinalIgnoreCase))
                         shaUrl = url;
@@ -123,6 +123,13 @@ public static class UpdateClient
             return null;
         }
     }
+
+    /// <summary>The object's "size" when it is an integral number, else 0: the
+    /// field is cosmetic (progress text), so a feed that emits it as a string
+    /// or null must not fail the whole version check. Internal for the harness.</summary>
+    internal static long SizeOf(JsonElement obj)
+        => obj.TryGetProperty("size", out var s) && s.ValueKind == JsonValueKind.Number && s.TryGetInt64(out var size)
+            ? size : 0;
 
     /// <summary>First standalone 64-hex-char token in the text (a SHA-256), or null.</summary>
     static string? ExtractSha(string? text)
@@ -183,6 +190,10 @@ public static class UpdateClient
         catch (Exception ex)
         {
             Log.Error("update", ex);
+            // The stream is already disposed (its `await using` unwound before
+            // this ran); don't strand a partial ~260 MB exe beside the app —
+            // each attempt uses a fresh name, so retries used to accumulate.
+            try { File.Delete(destPath); } catch { }
             return $"download failed: {ex.Message}";
         }
     }

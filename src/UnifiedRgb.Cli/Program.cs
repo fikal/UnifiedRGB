@@ -10,6 +10,9 @@ using UnifiedRgb.Core.Devices;
 var cancel = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cancel.Cancel(); Console.WriteLine("\nCtrl+C - restoring hardware state..."); };
 void Sleep(int ms) { if (cancel.Token.WaitHandle.WaitOne(ms)) throw new OperationCanceledException(); }
+// Probe output goes to the console AND the log: the elevated probes may run
+// where the console isn't visible. One helper; each probe picks its log tag.
+Action<string> Probe(string tag) => m => { Console.WriteLine(m); UnifiedRgb.Core.Log.Info(tag, m); };
 try
 {
 // --openrgb [echo]: OpenRGB bridge test. Ensures a server is running (downloads
@@ -121,9 +124,12 @@ if (args.Length >= 1 && args[0] == "--pump")
     }
     if (appRunning)
     { Console.WriteLine("Close UnifiedRGB first — it owns the pump LCD stream."); return; }
+    int count = args.Length >= 2 && int.TryParse(args[1], out var k) ? k : 10;
+    // Zero samples would reach samples.Min() on an empty list; reject before
+    // the LCD handle is even opened.
+    if (count < 1) { Console.WriteLine("sample count must be >= 1"); Environment.ExitCode = 2; return; }
     using var lcd = UnifiedRgb.Core.Devices.ThermalrightLcd.TryOpen();
     if (lcd == null) { Console.WriteLine("pump LCD not found"); return; }
-    int count = args.Length >= 2 && int.TryParse(args[1], out var k) ? k : 10;
     var samples = new List<byte[]>();
     for (int i = 0; i < count; i++)
     {
@@ -162,7 +168,7 @@ if (args.Length >= 1 && args[0] == "--pump")
 // Original value restores in finally no matter what.
 if (args.Length >= 1 && args[0] == "--fanctl")
 {
-    void Say(string m) { Console.WriteLine(m); UnifiedRgb.Core.Log.Info("fanctl-probe", m); }
+    var Say = Probe("fanctl-probe");
     int fan = args.Length >= 2 && int.TryParse(args[1], out var f) ? f : 1;
     var chips = UnifiedRgb.Core.Sensors.IteSuperIo.OpenAll();
     var sio = chips.FirstOrDefault();
@@ -260,7 +266,7 @@ if (args.Length >= 1 && args[0] == "--fanctl")
 // NOT the pump) to 100% then back to auto.
 if (args.Length >= 1 && args[0] == "--lhmfan")
 {
-    void Say(string m) { Console.WriteLine(m); UnifiedRgb.Core.Log.Info("lhmfan-probe", m); }
+    var Say = Probe("lhmfan-probe");
     using var lhm = UnifiedRgb.Core.Sensors.LhmFans.TryOpen();
     if (lhm == null) { Say("LHM found no motherboard fans/temps (needs admin)"); return; }
     void Dump(string tag)
@@ -306,7 +312,7 @@ if (args.Length >= 1 && args[0] == "--gbecdump")
 // every header, pump included; each register restores before the next.
 if (args.Length >= 1 && args[0] == "--fanmap")
 {
-    void Say(string m) { Console.WriteLine(m); UnifiedRgb.Core.Log.Info("fanmap-probe", m); }
+    var Say = Probe("fanmap-probe");
     var chips = UnifiedRgb.Core.Sensors.IteSuperIo.OpenAll();
     var sio = chips.FirstOrDefault();
     if (sio == null) { Say("no ITE chip (needs admin)"); return; }
@@ -335,9 +341,15 @@ if (args.Length >= 1 && args[0] == "--fanmap")
                 int orig = sio.ReadEcRaw(pwmRegs[i]);
                 if (orig < 0) { Say($"pwm[{i}] 0x{pwmRegs[i]:X2}: read failed"); continue; }
                 sio.WriteEcRaw(pwmRegs[i], 0xFF);
-                Sleep(4000);
-                Say($"pwm[{i}] 0x{pwmRegs[i]:X2} (was 0x{orig:X2}) at 0xFF -> [{Rpms()}]");
-                sio.WriteEcRaw(pwmRegs[i], (byte)orig);
+                // Sleep() throws on Ctrl+C: restore THIS register in a finally.
+                // The outer finally only hands vendor control back, which on a
+                // board without the ISA bridge re-drives nothing.
+                try
+                {
+                    Sleep(4000);
+                    Say($"pwm[{i}] 0x{pwmRegs[i]:X2} (was 0x{orig:X2}) at 0xFF -> [{Rpms()}]");
+                }
+                finally { sio.WriteEcRaw(pwmRegs[i], (byte)orig); }
                 Sleep(2500);
             }
             Say($"all regs restored -> [{Rpms()}]");
@@ -359,7 +371,7 @@ if (args.Length >= 1 && args[0] == "--fanmap")
 // each handle (elevated).
 if (args.Length >= 1 && args[0] == "--sioldn")
 {
-    void Say(string m) { Console.WriteLine(m); UnifiedRgb.Core.Log.Info("sioldn-probe", m); }
+    var Say = Probe("sioldn-probe");
     var chips = UnifiedRgb.Core.Sensors.IteSuperIo.OpenAll();
     if (chips.Count == 0) { Say("no ITE chips (needs admin)"); return; }
     try
@@ -448,7 +460,7 @@ if (args.Length >= 1 && args[0] == "--gpu")
 // not be visible).
 if (args.Length >= 1 && args[0] == "--superio")
 {
-    void Say(string m) { Console.WriteLine(m); UnifiedRgb.Core.Log.Info("superio-probe", m); }
+    var Say = Probe("superio-probe");
 
     // First: raw enumerate BOTH Super-I/O slots — some boards (Gigabyte
     // especially) put extra fan headers on a second ITE chip at 0x4E.
@@ -741,6 +753,13 @@ if (args.Length > 0 && args[0] == "--scan")
 //   <RRGGBB>           set every LED on every device to that color
 //   <deviceIndex> <hex> set one device
 
+// Every --option handler returned above, so a --token reaching here is either
+// unknown or a known option with the wrong argument count (the exact-arity
+// handlers such as --argb/--lcd simply don't match on a miscount). Reject it
+// here, before the generic path opens every device and reports "Done.".
+if (args.Length > 0 && args[0].StartsWith("--"))
+{ Console.WriteLine($"Unknown option or wrong argument count: {string.Join(' ', args)}"); Environment.ExitCode = 2; return; }
+
 using var manager = new DeviceManager();
 manager.DetectAll();
 
@@ -763,9 +782,6 @@ if (args.Length == 0) return;
 
 if (args.Length == 1)
 {
-    // An unknown --option used to fall through here (after a full device scan)
-    // and die in Rgb.FromHex with a stack trace.
-    if (args[0].StartsWith("--")) { Console.WriteLine($"Unknown option {args[0]}"); Environment.ExitCode = 2; return; }
     if (!Rgb.TryFromHex(args[0], out var color)) { Console.WriteLine($"Not a color: {args[0]} (want RRGGBB)"); Environment.ExitCode = 2; return; }
     Console.WriteLine($"Setting all devices to {color}...");
     foreach (var d in manager.Devices) d.SetAll(color);

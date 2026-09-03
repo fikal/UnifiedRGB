@@ -41,6 +41,17 @@ public sealed partial class MainViewModel
         _applier.Post(LaneOf(dev), ("hdrtest", header), () => dev.SetHeaderLeds(header, white));
     }
 
+    /// <summary>Undo a header test: re-push the board's stored static frame
+    /// (SetHeaderLeds leaves the header marked for re-init, so this write also
+    /// restores its counts/effect mask). Any running effect channel repaints
+    /// its range on the next engine frame. HeaderConfigDialog calls this from
+    /// the window's Closed event, so a tested header never stays white.</summary>
+    public void EndHeaderTest()
+    {
+        var dev = Devices.OfType<GigabyteIt5711>().FirstOrDefault();
+        if (dev != null) _lighting.PushFrame(dev);
+    }
+
     /// <summary>Persist the new header layout and rebuild devices from it.</summary>
     public void ApplyHeaderConfig(HardwareConfig cfg)
     {
@@ -104,8 +115,8 @@ public sealed partial class MainViewModel
     | model, edit it. Parts map onto the device's zones, so  |
     | the whole existing pipeline (wheel, effects, profiles) |
     | drives whatever part is selected.                      |
-    | Parts: 0 whole fan, 1 center, 2 inner ring,            |
-    |        3 outer (infinity) ring.                        |
+    | Parts: 0 whole fan, 1 center/inner, 2 outer ring,      |
+    |        3 side glow (see LianLiFanView).                |
     \*-----------------------------------------------------*/
     public bool IsLianLiSelected => SelectedDevice is ILianFanDevice;
     ILianFanDevice? LianDev => SelectedDevice as ILianFanDevice;
@@ -276,6 +287,21 @@ public sealed partial class MainViewModel
         return (slice, sel);
     }
 
+    // Preview geometry cache. Positions, footprints, style and aspect depend
+    // only on the selected (device, zone), so the 30 Hz preview pull hands back
+    // the SAME instances until the selection changes: LedPreview's
+    // ReferenceEquals fast path then skips its per-tick array compares, and the
+    // per-pull LedPositions/LedGeometry copies + bounds pass are gone. Only the
+    // colors buffer is refilled per pull (in place - the preview copies what it
+    // shows into its own array).
+    IRgbDevice? _viewDev; RgbZone? _viewZone;
+    IReadOnlyList<LedPos>? _viewSrcPos; IReadOnlyList<LedRect>? _viewSrcGeo;
+    Rgb[] _viewColors = Array.Empty<Rgb>();
+    LedPos[] _viewPos = Array.Empty<LedPos>();
+    LedRect[]? _viewRects;
+    PreviewStyle _viewStyle;
+    double _viewAspect;
+
     /// <summary>Live view of the selected target for the preview: per-LED colors
     /// (with any running effect composited over its range), positions normalized
     /// to the target's bounds, plus the render style and layout aspect.</summary>
@@ -288,37 +314,26 @@ public sealed partial class MainViewModel
         int off = zone?.Offset ?? 0;
         int count = zone?.Count ?? dev.LedCount;
 
-        var frame = ComposedFrame(dev);
+        if (!ReferenceEquals(dev, _viewDev) || !ReferenceEquals(zone, _viewZone) || _viewPos.Length != count
+            || !ReferenceEquals(dev.LedPositions, _viewSrcPos) || !ReferenceEquals(dev.LedGeometry, _viewSrcGeo))
+            RebuildViewGeometry(dev, zone, off, count);
 
-        var colors = new Rgb[count];
+        var frame = ComposedFrame(dev);
+        var colors = _viewColors;
         for (int i = 0; i < count; i++)
             colors[i] = off + i < frame.Length ? frame[off + i] : Rgb.Black;
+        return (colors, _viewPos, _viewStyle, _viewAspect, _viewRects);
+    }
 
-        // Positions normalized to the target's bounding box.
-        LedPos[] src;
-        if (dev.LedPositions is { Count: > 0 } p && p.Count == dev.LedCount)
-            src = p.ToArray();
-        else
-        {
-            src = new LedPos[dev.LedCount];
-            for (int i = 0; i < src.Length; i++)
-                src[i] = new LedPos(dev.LedCount <= 1 ? 0.5f : i / (float)(dev.LedCount - 1), 0.5f);
-        }
-        var pos = new LedPos[count];
-        float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
-        for (int i = 0; i < count; i++)
-        {
-            var q = src[Math.Min(off + i, src.Length - 1)];
-            minX = Math.Min(minX, q.X); maxX = Math.Max(maxX, q.X);
-            minY = Math.Min(minY, q.Y); maxY = Math.Max(maxY, q.Y);
-        }
-        float rx = maxX - minX, ry = maxY - minY;
-        for (int i = 0; i < count; i++)
-        {
-            var q = src[Math.Min(off + i, src.Length - 1)];
-            pos[i] = new LedPos(rx > 1e-4f ? (q.X - minX) / rx : 0.5f,
-                                ry > 1e-4f ? (q.Y - minY) / ry : 0.5f);
-        }
+    void RebuildViewGeometry(IRgbDevice dev, RgbZone? zone, int off, int count)
+    {
+        _viewDev = dev; _viewZone = zone;
+        _viewSrcPos = dev.LedPositions; _viewSrcGeo = dev.LedGeometry;
+        _viewColors = new Rgb[count];
+
+        // Positions normalized to the target's bounding box - the engine's own
+        // math, so the preview geometry can never drift from what effects render.
+        var pos = EffectEngine.ZonePositions(dev, off, count);
 
         var style = zone?.IsFan == true ? PreviewStyle.Fan
                   : dev.Type == DeviceType.Keyboard ? PreviewStyle.Keys
@@ -331,7 +346,7 @@ public sealed partial class MainViewModel
         LedRect[]? rects = null;
         if (zone == null && dev.LedGeometry is { } g && g.Count == dev.LedCount)
             rects = g.ToArray();
-        return (colors, pos, style, aspect, rects);
+        _viewPos = pos; _viewStyle = style; _viewAspect = aspect; _viewRects = rects;
     }
 
     /// <summary>Click-to-paint one LED of the selected target with the current color.</summary>

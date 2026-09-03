@@ -18,7 +18,7 @@ endlocal
 
 setlocal
 call "C:\Program Files\Microsoft Visual Studio\18\Professional\VC\Auxiliary\Build\vcvarsall.bat" x64_x86
-rc /nologo /fo version32.res version.rc
+rc /nologo /D SHIM32 /fo version32.res version.rc
 cl /nologo /LD /MT /EHsc /O2 /std:c++17 RzChromaSDK.cpp version32.res /Fo:RzChromaSDK32.obj /link /DEF:RzChromaSDK32.def /IMPLIB:RzChromaSDK32.lib /OUT:RzChromaSDK.dll
 if errorlevel 1 echo *** x86 BUILD FAILED - any RzChromaSDK.dll below is STALE ***
 if errorlevel 1 exit /b 1

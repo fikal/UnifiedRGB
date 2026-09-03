@@ -3,6 +3,16 @@
 // The Wallpaper Engine LED plugin refuses SDKs whose numeric file version is
 // below 3, so FILEVERSION must be 3.x. The string fields attribute this file
 // honestly to UnifiedRGB - it is an interoperability shim, not a Razer product.
+//
+// One .rc for both bitnesses: build.bat's x86 line passes /D SHIM32 so the
+// 32-bit RzChromaSDK.dll is stamped with its own name, not the 64-bit one.
+#ifdef SHIM32
+#define SHIM_INTERNAL_NAME "RzChromaSDK"
+#define SHIM_ORIGINAL_FILENAME "RzChromaSDK.dll"
+#else
+#define SHIM_INTERNAL_NAME "RzChromaSDK64"
+#define SHIM_ORIGINAL_FILENAME "RzChromaSDK64.dll"
+#endif
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION 3,24,1,0
  PRODUCTVERSION 3,24,1,0
@@ -19,8 +29,8 @@ BEGIN
             VALUE "CompanyName", "UnifiedRGB"
             VALUE "FileDescription", "UnifiedRGB Chroma interoperability shim"
             VALUE "FileVersion", "3.24.1.0"
-            VALUE "InternalName", "RzChromaSDK64"
-            VALUE "OriginalFilename", "RzChromaSDK64.dll"
+            VALUE "InternalName", SHIM_INTERNAL_NAME
+            VALUE "OriginalFilename", SHIM_ORIGINAL_FILENAME
             VALUE "ProductName", "UnifiedRGB Chroma Shim"
             VALUE "ProductVersion", "3.24.1.0"
         END

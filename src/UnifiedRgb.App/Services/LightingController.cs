@@ -38,8 +38,13 @@ public sealed class LightingController
         return f;
     }
 
-    /// <summary>Drop every stored frame (device instances are being replaced).</summary>
-    public void ForgetFrames() => _frames.Clear();
+    /// <summary>Drop every stored frame and idle applier lane (device instances
+    /// are being replaced; both are keyed by instance). Call after StopAndDrain.</summary>
+    public void ForgetFrames()
+    {
+        _frames.Clear();
+        Applier.PruneIdle();
+    }
 
     /// <summary>Write the device's whole stored frame: snapshot (the frame keeps
     /// changing on the UI thread), scale by master brightness on the worker,
@@ -47,7 +52,17 @@ public sealed class LightingController
     public void PushFrame(IRgbDevice dev)
     {
         var snap = (Rgb[])FrameFor(dev).Clone();
-        Applier.Post(LaneOf(dev), dev, () => { Master.Scale(snap); dev.SetColors(snap); });
+        Engine.InvalidateBase(dev);   // running non-zone channels re-snapshot the edited statics
+        Applier.Post(LaneOf(dev), dev, () =>
+        {
+            Master.Scale(snap);
+            // A static colour on the mouse is committed to its onboard memory
+            // in the same write (the engine streams effect frames without the
+            // persist byte; a one-shot static apply would otherwise sit
+            // uncommitted until Dispose).
+            if (dev is LogitechG403 g) g.SetColors(snap, persist: true);
+            else dev.SetColors(snap);
+        });
     }
 
     /// <summary>Write one zone of a zone-writable device from its stored frame,
@@ -77,12 +92,17 @@ public sealed class LightingController
     }
 
     /// <summary>Full device frame = static colors with every running channel
-    /// composited in (what the hardware is actually showing).</summary>
+    /// composited in (what the hardware is actually showing). Each channel's
+    /// slice is the worker's last render, copied - the effect is not rendered
+    /// a second time on the UI thread per preview pull; the on-demand render
+    /// remains only for a channel with no frame yet (just started) or one
+    /// idle in baked Lian mode, where the worker renders nothing.</summary>
     public Rgb[] ComposedFrame(IRgbDevice dev)
     {
         var frame = (Rgb[])FrameFor(dev).Clone();
         foreach (var ch in Engine.ChannelsFor(dev))
         {
+            if (Engine.TryCopyLastFrame(ch, frame, ch.Offset)) continue;
             var buf = new Rgb[ch.Count];
             if (Engine.RenderChannel(ch, buf))
                 for (int i = 0; i < buf.Length && ch.Offset + i < frame.Length; i++)

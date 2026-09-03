@@ -23,15 +23,22 @@ public static class WallpaperCapture
 
     static readonly object _lock = new();
     static readonly ColorGrid _grid = new(blend: 0.4);   // shared grid core
-    static long _lastTouch, _lastFrame;
+    static long _lastTouch, _lastFrame, _failedUntil;
     static Thread? _thread;
+    static volatile bool _alive;   // a WGC session is up (the render thread reads this, never _session)
 
-    public static bool WindowFound => Environment.TickCount64 - Interlocked.Read(ref _lastFrame) < 3000;
+    /// <summary>A capture session is up and at least one frame has ever landed.
+    /// Deliberately NOT frame recency: WGC only delivers a frame when the
+    /// window's content changes, so a static-image wallpaper, or WE paused
+    /// behind a fullscreen game, goes silent for hours while the last grid
+    /// stays right - it used to fall back to the amber "no window" breath.</summary>
+    public static bool WindowFound => _alive && Interlocked.Read(ref _lastFrame) != 0;
 
     public static void Touch()
     {
         Interlocked.Exchange(ref _lastTouch, Environment.TickCount64);
         if (_thread != null) return;
+        if (Environment.TickCount64 < Interlocked.Read(ref _failedUntil)) return;   // cooling down after repeated capture failures
         lock (_lock)
         {
             if (_thread != null) return;
@@ -50,10 +57,19 @@ public static class WallpaperCapture
     static WGC.Direct3D11CaptureFramePool? _pool;
     static WGC.GraphicsCaptureSession? _session;
     static ID3D11Texture2D? _staging;
+    static ID3D11Texture2D? _mipTex;              // GPU-side downscale chain (see CreateReadback); null = direct copy
+    static ID3D11ShaderResourceView? _mipSrv;
+    static int _readLevel;
+    static uint _readbackW, _readbackH;           // source size the readback path was built for
+    static int _sizeFlips; static long _lastResize;   // consecutive quick size changes (see PumpFrame)
     static WDXD3.IDirect3DDevice? _winrtDevice;   // reused wrapper over _d3d (see StartSession)
-    static IntPtr _capturedWnd;
-    static long _sessionStart;
+    static IntPtr _capturedWnd, _capturedTop;     // WE's render child and the top-level WGC captures
+    static Windows.Graphics.SizeInt32 _poolSize;
+    static long _sessionStart, _lastFind;
     static double _cropX, _cropY, _cropW = 1, _cropH = 1;   // primary-monitor sub-rect (fractions)
+
+    const int RefindMs = 5000;                    // re-find cadence while a session is alive but silent
+    const long FailCooldownMs = 5 * 60_000;
 
     static void Loop()
     {
@@ -66,19 +82,25 @@ public static class WallpaperCapture
                 try
                 {
                     // Re-derive the render window only when the session is NOT
-                    // healthy: no session, the captured window died, or frames
-                    // stopped. The old unconditional FindWallpaperWindow() cost
-                    // process snapshots + a full EnumWindows with a string per
-                    // window, 10x/s, forever - ~0.5-1 MB/s of garbage to
-                    // re-learn an HWND that changes maybe once an hour.
+                    // alive (none yet, or its window died) - or, on a slow
+                    // cadence, when it is alive but silent. Silence is not a
+                    // fault: WGC delivers frames only on content change, so a
+                    // static wallpaper or WE paused behind a fullscreen game
+                    // stops them for hours. The old "no frame for 3 s" gate
+                    // then re-ran process snapshots + a full EnumWindows with a
+                    // string per window 10x/s for as long as that lasted, to
+                    // re-learn the same HWND and restart nothing. The slow
+                    // re-find catches the one real stale case: WE's render
+                    // window moved under a new top-level (explorer restart).
                     long now = Environment.TickCount64;
-                    bool healthy = _session != null && _capturedWnd != IntPtr.Zero && IsWindow(_capturedWnd)
-                                   && (now - Interlocked.Read(ref _lastFrame) < 3000 || now - _sessionStart < 3000);
-                    if (!healthy)
+                    bool alive = _session != null && _capturedWnd != IntPtr.Zero && IsWindow(_capturedWnd) && IsWindow(_capturedTop);
+                    bool silent = now - Interlocked.Read(ref _lastFrame) >= 3000 && now - _sessionStart >= 3000;
+                    if (!alive || (silent && now - _lastFind >= RefindMs))
                     {
-                        IntPtr wnd = FindWallpaperWindow();
+                        _lastFind = now;
+                        IntPtr wnd = FindWallpaperWindow(refreshPids: !alive);
                         if (wnd == IntPtr.Zero) { Log.Occasional("wallpaper", "nowin", "no WE render window"); TearDown(); Thread.Sleep(500); continue; }
-                        if (wnd != _capturedWnd || _session == null)
+                        if (!alive || wnd != _capturedWnd || RootOf(wnd) != _capturedTop)
                         { Log.Info("wallpaper", $"found window {wnd:X}, starting WGC"); TearDown(); StartSession(wnd); }
                     }
                     PumpFrame(bgra);
@@ -88,7 +110,16 @@ public static class WallpaperCapture
                 {
                     Log.Occasional("wallpaper", "cap", $"capture failed: {ex.GetType().Name}: {ex.Message}");
                     TearDown();
-                    if (++fails >= 20) { Log.Warn("wallpaper", "too many capture failures - giving up"); break; }
+                    if (++fails >= 20)
+                    {
+                        // Sticks: Touch() honours the cooldown. Without it the
+                        // next rendered frame respawned this thread at once - a
+                        // WARN, a D3D device rebuild and 20 more failures every
+                        // ~12 s for as long as the effect stayed selected.
+                        Interlocked.Exchange(ref _failedUntil, Environment.TickCount64 + FailCooldownMs);
+                        Log.Warn("wallpaper", $"too many capture failures - giving up for {FailCooldownMs / 60_000} min");
+                        break;
+                    }
                     Thread.Sleep(500);
                 }
                 Thread.Sleep(100);
@@ -121,8 +152,7 @@ public static class WallpaperCapture
         // desktop's WorkerW, which throws E_INVALIDARG. Capture the top-level
         // ancestor - it still holds the wallpaper and isn't affected by
         // overlapping app windows.
-        IntPtr top = GetAncestor(wnd, 2 /*GA_ROOT*/);
-        if (top == IntPtr.Zero) top = wnd;
+        IntPtr top = RootOf(wnd);
         Log.Info("wallpaper", $"step: CreateForWindow (child {wnd:X} -> top {top:X} class '{ClassName(top)}')");
         interop.CreateForWindow(top, ref iid, out IntPtr itemPtr);
         _item = WGC.GraphicsCaptureItem.FromAbi(itemPtr);
@@ -150,11 +180,23 @@ public static class WallpaperCapture
         try { _session.IsCursorCaptureEnabled = false; } catch { }
         _session.StartCapture();
         _capturedWnd = wnd;
+        _capturedTop = top;
+        _poolSize = size;
+        _sizeFlips = 0;
         _sessionStart = Environment.TickCount64;   // grace period before "no frames" re-find
+        _alive = true;
 
-        // We capture Progman = the whole virtual desktop. Crop to the PRIMARY
-        // monitor (where the wallpaper is) as fractions of the virtual desktop,
-        // so it's DPI-independent: primary sits at virtual (0,0).
+        ComputeCrop();
+        Log.Info("wallpaper", $"WGC session started {size.Width}x{size.Height}, crop primary [{_cropX:0.00},{_cropY:0.00} {_cropW:0.00}x{_cropH:0.00}]");
+    }
+
+    /// <summary>We capture Progman = the whole virtual desktop. Crop to the
+    /// PRIMARY monitor (where the wallpaper is) as fractions of the virtual
+    /// desktop, so it's DPI-independent: primary sits at virtual (0,0).
+    /// Re-derived on a capture size change (a resolution/topology change
+    /// moves both).</summary>
+    static void ComputeCrop()
+    {
         double vx = GetSystemMetrics(76), vy = GetSystemMetrics(77);   // XVIRTUALSCREEN, YVIRTUALSCREEN
         double vw = GetSystemMetrics(78), vh = GetSystemMetrics(79);   // CXVIRTUALSCREEN, CYVIRTUALSCREEN
         double pw = GetSystemMetrics(0), ph = GetSystemMetrics(1);     // CXSCREEN, CYSCREEN (primary)
@@ -164,14 +206,38 @@ public static class WallpaperCapture
             _cropW = pw / vw; _cropH = ph / vh;
         }
         else { _cropX = _cropY = 0; _cropW = _cropH = 1; }
-        Log.Info("wallpaper", $"WGC session started {size.Width}x{size.Height}, crop primary [{_cropX:0.00},{_cropY:0.00} {_cropW:0.00}x{_cropH:0.00}]");
     }
 
+    /// <summary>Pull one frame into the grid. A captured-window size change
+    /// recreates the frame pool in place at the new size (no session restart,
+    /// so it cannot loop); the readback textures follow on the next frame.</summary>
     static void PumpFrame(byte[] bgra)
     {
         if (_pool == null) return;
         using var frame = _pool.TryGetNextFrame();
         if (frame == null) return;
+
+        // Resolution / topology change, a game toggling exclusive fullscreen:
+        // WGC keeps delivering into the old-size pool texture with the content
+        // in its corner, and the primary-monitor crop is stale. Recreate the
+        // pool at the content size and skip this (old-size) frame. A size
+        // that keeps flipping frame after frame (a driver quirk this code
+        // cannot converge on) is routed through the failure branch, which has
+        // the backoff and the 20-strike cooldown, instead of being chased.
+        var cs = frame.ContentSize;
+        if (cs.Width != _poolSize.Width || cs.Height != _poolSize.Height)
+        {
+            long now = Environment.TickCount64;
+            _sizeFlips = now - _lastResize < 1000 ? _sizeFlips + 1 : 0;
+            _lastResize = now;
+            if (_sizeFlips >= 5)
+                throw new InvalidOperationException($"capture size keeps changing ({_poolSize.Width}x{_poolSize.Height} <-> {cs.Width}x{cs.Height})");
+            Log.Info("wallpaper", $"capture size changed {_poolSize.Width}x{_poolSize.Height} -> {cs.Width}x{cs.Height}, recreating the frame pool");
+            _pool.Recreate(_winrtDevice!, WDX.DirectXPixelFormat.B8G8R8A8UIntNormalized, 2, cs);
+            _poolSize = cs;
+            ComputeCrop();
+            return;
+        }
 
         // The projected surface is IClosable: dispose it per frame instead of
         // leaving 20 finalizable RCWs/s to the GC.
@@ -179,42 +245,116 @@ public static class WallpaperCapture
         using var srcTex = GetTexture(surface);
         var desc = srcTex.Description;
 
-        // Lazily (re)create a 1:1 staging copy of the source, CPU-readable.
-        if (_staging == null || _staging.Description.Width != desc.Width || _staging.Description.Height != desc.Height)
-        {
-            _staging?.Dispose();
-            _staging = _d3d!.CreateTexture2D(new Texture2DDescription
-            {
-                Width = desc.Width, Height = desc.Height, MipLevels = 1, ArraySize = 1,
-                Format = desc.Format, SampleDescription = new SampleDescription(1, 0),
-                Usage = ResourceUsage.Staging, BindFlags = BindFlags.None,
-                CPUAccessFlags = CpuAccessFlags.Read, MiscFlags = ResourceOptionFlags.None,
-            });
-        }
-        _ctx!.CopyResource(_staging, srcTex);
+        if (_staging == null || _readbackW != desc.Width || _readbackH != desc.Height)
+            CreateReadback(desc);
 
-        var map = _ctx.Map(_staging, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
+        // GPU-side downscale: the whole captured frame (the virtual desktop,
+        // 33 MB at 4K) is copied GPU->GPU into the mip chain and only a small
+        // level crosses to the CPU. The old path copied and mapped the FULL
+        // frame every 100 ms - 330+ MB/s of GPU->CPU traffic and a ~10 ms Map
+        // stall - to produce 32x18 cells. Without a mip chain (no autogen for
+        // the format, or a source already small enough) the frame goes
+        // straight to the staging copy.
+        if (_mipTex != null)
+        {
+            _ctx!.CopySubresourceRegion(_mipTex, 0, 0, 0, 0, srcTex, 0, null);
+            _ctx.GenerateMips(_mipSrv!);
+            _ctx.CopySubresourceRegion(_staging!, 0, 0, 0, 0, _mipTex, (uint)_readLevel, null);
+        }
+        else
+            _ctx!.CopySubresourceRegion(_staging!, 0, 0, 0, 0, srcTex, 0, null);
+
+        var map = _ctx.Map(_staging!, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
         try
         {
-            Downsample(map.DataPointer, (int)map.RowPitch, (int)desc.Width, (int)desc.Height, bgra);
+            var sd = _staging!.Description;
+            Downsample(map.DataPointer, (int)map.RowPitch, (int)sd.Width, (int)sd.Height, bgra);
         }
-        finally { _ctx.Unmap(_staging, 0); }
+        finally { _ctx.Unmap(_staging!, 0); }
 
         _grid.BlendBgra(bgra);
         Interlocked.Exchange(ref _lastFrame, Environment.TickCount64);
     }
 
-    // ID3D11Texture2D IID (hardcoded - a projected type's .GUID is NOT the
-    // COM interface IID, which yields a garbage pointer and a native crash).
-    static readonly Guid IID_ID3D11Texture2D = new("6f15aaf2-d208-4e89-9ab4-489535d34f9c");
-
-    static ID3D11Texture2D GetTexture(WDXD3.IDirect3DSurface surface)
+    /// <summary>(Re)build the readback path for a source of this size: a CPU
+    /// staging copy of the smallest mip level that still gives Downsample its
+    /// 4x4 samples per cell over the primary-monitor crop, fed by a
+    /// full-mip-chain GPU texture. Autogen support is checked BEFORE the
+    /// chain is created (D3D11 rejects GENERATE_MIPS at create time for a
+    /// format without it): a GPU without it, or a source too small to need a
+    /// level, gets no chain and reads level 0 (the old full-frame copy).</summary>
+    static void CreateReadback(Texture2DDescription desc)
     {
-        var access = surface.As<IDirect3DDxgiInterfaceAccess>();
-        Guid iid = IID_ID3D11Texture2D;
-        access.GetInterface(ref iid, out IntPtr p);
-        if (p == IntPtr.Zero) throw new InvalidOperationException("no ID3D11Texture2D from surface");
-        return new ID3D11Texture2D(p);
+        DisposeReadback();
+        bool autogen = (_d3d!.CheckFormatSupport(desc.Format) & FormatSupport.MipAutogen) != 0;
+        int cw = Math.Max(1, (int)(desc.Width * _cropW)), ch = Math.Max(1, (int)(desc.Height * _cropH));
+        int maxLevels = 1 + (int)Math.Floor(Math.Log2(Math.Max(desc.Width, desc.Height)));   // what MipLevels = 0 yields
+        int k = 0;
+        if (autogen)
+            while (k + 1 < maxLevels && (cw >> (k + 1)) >= 4 * W && (ch >> (k + 1)) >= 4 * H) k++;
+        _readLevel = k;
+        if (k > 0)
+        {
+            _mipTex = _d3d.CreateTexture2D(new Texture2DDescription
+            {
+                Width = desc.Width, Height = desc.Height, MipLevels = 0, ArraySize = 1,   // 0 = full chain
+                Format = desc.Format, SampleDescription = new SampleDescription(1, 0),
+                Usage = ResourceUsage.Default, BindFlags = BindFlags.ShaderResource | BindFlags.RenderTarget,
+                CPUAccessFlags = CpuAccessFlags.None, MiscFlags = ResourceOptionFlags.GenerateMips,
+            });
+            _mipSrv = _d3d.CreateShaderResourceView(_mipTex, null);
+        }
+        _staging = _d3d.CreateTexture2D(new Texture2DDescription
+        {
+            Width = Math.Max(1u, desc.Width >> k), Height = Math.Max(1u, desc.Height >> k), MipLevels = 1, ArraySize = 1,
+            Format = desc.Format, SampleDescription = new SampleDescription(1, 0),
+            Usage = ResourceUsage.Staging, BindFlags = BindFlags.None,
+            CPUAccessFlags = CpuAccessFlags.Read, MiscFlags = ResourceOptionFlags.None,
+        });
+        _readbackW = desc.Width; _readbackH = desc.Height;
+        Log.Info("wallpaper", $"readback {_staging.Description.Width}x{_staging.Description.Height} (mip {k} of {maxLevels}{(autogen ? "" : ", no autogen")})");
+    }
+
+    static void DisposeReadback()
+    {
+        try { _mipSrv?.Dispose(); } catch { }
+        try { _mipTex?.Dispose(); } catch { }
+        try { _staging?.Dispose(); } catch { }
+        _mipSrv = null; _mipTex = null; _staging = null;
+        _readbackW = _readbackH = 0;
+    }
+
+    // IIDs hardcoded - a projected type's .GUID is NOT the COM interface IID,
+    // which yields a garbage pointer and a native crash.
+    static readonly Guid IID_ID3D11Texture2D = new("6f15aaf2-d208-4e89-9ab4-489535d34f9c");
+    static readonly Guid IID_IDirect3DDxgiInterfaceAccess = new("A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1");
+
+    // Raw COM instead of surface.As<IDirect3DDxgiInterfaceAccess>(): that
+    // minted a finalizable RCW around every frame's surface (10/s) that
+    // nothing released. QueryInterface (IUnknown slot 0) the ABI pointer for
+    // the access interface, call its GetInterface (slot 3, after IUnknown's
+    // three) - both through the vtables - and release both on the spot.
+    static unsafe ID3D11Texture2D GetTexture(WDXD3.IDirect3DSurface surface)
+    {
+        IntPtr unk = MarshalInspectable<object>.FromManaged(surface);
+        try
+        {
+            Guid accessIid = IID_IDirect3DDxgiInterfaceAccess;
+            IntPtr access;
+            var queryInterface = (delegate* unmanaged[Stdcall]<IntPtr, Guid*, IntPtr*, int>)(*(void***)unk)[0];
+            Marshal.ThrowExceptionForHR(queryInterface(unk, &accessIid, &access));
+            try
+            {
+                Guid iid = IID_ID3D11Texture2D;
+                IntPtr p;
+                var getInterface = (delegate* unmanaged[Stdcall]<IntPtr, Guid*, IntPtr*, int>)(*(void***)access)[3];
+                Marshal.ThrowExceptionForHR(getInterface(access, &iid, &p));
+                if (p == IntPtr.Zero) throw new InvalidOperationException("no ID3D11Texture2D from surface");
+                return new ID3D11Texture2D(p);
+            }
+            finally { Marshal.Release(access); }
+        }
+        finally { Marshal.Release(unk); }
     }
 
     // Box-average the full frame down into the W x H grid.
@@ -254,10 +394,11 @@ public static class WallpaperCapture
 
     static void TearDown()
     {
+        _alive = false;
         try { _session?.Dispose(); } catch { }
         try { _pool?.Dispose(); } catch { }
-        try { _staging?.Dispose(); } catch { }
-        _session = null; _pool = null; _item = null; _staging = null; _capturedWnd = IntPtr.Zero;
+        DisposeReadback();
+        _session = null; _pool = null; _item = null; _capturedWnd = _capturedTop = IntPtr.Zero;
     }
     static void DisposeDevice()
     {
@@ -274,15 +415,30 @@ public static class WallpaperCapture
     static long _pidsStamp;
     static IntPtr _best; static long _bestArea;
 
-    static IntPtr FindWallpaperWindow()
+    // refreshPids: the pid set only changes when WE restarts, and then its
+    // window dies first (the not-alive path refreshes); the slow alive-but-
+    // silent re-find keeps the pids it has and skips the process snapshot.
+    static IntPtr FindWallpaperWindow(bool refreshPids)
     {
-        if (Environment.TickCount64 - _pidsStamp > 2000)
+        if ((refreshPids || _wpPids.Count == 0) && Environment.TickCount64 - _pidsStamp > 2000)
         {
             _pidsStamp = Environment.TickCount64;
             _wpPids.Clear();
-            foreach (var name in new[] { "wallpaper64", "wallpaper32", "wallpaperwindow" })
-                foreach (var p in System.Diagnostics.Process.GetProcessesByName(name))
-                    try { _wpPids.Add((uint)p.Id); } catch { } finally { p.Dispose(); }
+            // One process snapshot for all three names (GetProcessesByName is a
+            // full process-table pass each; this ran three), everything disposed.
+            foreach (var p in System.Diagnostics.Process.GetProcesses())
+            {
+                try
+                {
+                    string n = p.ProcessName;
+                    if (n.Equals("wallpaper64", StringComparison.OrdinalIgnoreCase)
+                        || n.Equals("wallpaper32", StringComparison.OrdinalIgnoreCase)
+                        || n.Equals("wallpaperwindow", StringComparison.OrdinalIgnoreCase))
+                        _wpPids.Add((uint)p.Id);
+                }
+                catch { }
+                finally { p.Dispose(); }
+            }
         }
         if (_wpPids.Count == 0) return IntPtr.Zero;
         _best = IntPtr.Zero; _bestArea = 0;
@@ -309,6 +465,11 @@ public static class WallpaperCapture
     }
     static bool ChildCallback(IntPtr h, IntPtr _) { Consider(h); return true; }
     static string ClassName(IntPtr h) { var sb = new StringBuilder(64); GetClassNameW(h, sb, 64); return sb.ToString(); }
+    // WGC needs a TOP-LEVEL window; WE's render surface is a child of the
+    // desktop's WorkerW (CreateForWindow on it throws E_INVALIDARG). The
+    // top-level ancestor still holds the wallpaper and isn't affected by
+    // overlapping app windows.
+    static IntPtr RootOf(IntPtr wnd) { IntPtr top = GetAncestor(wnd, 2 /*GA_ROOT*/); return top == IntPtr.Zero ? wnd : top; }
 
     /*----- interop -----*/
     [ComImport, Guid("3628E81B-3CAC-4C60-B7F4-23CE0E0C3356"),
@@ -317,12 +478,6 @@ public static class WallpaperCapture
     {
         void CreateForWindow([In] IntPtr window, [In] ref Guid iid, out IntPtr result);
         void CreateForMonitor([In] IntPtr monitor, [In] ref Guid iid, out IntPtr result);
-    }
-    [ComImport, Guid("A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1"),
-     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    interface IDirect3DDxgiInterfaceAccess
-    {
-        void GetInterface([In] ref Guid iid, out IntPtr p);
     }
     [DllImport("d3d11.dll", EntryPoint = "CreateDirect3D11DeviceFromDXGIDevice")]
     static extern int CreateDirect3D11DeviceFromDXGIDevice(IntPtr dxgiDevice, out IntPtr graphicsDevice);

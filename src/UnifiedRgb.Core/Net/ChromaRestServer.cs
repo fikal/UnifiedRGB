@@ -31,6 +31,7 @@ public static class ChromaRestServer
 
     static readonly byte[] RespResult0 = Encoding.UTF8.GetBytes("{\"result\":0}");
     static readonly byte[] RespTick = Encoding.UTF8.GetBytes("{\"tick\":1}");
+    static readonly LogBudget _initLog = new(5);   // a game inits once; a flood must not grow the log
 
     public static void Start()
     {
@@ -116,7 +117,7 @@ public static class ChromaRestServer
         if (req.HttpMethod == "POST" && path.EndsWith("/razer/chromasdk"))
         {
             int id = Interlocked.Increment(ref _session);
-            Log.Info("chroma", $"REST init: session {id} ({AppTitle(body, bodyLen)})");
+            if (_initLog.Allow()) Log.Info("chroma", $"REST init: session {id} ({AppTitle(body, bodyLen)})");
             Json(ctx, Encoding.UTF8.GetBytes(
                 $"{{\"sessionid\":{id},\"uri\":\"http://localhost:{Port}/razer/chromasdk/{id}\"}}"));
             return;
@@ -131,7 +132,7 @@ public static class ChromaRestServer
             if (req.HttpMethod == "DELETE") { Json(ctx, RespResult0); return; }
             if (seg.Length >= 2 && seg[1].Equals("heartbeat", StringComparison.OrdinalIgnoreCase))
             { Json(ctx, RespTick); return; }
-            if (seg.Length >= 2 && body != null) TryApply(body, bodyLen);
+            if (seg.Length >= 2 && body != null) TryApply(body, bodyLen, seg[1]);
             Json(ctx, RespResult0);
             return;
         }
@@ -139,10 +140,19 @@ public static class ChromaRestServer
         Json(ctx, RespResult0);
     }
 
-    /// <summary>Parse a device effect and push its colors to the shared grid. The
-    /// keyboard's CHROMA_CUSTOM 6x22 grid is the richest; STATIC fills one color.</summary>
-    static void TryApply(byte[] body, int len)
+    /// <summary>Parse a device effect and push its colors to the feed, routed by
+    /// device: the keyboard's CHROMA_CUSTOM 6x22 grid (type 1) is the richest
+    /// source, ChromaLink's 1-D strip fills the type-2 slot, and every other
+    /// device (mouse, headset, mousepad, keypad, the apply-by-id /effect
+    /// endpoint) only marks the host alive. Their 9x7 / 1x1 / body-less frames
+    /// used to land in the keyboard slot too, so a game driving several Razer
+    /// device classes per frame flickered every LED between pictures and black.</summary>
+    static void TryApply(byte[] body, int len, string device)
     {
+        int type;
+        if (device.Equals("keyboard", StringComparison.OrdinalIgnoreCase)) type = 1;
+        else if (device.Equals("chromalink", StringComparison.OrdinalIgnoreCase)) type = 2;
+        else { ChromaFeed.Touch(); return; }
         try
         {
             using var doc = JsonDocument.Parse(new ReadOnlyMemory<byte>(body, 0, len));
@@ -151,23 +161,35 @@ public static class ChromaRestServer
 
             if (effect.Contains("CUSTOM", StringComparison.OrdinalIgnoreCase) && root.TryGetProperty("param", out var param))
             {
-                // param is either a 2D int array, or { color: [[...]], key: [[...]] }.
+                // param is a 2D int array (keyboard), a 1D int array (ChromaLink),
+                // or { color: [...], key: [[...]] }.
                 var rows = param.ValueKind == JsonValueKind.Object && param.TryGetProperty("color", out var col) ? col : param;
-                if (rows.ValueKind == JsonValueKind.Array && rows.GetArrayLength() > 0 && rows[0].ValueKind == JsonValueKind.Array)
+                if (rows.ValueKind == JsonValueKind.Array && rows.GetArrayLength() > 0)
                 {
-                    int r = rows.GetArrayLength(), c = rows[0].GetArrayLength();
-                    if (r > 0 && c > 0 && r * c <= 4096)
+                    if (rows[0].ValueKind == JsonValueKind.Array)
                     {
-                        // The grid must be a fresh array: it's published by
-                        // reference to the render threads.
-                        var grid = new Rgb[r * c];
-                        for (int y = 0; y < r; y++)
+                        int r = rows.GetArrayLength(), c = rows[0].GetArrayLength();
+                        if (r > 0 && c > 0 && r * c <= 4096)
                         {
-                            var rowArr = rows[y];
-                            for (int x = 0; x < c && x < rowArr.GetArrayLength(); x++)
-                                grid[y * c + x] = FromChroma(rowArr[x].GetInt32());
+                            // The grid must be a fresh array: it's published by
+                            // reference to the render threads.
+                            var grid = new Rgb[r * c];
+                            for (int y = 0; y < r; y++)
+                            {
+                                var rowArr = rows[y];
+                                for (int x = 0; x < c && x < rowArr.GetArrayLength(); x++)
+                                    grid[y * c + x] = FromChroma(rowArr[x].GetInt32());
+                            }
+                            ChromaFeed.PushGrid(grid, r, c, type);
+                            return;
                         }
-                        ChromaFeed.PushGrid(grid, r, c);
+                    }
+                    else if (rows[0].ValueKind == JsonValueKind.Number)
+                    {
+                        int c = Math.Min(rows.GetArrayLength(), 64);   // ChromaLink is 5; cap a hostile body
+                        var grid = new Rgb[c];
+                        for (int x = 0; x < c; x++) grid[x] = FromChroma(rows[x].GetInt32());
+                        ChromaFeed.PushGrid(grid, 1, c, type);
                         return;
                     }
                 }
@@ -182,13 +204,13 @@ public static class ChromaRestServer
                     else if (p.ValueKind == JsonValueKind.Object && p.TryGetProperty("color", out var cc) && cc.ValueKind == JsonValueKind.Number)
                         color = cc.GetInt32();
                 }
-                ChromaFeed.PushGrid(new[] { FromChroma(color) }, 1, 1);
+                ChromaFeed.PushGrid(new[] { FromChroma(color) }, 1, 1, type);
                 return;
             }
 
             // NONE / unrecognised: mark connected with black so the effect stops
             // showing its "waiting" breath while a host is clearly present.
-            ChromaFeed.PushGrid(new[] { new Rgb(0, 0, 0) }, 1, 1);
+            ChromaFeed.PushGrid(new[] { new Rgb(0, 0, 0) }, 1, 1, type);
         }
         catch { }
     }
@@ -196,13 +218,23 @@ public static class ChromaRestServer
     // Chroma color int = COLORREF 0x00BBGGRR (R low byte).
     static Rgb FromChroma(int c) => new((byte)(c & 0xFF), (byte)((c >> 8) & 0xFF), (byte)((c >> 16) & 0xFF));
 
-    static string AppTitle(byte[]? body, int len)
+    // Internal (not private) so the console harness can pin the log-forgery guard.
+    internal static string AppTitle(byte[]? body, int len)
     {
         if (body == null || len == 0) return "?";
         try
         {
             using var d = JsonDocument.Parse(new ReadOnlyMemory<byte>(body, 0, len));
-            return d.RootElement.TryGetProperty("title", out var t) ? t.GetString() ?? "?" : "?";
+            string title = d.RootElement.TryGetProperty("title", out var t) ? t.GetString() ?? "?" : "?";
+            // Peer-controlled text headed for the log (and the support bundle):
+            // no control characters (an embedded newline forges a log line), short.
+            var sb = new StringBuilder(Math.Min(title.Length, 64));
+            foreach (char ch in title)
+            {
+                if (sb.Length >= 64) break;
+                sb.Append(char.IsControl(ch) ? ' ' : ch);
+            }
+            return sb.Length == 0 ? "?" : sb.ToString();
         }
         catch { return "?"; }
     }

@@ -85,9 +85,15 @@ public partial class PaletteLibraryWindow : Window
             BorderBrush = Brushes.Transparent, BorderThickness = new Thickness(2), Cursor = Cursors.Hand,
             Child = body,
         };
-        card.MouseLeftButtonUp += (_, e) =>
+        // Apply on the (bubbling) button-DOWN and mark it handled. The window's
+        // Drag_Down runs DragMove on any unhandled press; its modal move loop
+        // swallows the real button-up and WPF then posts a synthetic one at
+        // client (0,0), so a MouseLeftButtonUp handler on the card never fired.
+        // Bubbling (not Preview) so the delete Button inside a custom card
+        // still takes its own press first.
+        card.MouseLeftButtonDown += (_, e) =>
         {
-            e.Handled = true;                       // don't let the click drag the window
+            e.Handled = true;
             _vm.ApplyPaletteColors(entry.Colors);
             if (_active != null) _active.BorderBrush = Brushes.Transparent;
             card.BorderBrush = AccentBrush;

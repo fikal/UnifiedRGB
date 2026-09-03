@@ -5,8 +5,6 @@ using UnifiedRgb.Core;
 
 namespace UnifiedRgb.App;
 
-/// <summary>A saved lighting setup: per-device LED frames, keyed by device
-/// name (device identity is stable per machine).</summary>
 /// <summary>A saved effect assignment: which effect runs on which LED range of
 /// which device, with its speed / tint / custom-pattern settings.</summary>
 public sealed class EffectAssignment
@@ -25,12 +23,19 @@ public sealed class EffectAssignment
     public string[]? PatternPalette { get; set; }
 }
 
+/// <summary>A saved lighting setup: per-device LED frames, keyed by device
+/// name (device identity is stable per machine), plus the effect assignments
+/// and user swatches that were live when it was captured.</summary>
 public sealed class Profile
 {
     // Not `required`: System.Text.Json throws for a missing required member, so
     // ONE hand-edited/old entry without a Name used to fail the whole list.
     public string Name { get; set; } = "";
-    public Dictionary<string, string[]> DeviceFrames { get; set; } = new();  // deviceName -> hex per LED
+    /// <summary>deviceName -> hex per LED. Null-tolerant on set: "DeviceFrames": null
+    /// in a hand-edited file used to NRE the startup profile apply in the
+    /// view-model constructor, i.e. the app would not launch until the file was fixed.</summary>
+    public Dictionary<string, string[]> DeviceFrames { get => _frames; set => _frames = value ?? new(); }
+    Dictionary<string, string[]> _frames = new();
     public string[]? CustomColors { get; set; }                              // user swatches (hex)
     public List<EffectAssignment>? Effects { get; set; }                     // running effects per target
     public override string ToString() => Name;
@@ -49,8 +54,11 @@ public sealed class SettingsData
     public string[]? CustomColors { get; set; }     // user swatches (hex), global
     public List<DisabledDeviceEntry>? DisabledDevices { get; set; }
     public bool UseOpenRgb { get; set; }            // bridge extra devices via a managed OpenRGB
-    /// <summary>Custom Cooling-row names, keyed "{chipId:X4}:{fanIndex}" for
-    /// board fans and "gpu:{fanIndex}" for GPU fans.</summary>
+    /// <summary>Custom Cooling-row names, keyed "fan:{name}" where name is the
+    /// row's raw sensor name: the LHM header name for board fans ("Fan #2"),
+    /// "GPU" for the GPU row, "Lian Li {slot}" for wireless fans. By NAME, like
+    /// fan-config.json, because LHM indices shift across re-enumeration; two
+    /// identically named headers therefore share one label.</summary>
     public Dictionary<string, string>? FanLabels { get; set; }
     /// <summary>Global brightness scale (0.1-1.0) applied to every write.</summary>
     public double MasterBrightness { get; set; } = 1.0;
@@ -126,18 +134,45 @@ public sealed class ProfileStore
     public ProfileStore()
     {
         Directory.CreateDirectory(Dir);
-        Profiles = LoadJson<List<Profile>>(ProfilesPath, "profiles.json") ?? new();
+        // A null list entry ("[null]") is dropped rather than left to NRE the
+        // first name lookup at startup.
+        Profiles = LoadJson<List<Profile?>>(ProfilesPath, "profiles.json")?.OfType<Profile>().ToList() ?? new();
+        // Same for a null EFFECT entry ("Effects": [null]) and a null Device:
+        // scrubbed once here so Capture's carry-over of absent devices and the
+        // view-model's restore never meet one (an NRE on the first re-save).
+        foreach (var p in Profiles)
+        {
+            p.Effects?.RemoveAll(e => e == null);
+            foreach (var e in p.Effects ?? new()) e.Device ??= "";
+        }
         Settings = LoadJson<SettingsData>(SettingsPath, "settings.json") ?? new();
     }
 
-    /// <summary>Read a JSON store; null when absent or unreadable. An unreadable
-    /// file is COPIED aside first (`*.corrupt-yyyyMMdd-HHmmss`) and logged: the
+    /// <summary>Read a JSON store; null when absent or unreadable. A CORRUPT
+    /// file is copied aside first (`*.corrupt-yyyyMMdd-HHmmss`) and logged: the
     /// old path silently substituted defaults, and the next routine save then
-    /// overwrote the user's profiles/settings for good.</summary>
+    /// overwrote the user's profiles/settings for good. A file that merely
+    /// could not be READ (sharing violation from an AV/sync client at an
+    /// autostart launch, permissions) is not corrupt: the read is retried
+    /// briefly, and if it still fails the store runs on defaults with saves
+    /// to that path disabled for this session - so the intact file on disk is
+    /// never replaced by an empty one.</summary>
     internal static T? LoadJson<T>(string path, string what) where T : class
     {
         if (!File.Exists(path)) return null;
-        try { return JsonSerializer.Deserialize<T>(File.ReadAllText(path)); }
+        string text;
+        try { text = ReadWithRetry(path); }
+        // Vanished between Exists and the read (sync client relocating the
+        // folder, AV quarantine): nothing on disk to protect, so it is "no
+        // file" - defaults, saves allowed - not "unreadable".
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { return null; }
+        catch (Exception ex)
+        {
+            lock (Unreadable) Unreadable.Add(path);
+            Log.Warn("store", $"{what} could not be read ({ex.Message}) - running on defaults; saves to it are off until the next launch");
+            return null;
+        }
+        try { return JsonSerializer.Deserialize<T>(text); }
         catch (Exception ex)
         {
             string backup = path + $".corrupt-{DateTime.Now:yyyyMMdd-HHmmss}";
@@ -147,14 +182,37 @@ public sealed class ProfileStore
         }
     }
 
+    // Sharing violations from a scanner/sync client last milliseconds; a few
+    // short retries cover them without turning startup into a wait.
+    static string ReadWithRetry(string path)
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            try { return File.ReadAllText(path); }
+            catch (IOException ex) when (attempt < 4 && ex is not (FileNotFoundException or DirectoryNotFoundException)) { Thread.Sleep(200); }
+        }
+    }
+
+    /// <summary>Paths whose load failed for a non-corruption reason this
+    /// session; Save skips them (see LoadJson).</summary>
+    static readonly HashSet<string> Unreadable = new(StringComparer.OrdinalIgnoreCase);
+
     public void SaveProfiles() => Save(ProfilesPath, Profiles, "profiles.json");
     public void SaveSettings() => Save(SettingsPath, Settings, "settings.json");
 
     /// <summary>Saves are called from property setters, timers and Dispose; a
     /// locked file (AV scan, sync client) must log, not surface as an error
-    /// dialog or abort the shutdown sequence.</summary>
-    static void Save<T>(string path, T data, string what)
+    /// dialog or abort the shutdown sequence. Shared by the other JSON stores
+    /// (scenes.json) so the unreadable-file guard covers them too.</summary>
+    internal static void Save<T>(string path, T data, string what)
     {
+        bool unreadable;
+        lock (Unreadable) unreadable = Unreadable.Contains(path);
+        if (unreadable)
+        {
+            Log.Occasional($"store-skip:{what}", "store", $"{what} save skipped: the file could not be read at startup (see above)");
+            return;
+        }
         try { SafeFile.WriteAllText(path, JsonSerializer.Serialize(data, JsonOpts)); }
         catch (Exception ex) { Log.Warn("store", $"{what} save failed: {ex.Message}"); }
     }
@@ -171,7 +229,7 @@ public sealed class ProfileStore
         var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var (dev, frame) in frames)
         {
-            p.DeviceFrames[dev.Name] = frame.Select(c => c.ToString().TrimStart('#')).ToArray();
+            p.DeviceFrames[dev.Name] = frame.Select(c => c.ToHex()).ToArray();
             present.Add(dev.Name);
         }
 
@@ -232,26 +290,39 @@ public sealed class ProfileStore
         return key?.GetValue(RunValue) != null;
     }
 
-    public static void SetAutoStart(bool enable)
+    /// <summary>Create/remove the logon task. False when schtasks failed, timed
+    /// out or the UAC prompt was declined - logged with the exit code, so the
+    /// "why didn't it start after reboot" case has a trace instead of a ticked
+    /// box over a task that does not exist.</summary>
+    public static bool SetAutoStart(bool enable)
     {
-        // Clear any legacy Run-key entry either way.
-        using (var key = Registry.CurrentUser.CreateSubKey(RunKey))
-            key.DeleteValue(RunValue, throwOnMissingValue: false);
-
-        string exe = Environment.ProcessPath ?? "";
-        string cmd = enable
-            ? $"/Create /F /TN \"{TaskName}\" /SC ONLOGON /RL HIGHEST /TR \"\\\"{exe}\\\" --autostart\""
-            : $"/Delete /F /TN \"{TaskName}\"";
+        string verb = enable ? "/Create" : "/Delete";
         try
         {
+            // Clear any legacy Run-key entry either way.
+            using (var key = Registry.CurrentUser.CreateSubKey(RunKey))
+                key.DeleteValue(RunValue, throwOnMissingValue: false);
+
+            string exe = Environment.ProcessPath ?? "";
+            string cmd = enable
+                ? $"/Create /F /TN \"{TaskName}\" /SC ONLOGON /RL HIGHEST /TR \"\\\"{exe}\\\" --autostart\""
+                : $"/Delete /F /TN \"{TaskName}\"";
             var psi = new System.Diagnostics.ProcessStartInfo
             {
                 FileName = "schtasks", Arguments = cmd,
                 UseShellExecute = true, Verb = "runas", WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
             };
             using var p = System.Diagnostics.Process.Start(psi);
-            p?.WaitForExit(15000);
+            if (p == null) { Log.Warn("autostart", $"schtasks {verb}: process did not start"); return false; }
+            if (!p.WaitForExit(15000)) { Log.Warn("autostart", $"schtasks {verb}: timed out"); return false; }
+            if (p.ExitCode != 0) { Log.Warn("autostart", $"schtasks {verb} exited {p.ExitCode}"); return false; }
+            return true;
         }
-        catch { /* user declined UAC — leave state as-is */ }
+        catch (Exception ex)
+        {
+            // Includes the user declining UAC (Win32Exception 1223).
+            Log.Warn("autostart", $"schtasks {verb} failed: {ex.Message}");
+            return false;
+        }
     }
 }

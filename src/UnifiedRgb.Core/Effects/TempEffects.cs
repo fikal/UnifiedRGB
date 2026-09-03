@@ -18,7 +18,7 @@ public sealed class TempGlow : IEffect
 
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb _)
     {
-        SensorHub.Touch();
+        SensorHub.TouchTemps();   // temp only: don't arm the Cooling-pane sweep
         double? temp = SensorHub.HottestC;
 
         Rgb color;
@@ -29,7 +29,9 @@ public sealed class TempGlow : IEffect
             double hue = 120.0 * (1.0 - x);                    // green -> red
             // Heartbeat: rate 0.4Hz cool -> 2.2Hz hot; depth grows with heat.
             double rate = 0.4 + 1.8 * x;
-            double depth = (0.10 + 0.35 * x) * Math.Clamp(speed, 0, 2);
+            // Speed is pulse depth, not direction: Reverse (negative speed)
+            // used to clamp it to 0 and silently stop the heartbeat.
+            double depth = (0.10 + 0.35 * x) * Math.Clamp(Math.Abs(speed), 0, 2);
             pulse = 1.0 - depth * (0.5 + 0.5 * Math.Sin(t * rate * Math.PI * 2));
             color = ColorUtil.HsvToRgb(hue, 1.0, 1.0);
         }

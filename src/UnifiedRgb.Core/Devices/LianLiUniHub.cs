@@ -27,6 +27,12 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice
     readonly object _lock = new();
     bool _disposed;   // set under _lock so no HID op touches a freed handle post-Rescan
     readonly Rgb[] _chan = new Rgb[Channels * MaxPerChannel];   // full per-channel buffer
+    // False until the hub has received at least one commit from THIS instance.
+    // _chan starts all-black, so the dedup in Write() saw a black first frame
+    // (fans saved as off, LightsOff at launch) as "unchanged" and never sent
+    // it - the hub kept playing its power-on effect until a non-black colour
+    // was applied. Same class as the wireless driver's first-apply field bug.
+    bool _primed;
 
     // SL-Infinity layout: fixed 8 inner + 12 outer per fan (L-Connect's
     // Ene6K77Fan.Constants). fanCount is the one thing the hub can't report, so
@@ -90,8 +96,13 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice
         _fans = Math.Clamp(ConfiguredFanCount, 1, MaxFans);   // saved per-channel count
         _group = Math.Clamp(ConfiguredChannel, 0, Groups - 1);
         LoadCfg();                                      // optional file can still override
-        DetectPopulated();                              // which connectors have fans
-        _lastSpeeds = ReadGroupSpeeds();
+        // One tach read (feature report + 20 ms settle + GET_REPORT) seeds both
+        // the RPM cache and the populated-connector list: a connector reading
+        // non-zero has a spinning fan chain. Read-only and safe; it used to be
+        // issued twice back-to-back on this synchronous detection path.
+        var spd = ReadGroupSpeeds();
+        _lastSpeeds = spd;
+        _populated = spd == null ? Array.Empty<int>() : Enumerable.Range(0, Groups).Where(g => spd[g] > 0).ToArray();
         BuildLayout();
         Instance = this;
         _timer = new System.Threading.Timer(_ => Tick(), null, 1500, 1500);
@@ -109,20 +120,6 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice
         Log.Info("LianLiUni", $"opened wired SL-Infinity: {dev.LedCount} LEDs (channel={dev._group + 1} fans={dev._fans} populated=[{string.Join(",", dev._populated.Select(g => g + 1))}] tune={dev._tune})");
         if (dev._tune) dev.Probe();
         return dev;
-    }
-
-    /// <summary>Read the per-connector tach once and record which connectors have
-    /// a spinning fan chain - read-only, safe, and the basis for the channel list.</summary>
-    void DetectPopulated()
-    {
-        try
-        {
-            var spd = ReadGroupSpeeds();
-            _populated = spd == null
-                ? Array.Empty<int>()
-                : Enumerable.Range(0, Groups).Where(g => spd[g] > 0).ToArray();
-        }
-        catch { _populated = Array.Empty<int>(); }
     }
 
     /// <summary>Per-group fan tach (L-Connect GetFanSpeed): feature cmd
@@ -294,6 +291,7 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice
                     _chan[outerPort * MaxPerChannel + f * _outer + l] = l < _outer / 2 ? oA : oB;
             }
             Flush();
+            _primed = true;
         }
     }
 
@@ -334,7 +332,11 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice
                 }
                 if (_chan[slot] != colors[i]) { _chan[slot] = colors[i]; changed = true; }
             }
-            if (changed) Flush();              // the hub latches its last commit
+            if (changed || !_primed)           // the hub latches its last commit
+            {
+                _primed = true;
+                Flush();
+            }
         }
     }
 

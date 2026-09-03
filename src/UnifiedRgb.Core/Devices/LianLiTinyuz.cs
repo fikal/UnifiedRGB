@@ -36,17 +36,28 @@ public static class LianLiTinyuz
     const int MinLiteralLen = 15;         // kMinLiteralLen
     const int BigPosForLen = (1 << 11) + (1 << 9) + (1 << 7) - 1;   // kBigPosForLen = 2687
 
-    struct Ev { public bool IsBit; public int Bit; public byte Data; }
+    // One decoder read: a type bit (Kind 0/1 = the bit's value) or an inline
+    // data byte (Kind = EvData, Val = the byte). Two bytes per event - the old
+    // {bool; int; byte} layout padded to 12, so a bake's event list was 6x
+    // larger than it needed to be.
+    struct Ev { public byte Kind; public byte Val; }
+    const byte EvData = 2;
 
     // Per-thread scratch, reused across calls. Encode runs on every changed
     // frame (~22/s under a live effect); the old per-call `new int[1<<15]`
     // was a 128 KB Large-Object-Heap allocation per frame (~2.9 MB/s). The
     // hash table is 1<<13 buckets (32 KB, under the LOH threshold) — plenty
     // for a 528-byte frame and fine for multi-frame bakes since MaxChain
-    // already caps chain walks. `prev` grows to the largest input seen.
-    // Stale `prev` entries are unreachable: chains only traverse positions
-    // inserted THIS call, starting from a freshly reset `head`.
+    // already caps chain walks. Stale `prev` entries are unreachable: chains
+    // only traverse positions inserted THIS call, starting from a freshly
+    // reset `head`.
+    // Only streaming-sized inputs (<= CacheMaxInput) use the caches. A bake
+    // blob (up to 160 frames x 528 B) used to grow them to several MB of LOH
+    // arrays that every pool thread which ever ran an upload then held for
+    // its lifetime; bakes are rare user actions, so they get fresh scratch
+    // and the per-thread footprint stays at a few tens of KB.
     const int HSIZE = 1 << 13, HMASK = HSIZE - 1;
+    const int CacheMaxInput = 4096;
     [ThreadStatic] static int[]? _headCache;
     [ThreadStatic] static int[]? _prevCache;
     [ThreadStatic] static List<Ev>? _evCache;
@@ -55,12 +66,13 @@ public static class LianLiTinyuz
     public static byte[] Encode(byte[] raw)
     {
         int n = raw.Length;
-        var ev = _evCache ??= new List<Ev>(n + n / 4 + 16);
+        bool big = n > CacheMaxInput;
+        var ev = big ? new List<Ev>(n + n / 4 + 16) : (_evCache ??= new List<Ev>(CacheMaxInput + CacheMaxInput / 4 + 16));
         ev.Clear();
         bool haveDataBack = false;
 
-        void Bit(int b) => ev.Add(new Ev { IsBit = true, Bit = b });
-        void Data(byte d) => ev.Add(new Ev { IsBit = false, Data = d });
+        void Bit(int b) => ev.Add(new Ev { Kind = (byte)b });
+        void Data(byte d) => ev.Add(new Ev { Kind = EvData, Val = d });
 
         // Variable-length integer used by both len and far dict-pos fields.
         // Decoder: v=(v<<(k-1))+low(k-1 bits); if top bit set, v++ and continue.
@@ -115,8 +127,7 @@ public static class LianLiTinyuz
 
         // ---- LZ pass: hash-chain longest-match search over a DictSize window.
         int[] head = _headCache ??= new int[HSIZE];
-        if (_prevCache == null || _prevCache.Length < n) _prevCache = new int[Math.Max(n, 1024)];
-        int[] prev = _prevCache;
+        int[] prev = big ? new int[n] : (_prevCache ??= new int[CacheMaxInput]);
         Array.Fill(head, -1);
         int Hash(int i) => ((raw[i] << 10) ^ (raw[i + 1] << 5) ^ raw[i + 2]) & HMASK;
         void Insert(int i) { if (i + MinMatch <= n) { int h = Hash(i); prev[i] = head[h]; head[h] = i; } }
@@ -162,26 +173,26 @@ public static class LianLiTinyuz
 
         // ---- Serialize events: pack type bits LSB-first into on-demand "types"
         // bytes, emit data bytes inline, exactly mirroring the decoder's reads.
-        var outp = _outCache ??= new List<byte>(n + n / 8 + 16);
+        var outp = big ? new List<byte>(n + n / 8 + 16) : (_outCache ??= new List<byte>(CacheMaxInput + CacheMaxInput / 8 + 16));
         outp.Clear();
         outp.Add((byte)(DictSize & 0xFF)); outp.Add((byte)((DictSize >> 8) & 0xFF));
         outp.Add((byte)((DictSize >> 16) & 0xFF)); outp.Add((byte)((DictSize >> 24) & 0xFF));
         int cacheBits = 0;
         for (int i = 0; i < ev.Count; i++)
         {
-            if (ev[i].IsBit)
+            if (ev[i].Kind != EvData)
             {
                 if (cacheBits == 0)
                 {
                     byte types = 0; int placed = 0;
                     for (int j = i; j < ev.Count && placed < 8; j++)
-                        if (ev[j].IsBit) { if (ev[j].Bit != 0) types |= (byte)(1 << placed); placed++; }
+                        if (ev[j].Kind != EvData) { if (ev[j].Kind != 0) types |= (byte)(1 << placed); placed++; }
                     outp.Add(types);
                     cacheBits = placed;
                 }
                 cacheBits--;
             }
-            else outp.Add(ev[i].Data);
+            else outp.Add(ev[i].Val);
         }
         return outp.ToArray();
     }

@@ -12,15 +12,11 @@
                 <TextBlock DockPanel.Dock="Top" Text="Pump LCD" FontSize="20" FontWeight="SemiBold"
                            Margin="0,0,0,12"/>
 
-                <!-- CPU temp needs elevation -->
+                <!-- CPU temp needs the PawnIO driver (the app always runs elevated) -->
                 <Border DockPanel.Dock="Top" Background="#33FFB020" CornerRadius="7" Padding="10,7" Margin="0,0,0,12"
                         Visibility="{Binding CpuTempUnavailable, Converter={StaticResource BoolToVis}}">
-                    <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="CPU temp needs admin rights (PawnIO sensor driver)."
-                                   VerticalAlignment="Center" Opacity="0.9"/>
-                        <Button Content="Restart as admin" Command="{Binding RelaunchElevatedCommand}"
-                                Style="{StaticResource Accent}" Margin="12,0,0,0" Padding="10,4"/>
-                    </StackPanel>
+                    <TextBlock Text="CPU temp needs the PawnIO sensor driver. Install it in Settings."
+                               VerticalAlignment="Center" Opacity="0.9"/>
                 </Border>
 
                 <Grid>
@@ -49,7 +45,7 @@
                                            Canvas.Left="{Binding LcdBgX}" Canvas.Top="{Binding LcdBgY}"
                                            Width="{Binding LcdBgW}" Height="{Binding LcdBgH}"/>
                                 </Canvas>
-                                <ListBox x:Name="DesignCanvas" Background="Transparent" BorderThickness="0"
+                                <ListBox Background="Transparent" BorderThickness="0"
                                          ItemsSource="{Binding LcdElements}" SelectedItem="{Binding SelectedElement}"
                                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                          ScrollViewer.VerticalScrollBarVisibility="Disabled"
@@ -114,7 +110,7 @@
 
                     <!-- Right side: one tab per task, so only the tools for the
                          job at hand are on screen -->
-                    <TabControl x:Name="LcdTabs" Grid.Column="1" Background="Transparent"
+                    <TabControl Grid.Column="1" Background="Transparent"
                                 BorderThickness="0" Padding="0">
                         <TabControl.Resources>
                             <Style TargetType="TabItem">

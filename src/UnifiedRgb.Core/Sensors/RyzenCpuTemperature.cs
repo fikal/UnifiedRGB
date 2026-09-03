@@ -20,12 +20,14 @@ public sealed class RyzenCpuTemperature : IDisposable
     public static RyzenCpuTemperature? TryCreate()
     {
         if (!PawnIO.IsAvailable) return null;
-        var blob = ReadEmbedded("AMDFamily17.bin");
+        var blob = PawnIO.ReadEmbeddedModule("AMDFamily17.bin");
         if (blob == null) return null;
         var io = PawnIO.LoadModule(blob);
         if (io == null) return null;
         var t = new RyzenCpuTemperature(io);
-        return t.ReadCelsius() is > 0 and < 130 ? t : null;   // sanity-gate on a real reading
+        if (t.ReadCelsius() is > 0 and < 130) return t;   // sanity-gate on a real reading
+        t.Dispose();   // PawnIO has no finalizer: a rejected reader leaked its kernel handle
+        return null;
     }
 
     /// <summary>Current Tctl in degrees Celsius, or null if the read failed.</summary>
@@ -43,7 +45,7 @@ public sealed class RyzenCpuTemperature : IDisposable
     public static string Diagnose()
     {
         if (!PawnIO.IsAvailable) return "PawnIO not available";
-        var blob = ReadEmbedded("AMDFamily17.bin");
+        var blob = PawnIO.ReadEmbeddedModule("AMDFamily17.bin");
         if (blob == null) return "embedded module not found";
         var io = PawnIO.LoadModule(blob);
         if (io == null) return $"open/load failed (blob {blob.Length}B) - likely needs elevation";
@@ -56,8 +58,6 @@ public sealed class RyzenCpuTemperature : IDisposable
         io.Dispose();
         return $"OK raw=0x{raw:X8} temp={t:0.0}C";
     }
-
-    static byte[]? ReadEmbedded(string file) => PawnIO.ReadEmbeddedModule(file);
 
     public void Dispose() => _io.Dispose();
 }

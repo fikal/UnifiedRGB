@@ -1,11 +1,7 @@
 using System.ComponentModel;
-using System.IO;
 using System.Runtime.CompilerServices;
-using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Windows.Media;
-
-using UnifiedRgb.Core;
 
 namespace UnifiedRgb.App;
 
@@ -27,6 +23,15 @@ public sealed class LcdElement : INotifyPropertyChanged
     double _x = 90, _y = 100;
     public double X { get => _x; set { _x = value; Changed(); } }
     public double Y { get => _y; set { _y = value; Changed(); } }
+
+    /// <summary>Both coordinates in ONE notification (the empty name = "every
+    /// property", which refreshes the canvas bindings): a drag that set X then
+    /// Y rendered the whole panel twice per mouse-move.</summary>
+    public void MoveTo(double x, double y)
+    {
+        _x = x; _y = y;
+        PropertyChanged?.Invoke(this, new(string.Empty));
+    }
 
     double _fontSize = 40;
     public double FontSize
@@ -118,19 +123,12 @@ public sealed class LcdDesign
 
     static string Path => UnifiedRgb.Core.AppPaths.Config("lcd.json");
 
-    static readonly JsonSerializerOptions Opts = new() { WriteIndented = true };
-
     public static LcdDesign Load() => ProfileStore.LoadJson<LcdDesign>(Path, "lcd.json") ?? Default();
 
-    public void Save()
-    {
-        try
-        {
-            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
-            SafeFile.WriteAllText(Path, JsonSerializer.Serialize(this, Opts));
-        }
-        catch (Exception ex) { Log.Warn("lcd", $"lcd.json save failed: {ex.Message}"); }
-    }
+    /// <summary>Through the shared store writer (same indented JSON), so a
+    /// file that could not be READ at launch is never overwritten with the
+    /// two-element default by the debounced save or the exit save.</summary>
+    public void Save() => ProfileStore.Save(Path, this, "lcd.json");
 }
 
 /// <summary>Supplies the current CPU temperature in Celsius, or null if no source

@@ -11,8 +11,11 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
 {
     bool _running;
 
-    static string PendingMarker => Path.Combine(Path.GetTempPath(), "unifiedrgb-update-pending.txt");
-    static string SwapResult => Path.Combine(Path.GetTempPath(), "unifiedrgb-swap-result.txt");
+    // Every install-attempt file lives NEXT TO the exe (see InstallAsync for
+    // why not %TEMP%): the pending marker is fixed-name, the swap result is
+    // per-attempt like the script and payload that produce it.
+    static string PendingMarkerIn(string dir) => Path.Combine(dir, "unifiedrgb-update-pending.txt");
+    const string SwapResultPattern = "unifiedrgb-update-*.result";
 
     static Version LocalVersion => AppInfo.Version;
 
@@ -22,6 +25,11 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
         // the next compile. Updates only apply to deployed copies.
         string exe = Environment.ProcessPath ?? "";
         if (exe.Contains(@"\bin\Debug\", StringComparison.OrdinalIgnoreCase)) return;
+
+        // Before any network: the outcome of a previous attempt should reach
+        // the log even when this launch is offline.
+        string? dir = string.IsNullOrEmpty(exe) ? null : Path.GetDirectoryName(exe);
+        if (dir != null) ReportPreviousInstall(dir);
 
         // Public builds check GitHub Releases; that's the one outbound request
         // an unconfigured build makes, and the user can turn it off.
@@ -36,34 +44,55 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
         var server = new Version(serverRaw.Major, serverRaw.Minor, Math.Max(0, serverRaw.Build));
         var local = LocalVersion;
 
-        // A pending marker from a previous install attempt that still finds us
-        // on the old version = the swap script never replaced the exe.
-        if (File.Exists(PendingMarker))
-        {
-            string wanted = File.ReadAllText(PendingMarker).Trim();
-            if (wanted == local.ToString(3))
-                Log.Info("update", $"self-update to {wanted} completed");
-            else
-                Log.Warn("update", $"previous self-update to {wanted} did NOT take effect (still {local.ToString(3)})");
-            try { File.Delete(PendingMarker); } catch { }
-        }
-
-        // The swap script reports how its last run ended ("ok N" = swapped on
-        // try N, "gave-up N" = lock/permissions never released) so a failed
-        // install is never silent — it lands in the log the Send button ships.
-        if (File.Exists(SwapResult))
-        {
-            string result = File.ReadAllText(SwapResult).Trim();
-            if (result.StartsWith("ok")) Log.Info("update", $"swap script: {result}");
-            else Log.Warn("update", $"swap script FAILED: {result} — exe was not replaced (still locked, or the folder needs admin rights)");
-            try { File.Delete(SwapResult); } catch { }
-        }
-
         if (server <= local) return;
 
         setText($"Update v{latest.Version} — install");
         setAvailable(true);
         Log.Info("update", $"newer build available: {latest.Version} ({latest.Size:n0} bytes)");
+    }
+
+    /// <summary>Log how the last install attempt ended, then clear what it
+    /// left behind. Best-effort: nothing here may stop the update check.</summary>
+    static void ReportPreviousInstall(string dir)
+    {
+        var local = LocalVersion;
+        try
+        {
+            // A pending marker from a previous install attempt that still finds
+            // us on the old version = the swap script never replaced the exe.
+            string marker = PendingMarkerIn(dir);
+            if (File.Exists(marker))
+            {
+                string wanted = File.ReadAllText(marker).Trim();
+                if (wanted == local.ToString(3))
+                    Log.Info("update", $"self-update to {wanted} completed");
+                else
+                    Log.Warn("update", $"previous self-update to {wanted} did NOT take effect (still {local.ToString(3)})");
+                try { File.Delete(marker); } catch { }
+            }
+
+            // The swap script reports how its run ended ("ok N" = swapped on
+            // try N, "gave-up N" = lock/permissions never released) so a failed
+            // install is never silent — it lands in the log the Send button ships.
+            foreach (string f in Directory.EnumerateFiles(dir, SwapResultPattern))
+            {
+                string result;
+                try { result = File.ReadAllText(f).Trim(); } catch { continue; }
+                if (result.StartsWith("ok")) Log.Info("update", $"swap script: {result}");
+                else Log.Warn("update", $"swap script FAILED: {result} — exe was not replaced (still locked, or the folder needs admin rights)");
+                try { File.Delete(f); } catch { }
+            }
+
+            // Leftovers: a download that died mid-way, or a swap that gave up
+            // and left its payload. Every attempt uses a fresh name, so these
+            // would otherwise accumulate at ~260 MB each. An hour is well past
+            // any attempt's 3-minute swap window, so nothing live is touched.
+            var cutoff = DateTime.UtcNow - TimeSpan.FromHours(1);
+            foreach (string pattern in new[] { "UnifiedRGB-update-*.exe", "unifiedrgb-update-*.bat" })
+                foreach (string f in Directory.EnumerateFiles(dir, pattern))
+                    try { if (File.GetLastWriteTimeUtc(f) < cutoff) File.Delete(f); } catch { }
+        }
+        catch (Exception ex) { Log.Warn("update", $"previous-install cleanup failed: {ex.Message}"); }
     }
 
     /// <summary>Download the new build, verify its published SHA-256, then hand
@@ -73,6 +102,8 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
     {
         if (_running) return;
         _running = true;
+        string? staged = null, script = null;   // for the failure path in the catch below
+        bool handedOff = false;
         try
         {
             string target = Environment.ProcessPath!;
@@ -89,13 +120,21 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             // stale script from a prior attempt off a newer attempt's download.
             string stamp = $"{Environment.ProcessId}-{Guid.NewGuid():N}";
             string temp = Path.Combine(targetDir, $"UnifiedRGB-update-{stamp}.exe");
+            string swapResult = Path.Combine(targetDir, $"unifiedrgb-update-{stamp}.result");
+            staged = temp;
             var latest = await UpdateClient.GetLatestAsync();
             string? sha = latest != null ? await UpdateClient.ResolveShaAsync(latest) : null;
             setText("downloading 0%");
             string? err = await UpdateClient.DownloadAsync(temp,
                 pct => Application.Current.Dispatcher.Invoke(() => setText($"downloading {pct}%")),
                 latest?.DownloadUrl);   // GitHub asset when that's the source; feed otherwise
-            if (err != null) { setText(err); _running = false; return; }
+            if (err != null)
+            {
+                // A dropped connection leaves a partial payload; never strand
+                // it beside the exe (every retry would add another).
+                try { File.Delete(temp); } catch { }
+                setText(err); _running = false; return;
+            }
 
             // Integrity: the publisher registered the build's SHA-256; refuse
             // a download that doesn't match (corruption or tampering).
@@ -163,6 +202,7 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             // keeps retrying. "gave-up" after that = folder permissions.
             Log.Info("update", $"installing {latest?.Version} over {target}");
             string bat = Path.Combine(targetDir, $"unifiedrgb-update-{stamp}.bat");
+            script = bat;
             // taskkill is filtered to OUR image name: after a minute the PID may
             // already belong to an unrelated process (Windows recycles PIDs fast).
             string imageName = Path.GetFileName(target);
@@ -170,6 +210,11 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             // window between the managed hash check and the swap.
             string verify = string.IsNullOrEmpty(sha) ? "" :
                 $"certutil -hashfile \"{temp}\" SHA256 | findstr /i /c:\"{sha}\" >nul || goto tampered";
+            // The result redirect goes FIRST: cmd expands %n% before it parses
+            // redirection, so `echo ok %n%>file` with n=2 became `echo ok 2>file`
+            // (a stderr redirect - empty file) and n=12 became `1 0>file`
+            // (stdin from a missing file - nothing written). Only n=1 ever
+            // reported. Do not move the `>` back after the text.
             File.WriteAllText(bat, $"""
                 @echo off
                 set n=0
@@ -181,15 +226,15 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
                 {verify}
                 move /y "{temp}" "{target}" >nul 2>&1
                 if errorlevel 1 goto loop
-                echo ok %n%>"{SwapResult}"
+                >"{swapResult}" echo ok %n%
                 start "" "{target}"
                 goto done
                 :tampered
-                echo tampered %n%>"{SwapResult}"
+                >"{swapResult}" echo tampered %n%
                 del "{temp}" >nul 2>&1
                 goto done
                 :fail
-                echo gave-up %n%>"{SwapResult}"
+                >"{swapResult}" echo gave-up %n%
                 :done
                 del "%~f0"
                 """);
@@ -197,7 +242,7 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             void StartSwap()
             {
                 // Marker: next launch verifies the swap actually took (CheckAsync).
-                try { if (latest != null) File.WriteAllText(PendingMarker, latest.Version); } catch { }
+                try { if (latest != null) File.WriteAllText(PendingMarkerIn(targetDir), latest.Version); } catch { }
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
                     FileName = "cmd.exe",
@@ -205,6 +250,7 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
                     CreateNoWindow = true,
                     UseShellExecute = false,
                 });
+                handedOff = true;   // from here the script owns the payload
             }
             void Abandon()
             {
@@ -238,6 +284,13 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
         }
         catch
         {
+            // Thrown before the script took over (hash/version read, script
+            // write, cmd start): the staged payload must not stay behind.
+            if (!handedOff)
+            {
+                try { if (staged != null) File.Delete(staged); } catch { }
+                try { if (script != null) File.Delete(script); } catch { }
+            }
             _running = false;
             throw;
         }

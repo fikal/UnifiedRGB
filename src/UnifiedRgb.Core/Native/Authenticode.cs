@@ -10,9 +10,10 @@ namespace UnifiedRgb.Core.Native;
 public static class Authenticode
 {
     /// <summary>True when the file carries a valid Authenticode signature whose
-    /// signer certificate's subject contains <paramref name="expectedSubjectPart"/>
-    /// (e.g. "CN=namazso.eu"). <paramref name="detail"/> says why it failed.</summary>
-    public static bool IsSignedBy(string path, string expectedSubjectPart, out string detail)
+    /// signer certificate's subject has exactly the relative distinguished name
+    /// <paramref name="expectedRdn"/> (e.g. "CN=namazso.eu" — the whole CN, not
+    /// a substring of it). <paramref name="detail"/> says why it failed.</summary>
+    public static bool IsSignedBy(string path, string expectedRdn, out string detail)
     {
         try
         {
@@ -22,9 +23,9 @@ public static class Authenticode
                 detail = $"signature not trusted (0x{hr:X8})";
                 return false;
             }
-            if (!cert.Subject.Contains(expectedSubjectPart, StringComparison.OrdinalIgnoreCase))
+            if (!SubjectHasRdn(cert, expectedRdn))
             {
-                detail = $"signed by '{cert.Subject}', expected '{expectedSubjectPart}'";
+                detail = $"signed by '{cert.Subject}', expected '{expectedRdn}'";
                 return false;
             }
             detail = cert.Subject;
@@ -35,6 +36,25 @@ public static class Authenticode
             detail = ex.Message;
             return false;
         }
+    }
+
+    /// <summary>Exact RDN match on the parsed subject. A substring test on
+    /// cert.Subject would also pass "CN=namazso.eu.example.com", or the pinned
+    /// text sitting inside an O/OU attribute of some other trusted signer.</summary>
+    static bool SubjectHasRdn(X509Certificate2 cert, string expectedRdn)
+    {
+        int eq = expectedRdn.IndexOf('=');
+        if (eq <= 0) return false;
+        string type = expectedRdn[..eq].Trim(), value = expectedRdn[(eq + 1)..].Trim();
+        foreach (var rdn in cert.SubjectName.EnumerateRelativeDistinguishedNames())
+        {
+            if (rdn.HasMultipleElements) continue;
+            var oid = rdn.GetSingleElementType();
+            if (!string.Equals(oid.FriendlyName, type, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(oid.Value, type, StringComparison.Ordinal)) continue;
+            if (string.Equals(rdn.GetSingleElementValue(), value, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
     }
 
     /// <summary>Run WinVerifyTrust and, when the signature is trusted, hand back
@@ -60,9 +80,11 @@ public static class Authenticode
             dwStateAction = WTD_STATEACTION_VERIFY,      // keep the state so we can read the signer
             dwProvFlags = WTD_SAFER_FLAG,
         };
+        bool marshaled = false;
         try
         {
             Marshal.StructureToPtr(fileInfo, pFile, false);
+            marshaled = true;
             hr = WinVerifyTrust(IntPtr.Zero, ref action, ref data);
             if (hr != 0) return null;
 
@@ -85,6 +107,9 @@ public static class Authenticode
                 data.dwStateAction = WTD_STATEACTION_CLOSE;
                 WinVerifyTrust(IntPtr.Zero, ref action, ref data);
             }
+            // StructureToPtr gave the LPWStr field its own native copy of the
+            // path; FreeHGlobal alone releases only the struct block.
+            if (marshaled) Marshal.DestroyStructure<WINTRUST_FILE_INFO>(pFile);
             Marshal.FreeHGlobal(pFile);
         }
     }

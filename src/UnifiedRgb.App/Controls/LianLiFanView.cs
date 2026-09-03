@@ -55,13 +55,27 @@ public sealed class LianLiFanView : FrameworkElement
     static Brush Freeze(Brush b) { b.Freeze(); return b; }
     static Pen FreezeP(Pen p) { p.Freeze(); return p; }
 
+    static bool SameColors(Rgb[] a, Rgb[] b)
+    {
+        if (a.Length != b.Length) return false;
+        for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
+        return true;
+    }
+
     public LianLiFanView()
     {
         SetParts(8, 20, 16);
         _timer.Tick += (_, _) =>
         {
-            if (Source == null || !IsVisible) return;
-            (_colors, _selected) = Source();
+            // Same gates as LedPreview: nothing while a blurred modal / window
+            // drag has the previews paused, and no repaint unless the sampled
+            // colors or the selection changed - a static color used to redraw
+            // ~44 geometries 30x a second (through the full-window blur while
+            // "Arrange fans" was up). The VM hands out a fresh array per pull.
+            if (LedPreview.GlobalPause || Source == null || !IsVisible) return;
+            var (colors, selected) = Source();
+            if (selected == _selected && SameColors(colors, _colors)) return;
+            _colors = colors; _selected = selected;
             InvalidateVisual();
         };
         IsVisibleChanged += (_, _) => { if (IsVisible) _timer.Start(); else _timer.Stop(); };

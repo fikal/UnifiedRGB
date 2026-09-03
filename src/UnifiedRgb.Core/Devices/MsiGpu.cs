@@ -64,12 +64,15 @@ public sealed class MsiGpu : IRgbDevice
     // Data registers latch much faster; only mode switches keep a long settle.
     const int SettleData = 5, SettleMode = 15;
 
-    void Write(byte reg, byte val, int settleMs)
+    /// <summary>False on an NvAPI/I2C failure; the settle still runs so a
+    /// partial failure doesn't skip the controller's timing for the next register.</summary>
+    bool Write(byte reg, byte val, int settleMs)
     {
         Span<byte> b = stackalloc byte[1];
         b[0] = val;
-        NvApi.I2CWrite(_gpu, ADDR, reg, b);
+        bool ok = NvApi.I2CWrite(_gpu, ADDR, reg, b);
         Thread.Sleep(settleMs);
+        return ok;
     }
 
     public void SetColors(IReadOnlyList<Rgb> colors)
@@ -79,28 +82,34 @@ public sealed class MsiGpu : IRgbDevice
         {
             var c = colors[0];
             if (_last == c) return;
-            _last = c;
 
+            // Every register is written even after a failure (the sequence must
+            // end in STATIC); the dedup commits only when all of them landed,
+            // so the engine's 1 s keepalive or the next apply retries a frame
+            // the bus dropped instead of caching a colour the card never got.
+            bool ok;
             if (_v2)
             {
-                Write(REG_UNKNOWN_V2, 0x00, SettleData);
-                Write(REG_MODE, MODE_IDLE, SettleMode);
-                Write(REG_R1, c.R, SettleData);
-                Write(REG_G1, c.G, SettleData);
-                Write(REG_B1, c.B, SettleData);
-                Write(REG_BRIGHTNESS, 100, SettleData);   // max (20 * 5)
-                Write(REG_MODE, MODE_STATIC, SettleMode);
+                ok  = Write(REG_UNKNOWN_V2, 0x00, SettleData);
+                ok &= Write(REG_MODE, MODE_IDLE, SettleMode);
+                ok &= Write(REG_R1, c.R, SettleData);
+                ok &= Write(REG_G1, c.G, SettleData);
+                ok &= Write(REG_B1, c.B, SettleData);
+                ok &= Write(REG_BRIGHTNESS, 100, SettleData);   // max (20 * 5)
+                ok &= Write(REG_MODE, MODE_STATIC, SettleMode);
             }
             else
             {
                 // v1 (RTX 20/30): no idle dance; write colors, brightness, mode.
-                Write(REG_UNKNOWN_V1, 0x00, SettleData);
-                Write(REG_R1, c.R, SettleData);
-                Write(REG_G1, c.G, SettleData);
-                Write(REG_B1, c.B, SettleData);
-                Write(REG_BRIGHTNESS, 100, SettleData);
-                Write(REG_MODE, MODE_STATIC, SettleMode);
+                ok  = Write(REG_UNKNOWN_V1, 0x00, SettleData);
+                ok &= Write(REG_R1, c.R, SettleData);
+                ok &= Write(REG_G1, c.G, SettleData);
+                ok &= Write(REG_B1, c.B, SettleData);
+                ok &= Write(REG_BRIGHTNESS, 100, SettleData);
+                ok &= Write(REG_MODE, MODE_STATIC, SettleMode);
             }
+            _last = ok ? c : null;
+            if (!ok) Log.Occasional($"msigpu:{Name}", "MsiGpu", "I2C write failed - will retry on the next frame");
         }
     }
 

@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Nodes;
 
 namespace UnifiedRgb.Core.Net;
 
@@ -32,7 +31,6 @@ static class OpenRgbCrashBisect
     const int ArmAfterCrashes = 2;
 
     static string StatePath(string configDir) => Path.Combine(configDir, "crash-bisect.json");
-    static string ConfigPath(string configDir) => Path.Combine(configDir, "OpenRGB.json");
 
     static State LoadState(string configDir)
     {
@@ -80,7 +78,7 @@ static class OpenRgbCrashBisect
             }
             // Arm: suspects = every currently-enabled detector.
             s.Active = true;
-            s.Suspects = EnabledDetectors(configDir);
+            s.Suspects = OpenRgbDetectorConfig.Enabled(configDir);
             Log.Warn("openrgb", $"detection crash #{s.CrashCount} — starting detector bisect over {s.Suspects.Count} detectors");
             if (s.Suspects.Count == 0) { s.Active = false; SaveState(configDir, s); return false; }
         }
@@ -146,33 +144,9 @@ static class OpenRgbCrashBisect
         return true;
     }
 
-    static List<string> EnabledDetectors(string configDir)
-    {
-        try
-        {
-            if (!File.Exists(ConfigPath(configDir))) return new();
-            var root = JsonNode.Parse(File.ReadAllText(ConfigPath(configDir)));
-            if (root?["Detectors"]?["detectors"] is not JsonObject det) return new();
-            return det.Where(kv => kv.Value?.GetValue<bool>() != false)
-                      .Select(kv => kv.Key).ToList();
-        }
-        catch { return new(); }
-    }
-
     static void SetDetectors(string configDir, IEnumerable<string> names, bool enabled)
     {
-        try
-        {
-            if (!File.Exists(ConfigPath(configDir))) return;
-            var root = JsonNode.Parse(File.ReadAllText(ConfigPath(configDir))) ?? new JsonObject();
-            if (root["Detectors"]?["detectors"] is not JsonObject det) return;
-            bool changed = false;
-            foreach (var n in names)
-                if (det[n]?.GetValue<bool>() != enabled) { det[n] = enabled; changed = true; }
-            if (changed)
-                SafeFile.WriteAllText(ConfigPath(configDir),   // atomic: a torn OpenRGB.json re-enables everything
-                    root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-        }
+        try { OpenRgbDetectorConfig.Edit(configDir, det => OpenRgbDetectorConfig.Set(det, names, enabled)); }
         catch (Exception ex) { Log.Warn("openrgb", $"bisect config write failed: {ex.Message}"); }
     }
 }

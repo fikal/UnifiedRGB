@@ -27,6 +27,7 @@ public static class KeyboardTap
     const int WmKeydown = 0x100, WmKeyup = 0x101, WmSyskeydown = 0x104, WmSyskeyup = 0x105;
     const double IdleStopSeconds = 5;
     const double KeepSeconds = 4;
+    const double HeldCheckSeconds = 1;   // a key "held" this long is checked against the OS state
 
     delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
 
@@ -40,6 +41,8 @@ public static class KeyboardTap
     static extern int GetMessageW(out Msg msg, IntPtr hWnd, uint min, uint max);
     [DllImport("user32.dll")]
     static extern bool PostThreadMessageW(uint threadId, uint msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")]
+    static extern short GetAsyncKeyState(int vk);
     [DllImport("kernel32.dll")]
     static extern uint GetCurrentThreadId();
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
@@ -79,7 +82,12 @@ public static class KeyboardTap
             _running = true;
             _thread = new Thread(HookThread) { IsBackground = true, Name = "keyboard-tap" };
             _thread.Start();
-            _watchdog ??= new Timer(_ => Watchdog(), null, 2000, 2000);
+            // Re-armed here, paused by Watchdog once the hook is gone (same
+            // shape as AudioAnalyzer): no permanent 2 s wakeup after one
+            // reactive effect. Both happen under _gate so a pause can't race
+            // a re-arm and leave a live hook unguarded.
+            if (_watchdog == null) _watchdog = new Timer(_ => Watchdog(), null, 2000, 2000);
+            else _watchdog.Change(2000, 2000);
         }
     }
 
@@ -94,18 +102,24 @@ public static class KeyboardTap
             // Compact-in-place prune, then rebuild the held index once —
             // cheaper and simpler than fixing indices per removal.
             int w = 0;
-            bool pruned = false;
+            bool pruned = false, released = false;
             for (int i = 0; i < _events.Count; i++)
             {
                 var e = _events[i];
+                if (e.Up < 0 && now - e.Down > HeldCheckSeconds && (GetAsyncKeyState(e.Vk) & 0x8000) == 0)
+                {
+                    // Reconcile with the OS key state: a keyup the hook dropped
+                    // (TryEnter contention) would otherwise leave this key
+                    // "held" forever - lit at full level, every later press
+                    // ignored as auto-repeat - until the hook is uninstalled.
+                    e.Up = now;
+                    released = true;
+                }
                 if (e.Up >= 0 && now - e.Up > KeepSeconds) { pruned = true; continue; }
                 _events[w++] = e;
             }
-            if (pruned)
-            {
-                _events.RemoveRange(w, _events.Count - w);
-                Reindex();
-            }
+            if (pruned) _events.RemoveRange(w, _events.Count - w);
+            if (pruned || released) Reindex();
             int n = Math.Min(into.Length, _events.Count);
             for (int i = 0; i < n; i++) into[i] = _events[_events.Count - n + i];
             return n;
@@ -134,7 +148,12 @@ public static class KeyboardTap
 
     static void Watchdog()
     {
-        if (!_running || _threadId == 0) return;
+        if (!_running)
+        {
+            lock (_gate) if (!_running) _watchdog?.Change(Timeout.Infinite, Timeout.Infinite);
+            return;
+        }
+        if (_threadId == 0) return;
         var last = new DateTime(Interlocked.Read(ref _lastReadTicks), DateTimeKind.Utc);
         if ((DateTime.UtcNow - last).TotalSeconds < IdleStopSeconds) return;
         PostThreadMessageW(_threadId, 0x0012 /* WM_QUIT */, IntPtr.Zero, IntPtr.Zero);
@@ -152,7 +171,8 @@ public static class KeyboardTap
             // (300 ms default) it silently unhooks the app and reactive effects
             // die. Contention with the 60 fps Snapshot readers is rare and
             // brief; if it happens, dropping ONE key event (lighting misses a
-            // ripple) beats delaying the whole system's key delivery.
+            // ripple; a dropped keyup is reconciled by Snapshot) beats delaying
+            // the whole system's key delivery.
             if (msg is WmKeydown or WmSyskeydown)
             {
                 if (Monitor.TryEnter(_evLock, 2))

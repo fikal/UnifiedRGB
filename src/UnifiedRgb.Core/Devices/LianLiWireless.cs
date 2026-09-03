@@ -47,7 +47,10 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
             double v = Math.Clamp(value, 0.3, 4.0);
             if (Math.Abs(v - _intervalScale) < 1e-6) return;
             _intervalScale = v;
-            lock (_lock) _lastAnimHash = 0;   // force the next bake to re-upload at the new speed
+            // Force the next bake to re-upload at the new speed. Lock-free: this
+            // runs on the UI thread per slider delta, and _lock is held for the
+            // whole upload the PREVIOUS delta triggered (100-300 ms).
+            Interlocked.Exchange(ref _lastAnimHash, 0);
         }
     }
 
@@ -103,9 +106,11 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         new LianFanPart("Center", 0, 8), new LianFanPart("Outer ring", 8, 20), new LianFanPart("Side glow", 28, 16),
     };
     public IReadOnlyList<LianFanPart> LianFanParts => _parts;
-    IReadOnlyList<string>? _fanNames;
-    public IReadOnlyList<string> LianFanNames => _fanNames ??=
-        Zones.Where(z => z.Count == LedsPerFan).OrderBy(z => z.Offset).Select(z => z.Name).ToList();
+    // One name per arranged slot, built with the whole-fan zones in the ctor.
+    // This used to filter Zones by Count == LedsPerFan, which also matched a
+    // single-fan GROUP zone and put a phantom fifth pill in the Lighting pane.
+    readonly IReadOnlyList<string> _fanNames;
+    public IReadOnlyList<string> LianFanNames => _fanNames;
     // Fans are STACKED (front-of-case column), fan 1 on top: whole-group
     // effects flow continuously down the stack.
     public float? PreviewAspect => 1f / Math.Max(1, _fanNum);
@@ -113,15 +118,18 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
     readonly LedPos[] _positions;
 
     /*  Physical wire order per fan (what the RF frame carries):
-     *    0-7 center · 8-17 inner-ring half 1 · 18-25 outer-ring half 1
-     *    26-35 inner-ring half 2 · 36-43 outer-ring half 2
-     *  (Hardware-confirmed: lighting 8-17 lit HALF the inner ring, and
-     *  L-Connect's own scopes are Center / Inner(8-17+26-35) /
-     *  Outer(18-25+36-43) - the fan has NO side strips, the "outer" is the
-     *  infinity ring around the frame.)
+     *    0-7 center · 8-17 ring half 1 · 18-25 side-glow half 1
+     *    26-35 ring half 2 · 36-43 side-glow half 2
+     *  (Hardware-confirmed: lighting 8-17 lit HALF the 20-LED ring, and
+     *  L-Connect's own scopes are Center / "Inner"(8-17+26-35) /
+     *  "Outer"(18-25+36-43). This driver, the fan preview and the app all
+     *  use the hardware-observed names instead: the 20-LED group is the
+     *  "Outer ring" that outlines the fan face, and the 16-LED group is the
+     *  "Side glow" - the infinity-mirror strips on the two frame edges. See
+     *  _parts, the zone names in the ctor and BuildPositions.)
      *
-     *  The device presents a LOGICAL order instead, so every ring is one
-     *  contiguous zone: 0-7 center, 8-27 inner ring (20), 28-43 outer ring
+     *  The device presents a LOGICAL order instead, so every part is one
+     *  contiguous zone: 0-7 center, 8-27 outer ring (20), 28-43 side glow
      *  (16). Transmit() maps logical -> physical.  */
     static readonly int[] LogToPhys = BuildLogToPhys();
 
@@ -129,10 +137,10 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
     {
         var m = new int[LedsPerFan];
         for (int i = 0; i < 8; i++) m[i] = i;              // center
-        for (int i = 0; i < 10; i++) m[8 + i] = 8 + i;     // inner half 1
-        for (int i = 0; i < 10; i++) m[18 + i] = 26 + i;   // inner half 2
-        for (int i = 0; i < 8; i++) m[28 + i] = 18 + i;    // outer half 1
-        for (int i = 0; i < 8; i++) m[36 + i] = 36 + i;    // outer half 2
+        for (int i = 0; i < 10; i++) m[8 + i] = 8 + i;     // ring half 1
+        for (int i = 0; i < 10; i++) m[18 + i] = 26 + i;   // ring half 2
+        for (int i = 0; i < 8; i++) m[28 + i] = 18 + i;    // side-glow half 1
+        for (int i = 0; i < 8; i++) m[36 + i] = 36 + i;    // side-glow half 2
         return m;
     }
 
@@ -172,10 +180,11 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         (_slotToChain, var breaks) = LoadLayout(fanNum);
 
         var zones = new List<RgbZone>();
+        var names = new string[fanNum];
         for (int s = 0; s < fanNum; s++)
         {
             int b = s * LedsPerFan;
-            string n = $"Fan {_slotToChain[s] + 1}";
+            string n = names[s] = $"Fan {_slotToChain[s] + 1}";
             // Hardware-observed parts: the 20-LED group outlines the OUTSIDE
             // of the fan; the 16-LED group is the SIDE infinity-mirror glow.
             zones.Add(new RgbZone { Name = n, Offset = b, Count = LedsPerFan, IsFan = true });
@@ -200,6 +209,7 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
             }
         }
         Zones = zones;
+        _fanNames = names;
         _positions = BuildPositions();
 
         // Seed the effect index from the clock so the first frame differs from
@@ -643,6 +653,14 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
     public static LianLiWireless? Instance { get; private set; }
 
     WinUsbDevice? _rx;
+    // Guards the FIELD only - every publish and null-out of _rx happens under
+    // it - never the bulk transfers: PollTelemetry snapshots the receiver and
+    // releases the lock before Write+Read, so a Dispose (Rescan/exit, under
+    // _lock) is never queued behind a ReadPipe parked on its 2 s pipe timeout.
+    // WinUsbDevice's own transfer locks + _freed make a free that lands mid-
+    // transfer safe, and its CancelIoEx aborts the parked read in ms. Disposal
+    // of the snapshot is done outside _rxLock too. Order: _lock, then _rxLock.
+    readonly object _rxLock = new();
     Thread? _telemetryThread;
     long _telemetryTouch;
     volatile int[]? _rpmByChain;
@@ -685,21 +703,39 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
     /// saved fan modes across re-arrangements).</summary>
     public int ChainOf(int slot) => _slotToChain[Math.Clamp(slot, 0, _fanNum - 1)];
 
+    // Keep polling while something recently asked for telemetry or an
+    // animation upload still awaits its read-back confirmation.
+    bool TelemetryWanted()
+        => !_disposed && (Environment.TickCount64 - Interlocked.Read(ref _telemetryTouch) < 5000 || _animPending);
+
     void TelemetryLoop()
     {
-        while (!_disposed && (Environment.TickCount64 - Interlocked.Read(ref _telemetryTouch) < 5000 || _animPending))
+        while (true)
         {
-            try { PollTelemetry(); }
-            catch (Exception ex) { Log.Occasional("LianLi", "telemetry", $"telemetry poll failed: {ex.Message}"); }
-            // Poll fast while an animation upload awaits confirmation (drives the
-            // resend), slow otherwise (RPM/PWM only need a lazy refresh).
-            Thread.Sleep(_animPending ? 150 : 1500);
-        }
-        lock (_lock)
-        {
-            _rx?.Dispose();
-            _rx = null;
-            _telemetryThread = null;
+            if (TelemetryWanted())
+            {
+                try { PollTelemetry(); }
+                catch (Exception ex) { Log.Occasional("LianLi", "telemetry", $"telemetry poll failed: {ex.Message}"); }
+                // Poll fast while an animation upload awaits confirmation (drives the
+                // resend), slow otherwise (RPM/PWM only need a lazy refresh).
+                Thread.Sleep(_animPending ? 150 : 1500);
+                continue;
+            }
+            lock (_lock)
+            {
+                // Re-check under the lock before retiring. UploadAnimation sets
+                // _animPending while holding _lock and only calls TelemetryTouch
+                // after releasing it; an idle exit that blocked on that hold used
+                // to see the still-non-null thread from TelemetryTouch, then null
+                // it here - leaving the upload with no resend/confirm poller, so
+                // one dropped RF packet kept the fans on the previous animation.
+                if (TelemetryWanted()) continue;
+                WinUsbDevice? rx;
+                lock (_rxLock) { rx = _rx; _rx = null; }
+                rx?.Dispose();   // outside _rxLock; idempotent if Dispose() got there first
+                _telemetryThread = null;
+                return;
+            }
         }
     }
 
@@ -710,25 +746,36 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         {
             string? path = WinUsbDevice.FindPath(IfaceGuid, RxVidPid);
             if (path == null) return;
-            var rx = WinUsbDevice.Open(path);
-            if (rx == null || rx.BulkInPipe == 0) { rx?.Dispose(); return; }
+            var opened = WinUsbDevice.Open(path);
+            if (opened == null || opened.BulkInPipe == 0) { opened?.Dispose(); return; }
             // Publish under the lock so Dispose can't miss (and leak) a receiver
             // opened between its check and ours - WinUSB is exclusive, so a
             // leaked RX handle blocks the next instance's telemetry entirely.
             lock (_lock)
             {
-                if (_disposed) { rx.Dispose(); return; }
-                _rx = rx;
+                if (_disposed) { opened.Dispose(); return; }
+                lock (_rxLock) _rx = opened;
             }
         }
 
         // GetDev(0x10, 1 page) - L-Connect-identical, to the RX only.
         var q = new byte[64];
         q[0] = 0x10; q[1] = 1;
-        if (!_rx.Write(_rx.BulkOutPipe, q)) { _rx.Dispose(); _rx = null; return; }
-
         var page = new byte[434];
-        int got = _rx.Read(page);
+        // Snapshot under _rxLock and RELEASE it before the transfers (see the
+        // field's note): holding it across the read made a Rescan/exit Dispose
+        // wait out the 2 s pipe timeout - under _lock, stalling every SendRf
+        // with it - instead of cancelling the parked read in milliseconds.
+        WinUsbDevice? rx;
+        lock (_rxLock) rx = _rx;
+        if (rx == null) return;   // freed by Dispose since the publish above
+        if (!rx.Write(rx.BulkOutPipe, q))
+        {
+            lock (_rxLock) { if (ReferenceEquals(_rx, rx)) _rx = null; }
+            rx.Dispose();   // idempotent (WinUsbDevice._freed) if Dispose got there first
+            return;
+        }
+        int got = rx.Read(page);
         if (got < 46 || page[0] != 0x10) return;
 
         // 42-byte records after the 4-byte header; find our fan group by MAC.
@@ -766,23 +813,16 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
     | Once latched the value persists (like the RGB).        |
     \*-----------------------------------------------------*/
     volatile byte[]? _pwmByChainTele;
+    // The PWM target/seed/worker state has its own small lock: SetFanDuty runs
+    // on the UI thread (fan slider) and on the sensor timer (curve + thermal
+    // failsafe tick), and _lock is held for a whole animation upload or frame
+    // send (up to ~300 ms). Only the RF send itself needs _lock.
+    // Order: _lock is never taken while holding _pwmLock.
+    readonly object _pwmLock = new();
     readonly byte[] _pwmTarget = new byte[4];
     bool _pwmSeeded;
     volatile bool _pwmDirty;
     Thread? _pwmThread;
-
-    /// <summary>Current duty percent per arranged slot (from telemetry), or null.</summary>
-    public int[]? FanDutyBySlot
-    {
-        get
-        {
-            var p = _pwmByChainTele;
-            if (p == null) return null;
-            var o = new int[_fanNum];
-            for (int s = 0; s < _fanNum; s++) o[s] = p[_slotToChain[s]] * 100 / 255;
-            return o;
-        }
-    }
 
     /// <summary>Set one fan's duty (percent, by arranged slot). Asserts over
     /// RF until the receiver confirms; other fans keep their current duty.</summary>
@@ -792,7 +832,7 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         byte d = (byte)Math.Clamp(percent * 255 / 100, 0, 255);
         if (d == 6) d = 7;
         if (d >= 153 && d <= 155) d = 156;
-        lock (_lock)
+        lock (_pwmLock)
         {
             // First touch: seed untouched fans from telemetry so setting one
             // fan never yanks the other three.
@@ -812,7 +852,7 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
     void StartPwmThread()
     {
         if (_pwmThread != null) return;
-        lock (_lock)
+        lock (_pwmLock)
             if (_pwmThread == null && !_disposed)
             {
                 _pwmThread = new Thread(PwmLoop) { IsBackground = true, Name = "lianli-pwm" };
@@ -828,7 +868,7 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
             attempts++;
             if (_pwmDirty) { _pwmDirty = false; confirms = 0; }
             byte[] target;
-            lock (_lock) target = (byte[])_pwmTarget.Clone();
+            lock (_pwmLock) target = (byte[])_pwmTarget.Clone();
             var tele = _pwmByChainTele;
             bool match = tele != null && tele.AsSpan(0, 4).SequenceEqual(target);
             if (match)
@@ -844,9 +884,9 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
             TelemetryTouch();
             Thread.Sleep(400);
         }
-        if (_disposed) { lock (_lock) _pwmThread = null; return; }
+        if (_disposed) { lock (_pwmLock) _pwmThread = null; return; }
         Log.Info("LianLi", attempts >= 120 ? "pwm: gave up waiting for confirmation" : "pwm: confirmed and latched");
-        lock (_lock) _pwmThread = null;
+        lock (_pwmLock) _pwmThread = null;
         // Re-arm if a target changed mid-exit. Restart the worker directly: the
         // old path round-tripped fan 0's duty through percent (255 -> 100 -> 254),
         // rewriting a target the user never asked for.
@@ -860,10 +900,13 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
     public void FollowPwmLine()
     {
         var target = new byte[] { 6, 6, 6, 6 };
-        lock (_lock)
+        lock (_pwmLock)
         {
             for (int i = 0; i < 4; i++) _pwmTarget[i] = 6;
             _pwmSeeded = true;
+        }
+        lock (_lock)
+        {
             for (int k = 0; k < 4; k++)
             {
                 try { SendPwmFrame(target); } catch { break; }
@@ -895,7 +938,13 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
             _disposed = true;
             _animPending = false;
             _pwmDirty = false;
-            _rx?.Dispose(); _rx = null;
+            // Swap the field under _rxLock, free the snapshot outside it: the
+            // telemetry thread's in-flight transfer is cancelled by
+            // WinUsbDevice.Dispose (CancelIoEx + its own transfer locks), so
+            // this returns in ms rather than after the 2 s IN-pipe timeout.
+            WinUsbDevice? rx;
+            lock (_rxLock) { rx = _rx; _rx = null; }
+            rx?.Dispose();
             _usb.Dispose();   // inside the lock: every SendRf caller holds it, so no write overlaps the free
         }
     }

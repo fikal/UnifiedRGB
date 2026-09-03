@@ -22,6 +22,15 @@ static class Fx
     public static double Hash(int i, int j = 0)
         => Frac(Math.Sin(i * 127.1 + j * 311.7 + 0.137) * 43758.5453);
 
+    /// <summary>Step-clock guard. The engine clock is process uptime and a
+    /// (int) cast of it saturates at int.MaxValue on net10, after which every
+    /// hash-per-step effect freezes on one pattern. Wrap first: the modulus is
+    /// an integer, so Frac() of the wrapped value equals Frac() of the raw one
+    /// and window/phase splits stay consistent (one invisible re-seed every
+    /// million steps).</summary>
+    public const double StepWrap = 1_000_000.0;
+    public static int Step(double v) => (int)(v % StepWrap);
+
     /// <summary>Wrapped distance on a 0..1 ring.</summary>
     public static double WrapDist(double a, double b)
     {
@@ -153,6 +162,9 @@ public sealed class TideFx : IEffect
 {
     public string Name => "Tide";
     public bool UsesBaseColor => true;
+    // One full sine at 0.8 rad/s = 2*pi/0.8 s, so the baked loop closes instead
+    // of the tide reversing direction at the seam (default 4 s = 3.2 rad).
+    public double LoopSeconds(double speed) => Fx.Loop(2.0 * Math.PI / 0.8, speed);
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb baseColor)
     {
         double level = 0.5 + 0.48 * Math.Sin(t * speed * 0.8);
@@ -170,7 +182,9 @@ public sealed class Heartbeat : IEffect
 {
     public string Name => "Heartbeat";
     public bool UsesBaseColor => true;
-    public double LoopSeconds(double speed) => Fx.Loop(2.0, speed);
+    // One beat is 1/0.9 s: bake two whole beats (the old 2 s was 1.8 beats,
+    // so the fans jumped mid-thump at the seam).
+    public double LoopSeconds(double speed) => Fx.Loop(2.0 / 0.9, speed);
     static double Thump(double p, double c, double w)
     {
         double d = (p - c) / w;
@@ -213,7 +227,7 @@ public sealed class Disco : IEffect
     public bool UsesBaseColor => false;
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb _)
     {
-        int step = (int)(t * speed * 1.8);
+        int step = Fx.Step(t * speed * 1.8);
         for (int i = 0; i < buf.Length; i++)
             buf[i] = ColorUtil.HsvToRgb(Fx.Hash(i / 2, step) * 360.0, 1.0, 1.0);
     }
@@ -224,11 +238,16 @@ public sealed class Police : IEffect
 {
     public string Name => "Police";
     public bool UsesBaseColor => false;
+    // Two red/blue swaps per loop (2/0.9 s: one swap = 1.11 s sits under the
+    // baker's 1.5 s floor) with the strobe at 0.9 * 2*pi * 5 rad/s so it
+    // completes exactly 10 cycles per loop - both terms close at the seam.
+    const double StrobeRate = 9.0 * Math.PI;
+    public double LoopSeconds(double speed) => Fx.Loop(2.0 / 0.9, speed);
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb _)
     {
         double phase = Fx.Frac(t * speed * 0.9);
         bool redActive = phase < 0.5;
-        double strobe = Math.Sin(t * speed * 28.0) > 0.15 ? 1.0 : 0.0;
+        double strobe = Math.Sin(t * speed * StrobeRate) > 0.15 ? 1.0 : 0.0;
         var red = new Rgb(255, 0, 0);
         var blue = new Rgb(0, 60, 255);
         for (int i = 0; i < buf.Length; i++)
@@ -249,7 +268,7 @@ public sealed class Electric : IEffect
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb baseColor)
     {
         double flicker = 0.18 + 0.30 * Math.Abs(Math.Sin(t * 3.7)) * Math.Abs(Math.Sin(t * 7.3 + 1.0));
-        int step = (int)(t * speed * 12.0);
+        int step = Fx.Step(t * speed * 12.0);
         for (int i = 0; i < buf.Length; i++)
         {
             double v = flicker;
@@ -264,6 +283,9 @@ public sealed class Fire : IEffect
 {
     public string Name => "Fire";
     public bool UsesBaseColor => false;
+    // The 3 and 5 rad/s components share a 2*pi s period (3 and 5 whole
+    // cycles), so the baked loop closes there.
+    public double LoopSeconds(double speed) => Fx.Loop(2.0 * Math.PI, speed);
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb _)
     {
         for (int i = 0; i < buf.Length; i++)
@@ -284,7 +306,7 @@ public sealed class Starfield : IEffect
     public bool UsesBaseColor => false;
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb _)
     {
-        double u = t * speed * 0.5;
+        double u = (t * speed * 0.5) % Fx.StepWrap;   // wrap before the window/phase split
         int window = (int)u;
         double ph = Fx.Frac(u);
         for (int i = 0; i < buf.Length; i++)
@@ -470,7 +492,7 @@ public sealed class ColorfulMeteor : IEffect
     public double LoopSeconds(double speed) => Fx.Loop(2.5, speed);
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb _)
     {
-        double raw = t * speed * 0.4;
+        double raw = (t * speed * 0.4) % Fx.StepWrap;   // wrap before the lap/phase split
         double head = Fx.Frac(raw);
         var col = ColorUtil.HsvToRgb(Fx.Hash((int)raw) * 360.0, 1.0, 1.0);
         var dg = Geo.Diag(pos);   // per-channel geometry cache
@@ -535,7 +557,7 @@ public sealed class ColorCycle : IEffect
     public double LoopSeconds(double speed) => Fx.Loop(12.0, speed);
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb _)
     {
-        int step = (int)(t * speed) % 12;
+        int step = (int)((t * speed) % 12.0);   // wrap before the cast (uptime clock)
         var c = ColorUtil.HsvToRgb(step * 30, 1.0, 1.0);
         for (int i = 0; i < buf.Length; i++) buf[i] = c;
     }
@@ -672,6 +694,9 @@ public sealed class Warning : IEffect
 {
     public string Name => "Warning";
     public bool UsesBaseColor => true;
+    // One on/off flash is 1/0.6 s: bake two whole flashes (the 4 s default
+    // was 2.4 flashes, so the baked loop cut a flash short at the seam).
+    public double LoopSeconds(double speed) => Fx.Loop(2.0 / 0.6, speed);
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb baseColor)
     {
         bool on = Fx.Frac(t * speed * 0.6) < 0.5;
@@ -744,7 +769,7 @@ public sealed class CandyBox : IEffect
     public double LoopSeconds(double speed) => Fx.Loop((3.0 / 0.6), speed);
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb _)
     {
-        double u = t * speed * 0.6;
+        double u = (t * speed * 0.6) % Fx.StepWrap;   // wrap before the window/phase split
         int window = (int)u;
         double ph = Fx.Frac(u);
         for (int i = 0; i < buf.Length; i++)

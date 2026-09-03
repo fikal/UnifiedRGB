@@ -34,8 +34,10 @@ public static class Dialogs
 
     /*-----------------------------------------------------*\
     | Shared shell: chrome window + dark card + drag + keys |
+    | (also the shell of HeaderConfigDialog - it used to    |
+    | carry its own copies of this and Btn)                 |
     \*-----------------------------------------------------*/
-    static (Window Win, StackPanel Body) MakeDialog(Window owner, Action onEscape, Action onEnter)
+    internal static (Window Win, StackPanel Body) MakeDialog(Window owner, Action onEscape, Action? onEnter = null)
     {
         var win = new Window
         {
@@ -69,12 +71,12 @@ public static class Dialogs
         win.KeyDown += (_, e) =>
         {
             if (e.Key == Key.Escape) onEscape();
-            if (e.Key == Key.Enter) onEnter();
+            if (e.Key == Key.Enter) onEnter?.Invoke();
         };
         return (win, body);
     }
 
-    static UIElement Btn(string text, bool accent, Action click)
+    internal static UIElement Btn(string text, bool accent, Action click)
     {
         var normal = accent ? Color.FromRgb(0x4C, 0x6F, 0xFF) : Color.FromRgb(0x3A, 0x3D, 0x48);
         var hover = accent ? Color.FromRgb(0x63, 0x83, 0xFF) : Color.FromRgb(0x4A, 0x4E, 0x5C);

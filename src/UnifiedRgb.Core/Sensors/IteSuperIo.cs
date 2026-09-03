@@ -22,11 +22,14 @@ namespace UnifiedRgb.Core.Sensors;
 | (a declared count of 0 = unchecked), so every call passes   |
 | precisely sized arrays.                                     |
 |                                                             |
-| READ-ONLY by design in phase 1: config-space writes are     |
-| limited to the standard enter/exit key and LDN selection —  |
-| the same sequence every hardware monitor performs. EC       |
-| register reads share the machine-wide ISA-bus mutex so we   |
-| don't tear TRCC/BIOS tooling transactions (or they ours).   |
+| MONITOR ONLY in the app: config-space writes are limited to |
+| the standard enter/exit key and LDN selection — the same    |
+| sequence every hardware monitor performs — and SensorHub    |
+| calls nothing but Read. The raw EC/port read+write          |
+| primitives below exist for the CLI recipe probes; fan       |
+| control on these boards goes through LHM (SensorHub). Every |
+| access shares the machine-wide ISA-bus mutex so we don't    |
+| tear TRCC/BIOS tooling transactions (or they ours).         |
 \*-----------------------------------------------------------*/
 public sealed class IteSuperIo : IDisposable
 {
@@ -58,7 +61,7 @@ public sealed class IteSuperIo : IDisposable
     {
         var list = new List<IteSuperIo>();
         if (!PawnIO.IsAvailable) return list;
-        var blob = ReadEmbedded("LpcIO.bin");
+        var blob = PawnIO.ReadEmbeddedModule("LpcIO.bin");
         if (blob == null) return list;
         for (ulong slot = 0; slot < 2; slot++)
         {
@@ -179,234 +182,107 @@ public sealed class IteSuperIo : IDisposable
         return Call(_io, "ioctl_pio_outb", (ulong)(_ecBase + 6), val) >= 0;
     }
 
-    /*-----------------------------------------------------*\
-    | Fan control (phase 2). Strategy proven by the field   |
-    | hardware monitors: before the first manual write to a |
-    | PWM register, SAVE its original value; restoring that |
-    | byte hands the header back to the BIOS curve exactly  |
-    | as it was — no need to decode per-chip mode bits.     |
-    | On this family bit7 of 0x15-0x17 selects SmartFan     |
-    | auto; a raw value with bit7 clear = fixed duty.       |
-    \*-----------------------------------------------------*/
-    readonly byte?[] _origPwm = new byte?[6];
-
-    public int FanCount => FanRegs.Length;
-
-    /// <summary>The PWM register's current raw value, or -1.</summary>
-    public int ReadPwmRaw(int fan)
+    /// <summary>Every EC/port access runs under the instance lock AND the
+    /// machine-wide ISA-bus mutex, held for the whole multi-port sequence so
+    /// other monitors (TRCC, BIOS tools) can't tear it, nor we theirs. One
+    /// bracket rather than one per method: the first review's "ISA mutex left
+    /// owned" bug was exactly this pattern done wrong once.</summary>
+    T WithBus<T>(Func<T> body, int timeoutMs = 250)
     {
-        if ((uint)fan >= (uint)PwmRegs.Length) return -1;
         lock (_lock)
         {
-            bool held = TryAcquire(_isaMutex, 250);
-            try { return EcRead(PwmRegs[fan]); }
+            bool held = TryAcquire(_isaMutex, timeoutMs);
+            try { return body(); }
             finally { if (held) { try { _isaMutex?.ReleaseMutex(); } catch { } } }
         }
     }
 
     /// <summary>Raw EC register access for the CLI recipe probes ONLY — the
-    /// app itself goes through the typed fan-control methods.</summary>
-    public int ReadEcRaw(byte reg)
-    {
-        lock (_lock)
-        {
-            bool held = TryAcquire(_isaMutex, 250);
-            try { return EcRead(reg); }
-            finally { if (held) { try { _isaMutex?.ReleaseMutex(); } catch { } } }
-        }
-    }
+    /// app only ever monitors (<see cref="Read"/>).</summary>
+    public int ReadEcRaw(byte reg) => WithBus(() => EcRead(reg));
 
     /// <summary>See <see cref="ReadEcRaw"/> — probe use only.</summary>
-    public bool WriteEcRaw(byte reg, byte val)
-    {
-        lock (_lock)
-        {
-            bool held = TryAcquire(_isaMutex, 250);
-            try { return EcWrite(reg, val); }
-            finally { if (held) { try { _isaMutex?.ReleaseMutex(); } catch { } } }
-        }
-    }
+    public bool WriteEcRaw(byte reg, byte val) => WithBus(() => EcWrite(reg, val));
 
     /// <summary>Raw port read through this chip's whitelist (the module only
     /// allows ports find_bars discovered on THIS chip's logical devices).
     /// Used by the Gigabyte ECIO interface (0x3F0/0x3F4) that lives on the
     /// secondary chip. -1 = denied/failed.</summary>
-    public int PioInb(ushort port)
-    {
-        lock (_lock)
-        {
-            bool held = TryAcquire(_isaMutex, 250);
-            try { return In1(_io, "ioctl_pio_inb", port); }
-            finally { if (held) { try { _isaMutex?.ReleaseMutex(); } catch { } } }
-        }
-    }
+    public int PioInb(ushort port) => WithBus(() => In1(_io, "ioctl_pio_inb", port));
 
     /// <summary>See <see cref="PioInb"/>.</summary>
-    public bool PioOutb(ushort port, byte val)
-    {
-        lock (_lock)
-        {
-            bool held = TryAcquire(_isaMutex, 250);
-            try { return Call(_io, "ioctl_pio_outb", port, val) >= 0; }
-            finally { if (held) { try { _isaMutex?.ReleaseMutex(); } catch { } } }
-        }
-    }
+    public bool PioOutb(ushort port, byte val) => WithBus(() => Call(_io, "ioctl_pio_outb", port, val) >= 0);
 
     /// <summary>Read-only dump of this chip's logical devices: LDN, activate
     /// bit (0x30), BAR0 (0x60/61), BAR1 (0x62/63). Probe use.</summary>
-    public List<(int Ldn, int Active, int Bar0, int Bar1)> DumpLdns(int maxLdn = 0x20)
+    public List<(int Ldn, int Active, int Bar0, int Bar1)> DumpLdns(int maxLdn = 0x20) => WithBus(() =>
     {
         var list = new List<(int, int, int, int)>();
-        lock (_lock)
+        if (!EnterConfig(_io, _slot)) return list;
+        try
         {
-            bool held = TryAcquire(_isaMutex, 1000);
-            try
+            for (ulong ldn = 0; ldn <= (ulong)maxLdn; ldn++)
             {
-                if (!EnterConfig(_io, _slot)) return list;
-                try
-                {
-                    for (ulong ldn = 0; ldn <= (ulong)maxLdn; ldn++)
-                    {
-                        Call(_io, "ioctl_superio_outb", 0x07, ldn);
-                        int act = In1(_io, "ioctl_superio_inb", 0x30);
-                        int b0h = In1(_io, "ioctl_superio_inb", 0x60);
-                        int b0l = In1(_io, "ioctl_superio_inb", 0x61);
-                        int b1h = In1(_io, "ioctl_superio_inb", 0x62);
-                        int b1l = In1(_io, "ioctl_superio_inb", 0x63);
-                        list.Add(((int)ldn, act, (b0h << 8) | b0l, (b1h << 8) | b1l));
-                    }
-                }
-                finally { ExitConfig(_io); }   // never leave the chip in config mode
+                Call(_io, "ioctl_superio_outb", 0x07, ldn);
+                int act = In1(_io, "ioctl_superio_inb", 0x30);
+                int b0h = In1(_io, "ioctl_superio_inb", 0x60);
+                int b0l = In1(_io, "ioctl_superio_inb", 0x61);
+                int b1h = In1(_io, "ioctl_superio_inb", 0x62);
+                int b1l = In1(_io, "ioctl_superio_inb", 0x63);
+                list.Add(((int)ldn, act, (b0h << 8) | b0l, (b1h << 8) | b1l));
             }
-            finally { if (held) { try { _isaMutex?.ReleaseMutex(); } catch { } } }
         }
+        finally { ExitConfig(_io); }   // never leave the chip in config mode
         return list;
-    }
+    }, 1000);
 
-    /// <summary>Write a raw PWM register value, saving the original first so
-    /// RestoreFan can undo it. bit7 clear = fixed duty on this family.</summary>
-    public bool WritePwmRaw(int fan, byte value)
-    {
-        if ((uint)fan >= (uint)PwmRegs.Length) return false;
-        lock (_lock)
-        {
-            bool held = TryAcquire(_isaMutex, 250);
-            try
-            {
-                if (_origPwm[fan] == null)
-                {
-                    int cur = EcRead(PwmRegs[fan]);
-                    if (cur < 0) return false;
-                    _origPwm[fan] = (byte)cur;
-                }
-                if (!EcWrite(PwmRegs[fan], value)) return false;
-                Log.Info("superio", $"fan {fan + 1} pwm 0x{PwmRegs[fan]:X2} <- 0x{value:X2} (orig 0x{_origPwm[fan]:X2})");
-                return true;
-            }
-            finally { if (held) { try { _isaMutex?.ReleaseMutex(); } catch { } } }
-        }
-    }
-
-    /// <summary>Percent → the raw byte written to the PWM register (8-bit
-    /// duty assumption; the hold-check in SensorHub.Tick flags it in the log
-    /// if this chip's SmartFan overwrites the register instead).</summary>
+    /// <summary>Percent → an 8-bit duty byte (0-255), the encoding of the
+    /// ITE EXTENDED duty registers (0x63/0x6B/0x73). It is NOT valid for the
+    /// 7-bit control registers 0x15-0x17, where bit7 selects SmartFan auto:
+    /// any value ≥ 0x80 written there hands the header back to the BIOS. The
+    /// app drives board fans through LHM; this is kept for the test harness
+    /// (its only caller).</summary>
     internal static byte DutyByte(int percent)
         => (byte)Math.Round(Math.Clamp(percent, 0, 100) * 255.0 / 100);
-
-    /// <summary>Manual duty as percent, clamped 0-100. The caller owns policy
-    /// floors (pump minimums etc.).</summary>
-    public bool SetFanDutyPercent(int fan, int percent)
-        => WritePwmRaw(fan, DutyByte(percent));
-
-    /// <summary>True if this fan has a saved original (a manual write happened).</summary>
-    public bool IsFanOverridden(int fan) => (uint)fan < (uint)_origPwm.Length && _origPwm[fan] != null;
-
-    /// <summary>Original register value saved before the first manual write
-    /// (for the crash-recovery marker), or null.</summary>
-    public byte? SavedPwm(int fan) => (uint)fan < (uint)_origPwm.Length ? _origPwm[fan] : null;
-
-    /// <summary>Hand the header back to whatever ran it before us.</summary>
-    public bool RestoreFan(int fan)
-    {
-        if ((uint)fan >= (uint)_origPwm.Length || _origPwm[fan] is not byte orig) return true;
-        lock (_lock)
-        {
-            bool held = TryAcquire(_isaMutex, 250);
-            try
-            {
-                if (!EcWrite(PwmRegs[fan], orig)) return false;
-                _origPwm[fan] = null;
-                Log.Info("superio", $"fan {fan + 1} restored to 0x{orig:X2}");
-                return true;
-            }
-            finally { if (held) { try { _isaMutex?.ReleaseMutex(); } catch { } } }
-        }
-    }
-
-    /// <summary>Crash recovery: write a known original value back even though
-    /// this instance never overrode the fan (the previous process did).</summary>
-    public bool ForceRestore(int fan, byte original)
-    {
-        if ((uint)fan >= (uint)PwmRegs.Length) return false;
-        lock (_lock)
-        {
-            bool held = TryAcquire(_isaMutex, 250);
-            try { return EcWrite(PwmRegs[fan], original); }
-            finally { if (held) { try { _isaMutex?.ReleaseMutex(); } catch { } } }
-        }
-    }
-
-    public void RestoreAllFans()
-    {
-        for (int i = 0; i < _origPwm.Length; i++) RestoreFan(i);
-    }
 
     public sealed record Reading(double?[] TempsC, int?[] FanRpm, int?[] FanDutyPct);
 
     /// <summary>One monitoring sweep: temps (°C), fan RPMs, PWM duty %.
     /// includePwm=false skips the 6 duty registers (12 kernel ioctls) — the
     /// SensorHub fallback path never reads them.</summary>
-    public Reading Read(bool includePwm = true)
+    public Reading Read(bool includePwm = true) => WithBus(() =>
     {
-        lock (_lock)
+        var temps = new double?[TempRegs.Length];
+        for (int i = 0; i < TempRegs.Length; i++)
         {
-            // EC access is a stateful two-port sequence; the ISA mutex keeps
-            // us and other monitors (TRCC, BIOS tools) from tearing each other.
-            bool held = TryAcquire(_isaMutex, 250);
-            try
-            {
-                var temps = new double?[TempRegs.Length];
-                for (int i = 0; i < TempRegs.Length; i++)
-                {
-                    int v = EcRead(TempRegs[i]);
-                    temps[i] = v is > 0 and < 127 ? v : null;   // 0/128+/-1 = absent
-                }
-
-                var rpm = new int?[FanRegs.Length];
-                for (int i = 0; i < FanRegs.Length; i++)
-                {
-                    int lo = EcRead(FanRegs[i].Lo), hi = EcRead(FanRegs[i].Hi);
-                    if (lo < 0 || hi < 0) { rpm[i] = null; continue; }
-                    int count = (hi << 8) | lo;
-                    rpm[i] = count is > 0 and < 0xFFFF ? (int)(1_350_000.0 / (count * 2)) : null;
-                    if (rpm[i] is < 30 or > 20_000) rpm[i] = null;   // implausible
-                }
-
-                var duty = new int?[PwmRegs.Length];
-                if (includePwm)
-                    for (int i = 0; i < PwmRegs.Length; i++)
-                    {
-                        int v = EcRead(PwmRegs[i]);
-                        duty[i] = v >= 0 ? (int)Math.Round(Math.Min(v, 255) * 100.0 / 255) : null;
-                    }
-                return new Reading(temps, rpm, duty);
-            }
-            finally
-            {
-                if (held) { try { _isaMutex?.ReleaseMutex(); } catch { } }
-            }
+            int v = EcRead(TempRegs[i]);
+            temps[i] = v is > 0 and < 127 ? v : null;   // 0/128+/-1 = absent
         }
-    }
+
+        var rpm = new int?[FanRegs.Length];
+        for (int i = 0; i < FanRegs.Length; i++)
+        {
+            int lo = EcRead(FanRegs[i].Lo), hi = EcRead(FanRegs[i].Hi);
+            if (lo < 0 || hi < 0) { rpm[i] = null; continue; }
+            int count = (hi << 8) | lo;
+            // 0xFFFF = counter overflow = no pulses: a STOPPED (or empty)
+            // header, 0 RPM — the same mapping LHM's IT87 driver uses. It
+            // used to read null, indistinguishable from a failed register,
+            // so a fan sitting in BIOS fan-stop when the hub first opened
+            // was dropped from BoardFans for the whole session.
+            rpm[i] = count == 0xFFFF ? 0 : count > 0 ? (int)(1_350_000.0 / (count * 2)) : null;
+            if (rpm[i] is (> 0 and < 30) or > 20_000) rpm[i] = null;   // implausible
+        }
+
+        var duty = new int?[PwmRegs.Length];
+        if (includePwm)
+            for (int i = 0; i < PwmRegs.Length; i++)
+            {
+                int v = EcRead(PwmRegs[i]);
+                duty[i] = v >= 0 ? (int)Math.Round(Math.Min(v, 255) * 100.0 / 255) : null;
+            }
+        return new Reading(temps, rpm, duty);
+    });
 
     /// <summary>The machine-wide ISA-bus mutex hardware monitors share
     /// (documented in the LpcIO module as a required courtesy).</summary>
@@ -427,8 +303,6 @@ public sealed class IteSuperIo : IDisposable
         catch (AbandonedMutexException) { return true; }   // acquired anyway
         catch { return false; }
     }
-
-    internal static byte[]? ReadEmbedded(string file) => PawnIO.ReadEmbeddedModule(file);
 
     public void Dispose()
     {

@@ -29,7 +29,8 @@ if ((Get-Content $csproj -Raw) -notmatch '<Version>') { throw "$csproj has no <V
 
 $asset = "UnifiedRGB-v$Version.exe"
 try {
-    # Tests (console harness - `dotnet test` does not run these)
+    # Tests (console harness; exit code = failure count. The csproj also wires the
+    # same harness to `dotnet test`, so either entry point gives the real result.)
     dotnet run --project src/UnifiedRgb.Tests -c Release
     if ($LASTEXITCODE -ne 0) { throw "Tests failed" }
 

@@ -35,7 +35,7 @@ public abstract class PawnSmbus : IDisposable
     private protected static PawnIO? LoadModule(string file)
     {
         if (!PawnIO.IsAvailable) return null;
-        var blob = ReadEmbedded(file);
+        var blob = PawnIO.ReadEmbeddedModule(file);
         return blob == null ? null : PawnIO.LoadModule(blob);
     }
 
@@ -46,6 +46,7 @@ public abstract class PawnSmbus : IDisposable
         lock (_lock)
         {
             bool got = AcquireMutex();
+            if (!got) return -1;
             try
             {
                 var outv = new ulong[1];
@@ -85,6 +86,7 @@ public abstract class PawnSmbus : IDisposable
         lock (_lock)
         {
             bool got = AcquireMutex();
+            if (!got) return false;
             try { return _io.Execute("ioctl_smbus_xfer", input, Array.Empty<ulong>()) >= 0; }
             finally { if (got) _smbusMutex.ReleaseMutex(); }
         }
@@ -95,6 +97,7 @@ public abstract class PawnSmbus : IDisposable
         lock (_lock)
         {
             bool got = AcquireMutex();
+            if (!got) return -1;
             try
             {
                 var outv = new ulong[1];
@@ -110,6 +113,7 @@ public abstract class PawnSmbus : IDisposable
         lock (_lock)
         {
             bool got = AcquireMutex();
+            if (!got) return false;
             try
             {
                 return _io.Execute("ioctl_smbus_xfer",
@@ -119,13 +123,16 @@ public abstract class PawnSmbus : IDisposable
         }
     }
 
+    /// <summary>Wait for the machine-wide SMBus mutex. False means another
+    /// tool has held it for over 2 s; the caller then FAILS its transaction
+    /// instead of issuing it anyway — an interleaved transfer on the shared
+    /// bus corrupts both sides (garbage LED block for us, a bad SPD/sensor
+    /// read for the other tool). A failed write is repainted next frame.</summary>
     bool AcquireMutex()
     {
         try { return _smbusMutex.WaitOne(2000); }
         catch (AbandonedMutexException) { return true; }
     }
-
-    static byte[]? ReadEmbedded(string file) => PawnIO.ReadEmbeddedModule(file);
 
     public void Dispose()
     {

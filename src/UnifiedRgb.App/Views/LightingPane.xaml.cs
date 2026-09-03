@@ -48,15 +48,7 @@ public partial class LightingPane : UserControl
 
     void ConfigureHeaders_Click(object sender, RoutedEventArgs e)
     {
-        var owner = Owner;
-        if (owner == null) return;
-        var root = owner.Content as UIElement;
-        var prev = root?.Effect;
-        bool prevPause = LedPreview.GlobalPause;
-        if (root != null) root.Effect = new System.Windows.Media.Effects.BlurEffect { Radius = 9 };
-        LedPreview.GlobalPause = true;   // no 30 Hz preview redraws through a full-window blur
-        try { HeaderConfigDialog.Show(owner, VM); }
-        finally { if (root != null) root.Effect = prev; LedPreview.GlobalPause = prevPause; }
+        if (Owner is { } owner) HeaderConfigDialog.Show(owner, VM);   // blurs + pauses the previews itself
     }
 
     void DisableDevice_Click(object sender, RoutedEventArgs e) => VM.DisableSelectedDevice();

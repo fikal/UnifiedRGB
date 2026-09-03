@@ -28,34 +28,93 @@ public sealed class HardwareConfig
 
     static HardwareConfig? _loaded;
 
+    /// <summary>The user's file exists but could not be read (a sync client
+    /// or AV holding it at startup) or could not be backed up before the
+    /// defaults took over: Save() must not write this machine's defaults over
+    /// it, so saves are off until the next launch.</summary>
+    static bool _saveBlocked;
+
     /// <summary>Load (once) from %APPDATA%, writing the defaults file on first
-    /// run so users have something to edit. Any error falls back to defaults.</summary>
+    /// run so users have something to edit. A corrupt file is copied aside
+    /// (`hardware.json.corrupt-<stamp>`) and logged before the defaults take
+    /// over; an unreadable one (locked) blocks Save() for the session. Either
+    /// way the next Save() cannot silently cement this machine's header layout
+    /// over the user's.</summary>
     public static HardwareConfig Load()
     {
         if (_loaded != null) return _loaded;
-        try
-        {
-            if (File.Exists(PathName))
-                return _loaded = JsonSerializer.Deserialize<HardwareConfig>(File.ReadAllText(PathName), Opts) ?? new();
 
+        if (!File.Exists(PathName))
+        {
             var def = new HardwareConfig();
-            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(PathName)!);
-            SafeFile.WriteAllText(PathName, JsonSerializer.Serialize(def, Opts));
+            try { SafeFile.WriteAllText(PathName, JsonSerializer.Serialize(def, Opts)); }
+            catch (Exception ex) { Log.Warn("hardware", $"hardware.json defaults could not be written: {ex.Message}"); }
             return _loaded = def;
         }
-        catch { return _loaded = new HardwareConfig(); }
+
+        // Read and parse are split: a read failure is a locked/vanishing file,
+        // not a corrupt one - nothing to copy aside, but the intact original
+        // must be protected from Save().
+        string text;
+        try { text = ReadWithRetry(); }
+        catch (Exception ex)
+        {
+            _saveBlocked = true;
+            Log.Warn("hardware", $"hardware.json could not be read ({ex.Message}) - running on defaults; saves are off until the next launch");
+            return _loaded = new HardwareConfig();
+        }
+
+        try
+        {
+            var cfg = JsonSerializer.Deserialize<HardwareConfig>(text, Opts) ?? new();
+            // The file is hand-edited: an explicit `null` for the list (or a
+            // `[null]` entry) would NRE in the device's zone builder and in
+            // the header dialog that exists to fix it.
+            cfg.GigabyteArgbHeaders ??= new();
+            cfg.GigabyteArgbHeaders.RemoveAll(h => h is null);
+            // Normalise the wire order once, at the load boundary, so the
+            // device (GigabyteIt5711.NormalizeOrder, which still warns and
+            // falls back on an unknown value) and the header dialog's combo
+            // agree on a hand-typed "rgb" - the dialog used to pre-select GRB
+            // for it and write that back on Save.
+            foreach (var h in cfg.GigabyteArgbHeaders)
+                h.ColorOrder = (h.ColorOrder ?? "GRB").Trim().ToUpperInvariant();
+            return _loaded = cfg;
+        }
+        catch (Exception ex)
+        {
+            string backup = PathName + $".corrupt-{DateTime.Now:yyyyMMdd-HHmmss}";
+            try { File.Copy(PathName, backup, overwrite: true); }
+            catch { backup = "(backup failed - saves are off until the next launch)"; _saveBlocked = true; }
+            Log.Warn("hardware", $"hardware.json unreadable ({ex.Message}) - using defaults; original kept at {backup}");
+            return _loaded = new HardwareConfig();
+        }
+    }
+
+    /// <summary>A sharing violation at startup is usually a sync client or AV
+    /// pass that clears within a moment; retry before giving up on the file
+    /// (and with it, saves) for the session.</summary>
+    static string ReadWithRetry()
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            try { return File.ReadAllText(PathName); }
+            catch (IOException ex) when (attempt < 4 && ex is not (FileNotFoundException or DirectoryNotFoundException)) { Thread.Sleep(200); }
+        }
     }
 
     /// <summary>Persist and make this the active config (a device rescan
     /// rebuilds zones from it).</summary>
     public void Save()
     {
-        try
+        if (_saveBlocked)
         {
-            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(PathName)!);
-            SafeFile.WriteAllText(PathName, JsonSerializer.Serialize(this, Opts));
+            Log.Warn("hardware", "hardware.json save skipped: the file could not be read at startup (applied for this session only)");
+            _loaded = this;
+            return;
         }
-        catch { }
+        try { SafeFile.WriteAllText(PathName, JsonSerializer.Serialize(this, Opts)); }
+        catch (Exception ex) { Log.Warn("hardware", $"hardware.json save failed: {ex.Message}"); }
         _loaded = this;
     }
 }

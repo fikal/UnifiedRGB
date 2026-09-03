@@ -9,8 +9,14 @@ namespace UnifiedRgb.Core;
 /// Task Manager tells the truth about what the app is using.</summary>
 public static class MemoryTrimmer
 {
-    [DllImport("psapi.dll")]
+    [DllImport("psapi.dll", SetLastError = true)]
     static extern bool EmptyWorkingSet(IntPtr hProcess);
+
+    /// <summary>The pseudo-handle (-1): full access to ourselves, nothing to
+    /// close. Process.GetCurrentProcess().Handle opened a real handle that was
+    /// only released by a later finalizer pass.</summary>
+    [DllImport("kernel32.dll")]
+    static extern IntPtr GetCurrentProcess();
 
     public static void Trim()
     {
@@ -19,8 +25,13 @@ public static class MemoryTrimmer
             GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
             GC.WaitForPendingFinalizers();
             GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
-            EmptyWorkingSet(System.Diagnostics.Process.GetCurrentProcess().Handle);
-            Log.Info("memory", "working set trimmed (tray idle)");
+            if (EmptyWorkingSet(GetCurrentProcess()))
+                Log.Info("memory", "working set trimmed (tray idle)");
+            else
+            {
+                int err = Marshal.GetLastWin32Error();
+                Log.Warn("memory", $"EmptyWorkingSet failed (win32 {err})");
+            }
         }
         catch (Exception ex) { Log.Warn("memory", $"trim failed: {ex.Message}"); }
     }

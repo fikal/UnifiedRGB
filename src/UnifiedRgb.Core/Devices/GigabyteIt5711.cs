@@ -52,7 +52,7 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable
         {
             if (!fanHeaders.Add(h.Header)) continue;
             defs.Add(new ZoneDef(string.IsNullOrWhiteSpace(h.Name) ? $"ARGB Header {h.Header}" : h.Name,
-                                 h.Leds, ZoneKind.Fan, h.Header, h.ColorOrder));
+                                 h.Leds, ZoneKind.Fan, h.Header, NormalizeOrder(h.ColorOrder, h.Header)));
         }
         for (int header = 1; header <= MaxHeaders; header++)
             if (!fanHeaders.Contains(header))
@@ -72,6 +72,19 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable
         return defs.ToArray();
     }
 
+    static readonly string[] KnownOrders = { "RGB", "GRB", "BGR", "RBG", "GBR", "BRG" };
+
+    /// <summary>hardware.json is hand-editable and OrderIdx's switch is ordinal:
+    /// a typed "rgb" silently became GRB (red/green swapped, no warning).
+    /// Canonicalise once here so ZoneDef.Order is always one of the six.
+    /// Internal (not private) so the console harness can pin the mapping.</summary>
+    internal static string NormalizeOrder(string? raw, int header)
+    {
+        string order = (raw ?? "GRB").Trim().ToUpperInvariant();
+        if (KnownOrders.Contains(order)) return order;
+        Log.Warn("GigabyteIt5711", $"hardware.json: header {header} ColorOrder '{raw}' not recognised - using GRB");
+        return "GRB";
+    }
 
     readonly HidNative.HidHandle _hid;
     readonly int[] _zoneOffset;
@@ -209,7 +222,10 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable
             if (def.Kind == ZoneKind.Fan) { counts[def.Id - 1] = def.Count; mask |= HeaderInfo(def.Id).Mask; }
         SetLedCount(counts[0], counts[1], counts[2], counts[3]);
         Thread.Sleep(20);
-        _effectDisabled |= mask;
+        // Assign, don't OR: the mask is fully derived from ZoneDefs, and a
+        // header-test bit OR'd in by SetHeaderLeds must not survive the
+        // re-init that restores the tested header's built-in effect.
+        _effectDisabled = mask;
         Cc(0x32, (byte)_effectDisabled);
         Thread.Sleep(20);
         _directInit = true;
@@ -266,25 +282,17 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable
     /// apply packet, so committing them before the (milliseconds-long) fan
     /// streaming keeps the chipset/IO accents in phase with the fans during
     /// animated effects instead of trailing by a write cycle.</summary>
-    public void SetColors(IReadOnlyList<Rgb> colors)
-    {
-        lock (_writeLock)
-        {
-            EnsureDirectMode();
-            bool anyStatic = false;
-            for (int z = 0; z < ZoneDefs.Length; z++)
-                if (ZoneDefs[z].Kind != ZoneKind.Fan)
-                    anyStatic |= UpdateZone(z, colors, _zoneOffset[z]);
-            if (anyStatic) ApplyEffect();
-            for (int z = 0; z < ZoneDefs.Length; z++)
-                if (ZoneDefs[z].Kind == ZoneKind.Fan)
-                    UpdateZone(z, colors, _zoneOffset[z]);
-        }
-    }
+    public void SetColors(IReadOnlyList<Rgb> colors) => WriteZones(0, colors, containedOnly: false);
 
     /// <summary>Update only the zones fully contained in [offset, offset+count),
     /// leaving all other zones on the hardware untouched.</summary>
-    public void SetZone(int offset, IReadOnlyList<Rgb> colors)
+    public void SetZone(int offset, IReadOnlyList<Rgb> colors) => WriteZones(offset, colors, containedOnly: true);
+
+    /// <summary>The one statics-then-fans loop behind SetColors and SetZone.
+    /// containedOnly restricts the write to zones fully inside the range
+    /// (SetZone's contract); a full frame touches every zone, and a short one
+    /// blanks the zones past its end through UpdateZone's bounds guard.</summary>
+    void WriteZones(int offset, IReadOnlyList<Rgb> colors, bool containedOnly)
     {
         int end = offset + colors.Count;
         lock (_writeLock)
@@ -292,19 +300,15 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable
             EnsureDirectMode();
             bool anyStatic = false;
             for (int z = 0; z < ZoneDefs.Length; z++)
-            {
-                int zo = _zoneOffset[z];
-                if (zo >= offset && zo + ZoneDefs[z].Count <= end && ZoneDefs[z].Kind != ZoneKind.Fan)
-                    anyStatic |= UpdateZone(z, colors, zo - offset);
-            }
+                if (ZoneDefs[z].Kind != ZoneKind.Fan && Covered(z))
+                    anyStatic |= UpdateZone(z, colors, _zoneOffset[z] - offset);
             if (anyStatic) ApplyEffect();
             for (int z = 0; z < ZoneDefs.Length; z++)
-            {
-                int zo = _zoneOffset[z];
-                if (zo >= offset && zo + ZoneDefs[z].Count <= end && ZoneDefs[z].Kind == ZoneKind.Fan)
-                    UpdateZone(z, colors, zo - offset);
-            }
+                if (ZoneDefs[z].Kind == ZoneKind.Fan && Covered(z))
+                    UpdateZone(z, colors, _zoneOffset[z] - offset);
         }
+
+        bool Covered(int z) => !containedOnly || (_zoneOffset[z] >= offset && _zoneOffset[z] + ZoneDefs[z].Count <= end);
     }
 
     // Per-zone dedup for FAN zones: a static color on an ARGB header used to
@@ -379,52 +383,63 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable
     /*-----------------------------------------------------*\
     | Diagnostics (CLI): direct-stream + header scan.        |
     \*-----------------------------------------------------*/
-    public void SetHeaderLeds(int header, IReadOnlyList<Rgb> colors, bool grbOrder = true)
+    /// <summary>Light one header directly, bypassing the configured zones (the
+    /// app's header-config 'Test' button and the CLI probes). Runs under the
+    /// write lock — the effect thread streams frames on this handle
+    /// concurrently — and leaves the device marked for re-init so the next
+    /// frame repaints the header and restores its counts/effect mask.</summary>
+    public void SetHeaderLeds(int header, IReadOnlyList<Rgb> colors, string order = "GRB")
     {
-        var (argb, mask) = HeaderInfo(header);
-        var counts = new int[4];
-        counts[header - 1] = colors.Count;
-        SetLedCount(counts[0], counts[1], counts[2], counts[3]);
-        Thread.Sleep(20);
-        _effectDisabled |= mask;
-        Cc(0x32, (byte)_effectDisabled);
-        Thread.Sleep(20);
-
-        int k = 0, count = colors.Count;
-        while (k < count)
+        if (header is < 1 or > 4) throw new ArgumentOutOfRangeException(nameof(header));
+        lock (_writeLock)
         {
-            int n = Math.Min(19, count - k);
-            var pkt = new byte[BUF];
-            pkt[0] = REPORT_ID; pkt[1] = argb;
-            int byteOff = k * 3;
-            pkt[2] = (byte)(byteOff & 0xFF); pkt[3] = (byte)((byteOff >> 8) & 0xFF);
-            pkt[4] = (byte)(n * 3);
-            for (int i = 0; i < n; i++)
-            {
-                var c = colors[k + i];
-                int o = 5 + i * 3;
-                if (grbOrder) { pkt[o] = c.G; pkt[o + 1] = c.R; pkt[o + 2] = c.B; }
-                else          { pkt[o] = c.R; pkt[o + 1] = c.G; pkt[o + 2] = c.B; }
-            }
-            _hid.SetFeature(pkt);
-            k += n;
+            var (_, mask) = HeaderInfo(header);
+            // Keep the other headers' configured counts: zeroing them downgraded
+            // a >32-LED header's count enum, and nothing re-sent it afterwards.
+            var counts = new int[4];
+            foreach (var def in ZoneDefs)
+                if (def.Kind == ZoneKind.Fan) counts[def.Id - 1] = def.Count;
+            counts[header - 1] = colors.Count;
+            SetLedCount(counts[0], counts[1], counts[2], counts[3]);
+            Thread.Sleep(20);
+            _effectDisabled |= mask;
+            Cc(0x32, (byte)_effectDisabled);
+            Thread.Sleep(20);
+            StreamHeaderColors(header, colors, 0, colors.Count, order);
+            ApplyEffect();
+            InvalidateHeader(header);
         }
-        ApplyEffect();
     }
 
     public void TestAllHeaders(int ledsPerHeader, Rgb[] colorPerHeader)
     {
-        SetLedCount(ledsPerHeader, ledsPerHeader, ledsPerHeader, ledsPerHeader);
-        Thread.Sleep(20);
-        _effectDisabled = 0x01 | 0x02 | 0x08 | 0x10;
-        Cc(0x32, (byte)_effectDisabled);
-        Thread.Sleep(30);
-        for (int h = 1; h <= 4; h++)
+        lock (_writeLock)
         {
-            var flat = Enumerable.Repeat(colorPerHeader[h - 1], ledsPerHeader).ToList();
-            StreamHeaderColors(h, flat, 0, flat.Count);
+            SetLedCount(ledsPerHeader, ledsPerHeader, ledsPerHeader, ledsPerHeader);
+            Thread.Sleep(20);
+            _effectDisabled = 0x01 | 0x02 | 0x08 | 0x10;
+            Cc(0x32, (byte)_effectDisabled);
+            Thread.Sleep(30);
+            for (int h = 1; h <= 4; h++)
+            {
+                var flat = Enumerable.Repeat(colorPerHeader[h - 1], ledsPerHeader).ToList();
+                StreamHeaderColors(h, flat, 0, flat.Count);
+                InvalidateHeader(h);
+            }
+            ApplyEffect();
         }
-        ApplyEffect();
+    }
+
+    /// <summary>After a diagnostic write the dedup caches no longer describe
+    /// the hardware: drop them so the next SetColors/SetZone repaints the
+    /// header instead of deduping the frame away (a Test then Cancel left the
+    /// ring white until the colour changed or a rescan), and force
+    /// EnsureDirectMode to re-send the ZoneDefs counts and effect mask.</summary>
+    void InvalidateHeader(int header)
+    {
+        _lastFan.Remove(header);
+        _lastStatic[HeaderEffectIdx[header]] = null;
+        _directInit = false;
     }
 
     public sealed record HeaderScan(int Header, int Segments, int[] SegmentLeds, int TotalLeds);

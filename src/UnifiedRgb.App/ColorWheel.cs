@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using UnifiedRgb.Core;
 
 namespace UnifiedRgb.App;
 
@@ -107,6 +108,9 @@ public sealed class ColorWheel : FrameworkElement
 
     protected override void OnMouseDown(MouseButtonEventArgs e)
     {
+        // Left button only: a right/middle press used to pick too, and a pick
+        // is a device write - while right-click means "clear" everywhere else.
+        if (e.ChangedButton != MouseButton.Left) return;
         _dragging = true;
         CaptureMouse();
         Pick(e.GetPosition(this));
@@ -119,6 +123,7 @@ public sealed class ColorWheel : FrameworkElement
 
     protected override void OnMouseUp(MouseButtonEventArgs e)
     {
+        if (e.ChangedButton != MouseButton.Left) return;
         _dragging = false;
         ReleaseMouseCapture();
     }
@@ -140,37 +145,14 @@ public sealed class ColorWheel : FrameworkElement
         SelectedColor = HsvToRgb(hue, sat, v);
     }
 
+    // Media.Color adapters over the one HSV implementation in Core (this file
+    // used to carry a second copy of the math, with its own near-black guards).
     public static Color HsvToRgb(double h, double s, double v)
     {
-        h = ((h % 360) + 360) % 360;
-        double c = v * s;
-        double x = c * (1 - Math.Abs(h / 60 % 2 - 1));
-        double m = v - c;
-        (double r, double g, double b) = ((int)(h / 60)) switch
-        {
-            0 => (c, x, 0.0),
-            1 => (x, c, 0.0),
-            2 => (0.0, c, x),
-            3 => (0.0, x, c),
-            4 => (x, 0.0, c),
-            _ => (c, 0.0, x),
-        };
-        return Color.FromRgb((byte)((r + m) * 255), (byte)((g + m) * 255), (byte)((b + m) * 255));
+        var c = ColorUtil.HsvToRgb(h, s, v);
+        return Color.FromRgb(c.R, c.G, c.B);
     }
 
     public static (double H, double S, double V) RgbToHsv(Color c)
-    {
-        double r = c.R / 255.0, g = c.G / 255.0, b = c.B / 255.0;
-        double max = Math.Max(r, Math.Max(g, b)), min = Math.Min(r, Math.Min(g, b));
-        double d = max - min;
-        double h = 0;
-        if (d > 0)
-        {
-            if (max == r) h = 60 * (((g - b) / d) % 6);
-            else if (max == g) h = 60 * ((b - r) / d + 2);
-            else h = 60 * ((r - g) / d + 4);
-        }
-        if (h < 0) h += 360;
-        return (h, max == 0 ? 0 : d / max, max);
-    }
+        => ColorUtil.RgbToHsv(new Rgb(c.R, c.G, c.B));
 }

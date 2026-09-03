@@ -5,9 +5,9 @@
         ResizeMode="NoResize" SizeToContent="Height" Width="420"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
         MouseLeftButtonDown="Drag_Down">
-    <Border x:Name="RootPanel" Background="#FF1B1D24" CornerRadius="12" Padding="22"
+    <Border Background="#FF1B1D24" CornerRadius="12" Padding="22"
             BorderBrush="#FF2A2E38" BorderThickness="1"
-            AllowDrop="True" PreviewDragOver="Root_PreviewDragOver">
+            AllowDrop="True">
         <StackPanel>
             <Grid Margin="0,0,0,4">
                 <TextBlock Text="Arrange fans" FontSize="18" FontWeight="SemiBold"/>

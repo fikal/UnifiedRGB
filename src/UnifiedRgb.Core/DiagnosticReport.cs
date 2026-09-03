@@ -41,9 +41,7 @@ public static class DiagnosticReport
         {
             string[] conflicts = { "icue", "corsair", "signalrgb", "synapse", "razer", "armourycrate",
                                    "aura", "lconnect", "steelseriesgg", "openrgb" };
-            var fighting = ProcessNames()
-                .Where(n => conflicts.Any(k => n.Contains(k, StringComparison.OrdinalIgnoreCase)))
-                .Distinct().OrderBy(n => n).ToList();
+            var fighting = ConflictingProcesses(conflicts);
             if (fighting.Count > 0)
                 issues.Add($"Vendor RGB software running ({string.Join(", ", fighting)}) — it can grab a device before UnifiedRGB and hold it; close it if a device won't respond.");
         }
@@ -188,25 +186,31 @@ public static class DiagnosticReport
         else
         {
             Say("PawnIO driver: installed");
-            var bus = PawnSmbus.TryOpenAny();
-            if (bus == null)
+            // Guarded like every other section: opening the bus can throw
+            // (a vendor tool holding Global\Access_SMBUS.HTP.Method with a DACL
+            // that refuses us), and that used to discard the whole report.
+            try
             {
-                Say("Chipset SMBus: no module loaded (unsupported chipset?)");
-            }
-            else
-            {
-                Say($"Chipset SMBus: {bus.ChipsetName}");
-                var responding = new List<byte>();
-                for (byte addr = 0x08; addr <= 0x77; addr++)
+                using var bus = PawnSmbus.TryOpenAny();
+                if (bus == null)
                 {
-                    try { if (bus.ReadByte(addr) >= 0) responding.Add(addr); }
-                    catch { }
-                    Thread.Sleep(2);
+                    Say("Chipset SMBus: no module loaded (unsupported chipset?)");
                 }
-                Say($"Responding addresses: {(responding.Count == 0 ? "(none)" : string.Join(" ", responding.Select(a => $"0x{a:X2}")))}");
-                Say("  hints: 0x50-0x57=SPD (normal), 0x70-0x77/0x67/0x39-0x3D=possible ENE RGB, 0x18-0x1F=Corsair DRAM");
-                bus.Dispose();
+                else
+                {
+                    Say($"Chipset SMBus: {bus.ChipsetName}");
+                    var responding = new List<byte>();
+                    for (byte addr = 0x08; addr <= 0x77; addr++)
+                    {
+                        try { if (bus.ReadByte(addr) >= 0) responding.Add(addr); }
+                        catch { }
+                        Thread.Sleep(2);
+                    }
+                    Say($"Responding addresses: {(responding.Count == 0 ? "(none)" : string.Join(" ", responding.Select(a => $"0x{a:X2}")))}");
+                    Say("  hints: 0x50-0x57=SPD (normal), 0x70-0x77/0x67/0x39-0x3D=possible ENE RGB, 0x18-0x1F=Corsair DRAM");
+                }
             }
+            catch (Exception ex) { Say($"(SMBus probe failed: {ex.Message})"); }
         }
 
         Section("superio");
@@ -218,22 +222,27 @@ public static class DiagnosticReport
             Say("PawnIO driver: NOT INSTALLED (board fans use this when LHM's ring0 driver is blocked)");
         else
         {
-            var chips = Sensors.IteSuperIo.OpenAll();
-            if (chips.Count == 0)
-                Say("no ITE Super-I/O found");
-            else
-                foreach (var chip in chips)
-                {
-                    var r = chip.Read();
-                    Say($"ITE 0x{chip.ChipId:X4}:");
-                    for (int i = 0; i < r.FanRpm.Length; i++)
-                        if (r.FanRpm[i] is int rpm)
-                            Say($"    fan {i + 1}: {rpm} RPM (duty {(r.FanDutyPct[i]?.ToString() ?? "?")}%)");
-                    for (int i = 0; i < r.TempsC.Length; i++)
-                        if (r.TempsC[i] is double t)
-                            Say($"    temp {i + 1}: {t:0.#} C");
-                    chip.Dispose();
-                }
+            var chips = new List<Sensors.IteSuperIo>();
+            try
+            {
+                chips = Sensors.IteSuperIo.OpenAll();
+                if (chips.Count == 0)
+                    Say("no ITE Super-I/O found");
+                else
+                    foreach (var chip in chips)
+                    {
+                        var r = chip.Read();
+                        Say($"ITE 0x{chip.ChipId:X4}:");
+                        for (int i = 0; i < r.FanRpm.Length; i++)
+                            if (r.FanRpm[i] is int rpm)
+                                Say($"    fan {i + 1}: {rpm} RPM (duty {(r.FanDutyPct[i]?.ToString() ?? "?")}%)");
+                        for (int i = 0; i < r.TempsC.Length; i++)
+                            if (r.TempsC[i] is double t)
+                                Say($"    temp {i + 1}: {t:0.#} C");
+                    }
+            }
+            catch (Exception ex) { Say($"(Super-I/O probe failed: {ex.Message})"); }
+            finally { foreach (var chip in chips) { try { chip.Dispose(); } catch { } } }
         }
 
         Say();
@@ -261,26 +270,73 @@ public static class DiagnosticReport
         finally { foreach (var p in procs) p.Dispose(); }
     }
 
-    static string Ps(string command)
+    /// <summary>Running process names matching a conflict keyword, minus the
+    /// OpenRGB server the app launches itself: a USER-installed OpenRGB is the
+    /// classic device-fight case and must be flagged, the bundled one runs
+    /// from our own LocalAppData tree (OpenRgbManager's install root) and its
+    /// status has a section of its own. Told apart by image path; a path we
+    /// cannot read (an elevated instance seen from a non-elevated Diag run) is
+    /// not flagged - the informational RGB SOFTWARE list still names it.</summary>
+    static List<string> ConflictingProcesses(string[] conflicts)
+    {
+        string bundleDir = AppPaths.Local("openrgb");
+        var hits = new List<string>();
+        foreach (var p in Process.GetProcesses())
+        {
+            try
+            {
+                string n = p.ProcessName;
+                if (!conflicts.Any(k => n.Contains(k, StringComparison.OrdinalIgnoreCase))) continue;
+                if (n.Contains("openrgb", StringComparison.OrdinalIgnoreCase))
+                {
+                    string? path = null;
+                    try { path = p.MainModule?.FileName; } catch { }
+                    if (path == null || path.StartsWith(bundleDir, StringComparison.OrdinalIgnoreCase)) continue;
+                }
+                hits.Add(n);
+            }
+            catch { }
+            finally { p.Dispose(); }
+        }
+        return hits.Distinct().OrderBy(n => n).ToList();
+    }
+
+    // Internal (not private) so the console harness can pin the stdout/stderr merge.
+    internal static string Ps(string command)
     {
         try
         {
             var psi = new ProcessStartInfo
             {
                 FileName = "powershell", Arguments = $"-NoProfile -Command \"{command}\"",
-                UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true,
+                UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true,
+                CreateNoWindow = true,
             };
             using var p = Process.Start(psi)!;
             // Read asynchronously so the timeout is real: ReadToEnd() blocked
             // until PowerShell exited, so WaitForExit(20000) never got to time
             // out and a hung Get-WinEvent hung the whole report collection.
+            // Both streams must be draining before the wait, or a full pipe
+            // stalls PowerShell. stderr is captured too: a failed CIM query
+            // used to leave a blank section indistinguishable from "none".
             var output = p.StandardOutput.ReadToEndAsync();
+            var errors = p.StandardError.ReadToEndAsync();
             if (!p.WaitForExit(20000))
             {
                 try { p.Kill(entireProcessTree: true); } catch { }
                 return "(timed out after 20 s)";
             }
-            return output.GetAwaiter().GetResult().Trim();
+            string text = output.GetAwaiter().GetResult().Trim();
+            string err = errors.GetAwaiter().GetResult().Trim();
+            if (err.Length > 0)
+            {
+                err = System.Text.RegularExpressions.Regex.Replace(err, @"\s*[\r\n]+\s*", " | ");
+                if (err.Length > 300) err = err[..300] + "...";
+                text += (text.Length > 0 ? "\r\n" : "") + $"(errors: {err})";
+            }
+            else if (text.Length == 0 && p.ExitCode != 0)
+                text = $"(exit code {p.ExitCode}, no output)";
+            return text;
         }
         catch (Exception ex) { return $"(failed: {ex.Message})"; }
     }

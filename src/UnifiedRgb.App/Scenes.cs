@@ -34,7 +34,16 @@ public sealed class SceneAction : INotifyPropertyChanged
     public double DelaySeconds
     {
         get => _delaySeconds;
-        set { _delaySeconds = Math.Clamp(value, 0, 24 * 3600); Notify(nameof(DelaySeconds)); }
+        set
+        {
+            // The delay box is a plain double binding and "NaN" parses: NaN
+            // passes Clamp, TimeSpan.FromSeconds(NaN) then throws in the
+            // sequencer's timer and JSON refuses to serialize it (every later
+            // scenes.json save fails). Keep the previous value instead.
+            if (double.IsNaN(value)) value = _delaySeconds;
+            _delaySeconds = Math.Clamp(value, 0, 24 * 3600);
+            Notify(nameof(DelaySeconds));
+        }
     }
 
     string? _scene;
@@ -71,15 +80,12 @@ public sealed class SceneStore
     public string? ActiveSequence { get; set; }
 
     static string Path => AppPaths.Config("scenes.json");
-    static readonly JsonSerializerOptions Opts = new() { WriteIndented = true };
 
     public static SceneStore Load() => ProfileStore.LoadJson<SceneStore>(Path, "scenes.json") ?? new SceneStore();
 
-    public void Save()
-    {
-        try { SafeFile.WriteAllText(Path, JsonSerializer.Serialize(this, Opts)); }
-        catch (Exception ex) { Log.Warn("scenes", $"save failed: {ex.Message}"); }
-    }
+    // Through the shared store writer: a scenes.json that could not be read
+    // at startup must not be overwritten by the defaults (see ProfileStore.LoadJson).
+    public void Save() => ProfileStore.Save(Path, this, "scenes.json");
 
     /// <summary>Deep-clone a design via JSON round-trip (scenes must never
     /// share element instances with the live editor).</summary>

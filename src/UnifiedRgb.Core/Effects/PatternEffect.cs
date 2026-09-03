@@ -15,6 +15,7 @@ public sealed class PatternEffect : IEffect
     public bool UsesBaseColor => Color == PatternColor.Solid;
     public bool Bakeable => Color != PatternColor.Wallpaper && Color != PatternColor.Temp
         && Motion != PatternMotion.AudioPulse && Motion != PatternMotion.AudioLevel;
+    public bool LiveInput => Motion is PatternMotion.AudioPulse or PatternMotion.AudioLevel;
 
     public PatternColor Color { get; set; } = PatternColor.Rainbow;
     public PatternMotion Motion { get; set; } = PatternMotion.Rotate;
@@ -67,7 +68,7 @@ public sealed class PatternEffect : IEffect
         Rgb tempColor = default;
         if (Color == PatternColor.Temp)
         {
-            Sensors.SensorHub.Touch();
+            Sensors.SensorHub.TouchTemps();   // temp only: don't arm the Cooling-pane sweep
             tempColor = Sensors.SensorHub.HottestC is double tc
                 ? ColorUtil.HsvToRgb(120.0 * (1.0 - Math.Clamp((tc - 35.0) / 50.0, 0, 1)), 1.0, 1.0)
                 : ColorUtil.HsvToRgb(220, 0.9, 0.5);
@@ -78,7 +79,7 @@ public sealed class PatternEffect : IEffect
         if (Motion is PatternMotion.AudioPulse or PatternMotion.AudioLevel)
         {
             Audio.AudioAnalyzer.Touch();
-            double punch = Math.Clamp(speed, 0.25, 4.0);
+            double punch = Math.Clamp(Math.Abs(speed), 0.25, 4.0);   // punch, not direction
             level = Math.Pow(0.6 * Audio.AudioAnalyzer.Level + 0.4 * Audio.AudioAnalyzer.Bass, 1.0 / punch);
         }
 
@@ -142,16 +143,8 @@ public sealed class PatternEffect : IEffect
         return Lerp(pal[a], pal[a + 1], x - a);
     }
 
-    Rgb SamplePalette(double f)
-    {
-        var pal = Palette;
-        int n = pal.Count;
-        if (n == 0) return new Rgb(255, 255, 255);
-        if (n == 1) return pal[0];
-        double x = Frac(f) * n;                               // wrap the gradient
-        int a = (int)x % n, b = (a + 1) % n;
-        return Lerp(pal[a], pal[b], x - Math.Floor(x));
-    }
+    /// <summary>Cyclic: wraps the last colour back to the first (ring gradients).</summary>
+    Rgb SamplePalette(double f) => PaletteFx.Sample(Palette, f);
 
     static double Coord(LedPos p, int axis) => axis switch
     {

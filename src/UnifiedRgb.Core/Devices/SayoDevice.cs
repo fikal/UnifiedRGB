@@ -57,7 +57,6 @@ public sealed class SayoDevice : IRgbDevice
         {
             var c = colors[0];
             if (_last == c) return;
-            _last = c;
 
             // SAYO_MODE_PACK(speed=3(1x), color=STATIC(0), mode=STATIC(0)).
             byte modeByte = (3 & 0x3) << 6 | (0 & 0x3) << 4 | (0 & 0xF);
@@ -68,11 +67,18 @@ public sealed class SayoDevice : IRgbDevice
                 0x26, 0x00, 0x00, 0x00, modeByte, 0x00, 0x80, 0x80,
                 c.R, c.G, c.B,
             };
-            SendPacket(payload);
+            // Commit the dedup only when the write landed, so a dropped packet is
+            // retried by the next apply / engine keepalive instead of cached.
+            if (SendPacket(payload)) _last = c;
+            else
+            {
+                _last = null;
+                Log.Occasional($"sayo:{Name}", "Sayo", "HID write failed - will retry on the next frame");
+            }
         }
     }
 
-    void SendPacket(byte[] payload)
+    bool SendPacket(byte[] payload)
     {
         // 16-bit LE-word checksum of the 0x1221 header + payload.
         ushort checksum = 0x1221;
@@ -89,7 +95,7 @@ public sealed class SayoDevice : IRgbDevice
         packet[2] = (byte)(checksum & 0xFF);
         packet[3] = (byte)(checksum >> 8);
         Array.Copy(payload, 0, packet, 4, payload.Length);
-        _hid.Write(packet);
+        return _hid.Write(packet);
     }
 
     public void Dispose() => _hid.Dispose();

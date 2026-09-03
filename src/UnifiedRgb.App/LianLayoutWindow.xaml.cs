@@ -1,5 +1,4 @@
 using System.ComponentModel;
-using System.IO;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -60,7 +59,9 @@ public partial class LianLayoutWindow : Window
         var json = JsonSerializer.Serialize(new { order, breaks });
         try
         {
-            File.WriteAllText(AppPaths.Config("lianli-layout.json"), json);
+            // Atomic like every other store: a crash mid-write used to leave a
+            // truncated file, and LoadLayout then silently fell back to chain order.
+            SafeFile.WriteAllText(AppPaths.Config("lianli-layout.json"), json);
         }
         catch (Exception ex)
         {
@@ -107,8 +108,6 @@ public partial class LianLayoutWindow : Window
         try { DragDrop.DoDragDrop(row, new DataObject(typeof(FanSlot), slot), DragDropEffects.Move); }
         finally { row.Opacity = 1; ClearIndicator(); }
     }
-
-    void Root_PreviewDragOver(object sender, DragEventArgs e) { }
 
     void SetIndicator(Border row, bool below)
     {

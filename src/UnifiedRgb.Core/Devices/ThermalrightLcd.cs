@@ -61,9 +61,11 @@ public sealed class ThermalrightLcd : IDisposable
     /// <summary>Display a full frame of raw RGB565 pixels (little-endian,
     /// length == FrameBytes). Frame = 20-byte header + pixels, streamed in
     /// 512-byte writes on the OUT endpoint (exact format from USB capture).</summary>
-    // Reused across frames: this path runs ~25 fps forever, and fresh buffers
-    // here were the app's largest allocation source (a 153 KB LOH payload plus
-    // 301 chunk copies + 301 report buffers PER FRAME ~= 11.5 MB/s of garbage).
+    // Reused across frames: this path runs for the app's life - up to ~25 fps
+    // for an animated design, ~2 fps as the keepalive re-send of an unchanged
+    // frame (LcdController.StreamLoop) - and fresh buffers here were the app's
+    // largest allocation source (a 153 KB LOH payload plus 301 chunk copies +
+    // 301 report buffers PER FRAME ~= 11.5 MB/s of garbage at 25 fps).
     // Pinned-heap arrays also stop the per-write GCHandle pin from fragmenting
     // gen0 (HidHandle.Transfer pins whatever buffer it is given).
     byte[]? _payload;

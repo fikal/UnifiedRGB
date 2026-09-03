@@ -115,14 +115,18 @@ public sealed partial class MainViewModel
     public bool IsEffectRunning => ChoiceOf(CurrentFx()).Effect != null;
     public bool IsCustomPattern => ChoiceOf(CurrentFx()).Effect is PatternEffect;
 
+    // Speed/direction write every range of the selection (one per fan under
+    // "All fans + part"); fan 0 alone used to change and the stack desynced.
     public double EffectSpeed
     {
         get => CurrentFx().Speed;
         set
         {
-            var fx = CurrentFx();
-            fx.Speed = value;
-            if (fx.Channel != null) fx.Channel.Speed = SignedSpeed(fx);
+            foreach (var fx in CurrentFxSet())
+            {
+                fx.Speed = value;
+                if (fx.Channel != null) fx.Channel.Speed = SignedSpeed(fx);
+            }
             RequestLianRebake();
             MarkDirty();
             OnChanged();
@@ -135,9 +139,11 @@ public sealed partial class MainViewModel
         get => CurrentFx().Reverse;
         set
         {
-            var fx = CurrentFx();
-            fx.Reverse = value;
-            if (fx.Channel != null) fx.Channel.Speed = SignedSpeed(fx);
+            foreach (var fx in CurrentFxSet())
+            {
+                fx.Reverse = value;
+                if (fx.Channel != null) fx.Channel.Speed = SignedSpeed(fx);
+            }
             RequestLianRebake();
             MarkDirty();
             OnChanged();

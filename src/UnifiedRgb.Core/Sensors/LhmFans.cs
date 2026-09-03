@@ -55,9 +55,10 @@ public sealed class LhmFans : IDisposable
 
     public static LhmFans? TryOpen()
     {
+        Computer? c = null;
         try
         {
-            var c = new Computer
+            c = new Computer
             {
                 IsMotherboardEnabled = true,   // the ONLY subsystem we want
                 IsCpuEnabled = false,
@@ -85,6 +86,11 @@ public sealed class LhmFans : IDisposable
         catch (Exception ex)
         {
             Log.Warn("lhm", $"open failed: {ex.Message}");
+            // Collect() can throw after Open() succeeded (first Update sweep,
+            // duplicate control index): close, or the ring0 driver session and
+            // the ISA mutex stay held for the process lifetime while the ITE
+            // fallback opens the same Super-I/O on top of them.
+            try { c?.Close(); } catch { }
             return null;
         }
     }

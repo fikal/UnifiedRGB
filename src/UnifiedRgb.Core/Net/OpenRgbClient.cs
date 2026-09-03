@@ -26,14 +26,16 @@ public sealed class OpenRgbClient : IDisposable
 
     const uint OurProtocolVersion = 1;
 
+    // OpenRGB itself tops out at a few dozen controllers; a count beyond this
+    // is a wrong or hostile listener on the port, not a rig - and every index
+    // is a request with a 5 s read timeout, walked on the UI thread by Rescan.
+    const int MaxControllers = 256;
+
     readonly TcpClient _tcp = new();
     readonly object _io = new();
     NetworkStream _s = null!;
 
     public uint ServerVersion { get; private set; }
-
-    /// <summary>Device list changed server-side since the last enumerate.</summary>
-    public bool ListDirty { get; private set; }
 
     public sealed record ZoneInfo(string Name, int Type, int LedCount, int MatrixW, int MatrixH, uint[]? Matrix);
 
@@ -93,7 +95,9 @@ public sealed class OpenRgbClient : IDisposable
         {
             Send(0, PktControllerCount, Array.Empty<byte>());
             var (_, _, p) = ReadUntil(PktControllerCount);
-            return BitConverter.ToInt32(p);
+            int n = BitConverter.ToInt32(p);
+            if (n < 0 || n > MaxControllers) throw new IOException($"OpenRGB: implausible controller count {n}");
+            return n;
         }
     }
 
@@ -186,7 +190,7 @@ public sealed class OpenRgbClient : IDisposable
         for (int guard = 0; guard < 64; guard++)
         {
             var (dev, id, payload) = ReadPacket();
-            if (id == PktDeviceListUpdated) { ListDirty = true; continue; }
+            if (id == PktDeviceListUpdated) continue;    // async notification, never a reply
             if (id == wantId && (wantDevice == null || dev == wantDevice)) return (dev, id, payload);
             // Unexpected packet: skip it (already consumed).
         }

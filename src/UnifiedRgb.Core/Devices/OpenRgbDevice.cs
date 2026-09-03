@@ -52,8 +52,9 @@ public sealed class OpenRgbDevice : IRgbDevice, IZoneWritable
         var zones = new List<RgbZone>();
         foreach (var z in info.Zones)
         {
-            zones.Add(new RgbZone { Name = z.Name, Offset = offset, Count = z.LedCount });
-            offset += z.LedCount;
+            int count = Math.Max(0, z.LedCount);   // server-supplied i32: never let a negative count in
+            zones.Add(new RgbZone { Name = z.Name, Offset = offset, Count = count });
+            offset += count;
         }
         _zones = zones.Count > 0
             ? zones.ToArray()
@@ -76,6 +77,7 @@ public sealed class OpenRgbDevice : IRgbDevice, IZoneWritable
         int offset = 0;
         foreach (var z in info.Zones)
         {
+            int count = Math.Max(0, z.LedCount);
             if (z.Matrix != null && z.MatrixW > 1 && z.MatrixH > 1)
             {
                 anyMatrix = true;
@@ -84,19 +86,23 @@ public sealed class OpenRgbDevice : IRgbDevice, IZoneWritable
                     {
                         uint led = z.Matrix[y * z.MatrixW + x];
                         if (led == 0xFFFFFFFF) continue;
-                        int idx = offset + (int)led;
-                        if (idx < total)
-                            pos[idx] = new LedPos(
+                        // Matrix cells are raw server i32s: anything past the
+                        // sentinel used to reinterpret negative through (int)
+                        // and index pos[] out of range from the constructor,
+                        // which took the whole bridge down with it.
+                        long idx = offset + (long)led;
+                        if (idx >= 0 && idx < total)
+                            pos[(int)idx] = new LedPos(
                                 z.MatrixW > 1 ? (float)x / (z.MatrixW - 1) : 0.5f,
                                 z.MatrixH > 1 ? (float)y / (z.MatrixH - 1) : 0.5f);
                     }
             }
             else
             {
-                for (int i = 0; i < z.LedCount && offset + i < total; i++)
-                    pos[offset + i] = new LedPos(z.LedCount > 1 ? (float)i / (z.LedCount - 1) : 0.5f, 0.5f);
+                for (int i = 0; i < count && offset + i < total; i++)
+                    pos[offset + i] = new LedPos(count > 1 ? (float)i / (count - 1) : 0.5f, 0.5f);
             }
-            offset += z.LedCount;
+            offset += count;
         }
         var first = info.Zones.FirstOrDefault(z => z.Matrix != null);
         float? aspect = anyMatrix && first != null && first.MatrixH > 0

@@ -1,9 +1,14 @@
 using System.IO;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
+using System.Xml.Linq;
 using UnifiedRgb.Core;
+using UnifiedRgb.Core.Devices;
 using UnifiedRgb.Core.Effects;
 using UnifiedRgb.Core.Input;
+using UnifiedRgb.Core.Native;
 using UnifiedRgb.Core.Net;
 using UnifiedRgb.Core.Sensors;
 
@@ -286,5 +291,661 @@ void Equal<T>(T expected, T actual, string name)
         Check(UnifiedRgb.Core.Native.Authenticode.IsSignedBy(pawn, "CN=namazso.eu", out var ok), $"PawnIOLib.dll accepted ({ok})");
 }
 
+/*===========================================================*\
+| Review 2026-09-02 fix coverage. Each block names the fix    |
+| report ids it pins (review-2026-09-02/fix-report.json).     |
+\*===========================================================*/
+
+// Shared helpers for the blocks below.
+static bool WaitUntil(Func<bool> cond, int timeoutMs)
+{
+    var sw = Stopwatch.StartNew();
+    while (sw.ElapsedMilliseconds < timeoutMs) { if (cond()) return true; Thread.Sleep(5); }
+    return cond();
+}
+static LedPos[] Line(int n)
+{
+    var p = new LedPos[n];
+    for (int i = 0; i < n; i++) p[i] = new LedPos(n <= 1 ? 0.5f : i / (float)(n - 1), 0.5f);
+    return p;
+}
+static LedPos[] Grid(int w, int h)
+{
+    var p = new LedPos[w * h];
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+            p[y * w + x] = new LedPos(x / (float)(w - 1), y / (float)(h - 1));
+    return p;
+}
+static bool SameWithin(Rgb[] a, Rgb[] b, int lsb)
+{
+    for (int i = 0; i < a.Length; i++)
+        if (Math.Abs(a[i].R - b[i].R) > lsb || Math.Abs(a[i].G - b[i].G) > lsb || Math.Abs(a[i].B - b[i].B) > lsb) return false;
+    return true;
+}
+static string TempDir()
+{
+    string d = Path.Combine(Path.GetTempPath(), "unifiedrgb-tests-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(d);
+    return d;
+}
+
+/*---------------- SafeFile: parent dirs, no BOM, failure cleanup (#16 #20 #159 #162) ----------------*/
+{
+    string root = TempDir();
+    try
+    {
+        string nested = Path.Combine(root, "a", "b", "x.json");
+        SafeFile.WriteAllText(nested, "{}");
+        Check(File.Exists(nested) && File.ReadAllText(nested) == "{}", "SafeFile creates missing parent directories");
+        Check(!File.Exists(nested + ".tmp"), "SafeFile nested write leaves no .tmp");
+
+        string utf = Path.Combine(root, "utf.txt");
+        SafeFile.WriteAllText(utf, "héllo ☃");
+        var bytes = File.ReadAllBytes(utf);
+        Check(!(bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF), "SafeFile writes UTF-8 without a BOM");
+        Equal("héllo ☃", File.ReadAllText(utf), "SafeFile non-ASCII text round-trips");
+        SafeFile.WriteAllText(utf, "second");
+        Equal("second", File.ReadAllText(utf), "SafeFile second write replaces the first");
+        Check(!File.Exists(utf + ".tmp"), "SafeFile replace leaves no .tmp");
+
+        // The target is an existing DIRECTORY: the rename must fail, and the
+        // half-written .tmp must not be left behind for the next save.
+        string asDir = Path.Combine(root, "i-am-a-dir");
+        Directory.CreateDirectory(asDir);
+        bool threw = false;
+        try { SafeFile.WriteAllText(asDir, "x"); } catch (Exception) { threw = true; }
+        Check(threw, "SafeFile throws when the target cannot be replaced");
+        Check(!File.Exists(asDir + ".tmp"), "SafeFile failure deletes its .tmp");
+    }
+    finally { try { Directory.Delete(root, recursive: true); } catch { } }
+
+    _ = AppPaths.ConfigDir;   // forces the cctor
+    Check(Directory.Exists(AppPaths.ConfigDir), "AppPaths cctor creates ConfigDir");
+    Check(Directory.Exists(AppPaths.LocalDir), "AppPaths cctor creates LocalDir (fan-config.json home)");
+    Equal(Path.Combine(AppPaths.LocalDir, "fan-config.json"), AppPaths.Local("fan-config.json"), "AppPaths.Local joins under LocalDir");
+}
+
+/*---------------- Authenticode exact-RDN pin (#36 #37 #77) ----------------*/
+{
+    string kernel32 = Path.Combine(Environment.SystemDirectory, "kernel32.dll");
+    Check(Authenticode.IsSignedBy(kernel32, "CN=Microsoft Windows", out var d1), $"exact CN accepted ({d1})");
+    Check(Authenticode.IsSignedBy(kernel32, "O=Microsoft Corporation", out var d2), $"other RDN type (O=) accepted ({d2})");
+    Check(Authenticode.IsSignedBy(kernel32, "cn=microsoft windows", out _), "RDN type/value compare is case-insensitive");
+    Check(!Authenticode.IsSignedBy(kernel32, "CN=Microsoft Win", out var d3) && d3.Contains("expected"), $"CN prefix substring refused ({d3})");
+    Check(!Authenticode.IsSignedBy(kernel32, "CN=Windows", out _), "CN suffix substring refused");
+    Check(!Authenticode.IsSignedBy(kernel32, "O=Microsoft Windows", out _), "value must live in the pinned RDN type");
+    Check(!Authenticode.IsSignedBy(kernel32, "Microsoft", out _), "a pin without '=' never matches");
+    Check(!Authenticode.IsSignedBy(kernel32, "=Microsoft Windows", out _), "a pin with an empty type never matches");
+    Check(!Authenticode.IsSignedBy(Path.Combine(Environment.SystemDirectory, "no-such-file-xyz.dll"), "CN=Microsoft Windows", out var d4) && d4.Length > 0,
+        "missing file is refused with a reason");
+
+    // #37/#77: the WINTRUST_FILE_INFO path copy is now released; hammer all three
+    // exits (trusted+match, trusted+mismatch, untrusted) and require stable results.
+    string self = typeof(Rgb).Assembly.Location;
+    bool stable = true;
+    for (int i = 0; i < 15 && stable; i++)
+        stable = Authenticode.IsSignedBy(kernel32, "CN=Microsoft Windows", out _)
+              && !Authenticode.IsSignedBy(kernel32, "CN=nobody", out _)
+              && !Authenticode.IsSignedBy(self, "CN=Microsoft Windows", out _);
+    Check(stable, "repeated IsSignedBy is stable across match / mismatch / untrusted paths");
+}
+
+/*---------------- IteSuperIo dead fan-control block removed (#140 #87 #86) ----------------*/
+{
+    var t = typeof(IteSuperIo);
+    var any = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+            | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static;
+    foreach (var name in new[] { "SetFanDutyPercent", "ReadPwmRaw", "WritePwmRaw", "RestoreFan", "RestoreAllFans", "ForceRestore", "IsFanOverridden" })
+        Check(t.GetMethod(name, any) == null, $"IteSuperIo.{name} is gone");
+    Check(t.GetProperty("FanCount", any) == null && t.GetProperty("SavedPwm", any) == null, "IteSuperIo.FanCount/SavedPwm are gone");
+    Check(t.GetMethod("ReadEcRaw", any) != null && t.GetMethod("WriteEcRaw", any) != null && t.GetMethod("DumpLdns", any) != null,
+        "IteSuperIo raw probe primitives kept for the CLI");
+}
+
+/*---------------- Embedded PawnIO modules, single copy (#151 #12) ----------------*/
+{
+    foreach (var m in new[] { "LpcIO.bin", "AMDFamily17.bin", "IsaBridgeEC.bin" })
+        Check(PawnIO.ReadEmbeddedModule(m) is { Length: > 100 }, $"{m} embedded in Core");
+    int copies = typeof(PawnIO).Assembly.GetManifestResourceNames().Count(n => n.EndsWith("SmbusI801.bin"));
+    Equal(1, copies, "exactly one SmbusI801.bin manifest resource in Core");
+}
+
+/*---------------- FanCurve.Clone contract (#82 #112) ----------------*/
+{
+    var src = new FanCurve("Custom", TempSource.Cpu, new CurvePoint[] { new(60, 80), new(30, 30) }, floor: 20);
+    var cl = src.Clone();
+    Check(!ReferenceEquals(src, cl) && !ReferenceEquals(src.Points, cl.Points), "Clone yields a distinct instance and Points list");
+    Check(cl.Preset == "Custom" && cl.Source == TempSource.Cpu && cl.Floor == 20 && cl.Points.Count == 2, "Clone copies preset/source/floor/points");
+    cl.Points[0] = new CurvePoint(10, 10);
+    Equal(30, src.Points[0].TempC, "mutating the clone leaves the source untouched");
+    var unsorted = new FanCurve { Points = new List<CurvePoint> { new(80, 100), new(20, 20) } };
+    Equal(20, unsorted.Clone().Points[0].TempC, "Clone re-sorts hand-edited points by temperature");
+}
+
+/*---------------- tinyuz scratch-cache threshold (#4) ----------------*/
+{
+    byte[] Pseudo(int n, uint seed)
+    {
+        // Semi-compressible: a drifting byte pattern with repeated blocks, so
+        // both literal and match paths run.
+        var b = new byte[n];
+        uint s = seed;
+        for (int i = 0; i < n; i++)
+        {
+            if ((i / 64) % 3 == 2 && i >= 128) { b[i] = b[i - 128]; continue; }
+            s = s * 1664525 + 1013904223;
+            b[i] = (byte)((s >> 24) & 0x3F);
+        }
+        return b;
+    }
+    var small = Pseudo(300, 7);
+    var smallBefore = LianLiTinyuz.Encode(small);
+    foreach (int n in new[] { 4096, 4097 })
+    {
+        var raw = Pseudo(n, 0xC0FFEE + (uint)n);
+        var a = LianLiTinyuz.Encode(raw);
+        var b = LianLiTinyuz.Encode(raw);
+        Check(a.AsSpan().SequenceEqual(b), $"tinyuz {n}B encodes identically twice on one thread ({a.Length}B)");
+        Check(LianLiTinyuz.Decode(a).AsSpan().SequenceEqual(raw), $"tinyuz {n}B round-trips");
+    }
+    // The cached (small) path after a fresh-scratch (big) encode: caches were cleared correctly.
+    var smallAfter = LianLiTinyuz.Encode(small);
+    Check(smallBefore.AsSpan().SequenceEqual(smallAfter), "tinyuz cached path is unchanged after a >4096B encode");
+    Check(LianLiTinyuz.Decode(smallAfter).AsSpan().SequenceEqual(small), "tinyuz small buffer round-trips after the big one");
+}
+
+/*---------------- LianLiWireless.LoadLayout (#1) ----------------*/
+{
+    // Real config path (LoadLayout reads AppPaths.Config): the user's file, if
+    // any, is preserved byte-for-byte around the test.
+    string path = AppPaths.Config("lianli-layout.json");
+    byte[]? orig = File.Exists(path) ? File.ReadAllBytes(path) : null;
+    try
+    {
+        File.WriteAllText(path, "{\"order\":[3,0,1,2],\"breaks\":[3,0,9,3]}");
+        var (order, breaks) = LianLiWireless.LoadLayout(4);
+        Check(order.SequenceEqual(new[] { 3, 0, 1, 2 }), "LoadLayout honours the saved order");
+        Check(breaks.SequenceEqual(new[] { 3 }), "LoadLayout keeps a single-slot trailing group (break at 3 of 4) and drops 0/out-of-range/duplicates");
+        var (o6, b6) = LianLiWireless.LoadLayout(6);
+        Check(o6.SequenceEqual(Enumerable.Range(0, 6)) && b6.Length == 0, "LoadLayout falls back to identity on a fan-count mismatch");
+        File.WriteAllText(path, "{\"order\":[0,0,1,2]}");
+        Check(LianLiWireless.LoadLayout(4).Order.SequenceEqual(Enumerable.Range(0, 4)), "LoadLayout rejects a non-permutation order");
+        File.WriteAllText(path, "{not json");
+        Check(LianLiWireless.LoadLayout(4).Order.SequenceEqual(Enumerable.Range(0, 4)), "LoadLayout falls back to identity on malformed json");
+    }
+    finally
+    {
+        if (orig != null) File.WriteAllBytes(path, orig);
+        else File.Delete(path);
+    }
+}
+
+/*---------------- OpenRgbDevice.BuildPositions bounds (#30) ----------------*/
+{
+    var zone = new OpenRgbClient.ZoneInfo("Keys", 2, 6, 3, 2, new uint[] { 0, 1, 0x80000000, 0xFFFFFFFF, 4, 0x7FFFFFFF });
+    var info = new OpenRgbClient.DeviceInfo(0, 5, "Fake", "V", "", "", "", "loc", new[] { zone }, 6, new uint[6]);
+    OpenRgbDevice? dev = null;
+    bool threw = false;
+    try { dev = new OpenRgbDevice(null!, info); } catch (Exception) { threw = true; }
+    Check(!threw && dev != null, "OpenRgbDevice ctor survives out-of-range matrix cells (SetCustomMode NRE is caught)");
+    if (dev != null)
+    {
+        Equal(6, dev.LedPositions!.Count, "positions sized to the LED count");
+        Check(dev.LedPositions[0] == new LedPos(0, 0) && dev.LedPositions[1] == new LedPos(0.5f, 0) && dev.LedPositions[4] == new LedPos(0.5f, 1),
+            "in-range matrix cells are positioned");
+        Check(dev.LedPositions[2] == default && dev.LedPositions[3] == default && dev.LedPositions[5] == default,
+            "sentinel / negative-as-uint cells are skipped");
+        Equal(1.5f, dev.PreviewAspect, "aspect from the first matrix zone");
+        Equal("Fake (OpenRGB)", dev.Name, "bridged name suffix");
+        Equal(6, dev.Zones[0].Count, "zone count preserved");
+    }
+    var neg = new OpenRgbClient.DeviceInfo(1, 4, "Neg", "", "", "", "", "",
+        new[] { new OpenRgbClient.ZoneInfo("Z", 1, -5, 0, 0, null), new OpenRgbClient.ZoneInfo("Y", 1, 3, 0, 0, null) }, 3, new uint[3]);
+    threw = false;
+    try { dev = new OpenRgbDevice(null!, neg); } catch (Exception) { threw = true; }
+    Check(!threw && dev != null && dev.Zones[0].Count == 0 && dev.Zones[1].Offset == 0 && dev.Zones[1].Count == 3,
+        "negative server LedCount clamps to 0 and does not poison the next zone's offset");
+    Check(dev != null && dev.LedPositions!.Count == 3 && dev.LedPositions[2] == new LedPos(1f, 0.5f), "linear zone positions after a clamped zone");
+}
+
+/*---------------- AudioBars band bucketing at X = 1.0 (#110 #72) ----------------*/
+{
+    // No capture is required: hue depends only on X, so the checks below hold
+    // whatever the analyzer's levels are.
+    int n = 132;
+    var pos = Line(n);   // includes exactly X = 1.0f
+    var buf = new Rgb[n];
+    bool threw = false;
+    try { new AudioBars().Render(buf, pos, 1.0, 1.0, default); } catch (Exception) { threw = true; }
+    Check(!threw, "AudioBars X=1.0 buckets to the last band, not one past it");
+    Check(buf[n - 1].G == 0 && buf[n - 1].B == 0, "AudioBars rightmost LED is a pure-red hue whatever the level");
+    Check(buf[0].R == 0, "AudioBars leftmost LED carries no red (hue 230)");
+    Check(((IEffect)new AudioBars()).LiveInput && !((IEffect)new AudioBars()).Bakeable, "AudioBars: live input, not bakeable");
+    Check(((IEffect)new AudioPulse()).LiveInput && !((IEffect)new AudioPulse()).Bakeable, "AudioPulse: live input, not bakeable");
+}
+
+/*---------------- Reactive effects: flags, empty render, speed sign (#73 #71 #70 #72) ----------------*/
+{
+    IEffect kf = new KeyFade(), kr = new KeyRipple();
+    Check(!kf.Bakeable && kf.LiveInput, "KeyFade: not bakeable, live input");
+    Check(!kr.Bakeable && kr.LiveInput, "KeyRipple: not bakeable, live input");
+    var pat = new PatternEffect { Motion = PatternMotion.AudioPulse };
+    Check(((IEffect)pat).LiveInput && !pat.Bakeable, "PatternEffect audio motion is live and not bakeable");
+    pat.Motion = PatternMotion.AudioLevel;
+    Check(((IEffect)pat).LiveInput, "PatternEffect AudioLevel is live");
+    pat.Motion = PatternMotion.Rotate;
+    Check(!((IEffect)pat).LiveInput && pat.Bakeable, "PatternEffect rotate is not live and bakeable");
+    Check(!((IEffect)new RainbowWave()).LiveInput && ((IEffect)new RainbowWave()).Bakeable, "IEffect.LiveInput defaults to false");
+    Check(!((IEffect)new TempGlow()).Bakeable && !((IEffect)new ChromaSync()).Bakeable, "sensor/feed effects stay non-bakeable");
+
+    // Unmapped device, no key events: ripple is black, fade is the resting
+    // glow, and the sign of speed changes nothing (Reverse encodes as -speed).
+    int n = 4096;
+    var pos = Line(n);
+    var a = new Rgb[n]; var b = new Rgb[n];
+    var red = new Rgb(255, 0, 0);
+    kr.Render(a, pos, 1.0, 2.0, red);
+    Check(a.All(c => c == default), "KeyRipple with no presses renders black");
+    kr.Render(b, pos, 1.0, -2.0, red);
+    Check(a.AsSpan().SequenceEqual(b), "KeyRipple frame is identical at speed +2 and -2");
+    kf.Render(a, pos, 1.0, 2.0, red);
+    Check(a.All(c => c == ColorUtil.Scale(red, 0.06)), "KeyFade with no presses renders the 6% resting glow");
+    kf.Render(b, pos, 1.0, -2.0, red);
+    Check(a.AsSpan().SequenceEqual(b), "KeyFade frame is identical at speed +2 and -2");
+    var sw = Stopwatch.StartNew();
+    for (int i = 0; i < 1000; i++) kr.Render(a, pos, 1.0 + i * 0.001, 1.0, red);
+    Check(sw.ElapsedMilliseconds < 2000, $"KeyRipple 1000 empty frames on 4096 LEDs stay cheap ({sw.ElapsedMilliseconds} ms)");
+}
+
+/*---------------- Step-clock wrap (#68) ----------------*/
+{
+    Equal(123456, Fx.Step(123456.7), "Fx.Step truncates");
+    Equal(0, Fx.Step(Fx.StepWrap), "Fx.Step wraps to 0 at StepWrap");
+    Equal(3, Fx.Step(Fx.StepWrap * 7 + 3.9), "Fx.Step wraps a multi-million value");
+    Check(Fx.Step(2.2e9 * 1.8) >= 0 && Fx.Step(2.2e9 * 1.8) < 1_000_000, "Fx.Step stays in range past int.MaxValue");
+    Check(Math.Abs(Fx.Frac((3.5e9 + 0.25) % Fx.StepWrap) - Fx.Frac(3.5e9 + 0.25)) < 1e-9, "Frac is unchanged by the integer wrap");
+    // Every step-clock effect must still animate at t = 2.2e9 (an (int) cast of
+    // the raw product saturated there and froze the pattern).
+    var pos = Grid(8, 8);
+    var red = new Rgb(255, 0, 0);
+    foreach (IEffect fx in new IEffect[] { new Disco(), new Electric(), new Starfield(), new CandyBox(), new ColorfulMeteor(), new ColorCycle() })
+    {
+        var a = new Rgb[64]; var b = new Rgb[64];
+        fx.Render(a, pos, 2.2e9, 1.0, red);
+        fx.Render(b, pos, 2.2e9 + 1.0, 1.0, red);
+        Check(!a.AsSpan().SequenceEqual(b), $"{fx.Name} still animates at t = 2.2e9");
+    }
+}
+
+/*---------------- Baked loops close on their period (#67) ----------------*/
+{
+    var pos = Grid(8, 8);
+    var bc = new Rgb(200, 90, 30);
+    foreach (IEffect fx in new IEffect[] { new StackOutline(), new Waterfall(), new Orbit(), new TideFx(), new Police(), new Fire() })
+        foreach (double speed in new[] { 1.0, 2.5 })
+        {
+            double loop = fx.LoopSeconds(speed);
+            Check(loop >= 1.5 / speed - 1e-9 && loop <= 12.0 / speed + 1e-9, $"{fx.Name} LoopSeconds({speed}) = {loop:F3} inside the baker's clamp scaled by speed");
+            var a = new Rgb[64]; var b = new Rgb[64];
+            fx.Render(a, pos, 0.37, speed, bc);
+            fx.Render(b, pos, 0.37 + loop, speed, bc);
+            Check(SameWithin(a, b, 1), $"{fx.Name} frame at t0 equals frame at t0 + LoopSeconds({speed})");
+        }
+    // Baked at speed 1 these must land inside the 1.5..12 s clamp outright.
+    foreach (IEffect fx in new IEffect[] { new StackOutline(), new Waterfall(), new Orbit(), new TideFx(), new Police(), new Fire() })
+        Check(fx.LoopSeconds(1.0) >= 1.5 && fx.LoopSeconds(1.0) <= 12.0, $"{fx.Name} LoopSeconds(1) = {fx.LoopSeconds(1.0):F3} in 1.5..12");
+}
+
+/*---------------- PatternEffect gradient == PaletteFx.Sample (#143) ----------------*/
+{
+    var pal = new[] { new Rgb(255, 0, 0), new Rgb(0, 255, 0), new Rgb(0, 0, 255) };
+    int n = 32;
+    var pos = new LedPos[n];
+    for (int i = 0; i < n; i++)
+    {
+        double a = 2 * Math.PI * i / n;
+        pos[i] = new LedPos((float)(0.5 + 0.5 * Math.Cos(a)), (float)(0.5 + 0.5 * Math.Sin(a)));
+    }
+    foreach (double density in new[] { 1.0, 2.0 })
+    {
+        var pe = new PatternEffect { Color = PatternColor.Gradient, Motion = PatternMotion.Static, Palette = pal, Density = density };
+        var buf = new Rgb[n];
+        pe.Render(buf, pos, 3.3, 1.0, default);
+        bool ok = true;
+        for (int i = 0; i < n && ok; i++)
+        {
+            double u = Fx.Frac(Math.Atan2(pos[i].Y - 0.5, pos[i].X - 0.5) / (Math.PI * 2.0) + 1.0);
+            ok = buf[i] == PaletteFx.Sample(pal, Fx.Frac(u * density));
+        }
+        Check(ok, $"static ring gradient (density {density}) samples PaletteFx.Sample at the ring coordinate");
+    }
+    Equal(new Rgb(255, 255, 255), PaletteFx.Sample(Array.Empty<Rgb>(), 0.3), "PaletteFx.Sample of an empty palette is white");
+    Equal(pal[0], PaletteFx.Sample(pal, 1.0), "PaletteFx.Sample wraps u = 1 back to the first color");
+}
+
+/*---------------- EffectEngine: ChannelsFor / replace / stop (#75 #74 #123) ----------------*/
+{
+    var engine = new EffectEngine();
+    var d1 = new FakeDevice { Name = "D1", LedCount = 4 };
+    var d2 = new FakeDevice { Name = "D2", LedCount = 4 };
+    var d3 = new FakeDevice { Name = "D3", LedCount = 4 };
+    var fx = new CountingEffect();
+    var red = new Rgb(255, 0, 0);
+    var c1 = engine.Start(d1, 0, 2, new Rgb[4], fx, 1, red);
+    var c2 = engine.Start(d2, 0, 4, new Rgb[4], fx, 1, red);
+    var c3 = engine.Start(d1, 2, 2, new Rgb[4], fx, 1, red);
+    var list = engine.ChannelsFor(d1);
+    Check(list.Count == 2 && ReferenceEquals(list[0], c1) && ReferenceEquals(list[1], c3), "ChannelsFor returns the device's channels in insertion order");
+    Equal(0, engine.ChannelsFor(d3).Count, "ChannelsFor on a device with no channels is empty");
+    Check(ReferenceEquals(engine.FindExact(d1, 2, 2), c3) && engine.FindExact(d1, 0, 4) == null, "FindExact matches the exact range only");
+    var c4 = engine.Start(d1, 1, 2, new Rgb[4], fx, 1, red);   // overlaps both d1 channels
+    Check(!c1.IsRunning && !c3.IsRunning && c4.IsRunning, "Start stops every overlapping channel");
+    Check(engine.ChannelsFor(d1).Count == 1 && ReferenceEquals(engine.ChannelsFor(d1)[0], c4), "replaced channels leave the list");
+    Check(c2.IsRunning && engine.ChannelsFor(d2).Count == 1, "another device's channel is untouched");
+    engine.StopAll();
+    Check(!c2.IsRunning && !c4.IsRunning && engine.ChannelsFor(d1).Count == 0 && engine.ChannelsFor(d2).Count == 0, "StopAll clears every channel");
+
+    // A worker whose device write outlasts the 300 ms join must never START a
+    // write after StopRange returned (pre-write Running re-check).
+    var slow = new FakeDevice { Name = "Slow", LedCount = 2, WriteDelayMs = 400 };
+    engine.Start(slow, 0, 2, new Rgb[2], fx, 1, red);
+    Check(WaitUntil(() => slow.WriteCount > 0, 2000), "slow device receives its first frame");
+    Thread.Sleep(30);
+    engine.StopRange(slow, 0, 2);
+    long stopped = Stopwatch.GetTimestamp();
+    Thread.Sleep(600);
+    Check(slow.Writes.All(w => w.Start <= stopped), "no engine write starts after StopRange returned");
+    Equal(0, engine.ChannelsFor(slow).Count, "StopRange removed the channel");
+}
+
+/*---------------- EffectEngine: InvalidateBase re-snapshots the live static frame (#69) ----------------*/
+{
+    var engine = new EffectEngine();
+    var dev = new FakeDevice { Name = "Base", LedCount = 2 };
+    var frame = new Rgb[2];
+    var fx = new CountingEffect();
+    var red = new Rgb(255, 0, 0); var blue = new Rgb(0, 0, 255);
+    engine.Start(dev, 0, 1, frame, fx, 1, red);
+    Check(WaitUntil(() => dev.WriteCount > 0, 2000), "first composed frame lands");
+    var first = dev.Last;
+    Check(first != null && first[0] == red && first[1] == default, "channel slice over the (black) static base");
+    frame[1] = blue;                     // edit the LIVE static frame (a static pick on the sibling zone)
+    engine.InvalidateBase(dev);
+    Check(WaitUntil(() => dev.Last is { } l && l[1] == blue && l[0] == red, 2500), "InvalidateBase re-copies the base within the 1 s keepalive");
+    engine.StopAll();
+}
+
+/*---------------- EffectEngine: LiveInput bypasses the idle throttle (#72) ----------------*/
+{
+    var engine = new EffectEngine();
+    var live = new CountingEffect { Live = true };
+    var idle = new CountingEffect { Live = false };
+    var d1 = new FakeDevice { Name = "Live", LedCount = 2 };
+    var d2 = new FakeDevice { Name = "Idle", LedCount = 2 };
+    engine.Start(d1, 0, 2, new Rgb[2], live, 1, new Rgb(1, 2, 3));
+    engine.Start(d2, 0, 2, new Rgb[2], idle, 1, new Rgb(1, 2, 3));
+    Thread.Sleep(2000);
+    engine.StopAll();
+    int l = live.Renders, i = idle.Renders;
+    Check(l >= 55, $"LiveInput effect keeps rendering at full rate while static ({l} renders in 2 s)");
+    Check(i <= 55, $"non-live static effect drops to the 10 fps check loop ({i} renders in 2 s)");
+    Check(l > i, $"live renders ({l}) exceed throttled renders ({i})");
+}
+
+/*---------------- ChromaFeed keyboard / ChromaLink slots + Touch (#54) ----------------*/
+{
+    var kb = new[] { new Rgb(7, 7, 7) };
+    var cl = new[] { new Rgb(10, 20, 30), new Rgb(11, 21, 31), new Rgb(12, 22, 32), new Rgb(13, 23, 33), new Rgb(14, 24, 34) };
+    ChromaFeed.PushGrid(kb, 1, 1);
+    ChromaFeed.PushGrid(cl, 1, 5, type: 2);
+    Equal(kb[0], ChromaFeed.Sample(0.05f, 0.5f), "a fresh keyboard grid wins over a ChromaLink push");
+    Thread.Sleep(1100);                                  // keyboard stamp goes stale
+    ChromaFeed.PushGrid(cl, 1, 5, type: 2);
+    Equal(cl[0], ChromaFeed.Sample(0.05f, 0.5f), "stale keyboard yields to the ChromaLink grid (left)");
+    Equal(cl[4], ChromaFeed.Sample(0.95f, 0.5f), "ChromaLink 1x5 samples across X (right)");
+    Equal(cl[2], ChromaFeed.Sample(0.5f, 0.9f), "ChromaLink 1x5 ignores Y");
+    ChromaFeed.Touch();
+    Check(ChromaFeed.Active && ChromaFeed.Sample(0.05f, 0.5f) == cl[0], "Touch keeps the feed active without touching a grid");
+    ChromaFeed.PushGrid(new[] { new Rgb(9, 9, 9) }, 1, 1);
+    Equal(new Rgb(9, 9, 9), ChromaFeed.Sample(0.05f, 0.5f), "a new keyboard frame takes over again");
+    ChromaFeed.PushGrid(new[] { new Rgb(1, 1, 1) }, 2, 3, type: 2);   // undersized: rejected
+    Equal(new Rgb(9, 9, 9), ChromaFeed.Sample(0.05f, 0.5f), "undersized ChromaLink grid is rejected");
+}
+
+/*---------------- LogBudget + REST title sanitising (#135) ----------------*/
+{
+    var b = new LogBudget(5);
+    int allowed = 0;
+    for (int i = 0; i < 10; i++) if (b.Allow()) allowed++;
+    Equal(5, allowed, "LogBudget(5) allows exactly 5 in a minute");
+    Check(!b.Allow(), "LogBudget refuses after the budget");
+    Check(new LogBudget(1).Allow(), "a fresh budget allows its first line");
+
+    byte[] body = Encoding.UTF8.GetBytes("{\"title\":\"a\\n09-02 12:00:00 ERR forged\\ttab\\r\"}");
+    string t = ChromaRestServer.AppTitle(body, body.Length);
+    Check(!t.Contains('\n') && !t.Contains('\r') && !t.Contains('\t') && t.StartsWith("a 09-02"), $"AppTitle strips control characters ('{t}')");
+    byte[] longBody = Encoding.UTF8.GetBytes("{\"title\":\"" + new string('x', 200) + "\"}");
+    Equal(64, ChromaRestServer.AppTitle(longBody, longBody.Length).Length, "AppTitle caps at 64 chars");
+    Equal("?", ChromaRestServer.AppTitle(null, 0), "AppTitle null body -> ?");
+    Equal("?", ChromaRestServer.AppTitle(Encoding.UTF8.GetBytes("{garbage"), 8), "AppTitle malformed json -> ?");
+    Equal("?", ChromaRestServer.AppTitle(Encoding.UTF8.GetBytes("{\"title\":\"\"}"), 12), "AppTitle empty title -> ?");
+    Equal("?", ChromaRestServer.AppTitle(Encoding.UTF8.GetBytes("{\"other\":1}"), 11), "AppTitle missing title -> ?");
+    byte[] padded = Encoding.UTF8.GetBytes("{\"title\":\"ok\"}XXXXXXXX");
+    Equal("ok", ChromaRestServer.AppTitle(padded, 14), "AppTitle parses only the first len bytes");
+}
+
+/*---------------- UpdateClient.SizeOf tolerant parse (#23) ----------------*/
+{
+    long S(string json) { using var d = JsonDocument.Parse(json); return UpdateClient.SizeOf(d.RootElement); }
+    Equal(123L, S("{\"size\":123}"), "SizeOf integral number");
+    Equal(5_000_000_000L, S("{\"size\":5000000000}"), "SizeOf 64-bit number");
+    Equal(0L, S("{\"size\":\"123\"}"), "SizeOf string -> 0");
+    Equal(0L, S("{\"size\":null}"), "SizeOf null -> 0");
+    Equal(0L, S("{\"size\":1.5}"), "SizeOf non-integral -> 0");
+    Equal(0L, S("{}"), "SizeOf missing -> 0");
+    Equal(0L, S("{\"size\":true}"), "SizeOf bool -> 0");
+}
+
+/*---------------- GigabyteIt5711.NormalizeOrder (#31) ----------------*/
+{
+    Equal("RGB", GigabyteIt5711.NormalizeOrder(" rgb ", 1), "NormalizeOrder trims and upper-cases");
+    Equal("BGR", GigabyteIt5711.NormalizeOrder("Bgr", 2), "NormalizeOrder mixed case");
+    Equal("GBR", GigabyteIt5711.NormalizeOrder("GBR", 3), "NormalizeOrder known order passes through");
+    Equal("GRB", GigabyteIt5711.NormalizeOrder(null, 4), "NormalizeOrder null -> GRB");
+    Equal("GRB", GigabyteIt5711.NormalizeOrder("", 1), "NormalizeOrder empty -> GRB");
+    Equal("GRB", GigabyteIt5711.NormalizeOrder("xyz", 1), "NormalizeOrder unknown -> GRB (warned)");
+    Equal("GRB", GigabyteIt5711.NormalizeOrder("RGBW", 1), "NormalizeOrder four-channel string -> GRB");
+}
+
+/*---------------- MemoryTrimmer handle hygiene (#22) ----------------*/
+{
+    using var me = Process.GetCurrentProcess();
+    me.Refresh();
+    int before = me.HandleCount;
+    for (int i = 0; i < 10; i++) MemoryTrimmer.Trim();
+    me.Refresh();
+    int after = me.HandleCount;
+    Check(after - before < 10, $"Trim x10 leaks no process handles ({before} -> {after})");
+    try
+    {
+        string? lastMem = null;
+        using (var fs = new FileStream(Log.FilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        using (var rd = new StreamReader(fs))
+            for (string? line; (line = rd.ReadLine()) != null;)
+                if (line.Contains("[memory]")) lastMem = line;
+        Check(lastMem != null && lastMem.Contains("working set trimmed"), $"last [memory] log line reports success ({lastMem})");
+    }
+    catch (Exception ex) { Console.WriteLine($"  (skip) log tail unreadable: {ex.Message}"); }
+}
+
+/*---------------- DiagnosticReport.Ps stdout/stderr merge (#24) ----------------*/
+{
+    Equal("ok", DiagnosticReport.Ps("'ok'"), "Ps plain output");
+    string r = DiagnosticReport.Ps("'ok'; Write-Error 'boom'");
+    Check(r.StartsWith("ok") && r.Contains("(errors:") && r.Contains("boom"), $"Ps keeps partial stdout and appends stderr ({r.Replace("\r\n", " / ")})");
+    Check(!r.Contains("(errors: \r") && !r.Contains("(errors: \n"), "Ps collapses stderr line breaks");
+}
+
+/*---------------- OpenRgbDetectorConfig (#145) ----------------*/
+{
+    string dir = TempDir();
+    try
+    {
+        string file = Path.Combine(dir, "OpenRGB.json");
+        File.WriteAllText(file, "{\"Detectors\":{\"detectors\":{\"A\":true,\"B\":false,\"C\":true}}}");
+        Check(OpenRgbDetectorConfig.Enabled(dir).SequenceEqual(new[] { "A", "C" }), "Enabled lists the true detectors");
+        Check(OpenRgbDetectorConfig.Edit(dir, d => OpenRgbDetectorConfig.Set(d, new[] { "A" }, false)), "Edit writes when Set changed a value");
+        Check(OpenRgbDetectorConfig.Enabled(dir).SequenceEqual(new[] { "C" }), "the edit landed on disk");
+        Check(!OpenRgbDetectorConfig.Edit(dir, d => OpenRgbDetectorConfig.Set(d, new[] { "A" }, false)), "Edit is a no-op when nothing changes");
+        Check(!File.Exists(file + ".tmp"), "detector edit leaves no .tmp");
+        Check(OpenRgbDetectorConfig.Edit(dir, d => OpenRgbDetectorConfig.Set(d, new[] { "A", "Z" }, true)), "Set adds an unknown name");
+        Check(OpenRgbDetectorConfig.Enabled(dir).SequenceEqual(new[] { "A", "C", "Z" }), "new detector entries persist");
+        Check(File.ReadAllText(file).Contains("\"B\": false"), "untouched entries survive the rewrite (indented)");
+
+        string missing = Path.Combine(dir, "fresh");
+        Directory.CreateDirectory(missing);
+        Check(!OpenRgbDetectorConfig.Edit(missing, d => OpenRgbDetectorConfig.Set(d, new[] { "X" }, false)) && !File.Exists(Path.Combine(missing, "OpenRGB.json")),
+            "Edit on a missing file without createIfMissing writes nothing");
+        Check(OpenRgbDetectorConfig.Edit(missing, d => OpenRgbDetectorConfig.Set(d, new[] { "X" }, false), createIfMissing: true)
+              && File.Exists(Path.Combine(missing, "OpenRGB.json")), "createIfMissing builds the skeleton");
+        Check(OpenRgbDetectorConfig.Enabled(missing).Count == 0 && File.ReadAllText(Path.Combine(missing, "OpenRGB.json")).Contains("\"X\": false"),
+            "skeleton carries the disabled entry");
+        Equal(0, OpenRgbDetectorConfig.Enabled(Path.Combine(dir, "nowhere")).Count, "Enabled on a missing file is empty");
+
+        File.WriteAllText(file, "{\"Detectors\":{}}");
+        Check(OpenRgbDetectorConfig.Enabled(dir).Count == 0, "Enabled on a missing section is empty");
+        Check(!OpenRgbDetectorConfig.Edit(dir, d => true), "Edit on a missing section without createIfMissing is a no-op");
+        File.WriteAllText(file, "{not json");
+        Check(OpenRgbDetectorConfig.Enabled(dir).Count == 0, "Enabled on malformed json is empty, not a throw");
+        bool threw = false;
+        try { OpenRgbDetectorConfig.Edit(dir, d => true); } catch (Exception) { threw = true; }
+        Check(threw, "Edit on malformed json throws (callers own the log line)");
+    }
+    finally { try { Directory.Delete(dir, recursive: true); } catch { } }
+}
+
+/*---------------- ColorUtil HSV round-trip lattice (#142) ----------------*/
+{
+    bool ok = true;
+    int worst = 0;
+    for (int r = 0; r < 256 && ok; r += 15)
+        for (int g = 0; g < 256 && ok; g += 15)
+            for (int b = 0; b < 256 && ok; b += 15)
+            {
+                var c = new Rgb((byte)r, (byte)g, (byte)b);
+                var (h, s, v) = ColorUtil.RgbToHsv(c);
+                var back = ColorUtil.HsvToRgb(h, s, v);
+                int d = Math.Max(Math.Abs(back.R - c.R), Math.Max(Math.Abs(back.G - c.G), Math.Abs(back.B - c.B)));
+                worst = Math.Max(worst, d);
+                if (d > 1) ok = false;
+            }
+    Check(ok, $"RgbToHsv/HsvToRgb round-trips within 1 per channel on the 18^3 lattice (worst {worst})");
+    Check(ColorUtil.RgbToHsv(new Rgb(0, 0, 0)) == (0, 0, 0), "black -> (0,0,0)");
+    Check(ColorUtil.RgbToHsv(new Rgb(0, 0, 255)).H == 240, "blue hue is 240");
+}
+
+/*---------------- Self-update swap script: redirect-before-echo (#163) ----------------*/
+{
+    string dir = TempDir();
+    try
+    {
+        // `>"file" echo ok %n%` is the form the swap .bat must use: with a
+        // single-digit n the old `echo ok %n%>"file"` expands to
+        // `echo ok 2>"file"` - a STDERR redirect - and the result file stays
+        // empty (cmd only reads a lone digit before `>` as a handle).
+        File.WriteAllText(Path.Combine(dir, "r.bat"),
+            "@echo off\r\nset n=12\r\n>\"%~dp0r.txt\" echo ok %n%\r\nset n=2\r\n>\"%~dp0r3.txt\" echo ok %n%\r\necho ok %n%>\"%~dp0r2.txt\"\r\n");
+        var psi = new ProcessStartInfo("cmd.exe", $"/c \"{Path.Combine(dir, "r.bat")}\"")
+        { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+        using var p = Process.Start(psi)!;
+        var so = p.StandardOutput.ReadToEndAsync(); var se = p.StandardError.ReadToEndAsync();
+        Check(p.WaitForExit(10000), "swap-script probe finishes");
+        Equal("ok 12", File.ReadAllText(Path.Combine(dir, "r.txt")).Trim(), "redirect-first form writes a two-digit result");
+        Equal("ok 2", File.ReadAllText(Path.Combine(dir, "r3.txt")).Trim(), "redirect-first form writes a single-digit result");
+        Check(File.Exists(Path.Combine(dir, "r2.txt")) && File.ReadAllText(Path.Combine(dir, "r2.txt")).Trim().Length == 0,
+            "control: echo-first form loses a single-digit result to a stderr redirect");
+    }
+    finally { try { Directory.Delete(dir, recursive: true); } catch { } }
+}
+
+/*---------------- Repo-file invariants: app.manifest + chroma shims (#100 #8 #13) ----------------*/
+{
+    string? repo = null;
+    for (var d = new DirectoryInfo(AppContext.BaseDirectory); d != null && repo == null; d = d.Parent)
+        if (File.Exists(Path.Combine(d.FullName, "src", "UnifiedRgb.App", "app.manifest"))) repo = d.FullName;
+    if (repo == null) Console.WriteLine("  (skip) repo root not found from the test binary");
+    else
+    {
+        // #100: SupportService's elevation relaunch was deleted because the app
+        // always runs elevated - the manifest must keep saying so.
+        var man = XDocument.Load(Path.Combine(repo, "src", "UnifiedRgb.App", "app.manifest"));
+        var level = man.Descendants().FirstOrDefault(e => e.Name.LocalName == "requestedExecutionLevel")?.Attribute("level")?.Value;
+        Equal("requireAdministrator", level, "app.manifest requests administrator (IsAdmin() is always true in-app)");
+
+        string shim32 = Path.Combine(repo, "native", "chroma-shim", "RzChromaSDK.dll");
+        string shim64 = Path.Combine(repo, "native", "chroma-shim", "RzChromaSDK64.dll");
+        static bool HasWide(byte[] bytes, string s)
+            => Encoding.Unicode.GetString(bytes).Contains(s) || Encoding.Unicode.GetString(bytes, 1, bytes.Length - 1).Contains(s);
+        if (File.Exists(shim32))
+        {
+            var b = File.ReadAllBytes(shim32);
+            Check(HasWide(b, "RzChromaSDK_real.dll") && !HasWide(b, "RzChromaSDK64_real.dll"), "32-bit shim loads only the 32-bit backup name");
+            var vi = FileVersionInfo.GetVersionInfo(shim32);
+            Equal("RzChromaSDK.dll", vi.OriginalFilename, "32-bit shim OriginalFilename");
+            Equal("UnifiedRGB Chroma Shim", vi.ProductName, "32-bit shim ProductName (IsOurs pin)");
+        }
+        if (File.Exists(shim64))
+        {
+            var b = File.ReadAllBytes(shim64);
+            Check(HasWide(b, "RzChromaSDK64_real.dll") && !HasWide(b, "RzChromaSDK_real.dll"), "64-bit shim loads only the 64-bit backup name");
+            var vi = FileVersionInfo.GetVersionInfo(shim64);
+            Equal("RzChromaSDK64.dll", vi.OriginalFilename, "64-bit shim OriginalFilename");
+            Equal("UnifiedRGB Chroma Shim", vi.ProductName, "64-bit shim ProductName (IsOurs pin)");
+        }
+    }
+}
+
 Console.WriteLine($"{passed} passed, {failed} failed");
 return failed;
+
+/*---------------- test doubles (must follow the top-level statements) ----------------*/
+
+/// <summary>Non-zone device that records every full-frame write with its
+/// start timestamp; WriteDelayMs simulates a slow HID/USB write.</summary>
+sealed class FakeDevice : IRgbDevice
+{
+    public string Name { get; init; } = "Fake";
+    public string Vendor => "Test";
+    public DeviceType Type => DeviceType.Other;
+    public int LedCount { get; init; } = 2;
+    public IReadOnlyList<RgbZone> Zones => new[] { new RgbZone { Name = "All", Offset = 0, Count = LedCount } };
+    public int WriteDelayMs { get; init; }
+    public readonly List<(long Start, Rgb[] Frame)> Writes = new();
+    public int WriteCount { get { lock (Writes) return Writes.Count; } }
+    public Rgb[]? Last { get { lock (Writes) return Writes.Count == 0 ? null : Writes[^1].Frame; } }
+    public void SetColors(IReadOnlyList<Rgb> colors)
+    {
+        long start = Stopwatch.GetTimestamp();
+        if (WriteDelayMs > 0) Thread.Sleep(WriteDelayMs);
+        lock (Writes) Writes.Add((start, colors.ToArray()));
+    }
+    public void Dispose() { }
+}
+
+/// <summary>Constant-colour effect with a render counter and a settable
+/// LiveInput flag (drives the engine's idle-throttle branch).</summary>
+sealed class CountingEffect : IEffect
+{
+    public string Name => "Counting";
+    public bool UsesBaseColor => true;
+    public bool Live { get; init; }
+    public bool LiveInput => Live;
+    int _renders;
+    public int Renders => Volatile.Read(ref _renders);
+    public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb bc)
+    {
+        Interlocked.Increment(ref _renders);
+        Array.Fill(buf, bc);
+    }
+}

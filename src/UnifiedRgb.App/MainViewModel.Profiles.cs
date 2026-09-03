@@ -41,7 +41,7 @@ public sealed partial class MainViewModel
             {
                 Device = ch.Device.Name, Offset = ch.Offset, Count = ch.Count,
                 Effect = ChoiceOf(fx).Name, Speed = fx.Speed, Reverse = fx.Reverse,
-                BaseColor = ch.BaseColor.ToString().TrimStart('#'),
+                BaseColor = ch.BaseColor.ToHex(),
                 // The ripple's color source rides the pattern fields (it uses
                 // the same PatternColor enum and shares the target's palette).
                 PatternColor = isPattern ? fx.Pattern?.Color.ToString()
@@ -50,7 +50,7 @@ public sealed partial class MainViewModel
                 PatternDensity = fx.Pattern?.Density ?? 1.0,
                 PatternReverse = fx.Pattern?.Reverse ?? false,
                 PatternPalette = isPattern || isRipple || isPalette
-                    ? fx.Palette.Select(c => c.ToString().TrimStart('#')).ToArray() : null,
+                    ? fx.Palette.Select(c => c.ToHex()).ToArray() : null,
             });
         }
         return list;
@@ -64,8 +64,9 @@ public sealed partial class MainViewModel
         ["Screen Sync"] = "Wallpaper",
     };
 
-    EffectChoice? ChoiceByName(string name)
-        => Effects.FirstOrDefault(e => e.Name == name)
+    EffectChoice? ChoiceByName(string? name)
+        => string.IsNullOrEmpty(name) ? null   // "Effect": null in a hand-edited profile (TryGetValue throws on null)
+        : Effects.FirstOrDefault(e => e.Name == name)
         ?? (EffectAliases.TryGetValue(name, out var alias) ? Effects.FirstOrDefault(e => e.Name == alias) : null);
 
     /// <summary>Stop everything and start the profile's saved assignments.</summary>
@@ -74,12 +75,16 @@ public sealed partial class MainViewModel
         _engine.StopAll();
         foreach (var fx in _targetFx.Values) { fx.Channel = null; fx.Choice = Effects[0]; }
 
+        // Null-tolerant throughout: this runs from the constructor for the
+        // startup profile, and a well-formed profiles.json with a null entry
+        // ("Effects": [null], "Device": null) must not stop the app launching.
         foreach (var a in saved ?? new())
         {
+            if (a == null) continue;
             var dev = Devices.FirstOrDefault(d => d.Name == a.Device);
             var choice = ChoiceByName(a.Effect);
             if (dev == null || choice?.Effect == null) continue;
-            if (a.Offset < 0 || a.Count <= 0 || a.Offset + a.Count > dev.LedCount) continue;
+            if (a.Offset < 0 || a.Count <= 0 || (long)a.Offset + a.Count > dev.LedCount) continue;
 
             var fx = FxFor(dev, a.Offset, a.Count);
             fx.Choice = choice;
@@ -206,13 +211,13 @@ public sealed partial class MainViewModel
         _engine.StopAll();
         foreach (var d in Devices)
         {
-            if (!p.DeviceFrames.TryGetValue(d.Name, out var hex)) continue;
+            if (!p.DeviceFrames.TryGetValue(d.Name, out var hex) || hex == null) continue;   // "Device": null keeps its current colors
+            // An unparseable entry keeps that LED's current color (as before).
             var frame = FrameFor(d);
-            for (int i = 0; i < frame.Length && i < hex.Length; i++)
-            {
-                try { frame[i] = Rgb.FromHex(hex[i]); } catch { }
-            }
-            _lighting.PushFrame(d);
+            var saved = new Rgb[Math.Min(frame.Length, hex.Length)];
+            for (int i = 0; i < saved.Length; i++)
+                saved[i] = Rgb.TryFromHex(hex[i], out var c) ? c : frame[i];
+            RestoreFrame(d, saved);
         }
         ApplyCustomColors(p.CustomColors);
         RestoreEffects(p.Effects);

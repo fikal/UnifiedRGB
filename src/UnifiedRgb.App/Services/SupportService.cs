@@ -5,8 +5,8 @@ using UnifiedRgb.Core;
 namespace UnifiedRgb.App.Services;
 
 /// <summary>The support pipeline's app side: the one-button diagnostic+log
-/// bundle collection and the elevated-collect helper handoff. Extracted from
-/// the view model; the VM keeps only bindable state and thin wrappers.</summary>
+/// bundle collection. Extracted from the view model; the VM keeps only
+/// bindable state and thin wrappers.</summary>
 public sealed class SupportService
 {
     static string AppVersion => AppInfo.VersionString;
@@ -21,12 +21,9 @@ public sealed class SupportService
             string diag;
             try
             {
-                // Non-elevated app: relaunch ourselves elevated in helper mode
-                // so the report includes the SMBus/RAM scan. The UAC prompt is
-                // expected; declining falls back to a reduced in-process
-                // report (which says what was skipped).
-                diag = DiagnosticReport.IsAdmin() ? null! : TryElevatedCollect(status)!;
-                diag ??= DiagnosticReport.Collect(section =>
+                // The manifest requires administrator, so the in-process
+                // report always includes the admin-only SMBus/RAM scan.
+                diag = DiagnosticReport.Collect(section =>
                     Application.Current.Dispatcher.Invoke(() => status($"collecting: {section}...")));
             }
             catch (Exception ex) { diag = $"(diagnostic failed: {ex})"; }
@@ -90,32 +87,4 @@ public sealed class SupportService
         }
         catch (Exception ex) { Log.Warn("support", $"couldn't open issue page: {ex.Message}"); }
     }
-
-    /// <summary>Run the diagnostic in an elevated copy of this exe (UAC prompt)
-    /// so the admin-only sections are included. Null = declined/failed; the
-    /// caller falls back to the in-process non-admin report.</summary>
-    static string? TryElevatedCollect(Action<string> status)
-    {
-        string tmp = Path.Combine(Path.GetTempPath(), $"unifiedrgb-diag-{Guid.NewGuid():N}.txt");
-        try
-        {
-            Application.Current.Dispatcher.Invoke(() =>
-                status("requesting admin rights for the full hardware scan..."));
-            var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = Environment.ProcessPath!,
-                Arguments = $"--collect-diag \"{tmp}\"",
-                UseShellExecute = true,
-                Verb = "runas",
-            });
-            if (p == null) return null;
-            Application.Current.Dispatcher.Invoke(() =>
-                status("collecting hardware report (elevated, ~15s)..."));
-            if (!p.WaitForExit(120_000)) { try { p.Kill(); } catch { } return null; }
-            return File.Exists(tmp) ? File.ReadAllText(tmp) : null;
-        }
-        catch { return null; }               // UAC declined (Win32Exception) etc.
-        finally { try { File.Delete(tmp); } catch { } }
-    }
-
 }

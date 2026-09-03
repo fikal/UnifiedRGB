@@ -17,7 +17,7 @@
                        Text="When a listed program is focused, its profile applies. Switch away and your lighting comes back. If more than one rule matches, the top one wins. Drag rows to reorder."/>
 
             <!-- Existing rules -->
-            <ItemsControl x:Name="RulesList" ItemsSource="{Binding AutoRules}">
+            <ItemsControl ItemsSource="{Binding AutoRules}">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
                         <Border Background="#FF262932" CornerRadius="8" Padding="8,8,12,8" Margin="0,0,0,6"
@@ -67,7 +67,7 @@
                 <ComboBox x:Name="ProfilePick" Width="150"
                           ItemsSource="{Binding ProfileNames}"
                           ToolTip="Profile to apply while that program is focused"/>
-                <Button x:Name="AddBtn" Content="Add rule" Style="{StaticResource Accent}" Padding="14,4"
+                <Button Content="Add rule" Style="{StaticResource Accent}" Padding="14,4"
                         Margin="10,0,0,0" Click="AddRule_Click"/>
             </StackPanel>
             <TextBlock x:Name="AddHint" Opacity="0.5" FontSize="11" Margin="2,8,0,0"

@@ -2,7 +2,6 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Media.Effects;
 using UnifiedRgb.Core;
 
 namespace UnifiedRgb.App;
@@ -15,16 +14,15 @@ public sealed class HeaderConfigDialog
 {
     static readonly string[] Orders = { "GRB", "RGB", "BGR", "RBG", "GBR", "BRG" };
 
+    /// <summary>Builds the dialog on the shared Dialogs shell and shows it
+    /// modally over a blurred owner.</summary>
     public static void Show(Window owner, MainViewModel vm)
     {
         var cfg = HardwareConfig.Load();
-        var win = new Window
-        {
-            Owner = owner, WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            WindowStyle = WindowStyle.None, AllowsTransparency = true, Background = Brushes.Transparent,
-            ResizeMode = ResizeMode.NoResize, SizeToContent = SizeToContent.WidthAndHeight,
-            ShowInTaskbar = false,
-        };
+        Window win = null!;
+        (win, var body) = Dialogs.MakeDialog(owner, onEscape: () => win.Close());
+        win.Topmost = false;   // an owned config dialog; only the close prompts float
+        body.MinWidth = 470;
 
         var fgMain = new SolidColorBrush(Color.FromRgb(0xE6, 0xE6, 0xE6));
         var fgDim = new SolidColorBrush(Color.FromRgb(0xA8, 0xAC, 0xB8));
@@ -56,7 +54,9 @@ public sealed class HeaderConfigDialog
             leds.Margin = new Thickness(8, 0, 0, 0);
             var order = new ComboBox
             {
-                ItemsSource = Orders, SelectedItem = existing?.ColorOrder is string o && Orders.Contains(o) ? o : "GRB",
+                // Case-insensitive like the device's NormalizeOrder: a hand-edited
+                // "rgb" must pre-select RGB, or Save would silently rewrite it to GRB.
+                ItemsSource = Orders, SelectedItem = existing?.ColorOrder?.Trim().ToUpperInvariant() is string o && Orders.Contains(o) ? o : "GRB",
                 Width = 68, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
             };
 
@@ -79,22 +79,9 @@ public sealed class HeaderConfigDialog
             rows.Add((on, name, leds, order));
         }
 
-        UIElement Btn(string text, bool accent, Action onClick)
-        {
-            var normal = accent ? Color.FromRgb(0x4C, 0x6F, 0xFF) : Color.FromRgb(0x3A, 0x3D, 0x48);
-            var b = new Border
-            {
-                Background = new SolidColorBrush(normal), CornerRadius = new CornerRadius(7),
-                Padding = new Thickness(16, 9, 16, 9), Margin = new Thickness(8, 0, 0, 0), Cursor = Cursors.Hand,
-                Child = new TextBlock { Text = text, Foreground = Brushes.White, FontWeight = accent ? FontWeights.SemiBold : FontWeights.Normal },
-            };
-            b.PreviewMouseLeftButtonDown += (_, e2) => { e2.Handled = true; onClick(); };
-            return b;
-        }
-
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 18, 0, 0) };
-        buttons.Children.Add(Btn("Cancel", false, () => win.Close()));
-        buttons.Children.Add(Btn("Save && Rescan", true, () =>
+        buttons.Children.Add(Dialogs.Btn("Cancel", false, () => win.Close()));
+        buttons.Children.Add(Dialogs.Btn("Save && Rescan", true, () =>
         {
             var newCfg = new HardwareConfig { GigabyteArgbHeaders = new() };
             for (int i = 0; i < rows.Count; i++)
@@ -113,7 +100,6 @@ public sealed class HeaderConfigDialog
             win.Close();
         }));
 
-        var body = new StackPanel { MinWidth = 470 };
         body.Children.Add(new TextBlock { Text = "ARGB Headers", FontSize = 17, FontWeight = FontWeights.SemiBold, Foreground = fgMain });
         body.Children.Add(new TextBlock
         {
@@ -129,18 +115,10 @@ public sealed class HeaderConfigDialog
         body.Children.Add(grid);
         body.Children.Add(buttons);
 
-        win.Content = new Border
-        {
-            Background = new SolidColorBrush(Color.FromRgb(0x1E, 0x20, 0x27)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0x2E, 0x31, 0x40)),
-            BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(12),
-            Padding = new Thickness(24, 20, 24, 20), Margin = new Thickness(16),
-            Effect = new DropShadowEffect { BlurRadius = 24, ShadowDepth = 4, Opacity = 0.55, Color = Colors.Black },
-            Child = body,
-        };
-
-        win.MouseLeftButtonDown += (_, _) => { try { win.DragMove(); } catch { } };
-        win.KeyDown += (_, e) => { if (e.Key == Key.Escape) win.Close(); };
-        win.ShowDialog();
+        // Every close path (Cancel, the X button, Save before its Rescan)
+        // repaints the header from the static frame: with no effect channel
+        // covering it nothing else would, and the Test's white ring stayed up.
+        win.Closed += (_, _) => vm.EndHeaderTest();
+        Dialogs.ShowBlurred(owner, win);
     }
 }

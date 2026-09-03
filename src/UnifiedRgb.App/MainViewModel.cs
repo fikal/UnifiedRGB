@@ -114,6 +114,46 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
 
     EffectChoice ChoiceOf(TargetFx fx) => fx.Choice ?? Effects[0];
 
+    /// <summary>Every per-range state the current selection stands for: one
+    /// TargetFx per fan under "All fans + part" (fan 0's IS CurrentFx()), else
+    /// just CurrentFx(). Setters write the whole set; getters read fan 0.</summary>
+    IEnumerable<TargetFx> CurrentFxSet()
+    {
+        if (LianFanOut && SelectedDevice is { } dev)
+            foreach (var (off, cnt) in LianApplyRanges()) yield return FxFor(dev, off, cnt);
+        else
+            yield return CurrentFx();
+    }
+
+    /// <summary>Carry speed, direction, the pattern settings (pattern effects)
+    /// and the palette (palette-driven effects) from one target's state to
+    /// another - All devices and the fan-out share it. Self-copy is a no-op:
+    /// Clear()-then-copy from the SAME collection used to wipe the source.</summary>
+    static void CopyTargetSettings(TargetFx src, TargetFx dst, EffectChoice choice)
+    {
+        if (ReferenceEquals(src, dst)) return;
+        dst.Speed = src.Speed;
+        dst.Reverse = src.Reverse;
+        if (choice.Effect is PatternEffect)
+        {
+            var srcPat = PatternOf(src);
+            var dstPat = PatternOf(dst);
+            dstPat.Color = srcPat.Color; dstPat.Motion = srcPat.Motion;
+            dstPat.Density = srcPat.Density; dstPat.Reverse = srcPat.Reverse;
+        }
+        if (choice.Effect is PatternEffect or IPaletteEffect) CopyPalette(src, dst);
+    }
+
+    /// <summary>Palette only (no speed/direction/pattern settings). Self-copy is
+    /// a no-op for the same reason as CopyTargetSettings.</summary>
+    static void CopyPalette(TargetFx src, TargetFx dst)
+    {
+        if (ReferenceEquals(src, dst)) return;
+        var pal = src.Palette.ToArray();
+        dst.Palette.Clear();
+        foreach (var c in pal) dst.Palette.Add(c);
+    }
+
     bool _pickingEffect;   // guards the pill ListBox's re-push while a pick notifies
 
     public EffectChoice? SelectedEffectChoice
@@ -388,29 +428,34 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public bool IsRipplePalette => RippleOf(CurrentFx()).Color == PatternColor.Gradient;
 
+    // The pattern setters read fan 0's instance and write EVERY range of the
+    // current selection (one per fan under "All fans + part"), so the stack
+    // stays uniform instead of only the representative fan changing.
     public PatternColor SelectedPatternColor
     {
         get => PatternOf(CurrentFx()).Color;
         set
         {
-            var pat = PatternOf(CurrentFx());
-            pat.Color = value;
-            // Switching to Solid: the wheel color becomes the pattern color
-            // right away (not whatever stale base the channel started with).
-            if (value == PatternColor.Solid && CurrentFx().Channel is { } ch) ch.BaseColor = Current;
-            // The new color source may not offer the current motion.
-            if (!PatternMotions.Contains(pat.Motion))
+            foreach (var fx in CurrentFxSet())
             {
-                pat.Motion = PatternMotion.Static;
+                PatternOf(fx).Color = value;
+                // Switching to Solid: the wheel color becomes the pattern color
+                // right away (not whatever stale base the channel started with).
+                if (value == PatternColor.Solid && fx.Channel is { } ch) ch.BaseColor = Current;
+            }
+            // The new color source may not offer the current motion.
+            if (!PatternMotions.Contains(PatternOf(CurrentFx()).Motion))
+            {
+                foreach (var fx in CurrentFxSet()) PatternOf(fx).Motion = PatternMotion.Static;
                 OnChanged(nameof(SelectedPatternMotion));
             }
             RequestLianRebake();
             MarkDirty(); OnChanged(); OnChanged(nameof(IsPaletteMode)); OnChanged(nameof(PatternMotions));
         }
     }
-    public PatternMotion SelectedPatternMotion { get => PatternOf(CurrentFx()).Motion; set { PatternOf(CurrentFx()).Motion = value; RequestLianRebake(); MarkDirty(); OnChanged(); } }
-    public bool PatternReverse { get => PatternOf(CurrentFx()).Reverse; set { PatternOf(CurrentFx()).Reverse = value; RequestLianRebake(); MarkDirty(); OnChanged(); } }
-    public double PatternDensity { get => PatternOf(CurrentFx()).Density; set { PatternOf(CurrentFx()).Density = value; RequestLianRebake(); MarkDirty(); OnChanged(); } }
+    public PatternMotion SelectedPatternMotion { get => PatternOf(CurrentFx()).Motion; set { foreach (var fx in CurrentFxSet()) PatternOf(fx).Motion = value; RequestLianRebake(); MarkDirty(); OnChanged(); } }
+    public bool PatternReverse { get => PatternOf(CurrentFx()).Reverse; set { foreach (var fx in CurrentFxSet()) PatternOf(fx).Reverse = value; RequestLianRebake(); MarkDirty(); OnChanged(); } }
+    public double PatternDensity { get => PatternOf(CurrentFx()).Density; set { foreach (var fx in CurrentFxSet()) PatternOf(fx).Density = value; RequestLianRebake(); MarkDirty(); OnChanged(); } }
     // Only Gradient uses the palette (Solid = wheel color, ScreenSync = the screen).
     public bool IsPaletteMode => PatternOf(CurrentFx()).Color == PatternColor.Gradient;
 
@@ -442,8 +487,22 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // The running effect holds a reference to this same collection, so it
         // repaints on the next frame; baked fans need an explicit rebake.
         OnChanged(nameof(HasPalette));
+        SyncFanOutPalettes();
         RequestLianRebake();
         MarkDirty();
+    }
+
+    /// <summary>The palette strip binds to fan 0's palette; under "All fans +
+    /// part" every other fan's range gets a copy after each edit so the stack
+    /// keeps one palette (each range's LivePalette re-snapshots on change).
+    /// Palette ONLY: a fan running its own speed/direction (mixed stack) must
+    /// not have its stored Speed/Reverse silently overwritten by a palette
+    /// edit while its channel keeps running the old values.</summary>
+    void SyncFanOutPalettes()
+    {
+        if (!LianFanOut) return;
+        var src = CurrentFx();
+        foreach (var fx in CurrentFxSet()) CopyPalette(src, fx);
     }
 
     /// <summary>Save the current target's palette under a name for reuse.</summary>
@@ -451,7 +510,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         name = (name ?? "").Trim();
         if (name.Length == 0) return;
-        var colors = CurrentFx().Palette.Select(c => c.ToString().TrimStart('#')).ToArray();
+        var colors = CurrentFx().Palette.Select(c => c.ToHex()).ToArray();
         if (colors.Length == 0) return;
         var list = _store.Settings.SavedPalettes ??= new();
         list.RemoveAll(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));   // overwrite same name
@@ -491,7 +550,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
 
     void PersistCustomColors()
     {
-        var hex = CustomColors.Select(c => c.ToString().TrimStart('#')).ToArray();
+        var hex = CustomColors.Select(c => c.ToHex()).ToArray();
         // Every profile apply (scene steps, app rules) routes through here; only
         // touch settings.json when the swatches actually changed.
         if (_store.Settings.CustomColors is { } cur && cur.AsSpan().SequenceEqual(hex)) return;
@@ -499,7 +558,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         _store.SaveSettings();
     }
 
-    string[] CustomColorsSnapshot() => CustomColors.Select(c => c.ToString().TrimStart('#')).ToArray();
+    string[] CustomColorsSnapshot() => CustomColors.Select(c => c.ToHex()).ToArray();
 
     void ApplyCustomColors(string[]? hex)
     {
@@ -521,21 +580,27 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     public LeftItem? SelectedLeftItem
     {
         get => _selectedLeft;
-        set
-        {
-            _selectedLeft = value; OnChanged();
-            if (value == null) return;
-            IsSettingsOpen = false;
-            if (value.IsLcd) IsLcdSelected = true;
-            else { IsLcdSelected = false; if (value.Device != null) SelectedDevice = value.Device; }
-            // Start the refresh timer only while Cooling is on screen; leaving
-            // stops it (it used to fire 40x/min for the process lifetime).
-            if (value.IsCooling) StartCoolingRefresh();
-            else Cooling.Stop();
-            OnChanged(nameof(IsDisabledSelected)); OnChanged(nameof(ShowDisabledPane));
-            OnChanged(nameof(IsCoolingSelected)); OnChanged(nameof(ShowCoolingPanel));
-            OnChanged(nameof(ShowLighting)); OnChanged(nameof(ShowLcdPanel));
-        }
+        set => SelectLeftItem(value, closeSettings: true);
+    }
+
+    /// <summary>Make a nav row the current view. A user pick closes Settings;
+    /// a rebuild (Rescan re-matching the same row) must not - toggling OpenRGB
+    /// or installing PawnIO FROM Settings used to swap the pane away from the
+    /// status text the user was waiting on.</summary>
+    void SelectLeftItem(LeftItem? value, bool closeSettings)
+    {
+        _selectedLeft = value; OnChanged(nameof(SelectedLeftItem));
+        if (value == null) return;
+        if (closeSettings) IsSettingsOpen = false;
+        if (value.IsLcd) IsLcdSelected = true;
+        else { IsLcdSelected = false; if (value.Device != null) SelectedDevice = value.Device; }
+        // Start the refresh timer only while Cooling is on screen; leaving
+        // stops it (it used to fire 40x/min for the process lifetime).
+        if (value.IsCooling) StartCoolingRefresh();
+        else Cooling.Stop();
+        OnChanged(nameof(IsDisabledSelected)); OnChanged(nameof(ShowDisabledPane));
+        OnChanged(nameof(IsCoolingSelected)); OnChanged(nameof(ShowCoolingPanel));
+        OnChanged(nameof(ShowLighting)); OnChanged(nameof(ShowLcdPanel));
     }
 
     public bool IsDisabledSelected => _selectedLeft?.IsDisabled == true;
@@ -705,6 +770,17 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         => System.Windows.Application.Current.Dispatcher.Invoke(
             () => MasterBrightness = UnifiedRgb.Core.Master.Brightness + delta);
 
+    /// <summary>Copy a saved frame over a device's stored frame (clamped to the
+    /// shorter of the two, so a changed LED count never overruns) and push it.
+    /// The one shape behind Rescan, RestoreState and LoadProfile - three pasted
+    /// copies before.</summary>
+    void RestoreFrame(IRgbDevice d, Rgb[] saved)
+    {
+        var frame = FrameFor(d);
+        Array.Copy(saved, frame, Math.Min(saved.Length, frame.Length));
+        _lighting.PushFrame(d);
+    }
+
     /// <summary>Re-push every device's current static frame (after a
     /// brightness change; animated zones get overwritten next engine frame).</summary>
     void ReapplyAllStatic()
@@ -712,10 +788,15 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         foreach (var d in Devices)
         {
             // The Lian Li handles brightness via re-baking (a direct SetColors
-            // would interrupt a playing hardware animation).
-            if (d is LianLiWireless lw && lw.SuppressStreaming) continue;
+            // would interrupt a playing hardware animation). Only trust the flag
+            // while a channel is actually running: a static "All devices" leaves
+            // it stale, and the fans then missed the first brightness change.
+            if (d is LianLiWireless { SuppressStreaming: true } && _engine.ChannelsFor(d).Count > 0) continue;
             _lighting.PushFrame(d);
         }
+        // Brightness is applied inside the bake render, not in its dedup
+        // signature - forget the last upload or the fans keep the old level.
+        _bake.ForgetSignatures();
         RequestLianRebake();
     }
 
@@ -746,7 +827,6 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         return true;
     }
 
-    /*-----------------------------------------------------*    | Automation primitives: full in-memory state capture /  |
     /*-----------------------------------------------------*\
     | Selection                                             |
     \*-----------------------------------------------------*/
@@ -905,7 +985,18 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         set
         {
             _startWithWindows = value; OnChanged();
-            _ = System.Threading.Tasks.Task.Run(() => ProfileStore.SetAutoStart(value));
+            _ = System.Threading.Tasks.Task.Run(() =>
+            {
+                if (ProfileStore.SetAutoStart(value)) return;
+                // schtasks failed / timed out / UAC declined (logged there): snap
+                // the checkbox back to the task's real state instead of leaving
+                // the optimistic tick over a task that does not exist.
+                bool on = ProfileStore.IsAutoStartEnabled();
+                Application.Current?.Dispatcher.BeginInvoke(() =>
+                {
+                    if (_startWithWindows != on) { _startWithWindows = on; OnChanged(nameof(StartWithWindows)); }
+                });
+            });
         }
     }
 
@@ -989,7 +1080,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             pawnIoMissing: () => PawnIoMissing,
             isOnScreen: () => ShowCoolingPanel);
         Lcd = new LcdDesignerViewModel(
-            isOnScreen: () => IsLcdSelected,
+            isOnScreen: () => ShowLcdPanel,   // visibility, not selection: Settings covers the pane
             lightsSuppressed: () => LightsSuppressed,
             applyProfile: ApplyProfileByName,
             profileNames: () => Profiles.Select(p => p.Name));
@@ -1001,8 +1092,8 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             _ => !string.IsNullOrWhiteSpace(ProfileName) || SelectedProfile != null);
         LoadProfileCommand   = new RelayCommand(_ => LoadProfile(SelectedProfile), _ => SelectedProfile != null);
         DeleteProfileCommand = new RelayCommand(_ => DeleteProfile(), _ => SelectedProfile != null);
-        AddPaletteColorCommand  = new RelayCommand(_ => { PatternPalette.Add(Current); OnChanged(nameof(HasPalette)); RequestLianRebake(); MarkDirty(); });
-        RemovePaletteColorCommand = new RelayCommand(o => { if (o is Rgb c && PatternPalette.Count > 1) { PatternPalette.Remove(c); OnChanged(nameof(HasPalette)); RequestLianRebake(); MarkDirty(); } });
+        AddPaletteColorCommand  = new RelayCommand(_ => { PatternPalette.Add(Current); OnChanged(nameof(HasPalette)); SyncFanOutPalettes(); RequestLianRebake(); MarkDirty(); });
+        RemovePaletteColorCommand = new RelayCommand(o => { if (o is Rgb c && PatternPalette.Count > 1) { PatternPalette.Remove(c); OnChanged(nameof(HasPalette)); SyncFanOutPalettes(); RequestLianRebake(); MarkDirty(); } });
         AddCustomColorCommand = new RelayCommand(_ => AddCustomColor(Current));
         AddCustomElementColorCommand = new RelayCommand(_ =>
             AddCustomColor(new Rgb(Lcd.SelectedElementColor.R, Lcd.SelectedElementColor.G, Lcd.SelectedElementColor.B)));
@@ -1108,7 +1199,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         if (_store.Settings.StartupProfile is string sp)
         {
             var prof = Profiles.FirstOrDefault(p => p.Name.Equals(sp, StringComparison.OrdinalIgnoreCase));
-            if (prof != null) { SelectedProfile = prof; LoadProfile(prof); }
+            if (prof != null) { SelectedProfile = prof; LoadProfile(prof); LandOnRunningLianTarget(); }
         }
         _initializing = false;
 
@@ -1134,10 +1225,12 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         UpdateColorViews(c);
         if (_selectionChanging) return;   // sync views only — never write mid-switch
 
-        var curFx = CurrentFx();
-        if (LiveChannel(curFx) is { } liveCh)
+        if (LiveChannel(CurrentFx()) != null)
         {
-            liveCh.BaseColor = c;   // tint the running effect live
+            // Tint the running effect live - on every fan of an "All fans +
+            // part" fan-out, not just the representative fan 0.
+            foreach (var fx in CurrentFxSet())
+                if (LiveChannel(fx) is { } liveCh) liveCh.BaseColor = c;
             // Lian Li fans play a BAKED animation (streaming suppressed), so a
             // live BaseColor change only moves the preview - re-bake to push the
             // new tint to the hardware.
@@ -1153,7 +1246,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         _syncing = true;
         _r = c.R; _g = c.G; _b = c.B;
-        _hex = c.ToString().TrimStart('#');
+        _hex = c.ToHex();
         _wheelColor = Color.FromRgb(c.R, c.G, c.B);
         _brightness = (int)(ColorWheel.RgbToHsv(_wheelColor).V * 255);
         var pb = new SolidColorBrush(_wheelColor); pb.Freeze();   // frozen: no per-color-change change-tracking overhead
@@ -1198,10 +1291,14 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // each fan's zone getting its own effect channel + state.
         if (LianFanOut)
         {
+            var src = CurrentFx();   // fan 0's range: the state the editor shows
             foreach (var (off, cnt) in LianApplyRanges())
             {
                 var rfx = FxFor(dev, off, cnt);
                 rfx.Choice = choice;
+                // Speed/direction/pattern/palette too, not just the mode -
+                // fans 2..N otherwise started on their own defaults.
+                CopyTargetSettings(src, rfx, choice);
                 ApplyFxRange(dev, off, cnt, rfx, choice);
             }
             return;
@@ -1265,10 +1362,6 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         var choice = ChoiceOf(srcFx);
         if (choice.Effect == null) { ApplyToAll(); return; }
 
-        var bc = Current;
-        if (choice.Effect.UsesBaseColor && bc.R < 16 && bc.G < 16 && bc.B < 16)
-            bc = new Rgb(255, 255, 255);
-
         foreach (var dev in Devices)
         {
             // Keyboard-only modes stay on keyboards.
@@ -1276,30 +1369,15 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
 
             var fx = FxFor(dev, 0, dev.LedCount);
             fx.Choice = choice;
-            fx.Speed = srcFx.Speed;
-            fx.Reverse = srcFx.Reverse;
-            if (choice.Effect is PatternEffect)
-            {
-                var srcPat = PatternOf(srcFx);
-                var dstPat = PatternOf(fx);
-                dstPat.Color = srcPat.Color; dstPat.Motion = srcPat.Motion;
-                dstPat.Density = srcPat.Density; dstPat.Reverse = srcPat.Reverse;
-            }
-            // Carry the palette for any palette-driven effect (Custom Pattern,
-            // Taichi) so All devices matches the source's colors everywhere.
-            if (choice.Effect is PatternEffect or IPaletteEffect)
-            {
-                fx.Palette.Clear();
-                foreach (var c in srcFx.Palette) fx.Palette.Add(c);
-            }
-            var effect = ResolveEffect(fx, choice);
-            fx.Channel = _engine.Start(dev, 0, dev.LedCount, FrameFor(dev), effect, SignedSpeed(fx), bc);
+            // Speed, direction, pattern settings and palette follow the source
+            // (self-copy safe: with the default "Entire device" target the
+            // source IS this device's whole-device state, and the old
+            // Clear()-then-copy wiped its palette).
+            CopyTargetSettings(srcFx, fx, choice);
+            // The ONE start path: replaced sub-targets fall back to Static, a
+            // black base swaps to white, the channel starts.
+            ApplyFxRange(dev, 0, dev.LedCount, fx, choice);
         }
-        // Sub-targets whose channels were replaced fall back to Static so
-        // their pills read correctly when revisited.
-        foreach (var other in _targetFx.Values)
-            if (other.Channel != null && !_engine.ChannelsFor(other.Channel.Device).Contains(other.Channel))
-            { other.Channel = null; other.Choice = Effects[0]; }
         // Synchronized restart: everything jumps to the top of the cycle together
         // (red for rainbow), including devices already running it, so All devices
         // reads as one coordinated start rather than a continuation.
@@ -1325,6 +1403,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             Array.Fill(FrameFor(d), Current);
             _lighting.PushFrame(d);
         }
+        RequestLianRebake();   // zero channels: clears the fans' SuppressStreaming flag
         MarkDirty();
     }
 
@@ -1351,24 +1430,34 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
 
         // Repaint statics on the fresh device instances.
         foreach (var d in Devices)
-        {
-            if (!savedFrames.TryGetValue(d.Name, out var old)) continue;
-            var frame = FrameFor(d);
-            Array.Copy(old, frame, Math.Min(old.Length, frame.Length));
-            _lighting.PushFrame(d);
-        }
+            if (savedFrames.TryGetValue(d.Name, out var old)) RestoreFrame(d, old);
 
         ApplyLianSpeed();                                      // carry the saved fan-speed calibration
         BuildLeftItems();                                      // devices + pump LCD row
         RestoreEffects(savedEffects);
+        LandOnRunningLianTarget();
         SyncWheelToSelection();
+    }
+
+    /// <summary>Rescan and launch select the device (landing on Fan 1 / whole
+    /// fan - no channel exists yet) BEFORE RestoreEffects/LoadProfile bring an
+    /// "All fans" effect back, so the pills read Static while the fans animate.
+    /// Once the channels exist, move a still-default selection to All fans.</summary>
+    void LandOnRunningLianTarget()
+    {
+        if (SelectedDevice is ILianFanDevice and IRgbDevice dev && _lianSel is { Fan: 0, Part: 0 }
+            && _engine.ChannelsFor(dev).Any(c => c.Offset == 0 && c.Count == dev.LedCount))
+            SelectLianPart(-1);
     }
 
     public void Dispose()
     {
         // Fans first: hand every controlled header back to the BIOS before
         // anything else can fail on the way down — but keep the saved profiles
-        // so the next launch re-applies them.
+        // so the next launch re-applies them. A slider value still on its
+        // debounce is dropped here (Cooling.Stop below would flush it AFTER
+        // the handback).
+        Cooling.DiscardPendingDuties();
         if (UnifiedRgb.Core.Sensors.SensorHub.AnyControlledFan)
             UnifiedRgb.Core.Sensors.SensorHub.RestoreAllFans("app exit", keepConfig: true);
         // Wireless fans: optionally follow the SYS fan header's hardware curve
@@ -1384,6 +1473,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         Safely(() => _lighting.StopAndDrain());   // the exit-restore writes must finish before the handles go
         Safely(_manager.Dispose);
         Safely(Lcd.Dispose);   // saves the design, releases the panel + the PawnIO temp reader
+        Safely(UnifiedRgb.Core.Sensors.SensorHub.Shutdown);   // closes LHM (unloads its ring0 service) + the PawnIO sensor handles
         Safely(UnifiedRgb.Core.Net.ChromaRestServer.Stop);   // release :54235 cleanly
         Safely(OpenRgbLink.Shutdown);
         Safely(OpenRgbManager.Stop);

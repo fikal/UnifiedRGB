@@ -166,7 +166,10 @@ public sealed class WasapiLoopback : IDisposable
                     // An IAudioClient initializes exactly once: activate a
                     // fresh one for the plain polling path.
                     _wakeEvent?.Dispose(); _wakeEvent = null;
-                    Marshal.ReleaseComObject(_client);
+                    // Null it before the re-activate: if that fails, Dispose runs
+                    // from Start's catch and must not touch the released RCW
+                    // (InvalidComObjectException would replace the real HRESULT).
+                    Marshal.ReleaseComObject(_client); _client = null;
                     Check(device.Activate(ref iid, ClsCtxAll, IntPtr.Zero, out var retryObj), "activate");
                     _client = (IAudioClient)retryObj;
                     Check(_client.Initialize(0, LoopbackFlag, 2_000_000, 0, fmt, IntPtr.Zero), "init");
@@ -204,8 +207,14 @@ public sealed class WasapiLoopback : IDisposable
         {
             try
             {
-                while (_running && _capture!.GetNextPacketSize(out uint packet) == 0 && packet > 0)
+                while (_running)
                 {
+                    // A failing HRESULT (AUDCLNT_E_DEVICE_INVALIDATED when the
+                    // endpoint is unplugged) must throw like every other call: a
+                    // silent loop exit here left IsAlive true, so the watchdog
+                    // kept polling a dead client for as long as the effect ran.
+                    Check(_capture!.GetNextPacketSize(out uint packet), "next packet");
+                    if (packet == 0) break;
                     Check(_capture.GetBuffer(out var data, out uint frames, out uint flags, out _, out _), "get buffer");
                     try
                     {
@@ -269,8 +278,12 @@ public sealed class WasapiLoopback : IDisposable
         _wakeEvent?.Set();                              // pop the loop out of its wait
         _thread?.Join(500);
         try { _client?.Stop(); } catch { }
-        if (_capture != null) { Marshal.ReleaseComObject(_capture); _capture = null; }
-        if (_client != null) { Marshal.ReleaseComObject(_client); _client = null; }
+        // Never throw from here: Start's catch relies on Dispose to clean up
+        // and then rethrow the ORIGINAL failure.
+        try { if (_capture != null) Marshal.ReleaseComObject(_capture); } catch { }
+        _capture = null;
+        try { if (_client != null) Marshal.ReleaseComObject(_client); } catch { }
+        _client = null;
         _wakeEvent?.Dispose(); _wakeEvent = null;
     }
 }

@@ -46,7 +46,7 @@
                         WindowChrome.IsHitTestVisibleInChrome="True">
                 <Button Style="{StaticResource CaptionButton}" Content="&#xE713;" FontSize="13"
                         Cursor="Hand" Click="Settings_Click" ToolTip="Settings"/>
-                <Button x:Name="BtnMin" Style="{StaticResource CaptionButton}"
+                <Button Style="{StaticResource CaptionButton}"
                         Content="&#xE921;" Click="Min_Click"/>
                 <Button x:Name="BtnMax" Style="{StaticResource CaptionButton}"
                         Content="&#xE922;" Click="Max_Click"/>

@@ -82,7 +82,14 @@ public sealed class LianBakeService
         // hitch. A generation stamp makes a superseded bake's upload a no-op
         // (a slower older bake can otherwise finish after a newer one).
         var baseFrame = (Rgb[])_lighting.FrameFor(dev).Clone();
+        // The statics are stored at full range and scaled at the write boundary
+        // everywhere else (PushFrame, the engine's base snapshot); the baked
+        // frames ARE the write, so scale them here too - the channel LEDs below
+        // are scaled and an unscaled base left any LED outside the effect's
+        // range at full brightness under a dimmed master.
+        Master.Scale(baseFrame);
         int myGen = _gen.AddOrUpdate(dev, 1, (_, g) => g + 1);
+        var ui = Dispatcher.CurrentDispatcher;   // Rebake runs on the UI thread (timer tick)
         // Bake from the clock's current phase so the fans' frame 0 is the same
         // point in the cycle the streamed devices are on (red right after an All-
         // devices restart). No look-ahead: on a restart we want them to START on
@@ -90,39 +97,61 @@ public sealed class LianBakeService
         double baseTime = engine.ClockSeconds;
         _ = Task.Run(() =>
         {
-            var frames = new Rgb[N][];
-            // One scratch buffer per channel, reused across all N frames (the
-            // old per-frame allocation threw away ~half the bake's memory).
-            var bufs = new Rgb[channels.Count][];
-            for (int c = 0; c < channels.Count; c++) bufs[c] = new Rgb[channels[c].Count];
-            for (int f = 0; f < N; f++)
+            try
             {
-                var frame = (Rgb[])baseFrame.Clone();
-                double time = baseTime + T * f / N;
-                for (int c = 0; c < channels.Count; c++)
+                var frames = new Rgb[N][];
+                // One scratch buffer per channel, reused across all N frames (the
+                // old per-frame allocation threw away ~half the bake's memory).
+                var bufs = new Rgb[channels.Count][];
+                for (int c = 0; c < channels.Count; c++) bufs[c] = new Rgb[channels[c].Count];
+                for (int f = 0; f < N; f++)
                 {
-                    var ch = channels[c];
-                    var buf = bufs[c];
-                    if (engine.RenderChannelAt(ch, buf, time))
+                    var frame = (Rgb[])baseFrame.Clone();
+                    double time = baseTime + T * f / N;
+                    for (int c = 0; c < channels.Count; c++)
                     {
-                        Master.Scale(buf);
-                        for (int i = 0; i < ch.Count && ch.Offset + i < frame.Length; i++)
-                            frame[ch.Offset + i] = buf[i];
+                        var ch = channels[c];
+                        var buf = bufs[c];
+                        if (engine.RenderChannelAt(ch, buf, time))
+                        {
+                            Master.Scale(buf);
+                            for (int i = 0; i < ch.Count && ch.Offset + i < frame.Length; i++)
+                                frame[ch.Offset + i] = buf[i];
+                        }
                     }
+                    frames[f] = frame;
                 }
-                frames[f] = frame;
+                // No seam crossfade: effects bake exactly one period (their real
+                // LoopSeconds), so frame N-1 -> frame 0 is already continuous.
+                // The upload is paced (many RF packets, sleeps between them) - run it
+                // on the device lane. Keyed so a fresh bake supersedes a still-queued
+                // one; the generation check drops an out-of-date bake entirely.
+                double frameMs = T * 1000.0 / N;
+                _lighting.Applier.Post(LightingController.LaneOf(dev), (dev, "anim"), () =>
+                {
+                    if (_gen.TryGetValue(dev, out int cur) && cur != myGen) return;   // superseded
+                    dev.UploadAnimation(frames, frameMs);
+                });
             }
-            // No seam crossfade: effects bake exactly one period (their real
-            // LoopSeconds), so frame N-1 -> frame 0 is already continuous.
-            // The upload is paced (many RF packets, sleeps between them) - run it
-            // on the device lane. Keyed so a fresh bake supersedes a still-queued
-            // one; the generation check drops an out-of-date bake entirely.
-            double frameMs = T * 1000.0 / N;
-            _lighting.Applier.Post(LightingController.LaneOf(dev), (dev, "anim"), () =>
+            catch (Exception ex)
             {
-                if (_gen.TryGetValue(dev, out int cur) && cur != myGen) return;   // superseded
-                dev.UploadAnimation(frames, frameMs);
-            });
+                // A faulted, discarded Task is silent: the device would sit on
+                // SuppressStreaming with nothing uploaded and the next identical
+                // Request short-circuited on the signature above. Log it and,
+                // unless a newer bake has since taken over, hand the device
+                // back to streaming so the effect still shows. (The applier
+                // already catches and logs the posted upload itself.) The reset
+                // is marshalled to the UI thread so the generation check and
+                // the flag write are ordered against Rebake, which sets the
+                // flag before it bumps the generation - a worker-side check
+                // could pass against the old generation and then clear the
+                // flag the newer bake had just set.
+                Log.Error("LianBake", ex);
+                ui.BeginInvoke(() =>
+                {
+                    if (_gen.TryGetValue(dev, out int gen) && gen == myGen) dev.SuppressStreaming = false;
+                });
+            }
         });
     }
 }

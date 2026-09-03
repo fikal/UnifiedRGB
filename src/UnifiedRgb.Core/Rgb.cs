@@ -29,4 +29,8 @@ public readonly record struct Rgb(byte R, byte G, byte B)
          : throw new FormatException($"'{hex}' is not an RRGGBB color");
 
     public override string ToString() => $"#{R:X2}{G:X2}{B:X2}";
+
+    /// <summary>The six upper-case hex digits without the '#'
+    /// (== ToString().TrimStart('#')) - for JSON/config fields and hex boxes.</summary>
+    public string ToHex() => $"{R:X2}{G:X2}{B:X2}";
 }

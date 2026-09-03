@@ -30,6 +30,12 @@ public static class ChromaFeed
     static long _lastFrame;
     const int PreferKeyboardMs = 1000;
     static Thread? _server;
+    // Every accepted instance costs a reader thread blocked in Read with no
+    // timeout; a host that leaks connections (or any hostile local process)
+    // must not pile those up in the elevated 24/7 process.
+    const int MaxClients = 16;
+    static int _clients;
+    static readonly LogBudget _connLog = new(10);
 
     /// <summary>A frame arrived within the last few seconds.</summary>
     public static bool Active => Environment.TickCount64 - Interlocked.Read(ref _lastFrame) < 4000;
@@ -47,12 +53,17 @@ public static class ChromaFeed
     }
 
     /// <summary>Push a frame from another source (the Chroma REST server, which
-    /// modern games use instead of the C++ DLL). Same grid the pipe feeds.</summary>
-    public static void PushGrid(Rgb[] grid, int rows, int cols)
+    /// modern games use instead of the C++ DLL). Same slots the pipe feeds:
+    /// type 1 = keyboard grid, type 2 = ChromaLink.</summary>
+    public static void PushGrid(Rgb[] grid, int rows, int cols, int type = 1)
     {
         if (grid.Length == 0 || rows <= 0 || cols <= 0 || grid.Length < rows * cols) return;
-        Publish(1, grid, rows, cols);
+        Publish(type, grid, rows, cols);
     }
+
+    /// <summary>A host is alive but sent nothing for our slots (mouse/headset/
+    /// mousepad frames): keeps <see cref="Active"/> true without touching a grid.</summary>
+    public static void Touch() => Interlocked.Exchange(ref _lastFrame, Environment.TickCount64);
 
     static void Publish(int type, Rgb[] grid, int rows, int cols)
     {
@@ -78,11 +89,21 @@ public static class ChromaFeed
     // We run elevated (high integrity); Wallpaper Engine runs as a normal user
     // (medium). A default pipe blocks the lower process from connecting, so we
     // create it with an SDDL that grants Everyone read/write AND labels the
-    // pipe low-integrity, so writes "down" from WE are allowed.
-    const string PipeSddl = "D:(A;;GRGW;;;WD)(A;;GRGW;;;AN)S:(ML;;NW;;;LW)";
+    // pipe MEDIUM integrity (NW = no write-up): WE and games write, sandboxed
+    // low-integrity processes are kept off it (the old LW label let them in,
+    // and the Anonymous ACE served nothing). Administrators/SYSTEM get full
+    // access explicitly - the server's own 2nd+ instances are access-checked
+    // against this DACL too. Everyone keeps GENERIC_WRITE, which carries
+    // FILE_CREATE_PIPE_INSTANCE (0x4), because the installed shims open with
+    // GENERIC_WRITE; narrowing it to FILE_WRITE_DATA needs the shim to open
+    // with the narrower mask first, or every installed shim stops connecting.
+    const string PipeSddl = "D:(A;;FA;;;BA)(A;;FA;;;SY)(A;;GRGW;;;WD)S:(ML;;NW;;;ME)";
     const uint PIPE_ACCESS_INBOUND = 0x00000001;
+    const uint FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000;
     const uint PIPE_TYPE_BYTE = 0, PIPE_WAIT = 0;
     const uint PIPE_UNLIMITED_INSTANCES = 255;
+    const int ERROR_ACCESS_DENIED = 5;
+    static bool _firstInstance = true;
 
     [StructLayout(LayoutKind.Sequential)]
     struct SECURITY_ATTRIBUTES { public int nLength; public IntPtr lpSecurityDescriptor; public int bInheritHandle; }
@@ -106,9 +127,15 @@ public static class ChromaFeed
             // (Wallpaper Engine + a game) got ERROR_PIPE_BUSY for as long as the
             // first stayed connected. Every accepted connection gets its own
             // reader thread; the accept loop immediately creates the next instance.
-            var h = CreateNamedPipeW(@"\\.\pipe\" + PipeName, PIPE_ACCESS_INBOUND,
+            // FIRST_PIPE_INSTANCE on our very first create: if the name already
+            // exists another process got there first and would share the
+            // hosts' connections with us - refuse instead of silently joining
+            // it. Later instances are ours (the flag would fail them).
+            uint openMode = PIPE_ACCESS_INBOUND | (_firstInstance ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0);
+            var h = CreateNamedPipeW(@"\\.\pipe\" + PipeName, openMode,
                 PIPE_TYPE_BYTE | PIPE_WAIT, PIPE_UNLIMITED_INSTANCES, 0, 1 << 20, 0, ref sa);
             if (h.IsInvalid) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            _firstInstance = false;
             // isConnected:false - the handle is a fresh, unconnected pipe; with
             // `true` a client racing CreateNamedPipe->ConnectNamedPipe made
             // WaitForConnection throw and tore down that client's connection.
@@ -124,20 +151,35 @@ public static class ChromaFeed
         while (true)
         {
             NamedPipeServerStream pipe;
-            try
+            try { pipe = CreateServer(); }
+            catch (Exception ex) { AcceptError(ex); continue; }
+            // Split from the create: an instance whose accept fails (a client
+            // connected and dropped before we got here: "pipe is broken") must
+            // be released here, not left to the finalizer.
+            try { pipe.WaitForConnection(); }
+            catch (Exception ex) { pipe.Dispose(); AcceptError(ex); continue; }
+            if (Interlocked.Increment(ref _clients) > MaxClients)
             {
-                pipe = CreateServer();
-                pipe.WaitForConnection();
-            }
-            catch (Exception ex)
-            {
-                Log.Occasional("chroma", "feed", $"pipe accept error: {ex.Message}");
-                Thread.Sleep(200);
+                Interlocked.Decrement(ref _clients);
+                pipe.Dispose();
+                Log.Occasional("chroma-clients", "chroma", $"more than {MaxClients} pipe clients - refusing extra connections");
                 continue;
             }
-            Log.Info("chroma", "host connected to the pipe");
+            if (_connLog.Allow()) Log.Info("chroma", "host connected to the pipe");
             new Thread(() => ServeClient(pipe)) { IsBackground = true, Name = "chroma-feed-client" }.Start();
         }
+    }
+
+    static void AcceptError(Exception ex)
+    {
+        if (_firstInstance && ex is System.ComponentModel.Win32Exception { NativeErrorCode: ERROR_ACCESS_DENIED })
+        {
+            Log.Occasional("chroma-squat", "chroma", $"pipe {PipeName} already exists (another process owns it) - Chroma feed off until it goes away");
+            Thread.Sleep(5000);
+            return;
+        }
+        Log.Occasional("chroma", "feed", $"pipe accept error: {ex.Message}");
+        Thread.Sleep(200);
     }
 
     static void ServeClient(NamedPipeServerStream pipe)
@@ -170,12 +212,13 @@ public static class ChromaFeed
                         grid[i] = new Rgb(r, gg, b);
                     }
                     Publish(head[0], grid, rows, cols);
-                    if (firstFrame) { Log.Info("chroma", $"first frame: type={head[0]} {rows}x{cols}"); firstFrame = false; }
+                    if (firstFrame) { if (_connLog.Allow()) Log.Info("chroma", $"first frame: type={head[0]} {rows}x{cols}"); firstFrame = false; }
                 }
             }
         }
         catch (Exception ex) { Log.Occasional("chroma", "feed", $"pipe error: {ex.Message}"); }
-        Log.Info("chroma", "host disconnected from the pipe");
+        finally { Interlocked.Decrement(ref _clients); }
+        if (_connLog.Allow()) Log.Info("chroma", "host disconnected from the pipe");
     }
 
     static bool ReadExact(Stream s, byte[] buf, int len)
@@ -191,6 +234,29 @@ public static class ChromaFeed
     }
 }
 
+/// <summary>Per-minute cap for peer-triggered log lines (a pipe connect, a REST
+/// init): any local process - or a web page posting to localhost - could
+/// otherwise grow the log without bound at request rate.</summary>
+internal sealed class LogBudget
+{
+    readonly object _gate = new();
+    readonly int _perMinute;
+    long _window;
+    int _count;
+
+    public LogBudget(int perMinute) => _perMinute = perMinute;
+
+    public bool Allow()
+    {
+        long now = Environment.TickCount64;
+        lock (_gate)
+        {
+            if (now - _window >= 60_000) { _window = now; _count = 0; }
+            return ++_count <= _perMinute;
+        }
+    }
+}
+
 /// <summary>Every LED mirrors the Chroma feed at its physical position -
 /// the rig follows Wallpaper Engine (and Chroma-enabled games) directly. Shows
 /// a slow "waiting" breath until the first frame arrives.</summary>
@@ -201,6 +267,9 @@ public sealed class ChromaSync : IEffect
     // Live feed - must STREAM, never bake into a fixed hardware loop.
     public bool Bakeable => false;
     public bool HasSpeed => false;      // driven by the game/host; speed is meaningless
+    // The host pushes a new frame at any moment: keep the engine at full rate
+    // (its idle throttle would turn a game's next frame into 100 ms of lag).
+    public bool LiveInput => true;
 
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb _)
     {

@@ -10,7 +10,8 @@ namespace UnifiedRgb.App.Controls;
 /// <summary>Draggable temperature -> fan-duty curve editor. X axis is 0-100 °C,
 /// Y axis is the duty floor..100 %. Drag a point to reshape; double-click the
 /// plot to add a point, right-click a point to remove it. Raises CurveChanged
-/// on every edit. A live marker shows the current (temp, duty).</summary>
+/// once per edit (a drag reports at release). A live marker shows the current
+/// (temp, duty).</summary>
 public partial class FanCurveEditor : UserControl
 {
     const double MinX = 0, MaxX = 100;
@@ -32,6 +33,7 @@ public partial class FanCurveEditor : UserControl
     Polyline? _line;    // kept so a drag can move points IN PLACE instead of
     Polygon? _fill;     // clearing + rebuilding ~25 elements per mouse-move
     int _dragIndex = -1;
+    bool _dragMoved;    // a press that never moved the point is not an edit
 
     public FanCurveEditor() => InitializeComponent();
 
@@ -171,6 +173,7 @@ public partial class FanCurveEditor : UserControl
         if (sender is Ellipse dot && dot.Tag is int i)
         {
             _dragIndex = i;
+            _dragMoved = false;
             dot.CaptureMouse();
             e.Handled = true;
         }
@@ -187,6 +190,11 @@ public partial class FanCurveEditor : UserControl
         int hi = _dragIndex < _curve.Points.Count - 1 ? _curve.Points[_dragIndex + 1].TempC - 1 : (int)MaxX;
         temp = Math.Clamp(temp, lo, hi);
         duty = Math.Clamp(duty, (int)MinY, (int)MaxY);
+        // Sub-pixel jitter on a click (or the MouseMove WPF synthesizes on
+        // capture) lands on the same point: not an edit, so no model push at
+        // release for a no-op.
+        var cur = _curve.Points[_dragIndex];
+        if (cur.TempC == temp && cur.DutyPct == duty) return;
         _curve.Points[_dragIndex] = new CurvePoint(temp, duty);
         _curve.Preset = "Custom";
         dot.ToolTip = $"{temp}°C → {duty}%";
@@ -195,7 +203,11 @@ public partial class FanCurveEditor : UserControl
         // elements (and deleted the very Ellipse holding mouse capture —
         // dragging worked by the accident that capture survives detachment).
         UpdateDragVisuals(dot, _dragIndex, temp, duty);
-        CurveChanged?.Invoke(_curve);
+        // The model push (a hardware duty write + a fan-config.json serialize
+        // and replace, synchronous on the UI thread) happens once, at release
+        // - it used to run on every mouse-move of the drag. The live marker
+        // follows the local curve meanwhile, so the feedback is unchanged.
+        _dragMoved = true;
     }
 
     void UpdateDragVisuals(Ellipse dot, int index, int temp, int duty)
@@ -228,12 +240,18 @@ public partial class FanCurveEditor : UserControl
 
     /// <summary>Alt+Tab / a popup mid-drag takes the capture without a MouseUp;
     /// without this the next hover kept dragging the handle with no button down.
-    /// The normal release path runs through here too (ReleaseMouseCapture fires it).</summary>
+    /// The normal release path runs through here too (ReleaseMouseCapture fires
+    /// it), so this is the one place a finished drag reaches the model.</summary>
     void Handle_LostCapture(object sender, MouseEventArgs e)
     {
         if (_dragIndex < 0) return;
         _dragIndex = -1;
         Rebuild();
+        if (_dragMoved && _curve != null)
+        {
+            _dragMoved = false;
+            CurveChanged?.Invoke(_curve);
+        }
     }
 
     void Handle_RightClick(object sender, MouseButtonEventArgs e)

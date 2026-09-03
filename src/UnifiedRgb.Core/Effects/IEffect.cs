@@ -23,9 +23,18 @@ public interface IEffect
     /// The UI hides the speed + direction controls for these.</summary>
     bool HasSpeed => true;
 
+    /// <summary>True when the frame can change on external input at any moment
+    /// (a key press, a beat). The engine keeps these at full rate: its idle
+    /// throttle (10 fps once the output has been static for ~0.5 s) would
+    /// otherwise turn the wait for the next key into press-to-light latency.</summary>
+    bool LiveInput => false;
+
     /// <summary>The natural loop period in seconds at the given speed - the
-    /// bake window. Default is one pattern rotation; a small seam crossfade in
-    /// the baker hides any imperfect periodicity.</summary>
+    /// bake window. There is NO seam crossfade in the baker: it renders exactly
+    /// one period and the hardware loops it, so every Bakeable effect must
+    /// return a true period - every time-dependent term must close over it
+    /// (and it must land inside the baker's 1.5..12 s clamp at speed 1) or the
+    /// fans pop at every wrap. Default: 4 s at speed 1.</summary>
     double LoopSeconds(double speed) => 4.0 / Math.Max(0.1, Math.Abs(speed));
 
     /// <summary>pos[i] is LED i's normalized position (0..1). Length == buffer.</summary>
@@ -39,9 +48,6 @@ public interface IEffect
         => Render(buffer, pos, seconds, speed, baseColor);
 }
 
-/// <summary>An effect that paints from a user-chosen list of colors rather than
-/// a single base color (e.g. Taichi's two halves). The app shows the palette
-/// editor and gives each target its own palette instance.</summary>
 /// <summary>Render-thread-safe read view over an editable palette. The UI
 /// mutates an ObservableCollection (Clear + Add per color); render threads used
 /// to read Count then [i] straight off that list and threw mid-rebuild (one
@@ -74,6 +80,9 @@ public sealed class LivePalette : IReadOnlyList<Rgb>
     System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => _items.GetEnumerator();
 }
 
+/// <summary>An effect that paints from a user-chosen list of colors rather than
+/// a single base color (e.g. Taichi's two halves). The app shows the palette
+/// editor and gives each target its own palette instance.</summary>
 public interface IPaletteEffect
 {
     IReadOnlyList<Rgb> Palette { get; set; }

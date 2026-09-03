@@ -47,12 +47,7 @@ public sealed partial class MainViewModel
     {
         _engine.StopAll();   // before the static writes (see LoadProfile)
         foreach (var d in Devices)
-        {
-            if (!s.Frames.TryGetValue(d.Name, out var saved)) continue;
-            var frame = FrameFor(d);
-            Array.Copy(saved, frame, Math.Min(saved.Length, frame.Length));
-            _lighting.PushFrame(d);
-        }
+            if (s.Frames.TryGetValue(d.Name, out var saved)) RestoreFrame(d, saved);
         RestoreEffects(s.Effects);
         // Restore the selection exactly - including "no profile selected" (an
         // app rule's profile used to stay selected over restored ad-hoc lighting).
@@ -228,6 +223,7 @@ public sealed partial class MainViewModel
             OnChanged(nameof(PawnIoMissing));
             OnChanged(nameof(PawnIoStatusText));
             Cooling.NotifyPawnIoChanged();
+            Lcd.NotifyPawnIoChanged();   // the "CPU temp needs PawnIO" banner clears
             if (!PawnIoMissing)
             {
                 // CPU temp and the ITE board-fan fallback both need PawnIO, which
@@ -250,13 +246,45 @@ public sealed partial class MainViewModel
             _store.SaveSettings();
             OnChanged();
             if (value) StartOpenRgbBridge();
-            else
+            else StopOpenRgbBridge();
+        }
+    }
+
+    /// <summary>The in-flight bridge teardown (completed when none). A bridge-up
+    /// that follows a quick off/on toggle waits on it, so EnsureRunning can't
+    /// launch a new OpenRGB while Stop is still killing the old one.</summary>
+    Task _openRgbStop = Task.CompletedTask;
+
+    /// <summary>Take the bridge down off the UI thread: OpenRgbManager.Stop runs
+    /// a process snapshot, Kill and up to a 3 s WaitForExit per instance, which
+    /// used to freeze the window from the property setter. Rescan follows on
+    /// the dispatcher, mirroring StartOpenRgbBridge.</summary>
+    async void StopOpenRgbBridge()
+    {
+        try
+        {
+            // Stop the effect workers BEFORE the shared socket goes away:
+            // every bridged channel otherwise throws ObjectDisposedException
+            // per frame (a rate-limited WARN each) until Rescan's own drain,
+            // which waits behind OpenRgbManager.Stop's process teardown. The
+            // stopped channels are still captured and restored by Rescan.
+            _lighting.StopAndDrain();
+            OpenRgbStatus = "stopping...";
+            // The task never faults (its own catch), so StartOpenRgbBridge can
+            // await it bare.
+            _openRgbStop = Task.Run(() =>
             {
-                OpenRgbLink.Shutdown();
-                OpenRgbManager.Stop();
-                OpenRgbStatus = "";
-                Rescan();
-            }
+                try { OpenRgbLink.Shutdown(); OpenRgbManager.Stop(); }
+                catch (Exception ex) { Log.Error("openrgb", ex); }
+            });
+            await _openRgbStop;
+            OpenRgbStatus = "";
+            Rescan();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("openrgb", ex);
+            OpenRgbStatus = $"OpenRGB stop failed: {ex.Message}";
         }
     }
 
@@ -271,6 +299,7 @@ public sealed partial class MainViewModel
         try
         {
             OpenRgbStatus = "starting...";
+            await _openRgbStop;   // an off->on toggle: let the teardown finish first
             bool ok = await Task.Run(() => OpenRgbManager.EnsureRunningAsync(
                 s => Application.Current.Dispatcher.Invoke(() => OpenRgbStatus = s)));
             if (!ok) { return; }

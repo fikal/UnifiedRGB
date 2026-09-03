@@ -1,10 +1,8 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
-using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using UnifiedRgb.Core;
@@ -45,7 +43,6 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         ChooseBackgroundCommand = new RelayCommand(_ => ChooseBackground(), _ => Available);
         ClearBackgroundCommand  = new RelayCommand(_ => ClearBackground(), _ => Available);
         PickElementColorCommand = new RelayCommand(o => { if (_selectedElement != null && o is Rgb c) _selectedElement.ColorHex = c.ToString().TrimStart('#'); });
-        RelaunchElevatedCommand = new RelayCommand(_ => RelaunchElevated());
     }
 
     public ICommand AddTimeCommand { get; }
@@ -61,12 +58,17 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     public ICommand ChooseBackgroundCommand { get; }
     public ICommand ClearBackgroundCommand { get; }
     public ICommand PickElementColorCommand { get; }
-    public ICommand RelaunchElevatedCommand { get; }
 
     /// <summary>A pump LCD was found and is being driven.</summary>
     public bool Available => _lcd != null;
 
+    /// <summary>The panel is up but the PawnIO driver is not: the CPU-temp
+    /// element shows "--". Elevation is guaranteed by the manifest, so the
+    /// driver is the only thing that can be missing; re-evaluated live.</summary>
     public bool CpuTempUnavailable => _lcd != null && _cpuTemp?.Available != true;
+
+    /// <summary>PawnIO got installed in-app: the banner clears without a restart.</summary>
+    public void NotifyPawnIoChanged() => OnChanged(nameof(CpuTempUnavailable));
 
     public ObservableCollection<LcdElement> LcdElements { get; } = new();
 
@@ -169,40 +171,43 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     }
 
     /// <summary>Push the live rendered text into each element for the editor.</summary>
+    int _clockSecond = -1;   // wall-clock second the editor clock face was last rasterized for
     void RefreshDisplays()
     {
         if (_lcd == null) return;
         // The Display/ClockImage properties feed the WYSIWYG editor only (the
         // physical panel renders separately) — skip the per-tick text pushes
-        // and clock-face bitmap when the designer isn't on screen.
-        if (!_isOnScreen()) return;
+        // and clock-face bitmap when the designer isn't on screen, including
+        // while the window is hidden in the tray with the LCD item selected.
+        if (!_isOnScreen() || !MainWindowState.Visible) return;
+        // With a GIF background Ticked fires at 10 Hz; the clock face only
+        // changes once a second, so the RenderTargetBitmap is made once per
+        // second (TouchLcd resets this so an edit re-rasterizes at once).
+        int sec = DateTime.Now.Second;
+        bool clockDue = sec != _clockSecond;
         foreach (var e in LcdElements)
         {
-            if (e.Kind == LcdElementKind.AnalogClock) e.ClockImage = LcdController.RenderClockImage(e);
-            else e.Display = _lcd.ElementText(e);
+            if (e.Kind == LcdElementKind.AnalogClock)
+            {
+                if (clockDue || e.ClockImage == null) e.ClockImage = LcdController.RenderClockImage(e);
+            }
+            else
+            {
+                var text = _lcd.ElementText(e);
+                if (text != e.Display) e.Display = text;   // the setter notifies unconditionally
+            }
         }
+        _clockSecond = sec;
     }
 
     /// <summary>Delete the selected element (bound to the Delete key on the canvas).</summary>
     public void DeleteSelectedElement() => DeleteElement();
 
-    static void RelaunchElevated()
-    {
-        try
-        {
-            var psi = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = Environment.ProcessPath, UseShellExecute = true, Verb = "runas",
-            };
-            System.Diagnostics.Process.Start(psi);
-            Application.Current.Shutdown();
-        }
-        catch { /* user declined UAC */ }
-    }
-
     /// <summary>Re-render the pump now and schedule a debounced save.</summary>
     public void TouchLcd()
     {
+        _liveIsShowScene = false;   // a user edit: the live design is the canvas again
+        _clockSecond = -1;
         _lcd?.Refresh();
         _lcdSave.Stop(); _lcdSave.Start();
     }
@@ -280,30 +285,11 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     }
 
     /// <summary>Editor-canvas background image source (null => show gradient).
-    /// Decoded once per (path, mtime): this getter is bound three times and
-    /// re-read on every LcdBgX/Y change, i.e. six full-resolution decodes per
-    /// mouse-move while dragging a background - visible stutter on a 4K JPG.</summary>
-    string? _bgCachePath; DateTime _bgCacheStamp; ImageSource? _bgCache;
-    public ImageSource? LcdBackground
-    {
-        get
-        {
-            var p = _lcd?.Design.BackgroundImagePath;
-            if (string.IsNullOrEmpty(p) || !System.IO.File.Exists(p)) { _bgCachePath = null; _bgCache = null; return null; }
-            var stamp = System.IO.File.GetLastWriteTimeUtc(p);
-            if (p == _bgCachePath && stamp == _bgCacheStamp) return _bgCache;
-            _bgCachePath = p; _bgCacheStamp = stamp; _bgCache = null;
-            try
-            {
-                var img = new BitmapImage();
-                img.BeginInit(); img.CacheOption = BitmapCacheOption.OnLoad;
-                img.UriSource = new Uri(p); img.EndInit(); img.Freeze();
-                _bgCache = img;
-            }
-            catch { }
-            return _bgCache;
-        }
-    }
+    /// The controller owns the ONE decoded copy (the panel render draws the
+    /// same bitmap; this view model used to hold a second full-resolution
+    /// decode), cached there per (path, write time) - so this getter, re-read
+    /// on every LcdBgX/Y change while dragging, is a field read.</summary>
+    public ImageSource? LcdBackground => _lcd?.Background;
 
     /*-----------------------------------------------------*\
     | Background placement: one rect, edited here, rendered |
@@ -316,12 +302,11 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     /// behavior, so existing designs look unchanged).</summary>
     void EnsureBgRect()
     {
-        var d = _lcd?.Design;
-        if (d == null) return;
-        var src = LcdBackground as BitmapSource;
-        if (src == null) return;
-        _bgNatW = Math.Max(1, src.PixelWidth);
-        _bgNatH = Math.Max(1, src.PixelHeight);
+        if (_lcd == null || _lcd.Background == null) return;
+        var d = _lcd.Design;
+        var (w, h) = _lcd.BackgroundSize;
+        _bgNatW = Math.Max(1, w);
+        _bgNatH = Math.Max(1, h);
         if (d.BgW > 0.5) return;
         double scale = Math.Max(320.0 / _bgNatW, 240.0 / _bgNatH);
         d.BgW = Math.Round(_bgNatW * scale);
@@ -379,6 +364,24 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
             if (value) _lcd.Design.BgH = Math.Round(_lcd.Design.BgW / BgAspect);
             NotifyBgRect(); TouchLcd();
         }
+    }
+
+    /// <summary>Position / size in ONE step (one panel render): the canvas
+    /// drags used to render twice per mouse-move via the X-then-Y / W-then-H
+    /// setters above. Same clamps and aspect handling as the setters.</summary>
+    public void MoveBg(double x, double y)
+    {
+        if (_lcd == null) return;
+        _lcd.Design.BgX = Math.Round(x); _lcd.Design.BgY = Math.Round(y);
+        NotifyBgRect(); TouchLcd();
+    }
+    public void SetBgSize(double w, double h)
+    {
+        if (_lcd == null) return;
+        var d = _lcd.Design;
+        d.BgW = Math.Round(Math.Clamp(w, 8, 2000));
+        d.BgH = d.BgAspectLock ? Math.Round(d.BgW / BgAspect) : Math.Round(Math.Clamp(h, 8, 2000));
+        NotifyBgRect(); TouchLcd();
     }
 
     // Resize grip sits at the rect's bottom-right corner.
@@ -510,16 +513,26 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         {
             _selectedSceneName = sc.Name;   // reflect without re-loading twice
             OnChanged(nameof(SelectedSceneName));
-            LoadDesignIntoEditor(SceneStore.Clone(sc.Design));
+            LoadDesignIntoEditor(SceneStore.Clone(sc.Design), fromShow: true);
         }
         if (!string.IsNullOrEmpty(a.Profile))
             _applyProfile(a.Profile);
     }
 
+    /// <summary>True while the live design was swapped in by a running show
+    /// rather than by the user. Rendered, but never persisted as the canvas: a
+    /// show used to rewrite lcd.json on every step (a 5 s show = ~17,000 atomic
+    /// file replaces a day) and replace the user's own design with whichever
+    /// scene played last.</summary>
+    bool _liveIsShowScene;
+
     /// <summary>Swap the live design (editor + pump) for another one.</summary>
-    void LoadDesignIntoEditor(LcdDesign d)
+    void LoadDesignIntoEditor(LcdDesign d, bool fromShow = false)
     {
         if (_lcd == null) return;
+        // A user edit still waiting for its debounced save lands before its
+        // design is swapped out (the save writes whatever Design is current).
+        if (fromShow && _lcdSave.IsEnabled) { _lcdSave.Stop(); _lcd.Design.Save(); }
         _lcd.Design = d;
         foreach (var old in LcdElements) Unhook(old);   // swap-out: no stranded handlers
         LcdElements.Clear();
@@ -528,7 +541,8 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         EnsureBgRect();
         OnChanged(nameof(LcdBackground)); OnChanged(nameof(LcdBackgroundName));
         NotifyBgRect();
-        TouchLcd();
+        if (fromShow) { _liveIsShowScene = true; _clockSecond = -1; _lcd.Refresh(); }
+        else TouchLcd();
     }
 
     /// <summary>Save the canvas as a scene: under the typed name if given,
@@ -644,9 +658,15 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
 
     public void Dispose()
     {
+        _sequencer?.Stop();   // a queued step must not drive the disposed controller
         _lcdSave.Stop();
-        _lcd?.Design.Save();
-        _lcd?.Dispose();
+        if (_lcd != null)
+        {
+            _lcd.Ticked -= RefreshDisplays;
+            if (!_liveIsShowScene) _lcd.Design.Save();   // the canvas, not the show's last scene
+            _lcd.Dispose();
+            _lcd = null;          // Available and every setter short-circuit from here on
+        }
         _cpuTemp?.Dispose();
     }
 

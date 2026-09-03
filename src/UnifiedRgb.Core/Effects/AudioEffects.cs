@@ -18,6 +18,7 @@ public sealed class AudioBars : IEffect
     public string Name => "Audio Bars";
     public bool UsesBaseColor => false;
     public bool Bakeable => false;
+    public bool LiveInput => true;
 
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb _)
     {
@@ -27,12 +28,20 @@ public sealed class AudioBars : IEffect
         // a per-channel constant, cached (was a full pos[] scan every frame).
         var (yMin, yMax) = Geo.YRange(pos);
         bool fill = yMax - yMin > 0.3;
-        double punch = Math.Clamp(speed, 0.25, 4.0);
+        // Speed is punch, not direction: Reverse (negative speed) must not pin it.
+        double punch = Math.Clamp(Math.Abs(speed), 0.25, 4.0);
+
+        // The analyzer's 24 bands are the only distinct inputs a frame has, so
+        // the punch curve (a non-integer Pow) is taken once per band, not once
+        // per LED (116 Pow/frame on a keyboard for 24 values).
+        Span<double> levels = stackalloc double[AudioAnalyzer.BandCount];
+        for (int b = 0; b < levels.Length; b++)
+            levels[b] = Math.Pow(AudioAnalyzer.Band(b), 1.0 / punch);
 
         for (int i = 0; i < buf.Length; i++)
         {
-            float band = AudioAnalyzer.BandAt(pos[i].X);
-            double level = Math.Pow(band, 1.0 / punch);
+            // Same X -> band mapping as the analyzer's levels array (index = X * BandCount).
+            double level = levels[(int)(Math.Clamp(pos[i].X, 0, 0.999) * AudioAnalyzer.BandCount)];
             double hue = 230.0 - pos[i].X * 230.0;          // bass blue -> treble red
 
             double v;
@@ -58,11 +67,12 @@ public sealed class AudioPulse : IEffect
     public string Name => "Audio Pulse";
     public bool UsesBaseColor => true;
     public bool Bakeable => false;
+    public bool LiveInput => true;
 
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb baseColor)
     {
         AudioAnalyzer.Touch();
-        double punch = Math.Clamp(speed, 0.25, 4.0);
+        double punch = Math.Clamp(Math.Abs(speed), 0.25, 4.0);   // punch, not direction
         double level = Math.Pow(0.6 * AudioAnalyzer.Level + 0.4 * AudioAnalyzer.Bass, 1.0 / punch);
         var c = ColorUtil.Scale(baseColor, 0.04 + 0.96 * level);
         for (int i = 0; i < buf.Length; i++) buf[i] = c;

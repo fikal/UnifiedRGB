@@ -93,7 +93,14 @@ public partial class AppRulesWindow : Window
         if ((sender as FrameworkElement)?.DataContext is AutomationRule r) _vm.RemoveAutoRule(r);
     }
 
-    void Rule_Persist(object sender, RoutedEventArgs e) => _vm.PersistAutomation();
+    // Selector raises SelectionChanged when each row's SelectedItem binding
+    // first applies (container generation, before Loaded): that was one full
+    // settings.json write per rule on every open with nothing changed. Only a
+    // change made in the live window persists.
+    void Rule_Persist(object sender, RoutedEventArgs e)
+    {
+        if (IsLoaded) _vm.PersistAutomation();
+    }
 
     /*-----------------------------------------------------*\
     | Drag-to-reorder with real feedback: grab anywhere on   |

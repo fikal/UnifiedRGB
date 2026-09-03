@@ -11,7 +11,8 @@ public static class AppPaths
     public static readonly string ConfigDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "UnifiedRgb");
 
-    /// <summary>%LOCALAPPDATA%\UnifiedRgb — machine-local bulk (OpenRGB bundle).</summary>
+    /// <summary>%LOCALAPPDATA%\UnifiedRgb — machine-local state (OpenRGB bundle,
+    /// fan-config.json).</summary>
     public static readonly string LocalDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "UnifiedRgb");
 
@@ -20,7 +21,11 @@ public static class AppPaths
 
     static AppPaths()
     {
+        // Both trees, so every store can assume its parent exists: LocalDir
+        // used to be created only by the OpenRGB installer, and on a machine
+        // that never enabled the bridge fan-config.json silently failed to save.
         try { Directory.CreateDirectory(ConfigDir); } catch { }
+        try { Directory.CreateDirectory(LocalDir); } catch { }
     }
 }
 
@@ -46,9 +51,9 @@ public static class Backend
     static Backend()
     {
         string? url = null, key = null;
+        string f = AppPaths.Config("backend.json");
         try
         {
-            string f = AppPaths.Config("backend.json");
             if (File.Exists(f))
             {
                 using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(f));
@@ -58,8 +63,25 @@ public static class Backend
         }
         catch (Exception ex) { Log.Warn("backend", $"backend.json unreadable: {ex.Message}"); }
 
+        // The override file lives in user-writable %APPDATA% while the app runs
+        // elevated, so it must be visible in any support bundle: a redirected
+        // feed is the first thing to rule out when an "update" looks wrong.
+        if (!string.IsNullOrWhiteSpace(url))
+            Log.Warn("backend", $"feed/support endpoint overridden by {f}: {url}");
+
         url ??= Meta("RgbBackendUrl");
         key ??= Meta("RgbBackendKey");
+
+        // Only https (or plain http to this machine, for a local dev backend)
+        // is honored: the updater trusts the feed for the payload's hash, and
+        // the support upload carries the session log — neither goes in the clear.
+        if (!string.IsNullOrWhiteSpace(url)
+            && !(Uri.TryCreate(url, UriKind.Absolute, out var uri)
+                 && (uri.Scheme == Uri.UriSchemeHttps || (uri.Scheme == Uri.UriSchemeHttp && uri.IsLoopback))))
+        {
+            Log.Warn("backend", $"endpoint ignored (must be https, or http on loopback): {url}");
+            url = null;
+        }
 
         BaseUrl = string.IsNullOrWhiteSpace(url) ? null : url.TrimEnd('/');
         ClientKey = string.IsNullOrWhiteSpace(key) ? null : key.Trim();

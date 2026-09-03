@@ -17,12 +17,29 @@ public sealed class CoalescingApplier
     sealed class Lane
     {
         public readonly object Lock = new();
-        public readonly Dictionary<object, Action> Pending = new();
+        // Insertion-ordered: a plain Dictionary recycles freed slots, so after
+        // the worker removed the running job a NEWER key could enumerate ahead
+        // of an older pending one and break the lane's in-order promise.
+        public readonly OrderedDictionary<object, Action> Pending = new();
         public bool Running;
     }
 
     readonly object _mapLock = new();
     readonly Dictionary<object, Lane> _lanes = new();
+
+    /// <summary>Drop every idle lane. Native devices key their lane by instance,
+    /// so without this each Rescan left a lane per replaced device behind (and
+    /// pinned the disposed device with it) for the process lifetime.</summary>
+    public void PruneIdle()
+    {
+        lock (_mapLock)
+        {
+            var idle = new List<object>();
+            foreach (var (key, lane) in _lanes)
+                lock (lane.Lock) if (!lane.Running && lane.Pending.Count == 0) idle.Add(key);
+            foreach (var key in idle) _lanes.Remove(key);
+        }
+    }
 
     /// <summary>Block until every lane has run dry (or the timeout passes).
     /// Call before disposing devices: a queued static write landing on a freed
@@ -47,16 +64,23 @@ public sealed class CoalescingApplier
     public void Post(object laneKey, object key, Action work)
     {
         Lane? lane;
+        bool start;
         lock (_mapLock)
+        {
             if (!_lanes.TryGetValue(laneKey, out lane))
                 _lanes[laneKey] = lane = new Lane();
-
-        lock (lane.Lock)
-        {
-            lane.Pending[key] = work;
-            if (lane.Running) return;
-            lane.Running = true;
+            // Enqueue while still holding the map lock (same nesting order as
+            // PruneIdle/Drain): a lane with a pending job or a running worker
+            // can then never be pruned out from under a Post that already
+            // looked it up - an orphan lane Drain would not see.
+            lock (lane.Lock)
+            {
+                lane.Pending[key] = work;
+                start = !lane.Running;
+                if (start) lane.Running = true;
+            }
         }
+        if (!start) return;
         Task.Run(() =>
         {
             while (true)
@@ -65,7 +89,7 @@ public sealed class CoalescingApplier
                 lock (lane.Lock)
                 {
                     if (lane.Pending.Count == 0) { lane.Running = false; return; }
-                    var first = lane.Pending.First();
+                    var first = lane.Pending.GetAt(0);   // oldest key first
                     lane.Pending.Remove(first.Key);
                     job = first.Value;
                 }

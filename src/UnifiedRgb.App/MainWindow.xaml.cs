@@ -16,14 +16,20 @@ public partial class MainWindow : Window
     WF.NotifyIcon? _tray;
     bool _wasMaximized;
     bool _closing;   // Window.Show() during Closing throws; tray/second-launch must not call it
+    bool _sessionEnding;   // logoff/shutdown in progress: no modal prompts
 
     public MainWindow()
     {
         InitializeComponent();
         DataContext = _vm;
         Closing += Window_Closing;
+        Application.Current.SessionEnding += Session_Ending;
         _automation = new Services.AutomationService(_vm);
-        Closed += (_, _) => { _automation.Dispose(); UnregisterHotkeys(); _tray?.Dispose(); _vm.Dispose(); };
+        Closed += (_, _) =>
+        {
+            Application.Current.SessionEnding -= Session_Ending;
+            _automation.Dispose(); UnregisterHotkeys(); _tray?.Dispose(); _vm.Dispose();
+        };
         PreviewKeyDown += Window_PreviewKeyDown;
         StateChanged += Window_StateChanged;
 
@@ -169,6 +175,7 @@ public partial class MainWindow : Window
         // center on screen when the owner isn't visible, so a tray-exit still
         // shows them fine.
         _closing = true;
+        if (_sessionEnding) { SaveWindowPlacement(); return; }   // saved already; a modal would never be answered
         if (_vm.NeedsFirstProfilePrompt)
         {
             var (r, name) = Dialogs.AskSaveFirstProfile(this);
@@ -182,6 +189,25 @@ public partial class MainWindow : Window
             if (r == MessageBoxResult.Yes) _vm.SaveActiveProfile();
         }
         SaveWindowPlacement();
+    }
+
+    /// <summary>Logoff / shutdown. WPF only QUEUES Shutdown() from
+    /// WM_QUERYENDSESSION and the OS may kill the process right after
+    /// WM_ENDSESSION, so the Closing prompt either blocked on a modal nobody
+    /// could answer or never ran at all - skipping the exit chain in Closed
+    /// (fans back to the BIOS curve, the wireless-fan handoff, the debounced
+    /// settings flush, the LCD design save). Save what can be saved without
+    /// asking and close synchronously, right here.</summary>
+    void Session_Ending(object sender, SessionEndingCancelEventArgs e)
+    {
+        if (_closing) return;   // a close prompt is already up
+        _sessionEnding = true;
+        try
+        {
+            if (_vm.NeedsSavePrompt) _vm.SaveActiveProfile();
+            Close();
+        }
+        catch (Exception ex) { UnifiedRgb.Core.Log.Error("app", ex); }
     }
 
     /*-----------------------------------------------------*\
@@ -273,7 +299,9 @@ public partial class MainWindow : Window
         }
         if (e.Key != Key.Delete) return;
         if (Keyboard.FocusedElement is TextBox) return;   // don't hijack text editing
-        if (_vm.IsLcdSelected && _vm.Lcd.HasElement)
+        // ShowLcdPanel, not IsLcdSelected: the latter stays true under Settings,
+        // where Delete used to remove the off-screen design's element unseen.
+        if (_vm.ShowLcdPanel && _vm.Lcd.HasElement)
         {
             _vm.Lcd.DeleteSelectedElement();
             e.Handled = true;

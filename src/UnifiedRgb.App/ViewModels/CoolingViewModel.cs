@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Windows;
 using System.Windows.Threading;
 using UnifiedRgb.Core.Devices;
 using UnifiedRgb.Core.Sensors;
@@ -27,19 +28,61 @@ public sealed class CoolingViewModel : INotifyPropertyChanged
     }
 
     /// <summary>Start the 1.5 s refresh (pane shown). It self-stops when the
-    /// pane leaves the screen, so it never runs for the process lifetime.</summary>
+    /// pane leaves the screen or the window hides to the tray, so it never
+    /// runs for the process lifetime.</summary>
     public void Start()
     {
+        HookWindowVisibility();
         if (_timer == null)
         {
             _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
-            _timer.Tick += (_, _) => { if (_isOnScreen()) Refresh(); else _timer.Stop(); };
+            _timer.Tick += (_, _) =>
+            {
+                HookWindowVisibility();   // Start() may have run before the window existed
+                if (_isOnScreen() && MainWindowState.Visible) Refresh(); else _timer.Stop();
+            };
         }
         _timer.Start();
         Refresh();
     }
 
-    public void Stop() => _timer?.Stop();
+    /// <summary>Stop the refresh (pane left, window hidden to the tray). A
+    /// slider value still waiting on its debounce LANDS here rather than being
+    /// dropped: a nav click or minimize within 120 ms of the last slider step
+    /// used to leave the row saying e.g. "Manual - 55%" while the fan and
+    /// fan-config.json stayed at the earlier value.</summary>
+    public void Stop()
+    {
+        _timer?.Stop();
+        foreach (var f in CoolingFans) f.FlushPendingDuty();
+    }
+
+    /// <summary>Exit only: drop pending slider values instead of flushing them.
+    /// Called before RestoreAllFans hands the fans back to the BIOS, so no late
+    /// manual write can follow the handback.</summary>
+    public void DiscardPendingDuties()
+    {
+        foreach (var f in CoolingFans) f.CancelPendingDuty();
+    }
+
+    // The nav selection survives minimize-to-tray (the window hides, Cooling
+    // stays selected), so the tick's on-screen check alone kept SensorHub's
+    // UI-only sweep - NvAPI, the LHM board scan, the UniHub poll, wireless
+    // telemetry - armed 24/7 in the tray. Follow the window: stop when it
+    // hides, restart (with a fresh Refresh) when it returns with Cooling up.
+    Window? _hookedWindow;
+    void HookWindowVisibility()
+    {
+        if (_hookedWindow != null) return;
+        var w = Application.Current?.MainWindow;
+        if (w == null) return;   // Start() before the window exists (startup): hooked on the next Start
+        _hookedWindow = w;
+        w.IsVisibleChanged += (_, _) =>
+        {
+            if (!w.IsVisible) Stop();
+            else if (_isOnScreen()) Start();
+        };
+    }
 
     // Friendlier defaults for this Gigabyte board's LHM sensors (generic
     // "Temperature #N"/"Fan #N" otherwise). Best-effort by position — every
@@ -124,7 +167,20 @@ public sealed class CoolingViewModel : INotifyPropertyChanged
     public string CpuVoltText => SensorHub.CpuVoltage is double v ? $"{v:0.00} V" : "--";
     public string GpuVoltText => SensorHub.GpuVoltage is double gv ? $"{gv:0.00} V" : "--";
 
+    /// <summary>One refresh, guarded like AutomationService.Tick: a per-tick
+    /// fault (a device that throws mid-unplug, an NvAPI hiccup) is logged
+    /// rate-limited instead of reaching the app-level handler's dialog every
+    /// 1.5 s for as long as Cooling is on screen.</summary>
     void Refresh()
+    {
+        try { RefreshCore(); }
+        catch (Exception ex)
+        {
+            UnifiedRgb.Core.Log.Occasional("cooling-tick", "cooling", () => $"refresh failed: {ex.Message}");
+        }
+    }
+
+    void RefreshCore()
     {
         SensorHub.Touch();
 
@@ -198,12 +254,16 @@ public sealed class CoolingViewModel : INotifyPropertyChanged
         if (sig != _fanSig)
         {
             _fanSig = sig;
+            // Keep the edited fan across the rebuild: a fan-stopped header
+            // dropping off (or returning) used to yank the curve editor to row 1
+            // mid-edit.
+            int? keep = _editingFan?.Index;
             CoolingFans.Clear();
             foreach (int i in desired) CoolingFans.Add(BuildFanModel(i, fans[i].Name, fans[i].CanControl));
             if (gpuRow) CoolingFans.Add(BuildFanModel(SensorHub.GpuFanIndex, "GPU", true));
             for (int s = 0; s < lianCount; s++)
                 CoolingFans.Add(BuildFanModel(SensorHub.LianFanBase + s, $"Lian Li {lianDev!.FanNameAtSlot(s)}", true));
-            EditingFan = CoolingFans.FirstOrDefault();
+            EditingFan = CoolingFans.FirstOrDefault(m => m.Index == keep) ?? CoolingFans.FirstOrDefault();
             OnChanged(nameof(HasControllableFans));
         }
         foreach (var m in CoolingFans)
@@ -235,8 +295,11 @@ public sealed class CoolingViewModel : INotifyPropertyChanged
         // GPU defaults to following its own temperature.
         var src = isGpu ? TempSource.Gpu : TempSource.Hottest;
         if (SensorHub.ManualFanDuty(i) is int p) { mode = "Manual"; duty = p; }
+        // The row gets its OWN copy: FanCurveOf returns the hub's live instance,
+        // which the sensor timer thread reads (DutyAt) while the curve editor
+        // would otherwise Insert/RemoveAt its Points on the UI thread.
         else if (SensorHub.FanCurveOf(i) is FanCurve c)
-        { mode = c.MatchesPreset() ? c.Preset : "Custom"; curve = c; src = c.Source; }
+        { mode = c.MatchesPreset() ? c.Preset : "Custom"; curve = c.Clone(); src = c.Source; }
         string key = $"fan:{rawName}";
         string def = isGpu ? "GPU fans" : FanDefault(i, rawName);
         return new FanRowModel(i, canControl, def, key,

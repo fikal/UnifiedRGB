@@ -12,10 +12,4 @@
     <AssemblyName>UnifiedRGB-Diagnostic</AssemblyName>
   </PropertyGroup>
 
-  <ItemGroup>
-    <!-- Intel SMBus module (signed, namazso PawnIO.Modules) so the diag can
-         identify Intel chipset SMBus too; AMD PIIX4 comes from Core. -->
-    <EmbeddedResource Include="Modules\SmbusI801.bin" />
-  </ItemGroup>
-
 </Project>
