@@ -59,6 +59,19 @@ public sealed partial class MainViewModel
         Rescan();
     }
 
+    /*-----------------------------------------------------*\
+    | Razer layout (HyperFlux V2 pad LED count, chase test) |
+    \*-----------------------------------------------------*/
+    public bool IsRazerSelected => SelectedDevice is RazerHid;
+
+    /// <summary>After the Razer… dialog's Test chase: re-push every Razer
+    /// device's stored static frame (the chase cleared its dedup, so the
+    /// write goes out whole); a running effect repaints on its next frame.</summary>
+    public void EndRazerTest()
+    {
+        foreach (var dev in Devices.OfType<RazerHid>()) _lighting.PushFrame(dev);
+    }
+
     void RebuildTargets()
     {
         Targets.Clear();

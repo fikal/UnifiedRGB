@@ -108,6 +108,15 @@ public static class DiagnosticReport
         }
         catch (Exception ex) { Say($"(HID enumeration failed: {ex.Message})"); }
 
+        // Read-only probe of every Razer control collection on every known
+        // transaction id: which id a pad/dongle answers on, and with whose
+        // firmware/serial, is exactly what a new-device report has to tell us.
+        Section("razer");
+        Say();
+        Say("--- RAZER (HID vendor protocol, read-only probe) ---");
+        try { Say(Devices.RazerHid.ProbeAll()); }
+        catch (Exception ex) { Say($"(Razer probe failed: {ex.Message})"); }
+
         Section("usb devices");
         Say();
         Say("--- USB DEVICES (PnP) ---");

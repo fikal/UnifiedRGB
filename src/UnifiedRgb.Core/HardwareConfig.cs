@@ -22,6 +22,12 @@ public sealed class HardwareConfig
         new ArgbHeaderConfig { Header = 4, Name = "AIO Fan 3 (Header 4)",    Leds = 8, ColorOrder = "GRB" },
     };
 
+    /// <summary>LED counts for Razer devices whose shape the firmware won't
+    /// reveal (the HyperFlux V2 pad's strip), keyed by product id in hex
+    /// ("00CF"). Set from the Lighting pane's Razer… dialog after a Test chase;
+    /// a configured value beats the frame-width probe and the guess.</summary>
+    public Dictionary<string, int> RazerLedCounts { get; set; } = new();
+
     static readonly string PathName = AppPaths.Config("hardware.json");
 
     static readonly JsonSerializerOptions Opts = new() { WriteIndented = true };
@@ -72,6 +78,7 @@ public sealed class HardwareConfig
             // the header dialog that exists to fix it.
             cfg.GigabyteArgbHeaders ??= new();
             cfg.GigabyteArgbHeaders.RemoveAll(h => h is null);
+            cfg.RazerLedCounts ??= new();
             // Normalise the wire order once, at the load boundary, so the
             // device (GigabyteIt5711.NormalizeOrder, which still warns and
             // falls back on an unknown value) and the header dialog's combo

@@ -732,6 +732,48 @@ if (args.Length >= 1 && args[0] == "--mouse")
     return;
 }
 
+// --razer                    detect Razer mice, print fw/serial/DPI/stages/poll/battery + the raw probe
+// --razer color RRGGBB       hold a colour for 3 s
+// --razer dpi X [Y]          set the live DPI (onboard)
+// --razer stages A X1 X2..   set the onboard DPI stages (A = active, 1-based)
+// --razer poll HZ            set the polling rate (125/500/1000)
+if (args.Length >= 1 && args[0] == "--razer")
+{
+    Console.WriteLine("-- probe (every Razer control collection, every transaction id) --");
+    Console.WriteLine(RazerHid.ProbeAll());
+    var razers = RazerHid.DetectAll();
+    if (razers.Count == 0) { Console.WriteLine("No supported Razer device claimed."); return; }
+    try
+    {
+        foreach (var d in razers.OfType<RazerHid>())
+        {
+            Console.WriteLine($"{d.Name}: {d.DiagnosticInfo()}");
+            if (args.Length >= 3 && args[1] == "color")
+            {
+                var col = Rgb.FromHex(args[2]);
+                Console.WriteLine($"  holding {col} for 3 s...");
+                d.SetColors(Enumerable.Repeat(col, d.LedCount).ToArray());
+                Thread.Sleep(3000);
+            }
+            else if (args.Length >= 3 && args[1] == "dpi")
+            {
+                int x = int.Parse(args[2]); int y = args.Length >= 4 ? int.Parse(args[3]) : x;
+                Console.WriteLine($"  set dpi {x}x{y}: {(d.SetDpi(x, y) ? "ok" : "FAILED")}  now {d.GetDpi()}");
+            }
+            else if (args.Length >= 4 && args[1] == "stages")
+            {
+                int active = int.Parse(args[2]);
+                var stages = args.Skip(3).Select(s => { int v = int.Parse(s); return (v, v); }).ToArray();
+                Console.WriteLine($"  set stages: {(d.SetDpiStages(active, stages) ? "ok" : "FAILED")}  now {d.DiagnosticInfo()}");
+            }
+            else if (args.Length >= 3 && args[1] == "poll")
+                Console.WriteLine($"  set poll {args[2]} Hz: {(d.SetPollingRate(int.Parse(args[2])) ? "ok" : "FAILED")}  now {d.GetPollingRate()} Hz");
+        }
+    }
+    finally { foreach (var d in razers) d.Dispose(); }
+    return;
+}
+
 // --scan: probe the motherboard's ARGB headers for connected LED segments.
 if (args.Length > 0 && args[0] == "--scan")
 {

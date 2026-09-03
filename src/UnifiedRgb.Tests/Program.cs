@@ -455,6 +455,47 @@ static string TempDir()
     Check(LianLiTinyuz.Decode(smallAfter).AsSpan().SequenceEqual(small), "tinyuz small buffer round-trips after the big one");
 }
 
+// --- Razer HID wire format (openrazer's report layout: 90 wire bytes behind report id 0) ---
+{
+    var r = RazerHid.NewReport(0x1F, 0x00, 0x81, 0x02);
+    Check(r.Length == 91 && r[0] == 0x00, "razer report: 91 bytes, report id 0");
+    Check(r[2] == 0x1F && r[6] == 0x02 && r[7] == 0x00 && r[8] == 0x81, "razer report: tid/size/class/cmd at wire 1/5/6/7");
+    RazerHid.Seal(r);
+    byte crc = 0; for (int i = 3; i <= 88; i++) crc ^= r[i];
+    Check(r[89] == crc && r[90] == 0, "razer report: crc = XOR of wire bytes 2..87 at wire 88, reserved 0");
+
+    var colors = Enumerable.Range(0, 13).Select(i => new Rgb((byte)i, (byte)(i * 2), (byte)(i * 3))).ToArray();
+    var f = RazerHid.CustomFrameReport(0x1F, 0, 0, 12, colors, 0);
+    Check(f[6] == 5 + 39 && f[7] == 0x0F && f[8] == 0x03, "razer custom frame: class 0F cmd 03, size 5 + 3n");
+    Check(f[9] == 0 && f[10] == 0 && f[11] == 0 && f[12] == 0 && f[13] == 12, "razer custom frame: row 0, cols 0..12");
+    Check(f[14] == 0 && f[14 + 3 * 12] == 12 && f[15 + 3 * 12] == 24 && f[16 + 3 * 12] == 36, "razer custom frame: RGB triplets from args[5]");
+    var chunk = RazerHid.CustomFrameReport(0x1F, 2, 25, 30, Enumerable.Repeat(Rgb.Red, 31).ToArray(), 25);
+    Check(chunk[11] == 2 && chunk[12] == 25 && chunk[13] == 30 && chunk[6] == 5 + 18, "razer custom frame: a later chunk carries its own row/start/stop");
+
+    var d = RazerHid.DpiReport(0x1F, 1600, 800);
+    Check(d[7] == 0x04 && d[8] == 0x05 && d[6] == 7 && d[9] == 0x01, "razer dpi: class 04 cmd 05, VARSTORE");
+    Check(d[10] == 0x06 && d[11] == 0x40 && d[12] == 0x03 && d[13] == 0x20, "razer dpi: X/Y big-endian");
+    Check(RazerHid.DpiReport(0x1F, 5, 99999)[11] == 100 && RazerHid.DpiReport(0x1F, 5, 99999)[12] == 0xAF, "razer dpi: clamped to 100..45000");
+
+    var stages = new (int, int)[] { (400, 400), (800, 800), (1600, 1600), (3200, 3200), (6400, 6400) };
+    var s = RazerHid.DpiStagesReport(0x1F, 3, stages);
+    Check(s[7] == 0x04 && s[8] == 0x06 && s[6] == 0x26 && s[10] == 3 && s[11] == 5, "razer dpi stages: class 04 cmd 06, active 3 of 5");
+    Check(s[12] == 1 && s[12 + 7] == 2 && s[12 + 28] == 5, "razer dpi stages: 7-byte entries numbered 1..5");
+    var back = RazerHid.DecodeDpiStages(s.AsSpan(9, 80));
+    Check(back.Active == 3 && back.Stages.Length == 5 && back.Stages[2] == (1600, 1600) && back.Stages[4] == (6400, 6400), "razer dpi stages: encode/decode round-trip");
+    Check(RazerHid.DpiStagesReport(0x1F, 9, stages.Take(2).ToArray())[10] == 2, "razer dpi stages: active clamped to the count");
+
+    Check(RazerHid.PollingHz(0x01) == 1000 && RazerHid.PollingHz(0x02) == 500 && RazerHid.PollingHz(0x08) == 125 && RazerHid.PollingHz(0x40) == 0, "razer polling: code -> Hz");
+    Check(RazerHid.PollingCode(1000) == 0x01 && RazerHid.PollingCode(500) == 0x02 && RazerHid.PollingCode(125) == 0x08 && RazerHid.PollingCode(2000) == 0, "razer polling: Hz -> code");
+
+    var pad = RazerHid.PadPositionsFor(20);
+    Check(pad.Length == 20 && pad.All(p => p.X is >= 0 and <= 1 && p.Y is >= 0 and <= 1), "razer pad: n perimeter positions inside the unit box");
+    Check(pad[0] == new LedPos(0, 0) && pad[5].Y == 0 && pad[10].X > 0.99f && pad.Distinct().Count() == 20, "razer pad: clockwise from the top-left corner, all distinct");
+    var (guess, src) = RazerHid.ResolveCount(0x0FFF, null);
+    Check(guess == 20 && src == "guessed", "razer pad: no config, no probe -> 20 guessed");
+    Check(RazerHid.ResolveCount(0x0FFF, 19) == (19, "probed") && RazerHid.ResolveCount(0x0FFF, 999).Count == RazerHid.MaxLeds, "razer pad: probe wins over the guess and is capped");
+}
+
 /*---------------- LianLiWireless.LoadLayout (#1) ----------------*/
 {
     // Real config path (LoadLayout reads AppPaths.Config): the user's file, if

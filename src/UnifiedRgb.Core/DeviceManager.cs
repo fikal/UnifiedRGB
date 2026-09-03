@@ -36,6 +36,7 @@ public sealed class DeviceManager : IDisposable
     static readonly Func<List<IRgbDevice>>[] MultiFactories =
     {
         EneDram.DetectAll,
+        RazerHid.DetectAll,
         Net.OpenRgbLink.DetectAll,
     };
 

@@ -95,6 +95,7 @@ measurements — is documented in
 | SteelSeries Apex keyboards | HID |
 | Gigabyte RGB Fusion mobos (IT5711) + ARGB headers | HID |
 | Logitech G403 HERO (HID++ 2.0) | HID |
+| Razer Basilisk V3 Pro (lighting, DPI stages, polling rate — no Synapse; HyperFlux V2 pad probed) | HID |
 | MSI GeForce GPUs | I²C via NvAPI |
 | ENE DRAM (G.Skill and friends) | SMBus via PawnIO |
 | Lian Li SL-INF wireless | WinUSB + RF |

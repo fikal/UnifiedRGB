@@ -83,7 +83,9 @@ public sealed class HeaderConfigDialog
         buttons.Children.Add(Dialogs.Btn("Cancel", false, () => win.Close()));
         buttons.Children.Add(Dialogs.Btn("Save && Rescan", true, () =>
         {
-            var newCfg = new HardwareConfig { GigabyteArgbHeaders = new() };
+            // Only the header list is edited here; every other section of
+            // hardware.json (the Razer LED counts) rides along untouched.
+            var newCfg = new HardwareConfig { GigabyteArgbHeaders = new(), RazerLedCounts = cfg.RazerLedCounts };
             for (int i = 0; i < rows.Count; i++)
             {
                 var (on, name, leds, order) = rows[i];

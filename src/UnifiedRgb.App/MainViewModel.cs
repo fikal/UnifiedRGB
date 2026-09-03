@@ -847,7 +847,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             try
             {
                 _selected = value;
-                OnChanged(); OnChanged(nameof(HasSelection)); OnChanged(nameof(ShowPreview)); OnChanged(nameof(ShowGenericPreview)); OnChanged(nameof(ShowLianEditor)); OnChanged(nameof(IsGigabyteSelected)); OnChanged(nameof(ShowLianSpeed)); OnChanged(nameof(LianSpeedScale)); OnChanged(nameof(LianSpeedText)); OnChanged(nameof(ShowLianUni)); OnChanged(nameof(LianUniFanCount)); OnChanged(nameof(LianUniChannel)); OnChanged(nameof(LianUniChannelOptions)); OnChanged(nameof(ShowLianUniChannel));
+                OnChanged(); OnChanged(nameof(HasSelection)); OnChanged(nameof(ShowPreview)); OnChanged(nameof(ShowGenericPreview)); OnChanged(nameof(ShowLianEditor)); OnChanged(nameof(IsGigabyteSelected)); OnChanged(nameof(IsRazerSelected)); OnChanged(nameof(ShowLianSpeed)); OnChanged(nameof(LianSpeedScale)); OnChanged(nameof(LianSpeedText)); OnChanged(nameof(ShowLianUni)); OnChanged(nameof(LianUniFanCount)); OnChanged(nameof(LianUniChannel)); OnChanged(nameof(LianUniChannelOptions)); OnChanged(nameof(ShowLianUniChannel));
                 // Pills follow the device's fan list (wireless carries the
                 // user's arranged stack order; wired is Fan 1..N).
                 LianFanNames = (value as ILianFanDevice)?.LianFanNames.ToList() ?? new List<string>();
@@ -1378,6 +1378,11 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             // black base swaps to white, the channel starts.
             ApplyFxRange(dev, 0, dev.LedCount, fx, choice);
         }
+        // The whole-device channel now owns every fan; a fan/part selection's
+        // own sub-target was just retired to Static, so the pill would read
+        // Static while the fans animate. Land on "All fans, whole fan", whose
+        // state IS the running channel.
+        LandOnWholeLianDevice();
         // Synchronized restart: everything jumps to the top of the cycle together
         // (red for rainbow), including devices already running it, so All devices
         // reads as one coordinated start rather than a continuation.
@@ -1448,6 +1453,22 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         if (SelectedDevice is ILianFanDevice and IRgbDevice dev && _lianSel is { Fan: 0, Part: 0 }
             && _engine.ChannelsFor(dev).Any(c => c.Offset == 0 && c.Count == dev.LedCount))
             SelectLianPart(-1);
+    }
+
+    /// <summary>"All devices" just started a whole-device channel on the
+    /// selected Lian Li device: whatever fan/part was selected, its own
+    /// sub-target no longer runs anything, so move the selection to
+    /// "All fans, whole fan" — the target whose state is that channel — and
+    /// the pill shows the effect the fans are actually playing.</summary>
+    void LandOnWholeLianDevice()
+    {
+        if (SelectedDevice is ILianFanDevice and IRgbDevice dev
+            && (_lianSel.Fan != -1 || _lianSel.Part != 0)
+            && _engine.ChannelsFor(dev).Any(c => c.Offset == 0 && c.Count == dev.LedCount))
+        {
+            _lianSel.Part = 0;
+            SelectLianPart(-1);
+        }
     }
 
     public void Dispose()

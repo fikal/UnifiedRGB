@@ -27,6 +27,9 @@ public static class OpenRgbLink
         (0x048D, 0x5711),          // Gigabyte RGB Fusion (X870E)
         (0x048D, 0x8297),          // Gigabyte RGB Fusion (IT8297)
         (0x0416, 0x5302),          // Thermalright pump LCD
+        (0x1532, 0x00AA),          // Razer Basilisk V3 Pro (wired)
+        (0x1532, 0x00AB),          // Razer Basilisk V3 Pro (HyperSpeed dongle)
+        (0x1532, 0x00CF),          // Razer HyperFlux V2 pad (paired mouse behind it)
     };
 
     /// <summary>Names of remote devices skipped during the last detect —
