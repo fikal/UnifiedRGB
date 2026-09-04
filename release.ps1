@@ -27,6 +27,13 @@ if ((Get-Content $csproj -Raw) -notmatch '<Version>') { throw "$csproj has no <V
 (Get-Content $csproj) -replace '<Version>.*</Version>', "<Version>$Version</Version>" |
     Set-Content -Encoding utf8 $csproj
 
+# The website prints the current version in its download blurb; stamp it here so
+# unifiedrgb.com can never advertise a version the releases page has moved past.
+$site = "docs/index.html"
+if ((Get-Content $site -Raw) -notmatch '<span id="ver">') { throw "$site has no <span id=\"ver\"> to stamp" }
+(Get-Content $site) -replace '<span id="ver">[^<]*</span>', "<span id=`"ver`">v$Version</span>" |
+    Set-Content -Encoding utf8 $site
+
 $asset = "UnifiedRGB-v$Version.exe"
 try {
     # Tests (console harness; exit code = failure count. The csproj also wires the
@@ -59,7 +66,7 @@ catch {
     # Every pre-commit failure leaves the tree exactly as it was (the old script
     # only reverted the stamp on a test failure, so the next run tripped the
     # clean-tree check on a stale stamp / stray asset).
-    git checkout -- $csproj
+    git checkout -- $csproj $site
     Remove-Item $asset, "$asset.sha256" -ErrorAction SilentlyContinue
     throw
 }
@@ -71,7 +78,7 @@ catch {
 # Windows PowerShell 5.1 a native command's stderr becomes a terminating error
 # when the script's output is redirected (e.g. `.\release.ps1 2>&1`) - which
 # aborted a run right after a SUCCESSFUL push, before the release was created.
-git add $csproj
+git add $csproj $site
 git commit -q -m "v$Version"
 if ($LASTEXITCODE -ne 0) { throw "git commit failed" }
 git push -q
