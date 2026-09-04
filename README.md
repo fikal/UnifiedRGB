@@ -8,6 +8,8 @@ Keyboards, mice, motherboard, GPU, DRAM, fans, and the pump LCD — driven
 natively from a single tray app that idles at ~0% CPU. No vendor launchers,
 no accounts, no telemetry.
 
+### [unifiedrgb.com](https://unifiedrgb.com)
+
 [![Release](https://img.shields.io/github/v/release/fikal/UnifiedRGB)](https://github.com/fikal/UnifiedRGB/releases/latest)
 [![Build](https://img.shields.io/github/actions/workflow/status/fikal/UnifiedRGB/build.yml?branch=main)](https://github.com/fikal/UnifiedRGB/actions)
 [![License: GPL v2](https://img.shields.io/badge/license-GPLv2-blue)](LICENSE)
