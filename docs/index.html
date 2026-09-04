@@ -145,8 +145,12 @@
   <div class="wrap">
     <h2>How it compares</h2>
     <p class="sub">
-      Every claim below is about what the software does, not how good it is. Where a
-      rival is better, that's on this page too — see
+      These are the other <strong>cross-vendor</strong> tools — the ones that try to
+      drive your whole machine rather than one company's products. Single-brand
+      software (iCUE, Synapse, L-Connect, RGB Fusion, Armoury Crate) isn't compared
+      here: it only lights its own hardware, which is the pile this exists to replace.
+      Every claim is about what the software does, not how good it is. Where a rival
+      is better, that's on this page too — see
       <a href="#others-win">where the others win</a>.
     </p>
 
@@ -158,7 +162,8 @@
             <th class="me">UnifiedRGB</th>
             <th>OpenRGB</th>
             <th>SignalRGB</th>
-            <th>Vendor apps<br><small>iCUE · Synapse · L-Connect · RGB Fusion</small></th>
+            <th>Artemis</th>
+            <th>Aurora</th>
           </tr>
         </thead>
         <tbody>
@@ -168,83 +173,95 @@
             <td class="yes">Free</td>
             <td class="warn">Free tier + paid Pro</td>
             <td class="yes">Free</td>
+            <td class="yes">Free</td>
           </tr>
           <tr>
-            <th>Open source</th>
-            <td class="me yes">Yes — GPLv2</td>
-            <td class="yes">Yes — GPLv2</td>
-            <td class="no">No</td>
-            <td class="no">No</td>
+            <th>License</th>
+            <td class="me yes">GPLv2 open source</td>
+            <td class="yes">GPLv2 open source</td>
+            <td class="no">Closed source</td>
+            <td class="warn">PolyForm Noncommercial<br><small>source available, non-commercial</small></td>
+            <td class="yes">MIT open source</td>
           </tr>
           <tr>
-            <th>Controls other brands</th>
+            <th>Lighting across brands</th>
             <td class="me yes">Yes</td>
             <td class="yes">Yes</td>
             <td class="yes">Yes</td>
-            <td class="no">Own brand only</td>
+            <td class="yes">Yes</td>
+            <td class="yes">Yes</td>
           </tr>
           <tr>
-            <th>Devices supported</th>
+            <th>Breadth of devices</th>
             <td class="me warn">~12 native families<br>+ OpenRGB bridge</td>
             <td class="yes">1,200+ devices</td>
             <td class="yes">Very large library</td>
-            <td class="warn">Its own products</td>
+            <td class="warn">Per-brand plugins</td>
+            <td class="warn">Major peripheral brands</td>
+          </tr>
+          <tr>
+            <th>How it reaches hardware</th>
+            <td class="me yes">Directly — HID, SMBus, I²C</td>
+            <td class="yes">Directly</td>
+            <td class="yes">Its own drivers</td>
+            <td class="warn">RGB.NET plugins</td>
+            <td class="warn">SDK wrappers<br><small>Colore, RGB.NET</small></td>
           </tr>
           <tr>
             <th>Fan curves</th>
             <td class="me yes">Yes, free</td>
             <td class="no">No — lighting only</td>
             <td class="warn">Pro feature</td>
-            <td class="yes">Yes, own hardware</td>
+            <td class="no">No</td>
+            <td class="no">No</td>
           </tr>
           <tr>
-            <th>Temp / system monitoring</th>
+            <th>Temps / system monitoring</th>
             <td class="me yes">Yes, free</td>
             <td class="no">No</td>
             <td class="warn">Pro feature</td>
-            <td class="yes">Yes</td>
+            <td class="no">No</td>
+            <td class="no">No</td>
           </tr>
           <tr>
             <th>LCD screen dashboards</th>
             <td class="me yes">Yes, free</td>
             <td class="no">No</td>
-            <td class="warn">Custom LCD faces are Pro</td>
-            <td class="yes">Yes, own hardware</td>
+            <td class="warn">Custom faces are Pro</td>
+            <td class="no">No</td>
+            <td class="no">No</td>
           </tr>
           <tr>
             <th>Game lighting sync</th>
             <td class="me yes">Chroma games, no Razer software</td>
             <td class="warn">Via third-party plugins</td>
             <td class="yes">Many integrations</td>
-            <td class="warn">Synapse only</td>
+            <td class="yes">Deep profile engine</td>
+            <td class="yes">Its whole specialty</td>
           </tr>
           <tr>
             <th>Account to use it</th>
             <td class="me yes">Never</td>
             <td class="yes">Never</td>
             <td class="warn">Sign-in for Pro</td>
-            <td class="warn">Optional / guest mode</td>
+            <td class="yes">Never</td>
+            <td class="yes">Never</td>
           </tr>
           <tr>
             <th>Ads or upsells in the UI</th>
             <td class="me yes">None</td>
             <td class="yes">None</td>
             <td class="warn">Ad-free is a Pro feature</td>
-            <td class="warn">Varies by vendor</td>
+            <td class="yes">None</td>
+            <td class="yes">None</td>
           </tr>
           <tr>
             <th>Platforms</th>
             <td class="me warn">Windows 10/11</td>
             <td class="yes">Windows · Linux · macOS</td>
             <td class="warn">Windows</td>
-            <td class="warn">Mostly Windows</td>
-          </tr>
-          <tr>
-            <th>Install footprint</th>
-            <td class="me yes">One portable .exe</td>
-            <td class="yes">Portable or installer</td>
-            <td class="warn">Installer + services</td>
-            <td class="warn">Installer + services</td>
+            <td class="warn">Windows</td>
+            <td class="warn">Windows</td>
           </tr>
         </tbody>
       </table>
@@ -272,10 +289,21 @@
           your whole desk as a single image — is genuinely slicker than anything here.
         </li>
         <li>
-          <strong>Vendor apps</strong> are the only way to get firmware updates,
-          onboard-memory profiles that persist with no software running, macro
-          engines, and device-specific settings like mouse DPI stages or keyboard
-          actuation points. They also come with actual support staff.
+          <strong>Artemis</strong> has the most powerful customisation engine of
+          anything here — layers, conditions, and data bindings that drive lighting
+          from live values, closer to a visual scripting environment than an effect
+          picker. Nothing in UnifiedRGB approaches that depth.
+        </li>
+        <li>
+          <strong>Aurora</strong> owns per-game lighting. It reads real in-game state
+          for specific titles rather than sampling the screen, which is a different
+          and better thing when a game is supported.
+        </li>
+        <li>
+          <strong>Vendor apps</strong>, for all the bloat, remain the only way to get
+          firmware updates, onboard-memory profiles that persist with no software
+          running, macro engines, and device-specific settings like mouse DPI stages
+          or keyboard actuation points. They also come with actual support staff.
         </li>
         <li>
           <strong>UnifiedRGB is young.</strong> It went public in September 2026. The
