@@ -30,7 +30,7 @@ if ((Get-Content $csproj -Raw) -notmatch '<Version>') { throw "$csproj has no <V
 # The website prints the current version in its download blurb; stamp it here so
 # unifiedrgb.com can never advertise a version the releases page has moved past.
 $site = "docs/index.html"
-if ((Get-Content $site -Raw) -notmatch '<span id="ver">') { throw "$site has no <span id=\"ver\"> to stamp" }
+if ((Get-Content $site -Raw) -notmatch '<span id="ver">') { throw "$site is missing the version span to stamp" }
 (Get-Content $site) -replace '<span id="ver">[^<]*</span>', "<span id=`"ver`">v$Version</span>" |
     Set-Content -Encoding utf8 $site
 
@@ -59,6 +59,34 @@ try {
     if ($fv -ne "$Version.0") { throw "Built exe is $fv, expected $Version.0 - stale artifact?" }
 
     Copy-Item $exe.FullName $asset -Force
+
+    # Code signing via Azure Artifact Signing (formerly Trusted Signing).
+    # Inert until %APPDATA%\UnifiedRgb\signing.json exists, so an unsigned
+    # release still works exactly as before. That file holds:
+    #   { "endpoint": "https://xxx.codesigning.azure.net",
+    #     "account": "<signing account>", "profile": "<certificate profile>",
+    #     "dlib": "C:\path\to\Azure.CodeSigning.Dlib.dll" }
+    # Signing rewrites the file, so the SHA-256 below is taken AFTER it.
+    $signCfg = Join-Path $env:APPDATA "UnifiedRgb\signing.json"
+    if (Test-Path $signCfg) {
+        $cfg = Get-Content $signCfg -Raw | ConvertFrom-Json
+        $meta = Join-Path $env:TEMP "urgb-signing-metadata.json"
+        @{ Endpoint = $cfg.endpoint
+           CodeSigningAccountName = $cfg.account
+           CertificateProfileName = $cfg.profile } | ConvertTo-Json | Set-Content -Encoding utf8 $meta
+        $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -like "*\x64\*" } | Sort-Object FullName -Descending | Select-Object -First 1
+        if (-not $signtool) { throw "signtool.exe not found; install the Windows SDK signing tools" }
+        & $signtool.FullName sign /v /fd SHA256 /tr "http://timestamp.acs.microsoft.com" /td SHA256 /dlib $cfg.dlib /dmdf $meta $asset
+        if ($LASTEXITCODE -ne 0) { throw "signing failed" }
+        & $signtool.FullName verify /pa $asset
+        if ($LASTEXITCODE -ne 0) { throw "signature verification failed" }
+        Write-Host "signed $asset" -ForegroundColor Green
+    }
+    else {
+        Write-Host "no signing.json, publishing UNSIGNED" -ForegroundColor Yellow
+    }
+
     $sha = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
     "$sha  $asset" | Set-Content -Encoding ascii "$asset.sha256"
 }

@@ -570,6 +570,11 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public ObservableCollection<IRgbDevice> Devices { get; } = new();
     public ObservableCollection<LeftItem> DeviceItems { get; } = new();
+
+    /// <summary>Detection came up empty. A first-time user on unsupported
+    /// hardware would otherwise face a blank sidebar with nothing to act on,
+    /// so the list shows what to try next instead.</summary>
+    public bool NoDevicesFound => DeviceItems.Count == 0;
     public ObservableCollection<LeftItem> SystemItems { get; } = new();
     /// <summary>Both nav sections flattened (selection lookups).</summary>
     IEnumerable<LeftItem> AllLeftItems => DeviceItems.Concat(SystemItems);

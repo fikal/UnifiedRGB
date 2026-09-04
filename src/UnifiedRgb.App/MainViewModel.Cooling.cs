@@ -46,5 +46,6 @@ public sealed partial class MainViewModel
                     && i.IsCooling == prev.IsCooling && i.IsDisabled == prev.IsDisabled))
             ?? DeviceItems.FirstOrDefault() ?? SystemItems.FirstOrDefault(),
             closeSettings: false);
+        OnChanged(nameof(NoDevicesFound));
     }
 }

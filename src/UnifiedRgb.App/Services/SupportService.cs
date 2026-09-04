@@ -76,7 +76,7 @@ public sealed class SupportService
                 "**What happened?**\n\n" +
                 (string.IsNullOrWhiteSpace(note) ? "(describe the problem)" : note) + "\n\n" +
                 "**Diagnostic bundle**\n\n" +
-                $"`{bundleFileName}` was just saved to your Desktop — drag it into this box.\n\n" +
+                $"`{bundleFileName}` was just saved to your Desktop. Drag it into this box.\n\n" +
                 "**Build**\n" +
                 $"- UnifiedRGB {AppVersion}\n" +
                 $"- Windows {Environment.OSVersion.Version}\n";
