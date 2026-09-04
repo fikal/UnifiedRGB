@@ -1,6 +1,6 @@
-/* UnifiedRGB site — no webfonts, no trackers, no third-party requests.
-   The privacy section says the site loads nothing from anyone else; keep it
-   that way (system font stack, local images only). */
+/* UnifiedRGB site. No webfonts, no trackers, no third-party requests.
+   The privacy section says the site loads nothing from anyone else, so keep it
+   that way: system font stack, local images only. */
 
 :root {
   --bg: #0b0d12;
@@ -100,6 +100,19 @@ code {
 .btn.ghost { border-color: var(--line); color: var(--fg); background: var(--card); }
 .btn.ghost:hover { border-color: #39415a; }
 .fineprint { margin: 18px 0 0; font-size: 13.5px; color: var(--dim); }
+
+/* hero stat chips: scannable anchors so the page can be skimmed */
+.stats {
+  list-style: none; display: flex; flex-wrap: wrap; justify-content: center;
+  gap: 12px; margin: 30px 0 0; padding: 0;
+}
+.stats li {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 11px; padding: 12px 22px;
+  font-size: 12.5px; color: var(--dim); letter-spacing: .02em;
+}
+.stats b { font-size: 1.35rem; color: var(--fg); font-weight: 750; letter-spacing: -.02em; }
 
 .shot {
   display: block; width: 100%; height: auto;

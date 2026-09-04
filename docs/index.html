@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>UnifiedRGB — All your RGB. One app. Zero bloat.</title>
+<title>UnifiedRGB: All your RGB. One app. Zero bloat.</title>
 <meta name="description" content="Free, open-source Windows app for RGB lighting, fan curves, and pump-LCD dashboards across every brand in your PC. No account, no telemetry, no subscription.">
 <link rel="canonical" href="https://unifiedrgb.com/">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://unifiedrgb.com/">
-<meta property="og:title" content="UnifiedRGB — All your RGB. One app. Zero bloat.">
-<meta property="og:description" content="Lighting, fan curves, and pump-LCD dashboards for every brand in your PC — from one tray app that idles at ~0% CPU. Open source, GPLv2.">
+<meta property="og:title" content="UnifiedRGB: All your RGB. One app. Zero bloat.">
+<meta property="og:description" content="Lighting, fan curves, and pump-LCD dashboards for every brand in your PC, from one tray app that idles near zero. Open source, GPLv2.">
 <meta property="og:image" content="https://unifiedrgb.com/img/social-preview.png">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='11' fill='none' stroke='%23a855f7' stroke-width='7'/></svg>">
@@ -34,39 +34,43 @@
   <div class="wrap">
     <h1>All your RGB.<br>One app. <span class="grad">Zero bloat.</span></h1>
     <p class="lede">
-      Lighting, fan curves, and pump-LCD dashboards for every brand in your PC —
-      driven natively by a single tray app that idles at roughly <strong>0% CPU</strong>.
-      No vendor launchers stacked four deep. No account. No telemetry. No subscription.
+      Lighting, fan curves, and pump-LCD dashboards for every brand in your PC.
+      One tray app instead of four vendor launchers. No account, no telemetry,
+      no subscription.
     </p>
     <div class="cta">
       <a class="btn primary" href="https://github.com/fikal/UnifiedRGB/releases/latest">Download for Windows</a>
       <a class="btn ghost" href="https://github.com/fikal/UnifiedRGB">View source</a>
     </div>
     <p class="fineprint">
-      <span id="ver">v1.0.20</span> · one self-contained <code>.exe</code>, no installer,
-      no .NET needed · free and <a href="https://github.com/fikal/UnifiedRGB/blob/main/LICENSE">GPLv2</a> forever
+      <span id="ver">v1.0.20</span> · one self-contained <code>.exe</code> · no installer,
+      no .NET · free and <a href="https://github.com/fikal/UnifiedRGB/blob/main/LICENSE">GPLv2</a>
     </p>
+
+    <ul class="stats">
+      <li><b>58</b>effects</li>
+      <li><b>&lt;5%</b>of one core</li>
+      <li><b>0</b>accounts</li>
+      <li><b>1</b>file to run</li>
+    </ul>
+
     <img class="shot hero-shot" src="img/keyboard.png" alt="UnifiedRGB controlling per-key lighting on a Corsair keyboard, with a live preview of every LED" loading="eager">
   </div>
 </section>
 
 <section id="features" class="wrap section">
-  <h2>What it actually does</h2>
+  <h2>What it does</h2>
 
   <div class="feat">
     <div class="feat-text">
-      <h3>58 effects, on any device or any zone</h3>
+      <h3>58 effects, any device, any zone</h3>
       <p>
-        Rainbows, meteors, plasma, aurora, candle flicker, rain, Matrix, starfield,
-        police, heartbeat — plus audio-reactive bars and pulses on event-driven
-        WASAPI capture that react the instant sound does. Add whole-screen ambient,
-        Wallpaper Engine capture, and Razer Chroma game sync
-        <em>without Razer software installed</em>.
+        Rainbows, meteors, plasma, aurora, candle, rain, Matrix. Audio-reactive
+        bars and pulses that move the instant sound does. Screen ambient,
+        Wallpaper Engine capture, and Razer Chroma game sync with no Razer
+        software installed.
       </p>
-      <p>
-        Apply an effect to everything at once, to one device, or to a single fan
-        ring. Every part animates independently.
-      </p>
+      <p>Run one effect everywhere, or a different one on each fan ring.</p>
     </div>
     <img class="shot" loading="lazy" src="img/lianli-zones.png" alt="Lian Li SL-Infinity fans running Rainbow Wave with per-ring zone selection">
   </div>
@@ -75,10 +79,10 @@
     <div class="feat-text">
       <h3>Colors you actually chose</h3>
       <p>
-        A real wheel with brightness, hex and RGB entry, and your own saved swatches.
-        The <strong>Palette Library</strong> keeps curated presets and your own sets,
-        and imports straight from a <a href="https://coolors.co">coolors.co</a> URL
-        or a pasted list of hex codes.
+        A real wheel, with brightness, hex, and RGB entry. The Palette Library
+        keeps presets and your own sets, and imports straight from a
+        <a href="https://coolors.co">coolors.co</a> link or a pasted list of hex
+        codes.
       </p>
     </div>
     <img class="shot" loading="lazy" src="img/palette-library.png" alt="The Palette Library showing preset palettes, save-current, and coolors.co import">
@@ -88,10 +92,9 @@
     <div class="feat-text">
       <h3>A dashboard on your pump LCD</h3>
       <p>
-        Drag-and-drop designer for Thermalright 240×320 pump displays: CPU and GPU
-        temps, clock faces, date, fan RPM, network throughput, weather, and free
-        text — over your own image or GIF background, with multiple screens and a
-        scene sequencer.
+        Drag CPU and GPU temps, clocks, date, fan RPM, network throughput, and
+        weather onto a Thermalright 240&times;320 screen. Put your own image or
+        GIF behind them. Build several screens and sequence them.
       </p>
     </div>
     <img class="shot" loading="lazy" src="img/lcd-designer.png" alt="The LCD designer placing temperature and clock widgets over a custom background">
@@ -101,14 +104,11 @@
     <div class="feat-text">
       <h3>Fan curves that respect your other tools</h3>
       <p>
-        Temperature-driven curves that follow the CPU, the GPU, or whichever is
-        hotter — with live gauges, per-fan profiles, a drag-to-edit editor, and a
-        thermal failsafe that hands control back to the BIOS if anything goes wrong.
+        Curves follow the CPU, the GPU, or whichever runs hotter. Live gauges,
+        per-fan profiles, drag-to-edit points, and a failsafe that hands control
+        back to the BIOS if anything goes wrong.
       </p>
-      <p>
-        Fans you leave on <em>Auto</em> are never touched, so your BIOS profiles and
-        GPU tools keep working exactly as they did.
-      </p>
+      <p>Fans left on Auto are never touched, so your BIOS profiles keep working.</p>
     </div>
     <img class="shot" loading="lazy" src="img/cooling.png" alt="The Cooling panel with CPU and GPU gauges, a fan list, and a drag-to-edit curve editor">
   </div>
@@ -117,25 +117,25 @@
     <div class="card">
       <h4>Fast is a feature</h4>
       <p>
-        Under 5% of one core with the window open, near-silent in the tray, and
-        almost zero allocation in steady state. Every driver de-duplicates frames at
-        the write boundary so your USB bus isn't flooded with identical packets.
+        Under 5% of one core with the window open, near silent in the tray.
+        Drivers skip duplicate frames, so your USB bus never carries packets that
+        change nothing.
       </p>
     </div>
     <div class="card">
-      <h4>Profiles &amp; hotkeys</h4>
+      <h4>Profiles and hotkeys</h4>
       <p>
-        Save setups and switch them with <code>Ctrl+Alt+1…9</code> — hotkeys that
-        work inside games. Per-app auto-switching, night mode with an idle gate,
-        master brightness, and per-device disable.
+        Save setups, switch them with <code>Ctrl+Alt+1…9</code>, even inside
+        games. Per-app auto-switching, night mode, master brightness, per-device
+        disable.
       </p>
     </div>
     <div class="card">
-      <h4>Updates without the launcher</h4>
+      <h4>Updates without a launcher</h4>
       <p>
-        One click, straight from GitHub Releases, verified against the published
-        SHA-256 before it swaps itself. Don't want the check? Turn it off and the app
-        makes no network requests at all.
+        One click from GitHub Releases, checked against the published SHA-256
+        before it swaps itself. Turn the check off and the app makes no network
+        requests at all.
       </p>
     </div>
   </div>
@@ -145,13 +145,14 @@
   <div class="wrap">
     <h2>How it compares</h2>
     <p class="sub">
-      These are the other <strong>cross-vendor</strong> tools — the ones that try to
-      drive your whole machine rather than one company's products. Single-brand
-      software (iCUE, Synapse, L-Connect, RGB Fusion, Armoury Crate) isn't compared
-      here: it only lights its own hardware, which is the pile this exists to replace.
-      Every claim is about what the software does, not how good it is. Where a rival
-      is better, that's on this page too — see
-      <a href="#others-win">where the others win</a>.
+      These are the other cross-vendor tools, built to drive your whole machine
+      rather than one company's products. Single-brand software (iCUE, Synapse,
+      L-Connect, RGB Fusion, Armoury Crate) isn't compared here, because it only
+      lights its own hardware. That's the pile this replaces.
+    </p>
+    <p class="sub">
+      Every claim is about what the software does, not how good it is. Where a
+      rival wins, that's on this page too.
     </p>
 
     <div class="tablewrap">
@@ -171,17 +172,17 @@
             <th>Price</th>
             <td class="me yes">Free, all features</td>
             <td class="yes">Free</td>
-            <td class="warn">Free tier + paid Pro</td>
+            <td class="warn">Free tier, paid Pro</td>
             <td class="yes">Free</td>
             <td class="yes">Free</td>
           </tr>
           <tr>
             <th>License</th>
-            <td class="me yes">GPLv2 open source</td>
-            <td class="yes">GPLv2 open source</td>
+            <td class="me yes">GPLv2, open source</td>
+            <td class="yes">GPLv2, open source</td>
             <td class="no">Closed source</td>
-            <td class="warn">PolyForm Noncommercial<br><small>source available, non-commercial</small></td>
-            <td class="yes">MIT open source</td>
+            <td class="warn">PolyForm Noncommercial<br><small>source available</small></td>
+            <td class="yes">MIT, open source</td>
           </tr>
           <tr>
             <th>Lighting across brands</th>
@@ -193,7 +194,7 @@
           </tr>
           <tr>
             <th>Breadth of devices</th>
-            <td class="me warn">~12 native families<br>+ OpenRGB bridge</td>
+            <td class="me warn">~12 native families,<br>plus the OpenRGB bridge</td>
             <td class="yes">1,200+ devices</td>
             <td class="yes">Very large library</td>
             <td class="warn">Per-brand plugins</td>
@@ -201,7 +202,7 @@
           </tr>
           <tr>
             <th>How it reaches hardware</th>
-            <td class="me yes">Directly — HID, SMBus, I²C</td>
+            <td class="me yes">Directly (HID, SMBus, I²C)</td>
             <td class="yes">Directly</td>
             <td class="yes">Its own drivers</td>
             <td class="warn">RGB.NET plugins</td>
@@ -209,22 +210,22 @@
           </tr>
           <tr>
             <th>Uses OpenRGB for the rest</th>
-            <td class="me yes">Bundled and automatic<br><small>managed instance; devices we drive natively are excluded from it</small></td>
+            <td class="me yes">Bundled and automatic<br><small>devices we drive natively are excluded from it</small></td>
             <td>It <em>is</em> OpenRGB</td>
-            <td class="no">No — conflicts with it</td>
-            <td class="warn">Yes — you install OpenRGB<br><small>and start its SDK server</small></td>
-            <td class="warn">Yes — you install OpenRGB<br><small>and start its SDK server</small></td>
+            <td class="no">No, conflicts with it</td>
+            <td class="warn">Yes, once you install<br>OpenRGB and start its server</td>
+            <td class="warn">Yes, once you install<br>OpenRGB and start its server</td>
           </tr>
           <tr>
             <th>Fan curves</th>
             <td class="me yes">Yes, free</td>
-            <td class="no">No — lighting only</td>
+            <td class="no">No, lighting only</td>
             <td class="warn">Pro feature</td>
             <td class="no">No</td>
             <td class="no">No</td>
           </tr>
           <tr>
-            <th>Temps / system monitoring</th>
+            <th>Temps and monitoring</th>
             <td class="me yes">Yes, free</td>
             <td class="no">No</td>
             <td class="warn">Pro feature</td>
@@ -242,7 +243,7 @@
           <tr>
             <th>Game lighting sync</th>
             <td class="me yes">Chroma games, no Razer software</td>
-            <td class="warn">Via third-party plugins</td>
+            <td class="warn">Third-party plugins</td>
             <td class="yes">Many integrations</td>
             <td class="yes">Deep profile engine</td>
             <td class="yes">Its whole specialty</td>
@@ -256,7 +257,7 @@
             <td class="yes">Never</td>
           </tr>
           <tr>
-            <th>Ads or upsells in the UI</th>
+            <th>Ads or upsells</th>
             <td class="me yes">None</td>
             <td class="yes">None</td>
             <td class="warn">Ad-free is a Pro feature</td>
@@ -266,7 +267,7 @@
           <tr>
             <th>Platforms</th>
             <td class="me warn">Windows 10/11</td>
-            <td class="yes">Windows · Linux · macOS</td>
+            <td class="yes">Windows, Linux, macOS</td>
             <td class="warn">Windows</td>
             <td class="warn">Windows</td>
             <td class="warn">Windows</td>
@@ -278,46 +279,39 @@
     <div id="others-win" class="honest">
       <h3>Where the others win</h3>
       <p>
-        If one of these matters more to you than everything above, use the other
-        tool — that's the honest answer, and you can run UnifiedRGB alongside most
-        of them.
+        If one of these matters more to you, use that tool. You can run
+        UnifiedRGB alongside most of them.
       </p>
       <ul>
         <li>
-          <strong>OpenRGB</strong> supports vastly more hardware and runs on Linux
-          and macOS. If your gear isn't in our list, OpenRGB probably has it — which
-          is exactly why UnifiedRGB bridges to it instead of pretending otherwise.
-          Parts of our Gigabyte and Logitech drivers are ports of OpenRGB's GPLv2
-          code, and this project is GPLv2 because of it.
+          <strong>OpenRGB</strong> supports far more hardware and runs on Linux
+          and macOS. If your gear isn't on our list, OpenRGB probably has it.
+          Parts of our Gigabyte and Logitech drivers are ports of its GPLv2 code,
+          which is why this project is GPLv2.
         </li>
         <li>
-          <strong>SignalRGB</strong> has a much larger device library, a huge
-          catalogue of effects and community lightscripts, and more per-game
-          integrations. Its multi-device "canvas" model — one effect painted across
-          your whole desk as a single image — is genuinely slicker than anything here.
+          <strong>SignalRGB</strong> has a bigger device library, a huge
+          catalogue of effects, and more per-game integrations. Its canvas model,
+          one effect painted across your whole desk, is slicker than anything here.
         </li>
         <li>
-          <strong>Artemis</strong> has the most powerful customisation engine of
-          anything here — layers, conditions, and data bindings that drive lighting
-          from live values, closer to a visual scripting environment than an effect
-          picker. Nothing in UnifiedRGB approaches that depth.
+          <strong>Artemis</strong> has the deepest customisation engine of the
+          group. Layers, conditions, and data bindings put it closer to visual
+          scripting than an effect picker.
         </li>
         <li>
-          <strong>Aurora</strong> owns per-game lighting. It reads real in-game state
-          for specific titles rather than sampling the screen, which is a different
-          and better thing when a game is supported.
+          <strong>Aurora</strong> owns per-game lighting. It reads real in-game
+          state for supported titles instead of sampling the screen.
         </li>
         <li>
-          <strong>Vendor apps</strong>, for all the bloat, remain the only way to get
-          firmware updates, onboard-memory profiles that persist with no software
-          running, macro engines, and device-specific settings like mouse DPI stages
-          or keyboard actuation points. They also come with actual support staff.
+          <strong>Vendor apps</strong> remain the only route to firmware updates,
+          onboard profiles that survive with no software running, macros, DPI
+          stages, and actuation points. They also have support staff.
         </li>
         <li>
-          <strong>UnifiedRGB is young.</strong> It went public in September 2026. The
-          device list is short, the binary is unsigned, and the community is small.
-          If you need something battle-tested across thousands of configurations
-          today, it isn't this — yet.
+          <strong>UnifiedRGB is young.</strong> Public since September 2026.
+          Short device list, unsigned binary, small community. If you need
+          something proven across thousands of builds today, this isn't it yet.
         </li>
       </ul>
     </div>
@@ -325,18 +319,15 @@
     <div class="aside">
       <h3>What about JackNet RGB Sync?</h3>
       <p>
-        It's gone — <a href="https://rgbsync.com/">rgbsync.com</a> now says plainly
-        that "JackNet is retired," and its team went on to build SignalRGB. Worth
-        knowing if you're still searching for it.
+        It's retired. <a href="https://rgbsync.com/">rgbsync.com</a> says so
+        outright, and its team went on to build SignalRGB.
       </p>
       <p>
-        It's also a useful illustration of the difference in approach. JackNet
-        synced your lighting by driving the vendor apps through their SDKs, so iCUE,
-        Aura, Synapse, and the rest all had to stay installed and running underneath
-        it. UnifiedRGB talks to the hardware itself — the vendor software isn't
-        required, and in most cases shouldn't be running at all. That's more work per
-        device, which is why the supported list is shorter, but it's also why there's
-        nothing else left running on your machine.
+        It also shows the difference in approach. JackNet drove the vendor apps
+        through their SDKs, so iCUE, Aura, and Synapse all had to stay installed
+        underneath it. UnifiedRGB talks to the hardware itself. That's more work
+        per device, which is why our list is shorter, and it's why nothing else
+        is left running on your machine.
       </p>
     </div>
   </div>
@@ -345,9 +336,9 @@
 <section id="hardware" class="wrap section">
   <h2>Supported hardware</h2>
   <p class="sub">
-    Native drivers, talking directly to the hardware. Anything not on this list can
-    still be driven through the optional <a href="https://openrgb.org">OpenRGB</a>
-    bridge — and hardware we drive natively is never handed to it.
+    Native drivers, talking straight to the hardware. Anything not listed can
+    still run through the optional <a href="https://openrgb.org">OpenRGB</a>
+    bridge, and hardware we drive natively is never handed to it.
   </p>
   <div class="tablewrap">
     <table class="hw">
@@ -355,23 +346,23 @@
       <tbody>
         <tr><td>Corsair Strafe MK.2</td><td>HID</td></tr>
         <tr><td>SteelSeries Apex keyboards</td><td>HID</td></tr>
-        <tr><td>Gigabyte RGB Fusion boards (IT5711) + ARGB headers</td><td>HID</td></tr>
+        <tr><td>Gigabyte RGB Fusion boards (IT5711) and ARGB headers</td><td>HID</td></tr>
         <tr><td>Logitech G403 HERO</td><td>HID++ 2.0</td></tr>
-        <tr><td>Razer Basilisk V3 Pro — lighting, DPI stages, polling rate</td><td>HID, no Synapse</td></tr>
+        <tr><td>Razer Basilisk V3 Pro, including DPI stages and polling rate</td><td>HID, no Synapse</td></tr>
         <tr><td>MSI GeForce GPUs</td><td>I²C via NvAPI</td></tr>
         <tr><td>ENE DRAM (G.Skill and friends)</td><td>SMBus via PawnIO</td></tr>
-        <tr><td>Lian Li SL-INF wireless fans</td><td>WinUSB + RF</td></tr>
+        <tr><td>Lian Li SL-INF wireless fans</td><td>WinUSB and RF</td></tr>
         <tr><td>Lian Li SL-Infinity wired hub</td><td>HID</td></tr>
         <tr><td>Sayo devices</td><td>HID</td></tr>
         <tr><td>Thermalright pump LCD (240×320)</td><td>HID</td></tr>
-        <tr><td>Motherboard fans &amp; temperatures</td><td>Super I/O via PawnIO</td></tr>
+        <tr><td>Motherboard fans and temperatures</td><td>Super I/O via PawnIO</td></tr>
       </tbody>
     </table>
   </div>
   <p class="sub">
     Missing your hardware?
-    <a href="https://github.com/fikal/UnifiedRGB/issues/new/choose">Open a device request</a> —
-    protocol notes and USB captures are the fastest route to a driver.
+    <a href="https://github.com/fikal/UnifiedRGB/issues/new/choose">Open a device request</a>.
+    Protocol notes and USB captures are the fastest route to a driver.
   </p>
 </section>
 
@@ -382,27 +373,27 @@
       <div class="card warncard">
         <h4>It needs administrator</h4>
         <p>
-          Talking to hardware directly means kernel-level access. UnifiedRGB installs
-          <a href="https://pawnio.eu/">PawnIO</a>, a signed, module-constrained kernel
-          driver, for CPU temperatures, SMBus (DRAM lighting), and fan control. That's
-          real access to your machine — understand it before you run it.
+          Direct hardware access means kernel-level access. UnifiedRGB installs
+          <a href="https://pawnio.eu/">PawnIO</a>, a signed, module-constrained
+          kernel driver, for CPU temperatures, SMBus, and fan control. Know that
+          before you run it.
         </p>
       </div>
       <div class="card warncard">
         <h4>DRAM lighting talks raw SMBus</h4>
         <p>
-          It follows OpenRGB's proven ENE detection and writes only to detected ENE
-          controllers. As with every tool in this category: writing to the wrong SMBus
-          device can permanently damage hardware.
+          It follows OpenRGB's proven ENE detection and writes only to
+          controllers it detects. As with every tool in this category, writing to
+          the wrong SMBus device can permanently damage hardware.
         </p>
       </div>
       <div class="card warncard">
         <h4>The download is unsigned</h4>
         <p>
-          A code-signing certificate costs money this project doesn't take, so
-          SmartScreen will warn on first run — <em>More info → Run anyway</em>. Every
-          release publishes a SHA-256 you can verify, and you can always build it
-          yourself from source.
+          A signing certificate costs money this project doesn't take, so
+          SmartScreen warns on first run. Click <em>More info</em>, then
+          <em>Run anyway</em>. Every release publishes a SHA-256, and you can
+          build it yourself.
         </p>
       </div>
     </div>
@@ -415,40 +406,39 @@
   <details>
     <summary>Is it really free? What's the catch?</summary>
     <p>
-      Free, and there's no paid tier to upsell you to. It's GPLv2 open source — the
-      whole thing is on GitHub, including the reverse-engineered device protocols. The
-      catch is the honest one: it supports far less hardware than the big tools, and
-      it's maintained by one person.
+      Free, with no paid tier to upsell you to. The whole thing is on GitHub
+      under GPLv2, including the reverse-engineered device protocols. The catch
+      is the honest one: it supports far less hardware than the big tools, and
+      one person maintains it.
     </p>
   </details>
 
   <details>
     <summary>Does it phone home?</summary>
     <p>
-      One request: a check of this project's GitHub Releases at startup, so the app can
-      offer you a new version. Switch it off in Settings and it makes no network
-      requests at all. There is no telemetry, no analytics, and no account. The "Report
-      a problem" button writes a diagnostic file to your Desktop and opens a pre-filled
-      GitHub issue — nothing is uploaded without you posting it. This website has no
-      trackers, no analytics, and loads nothing from third parties either.
+      Once at startup, to check GitHub Releases for a new version. Switch that
+      off and it makes no network requests at all. No telemetry, no analytics, no
+      account. The "Report a problem" button writes a file to your Desktop and
+      opens a pre-filled GitHub issue, and nothing is uploaded unless you post
+      it. This website has no trackers and loads nothing from third parties
+      either.
     </p>
   </details>
 
   <details>
     <summary>Why is the download so large?</summary>
     <p>
-      It bundles the entire .NET runtime, so there's nothing to install and no framework
-      to keep in sync — one file that runs. That trades disk space for never fighting a
-      runtime installer.
+      It bundles the whole .NET runtime, so there's nothing to install and no
+      framework to keep in sync. One file that runs.
     </p>
   </details>
 
   <details>
     <summary>Can I run it next to iCUE, L-Connect, or OpenRGB?</summary>
     <p>
-      Usually, but two programs writing the same device will fight over it — the lighting
-      flickers between them. Best results come from letting UnifiedRGB own the devices it
-      drives natively and closing the vendor app. Its OpenRGB bridge is managed
+      Usually, but two programs writing the same device will fight over it and
+      the lighting flickers between them. Let UnifiedRGB own what it drives
+      natively and close the vendor app. Its OpenRGB bridge is managed
       automatically and never touches hardware UnifiedRGB already drives.
     </p>
   </details>
@@ -456,18 +446,18 @@
   <details>
     <summary>My device isn't supported. Now what?</summary>
     <p>
-      Try the OpenRGB bridge first — it covers over a thousand devices and turns on with
-      one checkbox. If that misses too,
+      Try the OpenRGB bridge first. It covers over a thousand devices and turns
+      on with one checkbox. If that misses too,
       <a href="https://github.com/fikal/UnifiedRGB/issues/new/choose">open a device request</a>.
-      Captures and protocol notes make a driver dramatically more likely.
+      Captures and protocol notes make a driver far more likely.
     </p>
   </details>
 
   <details>
     <summary>Does it work on Linux?</summary>
     <p>
-      No — it's a Windows app (WPF, .NET 10) and the kernel-access pieces are
-      Windows-specific. On Linux, OpenRGB is the right answer.
+      No. It's a Windows app, and the kernel-access parts are Windows-specific.
+      On Linux, OpenRGB is the right answer.
     </p>
   </details>
 </section>
@@ -475,7 +465,7 @@
 <section class="closer">
   <div class="wrap">
     <h2>Get your lighting back</h2>
-    <p>One app. One download. Nothing running in the background but the thing you asked for.</p>
+    <p>One app, one download, and nothing else left running.</p>
     <div class="cta">
       <a class="btn primary" href="https://github.com/fikal/UnifiedRGB/releases/latest">Download for Windows</a>
       <a class="btn ghost" href="https://github.com/fikal/UnifiedRGB">Read the source</a>
@@ -486,13 +476,14 @@
 <footer>
   <div class="wrap footrow">
     <p>
-      <strong>UnifiedRGB</strong> — free software under
+      <strong>UnifiedRGB</strong> is free software under
       <a href="https://github.com/fikal/UnifiedRGB/blob/main/LICENSE">GPLv2</a>.
     </p>
     <p class="dim">
-      Not affiliated with Corsair, Razer, Lian Li, Gigabyte, MSI, ASUS, SteelSeries,
-      Thermalright, G.Skill, or SignalRGB. All product names belong to their owners.
-      Comparison reflects publicly documented features as of September 2026.
+      Not affiliated with Corsair, Razer, Lian Li, Gigabyte, MSI, ASUS,
+      SteelSeries, Thermalright, G.Skill, or SignalRGB. All product names belong
+      to their owners. Comparison reflects publicly documented features as of
+      September 2026.
     </p>
     <p>
       <a href="https://github.com/fikal/UnifiedRGB">GitHub</a> ·
