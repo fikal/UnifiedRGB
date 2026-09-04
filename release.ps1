@@ -63,9 +63,11 @@ try {
     # Code signing via Azure Artifact Signing (formerly Trusted Signing).
     # Inert until %APPDATA%\UnifiedRgb\signing.json exists, so an unsigned
     # release still works exactly as before. That file holds:
-    #   { "endpoint": "https://xxx.codesigning.azure.net",
-    #     "account": "<signing account>", "profile": "<certificate profile>",
-    #     "dlib": "C:\path\to\Azure.CodeSigning.Dlib.dll" }
+    #   { "endpoint": "https://eus.codesigning.azure.net",
+    #     "account": "<signing account>", "profile": "<certificate profile>" }
+    # The endpoint MUST match the region the account and profile live in, or
+    # signing fails with a 403. "dlib" is optional; the client tools install
+    # per-user, so the default path below is used when it is omitted.
     # Signing rewrites the file, so the SHA-256 below is taken AFTER it.
     $signCfg = Join-Path $env:APPDATA "UnifiedRgb\signing.json"
     if (Test-Path $signCfg) {
@@ -77,7 +79,15 @@ try {
         $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
             Where-Object { $_.FullName -like "*\x64\*" } | Sort-Object FullName -Descending | Select-Object -First 1
         if (-not $signtool) { throw "signtool.exe not found; install the Windows SDK signing tools" }
-        & $signtool.FullName sign /v /fd SHA256 /tr "http://timestamp.acs.microsoft.com" /td SHA256 /dlib $cfg.dlib /dmdf $meta $asset
+        $dlib = if ($cfg.dlib) { $cfg.dlib } else {
+            Join-Path $env:LOCALAPPDATA "Microsoft\MicrosoftArtifactSigningClientTools\Azure.CodeSigning.Dlib.dll" }
+        if (-not (Test-Path $dlib)) {
+            throw "signing dlib not found at $dlib - run: winget install -e --id Microsoft.Azure.ArtifactSigningClientTools"
+        }
+        # Timestamping is not optional here: Artifact Signing certificates are
+        # valid for only three days, so an untimestamped signature expires almost
+        # immediately after release.
+        & $signtool.FullName sign /v /fd SHA256 /tr "http://timestamp.acs.microsoft.com" /td SHA256 /dlib $dlib /dmdf $meta $asset
         if ($LASTEXITCODE -ne 0) { throw "signing failed" }
         & $signtool.FullName verify /pa $asset
         if ($LASTEXITCODE -ne 0) { throw "signature verification failed" }
