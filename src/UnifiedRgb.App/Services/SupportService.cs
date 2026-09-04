@@ -39,6 +39,8 @@ public sealed class SupportService
                 + log;
         });
 
+        bundle = Redact(bundle);
+
         if (SupportUpload.CanUpload)
         {
             status("sending...");
@@ -63,6 +65,23 @@ public sealed class SupportService
         {
             return (false, $"couldn't save the bundle: {ex.Message}");
         }
+    }
+
+    /// <summary>Strip what identifies the person from a bundle. This file now
+    /// gets dragged into a PUBLIC GitHub issue, and a Windows account name is
+    /// often someone's real name. Applied to the whole bundle, not just the
+    /// header, because the appended log is full of profile paths. The profile
+    /// path goes first: it contains the account name.</summary>
+    static string Redact(string text)
+    {
+        string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrEmpty(profile))
+            text = text.Replace(profile, "%USERPROFILE%", StringComparison.OrdinalIgnoreCase);
+        // Short names would match far too much unrelated text to be worth it.
+        string user = Environment.UserName;
+        if (user.Length >= 3)
+            text = text.Replace(user, "<user>", StringComparison.OrdinalIgnoreCase);
+        return text;
     }
 
     /// <summary>Browser to a new-issue page with version/OS prefilled and a

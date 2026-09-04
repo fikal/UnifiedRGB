@@ -19,7 +19,7 @@ public static class DiagnosticReport
         bool admin = IsAdmin();
         Say("==============================================");
         Say(" UnifiedRGB Diagnostic Report");
-        Say($" {DateTime.Now:yyyy-MM-dd HH:mm}   admin={admin}   user={Environment.UserName}");
+        Say($" {DateTime.Now:yyyy-MM-dd HH:mm}   admin={admin}");
         Say($" exe: {Environment.ProcessPath}");   // update swaps need this path writable
         Say("==============================================");
 
