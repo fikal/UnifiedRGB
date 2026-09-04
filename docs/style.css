@@ -52,9 +52,10 @@ code {
 .navrow { display: flex; align-items: center; justify-content: space-between; height: 62px; }
 .brand { display: flex; align-items: center; gap: 10px; color: var(--fg); font-weight: 700; font-size: 17px; }
 .brand:hover { text-decoration: none; }
+/* The wordmark's orb is the app icon, same 135deg magenta-to-blue gradient. */
 .dot {
-  width: 13px; height: 13px; border-radius: 50%;
-  background: conic-gradient(#ff4d4d, #f0b942, #45d483, #4dd0e1, #6d8cff, #a855f7, #ff4d4d);
+  width: 14px; height: 14px; border-radius: 50%;
+  background: linear-gradient(135deg, #BE2989, #3F79D8);
 }
 .nav nav { display: flex; gap: 26px; }
 .nav nav a { color: var(--dim); font-size: 15px; }
