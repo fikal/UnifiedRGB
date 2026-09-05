@@ -1120,6 +1120,67 @@ static string TempDir()
         "app match: blank rule matches nothing");
 }
 
+/*---------------- UndoStack (#f3) ----------------*/
+{
+    var h = new UndoStack<string>(capacity: 3);
+    Check(!h.CanUndo && !h.CanRedo, "undo: empty to start");
+    Check(h.Undo("now") == null, "undo: nothing to undo returns null");
+    Check(h.Redo("now") == null, "undo: nothing to redo returns null");
+
+    // Push records the state BEFORE each change; the argument to Undo is the
+    // state as it is now, so redo can come back to it.
+    h.Push("a");            // about to go a -> b
+    h.Push("b");            // about to go b -> c
+    Check(h.CanUndo && !h.CanRedo, "undo: pushes are undoable, nothing to redo yet");
+
+    Equal("b", h.Undo("c"), "undo: steps back one");
+    Equal("a", h.Undo("b"), "undo: steps back again");
+    Check(!h.CanUndo && h.CanRedo, "undo: exhausted, redo available");
+    Check(h.Undo("a") == null, "undo: past the start returns null");
+
+    Equal("b", h.Redo("a"), "redo: steps forward one");
+    Equal("c", h.Redo("b"), "redo: steps forward again");
+    Check(!h.CanRedo && h.CanUndo, "redo: exhausted, undo available");
+
+    // A new edit after undoing abandons the future.
+    h.Undo("c");
+    Check(h.CanRedo, "undo: redo exists after stepping back");
+    h.Push("x");
+    Check(!h.CanRedo, "undo: a new edit clears redo");
+
+    // Capacity drops the OLDEST entry, so recent history always survives.
+    var cap = new UndoStack<int>(capacity: 3);
+    for (int i = 1; i <= 5; i++) cap.Push(i);
+    Equal(3, cap.Count, "undo: bounded at capacity");
+    Equal(5, cap.Undo(6), "undo: newest entry kept");
+    Equal(4, cap.Undo(5), "undo: second newest kept");
+    Equal(3, cap.Undo(4), "undo: third newest kept");
+    Check(cap.Undo(3) == 0, "undo: the oldest two fell off");
+
+    var cleared = new UndoStack<string>();
+    cleared.Push("a"); cleared.Undo("b");
+    cleared.Clear();
+    Check(!cleared.CanUndo && !cleared.CanRedo, "undo: Clear empties both sides");
+
+    // The view binds to CanUndo/CanRedo, so changes have to be announced.
+    int fired = 0;
+    var watched = new UndoStack<string>();
+    watched.Changed += () => fired++;
+    watched.Push("a"); watched.Undo("b"); watched.Redo("a"); watched.Clear();
+    Equal(4, fired, "undo: every mutation raises Changed");
+}
+
+/*---------------- UndoStack round-trips a design snapshot (#f3) ----------------*/
+{
+    // What the designer actually stores: whole-design JSON.
+    string before = "{\"BgX\":10,\"BgY\":20,\"Elements\":[]}";
+    string after = "{\"BgX\":99,\"BgY\":20,\"Elements\":[]}";
+    var h = new UndoStack<string>();
+    h.Push(before);
+    Equal(before, h.Undo(after), "undo: a design snapshot comes back intact");
+    Equal(after, h.Redo(before), "redo: the newer design comes back intact");
+}
+
 /*---------------- Schedules: window math (#f2) ----------------*/
 {
     // Monday is bit 0. A window that ends before it starts runs overnight and

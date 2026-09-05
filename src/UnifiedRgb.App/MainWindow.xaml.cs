@@ -297,6 +297,24 @@ public partial class MainWindow : Window
             e.Handled = true;
             return;
         }
+        // Undo/redo for the LCD designer. Handled here rather than in the pane
+        // because the panes are mouse-first and swallow keys on their list
+        // controls; a window-level PreviewKeyDown tunnels ahead of all that.
+        if (Keyboard.Modifiers == ModifierKeys.Control && _vm.ShowLcdPanel &&
+            Keyboard.FocusedElement is not TextBox)
+        {
+            if (e.Key == Key.Z) { _vm.Lcd.Undo(); e.Handled = true; return; }
+            if (e.Key == Key.Y) { _vm.Lcd.Redo(); e.Handled = true; return; }
+        }
+        // Ctrl+Shift+Z is the other redo people reach for.
+        if (Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) &&
+            e.Key == Key.Z && _vm.ShowLcdPanel && Keyboard.FocusedElement is not TextBox)
+        {
+            _vm.Lcd.Redo();
+            e.Handled = true;
+            return;
+        }
+
         if (e.Key != Key.Delete) return;
         if (Keyboard.FocusedElement is TextBox) return;   // don't hijack text editing
         // ShowLcdPanel, not IsLcdSelected: the latter stays true under Settings,

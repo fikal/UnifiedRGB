@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -125,6 +126,10 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     {
         _lcd = LcdController.TryStart();
         _lcdSave.Tick += (_, _) => { _lcdSave.Stop(); _lcd?.Design.Save(); };
+        // Editing has paused: the design as it stands is what the next undo
+        // should return to.
+        _undoSettle.Tick += (_, _) => SettleUndo();
+        _history.Changed += NotifyHistory;
         if (_lcd == null) return;
 
         _lcd.Design = LcdDesign.Load();
@@ -157,6 +162,9 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
 
     void LcdElementChanged(object? s, PropertyChangedEventArgs args)
     {
+        // After the fact, so this records _baseline (the pre-burst design) and
+        // coalesces the rest of the burst into that one entry.
+        CaptureUndo();
         // Live editor pushes are NOT user edits. ClockImage especially: it is
         // set from RefreshDisplays on every render tick, and reacting with
         // TouchLcd() -> Refresh() -> Ticked -> RefreshDisplays -> ClockImage
@@ -202,6 +210,85 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         _clockSecond = sec;
     }
 
+    /*-----------------------------------------------------*\
+    | Undo / redo.                                          |
+    |                                                       |
+    | Whole-design snapshots (a few KB of JSON each). The    |
+    | tricky part is that property changes arrive AFTER the  |
+    | edit, so the pre-edit state has to be kept standing:   |
+    | _baseline is the design as of the last quiet moment,   |
+    | and that is what gets pushed. A settle timer refreshes |
+    | it once editing pauses, which is also what collapses a |
+    | slider drag into ONE undo step instead of forty.       |
+    \*-----------------------------------------------------*/
+
+    readonly UndoStack<string> _history = new(50);
+    readonly DispatcherTimer _undoSettle = new() { Interval = TimeSpan.FromMilliseconds(500) };
+    string _baseline = "";
+
+    public bool CanUndo => _history.CanUndo;
+    public bool CanRedo => _history.CanRedo;
+
+    string Snapshot() => _lcd == null ? "" : JsonSerializer.Serialize(_lcd.Design);
+
+    /// <summary>Call BEFORE changing the design. Within a burst of edits the
+    /// first call records; the rest only extend the burst.</summary>
+    public void CaptureUndo()
+    {
+        if (_lcd == null) return;
+        if (_undoSettle.IsEnabled)
+        {
+            // Still the same gesture or the same burst of typing: keep the one
+            // entry already recorded and push the settle out.
+            _undoSettle.Stop(); _undoSettle.Start();
+            return;
+        }
+        if (_baseline.Length == 0) _baseline = Snapshot();
+        _history.Push(_baseline);
+        _undoSettle.Start();
+    }
+
+    /// <summary>End any open burst, so the next capture records the state as it
+    /// is now rather than as it was before the burst.</summary>
+    void SettleUndo()
+    {
+        _undoSettle.Stop();
+        _baseline = Snapshot();
+    }
+
+    public void Undo()
+    {
+        if (_lcd == null) return;
+        SettleUndo();
+        if (_history.Undo(_baseline) is string prev) ApplySnapshot(prev);
+    }
+
+    public void Redo()
+    {
+        if (_lcd == null) return;
+        SettleUndo();
+        if (_history.Redo(_baseline) is string next) ApplySnapshot(next);
+    }
+
+    void ApplySnapshot(string json)
+    {
+        LcdDesign? d;
+        try { d = JsonSerializer.Deserialize<LcdDesign>(json); }
+        catch (Exception ex) { Log.Warn("lcd", $"undo snapshot unreadable: {ex.Message}"); return; }
+        if (d == null) return;
+
+        // Put the selection back on the same row, which is what the eye expects
+        // after undoing a change to one element.
+        int index = _selectedElement == null ? -1 : LcdElements.IndexOf(_selectedElement);
+        LoadDesignIntoEditor(d, fromShow: false);
+        if (index >= 0 && index < LcdElements.Count) SelectedElement = LcdElements[index];
+        TouchLcd();
+        _baseline = Snapshot();
+        NotifyHistory();
+    }
+
+    void NotifyHistory() { OnChanged(nameof(CanUndo)); OnChanged(nameof(CanRedo)); }
+
     /// <summary>Delete the selected element (bound to the Delete key on the canvas).</summary>
     public void DeleteSelectedElement() => DeleteElement();
 
@@ -220,6 +307,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     void AddElement(LcdElementKind kind)
     {
         if (_lcd == null) return;
+        CaptureUndo();
         var e = new LcdElement
         {
             Kind = kind, X = 110, Y = 105,
@@ -252,6 +340,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     void DeleteElement()
     {
         if (_lcd == null || _selectedElement == null) return;
+        CaptureUndo();
         Unhook(_selectedElement);
         _lcd.Design.Elements.Remove(_selectedElement);
         LcdElements.Remove(_selectedElement);
@@ -268,6 +357,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
             Filter = "Images|*.png;*.jpg;*.jpeg;*.bmp;*.gif|All files|*.*",
         };
         if (dlg.ShowDialog() != true) return;
+        CaptureUndo();
         _lcd.Design.BackgroundImagePath = dlg.FileName;
         _lcd.Design.BgW = 0;                    // new image: recompute cover
         EnsureBgRect();
@@ -279,6 +369,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     void ClearBackground()
     {
         if (_lcd == null) return;
+        CaptureUndo();
         _lcd.Design.BackgroundImagePath = null;
         _lcd.Design.BgW = _lcd.Design.BgH = 0;
         OnChanged(nameof(LcdBackgroundName)); OnChanged(nameof(LcdBackground));
@@ -553,6 +644,10 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         EnsureBgRect();
         OnChanged(nameof(LcdBackground)); OnChanged(nameof(LcdBackgroundName));
         NotifyBgRect();
+        // A show replacing the canvas is not an edit: it must not record an
+        // undo entry, and the baseline has to follow it or the next real edit
+        // would undo to a design that is no longer on screen.
+        if (fromShow) { _undoSettle.Stop(); _baseline = Snapshot(); }
         if (fromShow) { _liveIsShowScene = true; _clockSecond = -1; _lcd.Refresh(); }
         else TouchLcd();
     }

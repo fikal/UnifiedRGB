@@ -29,6 +29,9 @@ public partial class LcdDesignerPane : UserControl
         var item = ItemsControl.ContainerFromElement(lb, e.OriginalSource as DependencyObject) as ListBoxItem;
         if (item?.DataContext is LcdElement el)
         {
+            // Before the first pixel of movement: undo returns to where the
+            // element was when the drag began, not part way through it.
+            VM.CaptureUndo();
             VM.SelectedElement = el;
             _drag = el;
             _dragOrigin = e.GetPosition(lb);
@@ -39,6 +42,7 @@ public partial class LcdDesignerPane : UserControl
         // Pressed empty canvas: drag the background itself.
         if (VM.LcdHasBackground)
         {
+            VM.CaptureUndo();
             _bgDrag = true;
             _dragOrigin = e.GetPosition(lb);
             _bgStartX = VM.LcdBgX; _bgStartY = VM.LcdBgY;
@@ -66,6 +70,9 @@ public partial class LcdDesignerPane : UserControl
                       Clamp(_bgStartY + (p.Y - _dragOrigin.Y), -VM.LcdBgH + 24, 216));
         }
     }
+
+    void Undo_Click(object sender, RoutedEventArgs e) => VM.Undo();
+    void Redo_Click(object sender, RoutedEventArgs e) => VM.Redo();
 
     void Design_Up(object sender, MouseButtonEventArgs e)
     {
@@ -180,6 +187,7 @@ public partial class LcdDesignerPane : UserControl
 
     void BgGrip_Down(object sender, MouseButtonEventArgs e)
     {
+        VM.CaptureUndo();
         if (sender is not FrameworkElement fe) return;
         _gripDrag = true;
         _gripOrigin = e.GetPosition(this);
