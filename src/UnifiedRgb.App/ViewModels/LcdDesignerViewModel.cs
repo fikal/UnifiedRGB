@@ -231,15 +231,26 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
 
     string Snapshot() => _lcd == null ? "" : JsonSerializer.Serialize(_lcd.Design);
 
-    /// <summary>Call BEFORE changing the design. Within a burst of edits the
-    /// first call records; the rest only extend the burst.</summary>
+    /// <summary>Call BEFORE a deliberate action: a drag, an add, a delete, a
+    /// background change. Always records, because these are never a continuation
+    /// of anything. Coalescing them was a bug: dragging within half a second of
+    /// any property change (a colour box writing back as the selection moved,
+    /// say) folded the drag into that burst and left nothing to undo.</summary>
+    public void CaptureUndoNow()
+    {
+        if (_lcd == null) return;
+        SettleUndo();                 // close any open burst: _baseline is now current
+        _history.Push(_baseline);
+        _undoSettle.Start();          // this gesture's own edits join THIS entry
+    }
+
+    /// <summary>Call BEFORE a property edit. The first in a burst records; the
+    /// rest extend it, so dragging a slider is one undo step and not forty.</summary>
     public void CaptureUndo()
     {
         if (_lcd == null) return;
         if (_undoSettle.IsEnabled)
         {
-            // Still the same gesture or the same burst of typing: keep the one
-            // entry already recorded and push the settle out.
             _undoSettle.Stop(); _undoSettle.Start();
             return;
         }
@@ -308,7 +319,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     void AddElement(LcdElementKind kind)
     {
         if (_lcd == null) return;
-        CaptureUndo();
+        CaptureUndoNow();
         var e = new LcdElement
         {
             Kind = kind, X = 110, Y = 105,
@@ -341,7 +352,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     void DeleteElement()
     {
         if (_lcd == null || _selectedElement == null) return;
-        CaptureUndo();
+        CaptureUndoNow();
         Unhook(_selectedElement);
         _lcd.Design.Elements.Remove(_selectedElement);
         LcdElements.Remove(_selectedElement);
@@ -358,7 +369,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
             Filter = "Images|*.png;*.jpg;*.jpeg;*.bmp;*.gif|All files|*.*",
         };
         if (dlg.ShowDialog() != true) return;
-        CaptureUndo();
+        CaptureUndoNow();
         _lcd.Design.BackgroundImagePath = dlg.FileName;
         _lcd.Design.BgW = 0;                    // new image: recompute cover
         EnsureBgRect();
@@ -370,7 +381,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     void ClearBackground()
     {
         if (_lcd == null) return;
-        CaptureUndo();
+        CaptureUndoNow();
         _lcd.Design.BackgroundImagePath = null;
         _lcd.Design.BgW = _lcd.Design.BgH = 0;
         OnChanged(nameof(LcdBackgroundName)); OnChanged(nameof(LcdBackground));
