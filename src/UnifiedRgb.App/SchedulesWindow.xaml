@@ -24,16 +24,17 @@
                                 <!-- Days -->
                                 <Grid>
                                     <StackPanel Orientation="Horizontal">
-                                        <CheckBox IsChecked="{Binding Enabled}" VerticalAlignment="Center"
-                                                  Margin="0,0,12,0" Click="Rule_Persist"
+                                        <CheckBox Content="On" IsChecked="{Binding Enabled}" VerticalAlignment="Center"
+                                                  Click="Rule_Persist"
                                                   ToolTip="Untick to pause this schedule"/>
-                                        <CheckBox Content="M" IsChecked="{Binding Mon}" Click="Rule_Persist" Margin="0,0,8,0" VerticalAlignment="Center"/>
-                                        <CheckBox Content="T" IsChecked="{Binding Tue}" Click="Rule_Persist" Margin="0,0,8,0" VerticalAlignment="Center"/>
-                                        <CheckBox Content="W" IsChecked="{Binding Wed}" Click="Rule_Persist" Margin="0,0,8,0" VerticalAlignment="Center"/>
-                                        <CheckBox Content="T" IsChecked="{Binding Thu}" Click="Rule_Persist" Margin="0,0,8,0" VerticalAlignment="Center"/>
-                                        <CheckBox Content="F" IsChecked="{Binding Fri}" Click="Rule_Persist" Margin="0,0,8,0" VerticalAlignment="Center"/>
-                                        <CheckBox Content="S" IsChecked="{Binding Sat}" Click="Rule_Persist" Margin="0,0,8,0" VerticalAlignment="Center"/>
-                                        <CheckBox Content="S" IsChecked="{Binding Sun}" Click="Rule_Persist" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                                        <Border Width="1" Background="#33FFFFFF" Margin="12,2,14,2"/>
+                                        <CheckBox Content="Mo" IsChecked="{Binding Mon}" Click="Rule_Persist" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                        <CheckBox Content="Tu" IsChecked="{Binding Tue}" Click="Rule_Persist" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                        <CheckBox Content="We" IsChecked="{Binding Wed}" Click="Rule_Persist" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                        <CheckBox Content="Th" IsChecked="{Binding Thu}" Click="Rule_Persist" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                        <CheckBox Content="Fr" IsChecked="{Binding Fri}" Click="Rule_Persist" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                        <CheckBox Content="Sa" IsChecked="{Binding Sat}" Click="Rule_Persist" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                        <CheckBox Content="Su" IsChecked="{Binding Sun}" Click="Rule_Persist" Margin="0,0,10,0" VerticalAlignment="Center"/>
                                     </StackPanel>
                                     <Button Content="&#x2715;" Style="{StaticResource Danger}" HorizontalAlignment="Right"
                                             Width="28" Height="28" Padding="0" VerticalAlignment="Center"
@@ -47,8 +48,8 @@
                                         <ColumnDefinition Width="Auto"/>
                                         <ColumnDefinition Width="Auto"/>
                                         <ColumnDefinition Width="Auto"/>
-                                        <ColumnDefinition Width="*" MinWidth="120"/>
                                         <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
                                     <ComboBox Grid.Column="0" Width="86" Height="28" VerticalAlignment="Center"
                                               SelectedItem="{Binding Start}" SelectionChanged="Rule_Persist"
@@ -64,12 +65,13 @@
                                         <ComboBoxItem Content="apply profile"/>
                                     </ComboBox>
                                     <ComboBox Grid.Column="4" Height="28" VerticalAlignment="Center" Margin="8,0,0,0"
-                                              IsEnabled="{Binding IsProfileAction}"
+                                              Visibility="{Binding IsProfileAction, Converter={StaticResource BoolToVis}}"
                                               ItemsSource="{Binding DataContext.ProfileNames, RelativeSource={RelativeSource AncestorType=Window}}"
                                               SelectedItem="{Binding Profile}" SelectionChanged="Rule_Persist"
                                               ToolTip="Which profile this window applies"/>
                                     <CheckBox Grid.Column="5" Content="only when away" IsChecked="{Binding IdleOnly}"
-                                              VerticalAlignment="Center" Margin="12,0,0,0" Click="Rule_Persist"
+                                              VerticalAlignment="Center" Margin="14,0,0,0" HorizontalAlignment="Left"
+                                              Click="Rule_Persist"
                                               ToolTip="Wait for 10 minutes of no keyboard or mouse before acting"/>
                                 </Grid>
                             </StackPanel>
