@@ -297,7 +297,7 @@
                                 <TextBlock Text="SAVE" FontSize="11" FontWeight="SemiBold"
                                            Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,16,0,8"/>
                                 <StackPanel Orientation="Horizontal">
-                                    <TextBox Width="180" Height="28" Padding="6,3" VerticalAlignment="Center"
+                                    <TextBox Width="180" MinHeight="28" Padding="6,3" VerticalAlignment="Center"
                                              Text="{Binding SceneNameInput, UpdateSourceTrigger=PropertyChanged}"
                                              ToolTip="Name for the screen"/>
                                     <Button Content="Save screen" Style="{StaticResource Accent}" Padding="14,0"
@@ -323,7 +323,7 @@
                                     <ComboBox Width="180" Height="28" VerticalAlignment="Center"
                                               ItemsSource="{Binding Sequences}"
                                               SelectedItem="{Binding SelectedSequence}"/>
-                                    <TextBox Width="140" Height="28" Padding="6,3" VerticalAlignment="Center"
+                                    <TextBox Width="140" MinHeight="28" Padding="6,3" VerticalAlignment="Center"
                                              Margin="8,0,0,0"
                                              Text="{Binding SceneNameInput, UpdateSourceTrigger=PropertyChanged}"
                                              ToolTip="Name for a new show"/>
@@ -365,7 +365,7 @@
                                                          card. Pinning the height is only safe because the padding is
                                                          trimmed with it; the style's default 6,7 needs ~34px and
                                                          clips the digits in a shorter box. -->
-                                                    <TextBox Grid.Column="1" Width="44" Height="28" Padding="6,3"
+                                                    <TextBox Grid.Column="1" Width="44" MinHeight="28" Padding="6,3"
                                                              Margin="6,0,4,0" VerticalAlignment="Center"
                                                              HorizontalContentAlignment="Center"
                                                              Background="#FF15171D"

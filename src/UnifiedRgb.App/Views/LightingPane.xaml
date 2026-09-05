@@ -209,7 +209,7 @@
                                         <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
                                     <Border Grid.Column="0" CornerRadius="7" Background="{Binding PreviewBrush}" Margin="0,0,8,0"/>
-                                    <TextBox Grid.Column="1" Height="28" Text="{Binding Hex, UpdateSourceTrigger=PropertyChanged}"
+                                    <TextBox Grid.Column="1" MinHeight="28" Text="{Binding Hex, UpdateSourceTrigger=PropertyChanged}"
                                              FontFamily="Consolas" FontSize="14"/>
                                 </Grid>
                                 <!-- Same width as the swatch+hex row above: aligned on both edges -->
@@ -222,19 +222,19 @@
                                     <DockPanel Grid.Column="0" Margin="0,0,10,0">
                                         <TextBlock Text="R" Foreground="#FFFF5555" FontWeight="SemiBold"
                                                    DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,7,0"/>
-                                        <TextBox Height="28" HorizontalContentAlignment="Center"
+                                        <TextBox MinHeight="28" HorizontalContentAlignment="Center"
                                                  Text="{Binding R, UpdateSourceTrigger=LostFocus}"/>
                                     </DockPanel>
                                     <DockPanel Grid.Column="1" Margin="0,0,10,0">
                                         <TextBlock Text="G" Foreground="#FF58D858" FontWeight="SemiBold"
                                                    DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,7,0"/>
-                                        <TextBox Height="28" HorizontalContentAlignment="Center"
+                                        <TextBox MinHeight="28" HorizontalContentAlignment="Center"
                                                  Text="{Binding G, UpdateSourceTrigger=LostFocus}"/>
                                     </DockPanel>
                                     <DockPanel Grid.Column="2">
                                         <TextBlock Text="B" Foreground="#FF6E96FF" FontWeight="SemiBold"
                                                    DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,7,0"/>
-                                        <TextBox Height="28" HorizontalContentAlignment="Center"
+                                        <TextBox MinHeight="28" HorizontalContentAlignment="Center"
                                                  Text="{Binding B, UpdateSourceTrigger=LostFocus}"/>
                                     </DockPanel>
                                 </Grid>
