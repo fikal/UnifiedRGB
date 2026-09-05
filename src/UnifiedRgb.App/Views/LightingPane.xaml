@@ -35,18 +35,18 @@
                                       SelectedItem="{Binding LianUniFanCount}"
                                       ToolTip="How many fans are daisy-chained on this channel (up to 4)."/>
                         </StackPanel>
-                        <Button Content="Arrange fans…" Height="34" Padding="10,0" Margin="0,0,14,0"
+                        <Button Content="Arrange fans…" Height="28" Padding="12,0" Margin="0,0,14,0"
                                 Visibility="{Binding ShowArrangeFans, Converter={StaticResource BoolToVis}}"
                                 Click="ArrangeFans_Click"
                                 ToolTip="Drag the fans into the order they sit in your case; split them into groups"/>
-                        <Button Content="Disable" Style="{StaticResource Danger}" Height="34" Padding="10,0"
+                        <Button Content="Disable" Style="{StaticResource Danger}" Height="28" Padding="12,0"
                                 Margin="0,0,14,0" Click="DisableDevice_Click"
                                 ToolTip="Stop controlling this device so other RGB software can own it. Profiles keep its saved colors and effects."/>
-                        <Button Content="Headers…" Height="34" Padding="10,0" Margin="0,0,14,0"
+                        <Button Content="Headers…" Height="28" Padding="12,0" Margin="0,0,14,0"
                                 Visibility="{Binding IsGigabyteSelected, Converter={StaticResource BoolToVis}}"
                                 Click="ConfigureHeaders_Click"
                                 ToolTip="Configure which ARGB headers have addressable fans"/>
-                        <Button Content="Razer…" Height="34" Padding="10,0" Margin="0,0,14,0"
+                        <Button Content="Razer…" Height="28" Padding="12,0" Margin="0,0,14,0"
                                 Visibility="{Binding IsRazerSelected, Converter={StaticResource BoolToVis}}"
                                 Click="ConfigureRazer_Click"
                                 ToolTip="Check the LED order with a chase, set the pad's LED count"/>
@@ -209,7 +209,7 @@
                                         <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
                                     <Border Grid.Column="0" CornerRadius="7" Background="{Binding PreviewBrush}" Margin="0,0,8,0"/>
-                                    <TextBox Grid.Column="1" Text="{Binding Hex, UpdateSourceTrigger=PropertyChanged}"
+                                    <TextBox Grid.Column="1" Height="28" Text="{Binding Hex, UpdateSourceTrigger=PropertyChanged}"
                                              FontFamily="Consolas" FontSize="14"/>
                                 </Grid>
                                 <!-- Same width as the swatch+hex row above: aligned on both edges -->
@@ -222,19 +222,19 @@
                                     <DockPanel Grid.Column="0" Margin="0,0,10,0">
                                         <TextBlock Text="R" Foreground="#FFFF5555" FontWeight="SemiBold"
                                                    DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,7,0"/>
-                                        <TextBox HorizontalContentAlignment="Center"
+                                        <TextBox Height="28" HorizontalContentAlignment="Center"
                                                  Text="{Binding R, UpdateSourceTrigger=LostFocus}"/>
                                     </DockPanel>
                                     <DockPanel Grid.Column="1" Margin="0,0,10,0">
                                         <TextBlock Text="G" Foreground="#FF58D858" FontWeight="SemiBold"
                                                    DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,7,0"/>
-                                        <TextBox HorizontalContentAlignment="Center"
+                                        <TextBox Height="28" HorizontalContentAlignment="Center"
                                                  Text="{Binding G, UpdateSourceTrigger=LostFocus}"/>
                                     </DockPanel>
                                     <DockPanel Grid.Column="2">
                                         <TextBlock Text="B" Foreground="#FF6E96FF" FontWeight="SemiBold"
                                                    DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,7,0"/>
-                                        <TextBox HorizontalContentAlignment="Center"
+                                        <TextBox Height="28" HorizontalContentAlignment="Center"
                                                  Text="{Binding B, UpdateSourceTrigger=LostFocus}"/>
                                     </DockPanel>
                                 </Grid>

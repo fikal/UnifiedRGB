@@ -322,11 +322,14 @@
         </Style>
 
         <!-- Buttons: soft light halo + sheen fade in on hover, gentle shrink on press -->
+        <!-- One control height across the app: buttons, text boxes and combos
+             all land near 28px so a row of mixed controls lines up without each
+             screen pinning heights by hand. Accent/Danger inherit this. -->
         <Style TargetType="Button">
             <Setter Property="Foreground" Value="#FFF0F0F0"/>
             <Setter Property="Background" Value="#FF3A3D48"/>
             <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Padding" Value="12,8"/>
+            <Setter Property="Padding" Value="14,5"/>
             <Setter Property="Cursor" Value="Hand"/>
             <EventSetter Event="PreviewKeyDown" Handler="MouseOnly_PreviewKeyDown"/>
             <Setter Property="Template">
@@ -527,7 +530,7 @@
             <Setter Property="Foreground" Value="#FFE6E6E6"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="CaretBrush" Value="#FFE6E6E6"/>
-            <Setter Property="Padding" Value="6,7"/>
+            <Setter Property="Padding" Value="6,4"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TextBox">
@@ -575,7 +578,7 @@
 
         <Style TargetType="ComboBox">
             <Setter Property="Foreground" Value="#FFE6E6E6"/>
-            <Setter Property="Height" Value="34"/>
+            <Setter Property="Height" Value="28"/>
             <Setter Property="FontSize" Value="13"/>
             <!-- Mouse-first: reactive effects run off real keystrokes, so a
                  focused-but-closed combo must ignore stray typing entirely. -->
