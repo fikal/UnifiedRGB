@@ -13,7 +13,7 @@
                 <Button Content="✕" HorizontalAlignment="Right" Padding="8,3" Click="Close_Click"/>
             </Grid>
             <TextBlock Opacity="0.6" TextWrapping="Wrap" Margin="0,0,0,12"
-                       Text="When a sensor crosses the number you set, its profile applies. When it comes back, your lighting does too. The top firing rule wins, so order is priority."/>
+                       Text="Cross the number, the profile applies. Drop back, your lighting returns. The top firing rule wins."/>
 
             <CheckBox Content="Watch sensors and switch profiles" IsChecked="{Binding SensorRulesEnabled}"
                       Margin="0,0,0,12"
@@ -81,7 +81,7 @@
             <TextBlock x:Name="NoRulesText" Text="No rules yet. Add one below." Opacity="0.5" FontSize="12" Margin="2,0,0,6"/>
             <TextBlock x:Name="MissingProfileText" Foreground="#FFF0B942" FontSize="11.5" Margin="2,2,0,0"
                        TextWrapping="Wrap" Visibility="Collapsed"
-                       Text="A rule with an empty profile was pointing at one that has been renamed or deleted. Pick a new profile, or remove the rule. It is skipped meanwhile."/>
+                       Text="A blank profile means it was renamed or deleted. That rule is skipped until you pick a new one."/>
 
             <Border Background="#22FFFFFF" Height="1" Margin="0,12,0,14"/>
 
@@ -115,7 +115,7 @@
                         Height="28" VerticalAlignment="Center" Margin="10,0,0,0" Click="AddRule_Click"/>
             </Grid>
             <TextBlock x:Name="AddHint" Opacity="0.5" FontSize="11" Margin="2,8,0,0" TextWrapping="Wrap"
-                       Text="Pick a sensor, a number and a profile, then hit Add rule. It waits a few seconds before firing, and needs the reading to come back past the number before it releases, so a value sitting on the line cannot flicker your lights."/>
+                       Text="A rule waits a few seconds before firing, and needs the reading to come well back before it releases, so a value sitting on the line cannot flicker your lights."/>
 
             <TextBlock Text="{Binding AutomationStatus}" Foreground="#FF7FB4FF" FontSize="12" Margin="0,14,0,0" TextWrapping="Wrap"/>
         </StackPanel>

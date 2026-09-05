@@ -1085,14 +1085,17 @@ static string TempDir()
     Equal("CPU temp", SensorSources.Label(SensorSources.CpuTemp), "source label: cpu temp");
     Equal("°C", SensorSources.Unit(SensorSources.CpuTemp), "source unit: cpu temp");
     Equal("%", SensorSources.Unit(SensorSources.GpuLoad), "source unit: gpu load");
-    Equal("Motherboard: Temperature #3", SensorSources.Label(SensorSources.BoardPrefix + "Temperature #3"), "source label: board temp says it is the motherboard");
-    Equal("Fan: CPU Fan", SensorSources.Label(SensorSources.FanPrefix + "CPU Fan"), "source label: fan is qualified");
+    Equal("MB Temp #3", SensorSources.Label(SensorSources.BoardPrefix + "Temperature #3"), "source label: board temp is short and marked MB");
+    Equal("CPU Fan", SensorSources.Label(SensorSources.FanPrefix + "CPU Fan"), "source label: fan name stands alone");
 
     // Only the sources that need the expensive sweep should ask for it.
     Check(!SensorSources.NeedsFullSweep(SensorSources.CpuTemp), "gating: cpu temp uses the cheap touch");
     Check(!SensorSources.NeedsFullSweep(SensorSources.Hottest), "gating: hottest uses the cheap touch");
     Check(SensorSources.NeedsFullSweep(SensorSources.GpuLoad), "gating: gpu load needs the full sweep");
     Check(SensorSources.NeedsFullSweep(SensorSources.FanPrefix + "CPU Fan"), "gating: fan rpm needs the full sweep");
+
+    Equal("MB Temp #1 (IT87952E)", SensorSources.Label(SensorSources.BoardPrefix + "Temperature #1 (IT87952E)"),
+        "source label: second-chip sensor keeps its qualifier");
 
     var hit = new SensorHit(SensorSources.CpuTemp, "Alert", 87.4, 85, true);
     Equal("CPU temp 87°C at or above 85°C", hit.Describe(), "sensor hit describes itself");

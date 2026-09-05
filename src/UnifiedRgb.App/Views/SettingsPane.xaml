@@ -132,7 +132,7 @@
                     <Button Content="Manage app rules…" Padding="12,5" Margin="24,6,0,0" HorizontalAlignment="Left"
                             Click="ManageRules_Click"/>
                     <CheckBox IsChecked="{Binding SensorRulesEnabled}" Margin="0,12,0,0">
-                        <TextBlock Text="Switch profiles by sensor. When a temperature, load or fan speed crosses the number you set, its profile applies, and your lighting comes back when it passes."
+                        <TextBlock Text="Switch profiles by sensor, when a temperature, load or fan speed crosses your number."
                                    TextWrapping="Wrap" MaxWidth="510"/>
                     </CheckBox>
                     <ItemsControl ItemsSource="{Binding SensorRules}" Margin="24,8,0,0">
