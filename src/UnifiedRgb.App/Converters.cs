@@ -62,6 +62,26 @@ public sealed class InverseBoolToVisConverter : System.Windows.Data.IValueConver
         => throw new NotSupportedException();
 }
 
+/// <summary>Above/below dropdown: true (at or above) is the first item.</summary>
+public sealed class AboveIndexConverter : System.Windows.Data.IValueConverter
+{
+    public object Convert(object v, Type t, object? p, System.Globalization.CultureInfo c)
+        => v is bool b && !b ? 1 : 0;
+
+    public object ConvertBack(object v, Type t, object? p, System.Globalization.CultureInfo c)
+        => v is int i && i == 0;
+}
+
+/// <summary>Sensor id to its readable name ("CpuTemp" to "CPU temp").</summary>
+public sealed class SensorSourceLabelConverter : System.Windows.Data.IValueConverter
+{
+    public object Convert(object v, Type t, object? p, System.Globalization.CultureInfo c)
+        => v is string s ? UnifiedRgb.Core.Automation.SensorSources.Label(s) : "";
+
+    public object ConvertBack(object v, Type t, object? p, System.Globalization.CultureInfo c)
+        => throw new NotSupportedException();
+}
+
 /// <summary>Unit hint for the readout the Slider template draws above its
 /// track. Sliders carry very different meanings (a 0-1 fraction, a 0-255
 /// channel, a 0.1-4 multiplier), so the value alone can't be formatted

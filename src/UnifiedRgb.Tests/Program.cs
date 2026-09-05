@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Xml.Linq;
 using UnifiedRgb.Core;
+using UnifiedRgb.Core.Automation;
 using UnifiedRgb.Core.Devices;
 using UnifiedRgb.Core.Effects;
 using UnifiedRgb.Core.Input;
@@ -945,6 +946,287 @@ static string TempDir()
             Equal("UnifiedRGB Chroma Shim", vi.ProductName, "64-bit shim ProductName (IsOurs pin)");
         }
     }
+}
+
+/*---------------- SensorRule persisted shape (#f1) ----------------*/
+{
+    // The rules live in settings.json, so the field names are a contract with
+    // files already on disk. An older build strips what it does not know, so a
+    // rule must also survive being read back with fields missing.
+    var r = new SensorRule { Source = "Board:Fan #2", Above = false, Threshold = 42.5, ClearMargin = 2, HoldSeconds = 7, Profile = "Cool", Enabled = false };
+    string json = JsonSerializer.Serialize(r);
+    foreach (var field in new[] { "Source", "Above", "Threshold", "ClearMargin", "HoldSeconds", "Profile", "Enabled" })
+        Check(json.Contains($"\"{field}\""), $"SensorRule json carries {field}");
+
+    var back = JsonSerializer.Deserialize<SensorRule>(json)!;
+    Equal(r.Source, back.Source, "SensorRule round-trip: source");
+    Equal(r.Above, back.Above, "SensorRule round-trip: direction");
+    Equal(r.Threshold, back.Threshold, "SensorRule round-trip: threshold");
+    Equal(r.HoldSeconds, back.HoldSeconds, "SensorRule round-trip: hold");
+    Equal(r.Enabled, back.Enabled, "SensorRule round-trip: enabled");
+
+    // Defaults must be sane for a rule an older build wrote back stripped.
+    var bare = JsonSerializer.Deserialize<SensorRule>("{\"Profile\":\"X\"}")!;
+    Equal(SensorSources.CpuTemp, bare.Source, "SensorRule default source");
+    Check(bare.Above, "SensorRule defaults to above");
+    Check(bare.Enabled, "SensorRule defaults to enabled");
+    Check(bare.ClearMargin > 0 && bare.HoldSeconds > 0, "SensorRule defaults cannot chatter");
+}
+
+/*---------------- Sensor rules: hysteresis + hold (#f1) ----------------*/
+{
+    // Rule: fire at or above 85, release below 82, both after a 5 s hold.
+    var rule = new SensorRule { Source = SensorSources.CpuTemp, Above = true, Threshold = 85, ClearMargin = 3, HoldSeconds = 5, Profile = "Alert" };
+    var st = default(SensorRuleState);
+
+    // Below the line: nothing pending, nothing active.
+    st = SensorRuleEvaluator.Step(rule, 70, st, 0);
+    Check(!st.Active && st.SinceSeconds == null, "sensor: cold value is inactive");
+
+    // Over the line, but the hold has not elapsed.
+    st = SensorRuleEvaluator.Step(rule, 86, st, 10);
+    Check(!st.Active && st.SinceSeconds == 10, "sensor: hold starts, not yet active");
+    st = SensorRuleEvaluator.Step(rule, 86, st, 14);
+    Check(!st.Active, "sensor: still holding at 4 s");
+    st = SensorRuleEvaluator.Step(rule, 86, st, 15);
+    Check(st.Active && st.SinceSeconds == null, "sensor: fires once the hold elapses");
+
+    // Inside the hysteresis band: stays on.
+    st = SensorRuleEvaluator.Step(rule, 84, st, 20);
+    Check(st.Active, "sensor: 84 is inside the band, stays on");
+    st = SensorRuleEvaluator.Step(rule, 83, st, 25);
+    Check(st.Active, "sensor: 83 is inside the band, stays on");
+
+    // Past the margin, held, then released.
+    st = SensorRuleEvaluator.Step(rule, 81, st, 30);
+    Check(st.Active && st.SinceSeconds == 30, "sensor: release hold starts");
+    st = SensorRuleEvaluator.Step(rule, 81, st, 35);
+    Check(!st.Active, "sensor: releases after the hold");
+
+    // A null reading (no PawnIO) is always inactive and forgets the hold.
+    var pending = new SensorRuleState(false, 100);
+    Check(!SensorRuleEvaluator.Step(rule, null, pending, 101).Active, "sensor: null reading is inactive");
+    Check(SensorRuleEvaluator.Step(rule, null, pending, 101).SinceSeconds == null, "sensor: null reading clears the hold");
+}
+
+/*---------------- Sensor rules: the flapping case (#f1) ----------------*/
+{
+    // The acceptance case: oscillating 84/86 either side of an 85 rule must
+    // never toggle, because the value never clears the margin.
+    var rule = new SensorRule { Threshold = 85, ClearMargin = 3, HoldSeconds = 5, Profile = "Alert" };
+    var st = default(SensorRuleState);
+    bool everActive = false;
+    for (int i = 0; i < 200; i++)
+    {
+        st = SensorRuleEvaluator.Step(rule, i % 2 == 0 ? 86 : 84, st, i * 2.0);
+        everActive |= st.Active;
+    }
+    Check(!everActive, "sensor: 84/86 flapping never fires (hold resets)");
+
+    // Once genuinely hot it fires, and then the same flapping cannot drop it.
+    var st2 = default(SensorRuleState);
+    for (int i = 0; i < 5; i++) st2 = SensorRuleEvaluator.Step(rule, 90, st2, i * 2.0);
+    Check(st2.Active, "sensor: sustained heat fires");
+    bool everCleared = false;
+    for (int i = 0; i < 200; i++)
+    {
+        st2 = SensorRuleEvaluator.Step(rule, i % 2 == 0 ? 86 : 84, st2, 100 + i * 2.0);
+        everCleared |= !st2.Active;
+    }
+    Check(!everCleared, "sensor: 84/86 flapping never releases (inside the band)");
+}
+
+/*---------------- Sensor rules: below-threshold direction (#f1) ----------------*/
+{
+    // "At or below 15%", e.g. a battery rule. Releases above 15 + margin.
+    var rule = new SensorRule { Source = "Battery:Mouse", Above = false, Threshold = 15, ClearMargin = 5, HoldSeconds = 0, Profile = "Low" };
+    var st = default(SensorRuleState);
+    st = SensorRuleEvaluator.Step(rule, 15, st, 0);
+    Check(st.Active, "sensor: below-rule fires at the threshold");
+    st = SensorRuleEvaluator.Step(rule, 18, st, 1);
+    Check(st.Active, "sensor: below-rule holds inside the band");
+    st = SensorRuleEvaluator.Step(rule, 21, st, 2);
+    Check(!st.Active, "sensor: below-rule releases past the margin");
+}
+
+/*---------------- Sensor rules: FirstActive picks by list order (#f1) ----------------*/
+{
+    var rules = new List<SensorRule>
+    {
+        new() { Source = SensorSources.CpuTemp, Threshold = 80, Profile = "First", Enabled = false },
+        new() { Source = SensorSources.GpuTemp, Threshold = 80, Profile = "Second" },
+        new() { Source = SensorSources.Hottest, Threshold = 80, Profile = "Third" },
+        new() { Source = SensorSources.CpuTemp, Threshold = 80, Profile = "Gone" },
+    };
+    var states = new[]
+    {
+        new SensorRuleState(true, null), new SensorRuleState(true, null),
+        new SensorRuleState(true, null), new SensorRuleState(true, null),
+    };
+    var values = new double?[] { 90, 91, 92, 93 };
+
+    var hit = SensorRuleEvaluator.FirstActive(rules, states, values);
+    Equal("Second", hit?.Profile, "sensor: disabled rule is skipped, next wins");
+
+    // A rule pointing at a deleted profile is skipped, not applied blank.
+    var only = new List<SensorRule> { rules[3] };
+    var hit2 = SensorRuleEvaluator.FirstActive(only, new[] { new SensorRuleState(true, null) },
+        new double?[] { 93 }, name => name != "Gone");
+    Check(hit2 == null, "sensor: rule with a deleted profile is skipped");
+
+    // Nothing active at all.
+    Check(SensorRuleEvaluator.FirstActive(rules, new SensorRuleState[4], values) == null,
+        "sensor: no active rule yields no hit");
+    Check(SensorRuleEvaluator.FirstActive(null, states, values) == null, "sensor: null rule list is safe");
+}
+
+/*---------------- Sensor sources: labels, units, poll gating (#f1) ----------------*/
+{
+    Equal("CPU temp", SensorSources.Label(SensorSources.CpuTemp), "source label: cpu temp");
+    Equal("°C", SensorSources.Unit(SensorSources.CpuTemp), "source unit: cpu temp");
+    Equal("%", SensorSources.Unit(SensorSources.GpuLoad), "source unit: gpu load");
+    Equal("Fan #2", SensorSources.Label(SensorSources.BoardPrefix + "Fan #2"), "source label: board temp strips the prefix");
+    Equal("CPU Fan RPM", SensorSources.Label(SensorSources.FanPrefix + "CPU Fan"), "source label: fan reads as RPM");
+
+    // Only the sources that need the expensive sweep should ask for it.
+    Check(!SensorSources.NeedsFullSweep(SensorSources.CpuTemp), "gating: cpu temp uses the cheap touch");
+    Check(!SensorSources.NeedsFullSweep(SensorSources.Hottest), "gating: hottest uses the cheap touch");
+    Check(SensorSources.NeedsFullSweep(SensorSources.GpuLoad), "gating: gpu load needs the full sweep");
+    Check(SensorSources.NeedsFullSweep(SensorSources.FanPrefix + "CPU Fan"), "gating: fan rpm needs the full sweep");
+
+    var hit = new SensorHit(SensorSources.CpuTemp, "Alert", 87.4, 85, true);
+    Equal("CPU temp 87°C at or above 85°C", hit.Describe(), "sensor hit describes itself");
+}
+
+/*---------------- App rule matching (#f1) ----------------*/
+{
+    var rules = new List<AutomationRule>
+    {
+        new() { Process = "", Profile = "Blank" },
+        new() { Process = "cs2.exe", Profile = "Game" },
+        new() { Process = "chrome", Profile = "Browse" },
+    };
+    Equal("Game", AutomationRule.Match(rules, "cs2"), "app match: .exe suffix tolerated");
+    Equal("Browse", AutomationRule.Match(rules, "chrome"), "app match: plain name");
+    Equal("Browse", AutomationRule.Match(rules, "CHROME"), "app match: case insensitive");
+    Check(AutomationRule.Match(rules, "notepad") == null, "app match: no rule");
+    Check(AutomationRule.Match(rules, null) == null, "app match: null process");
+    Check(AutomationRule.Match(null, "cs2") == null, "app match: null rules");
+    // A half-filled rule must never swallow every process.
+    Check(AutomationRule.Match(new List<AutomationRule> { new() { Process = "", Profile = "X" } }, "anything") == null,
+        "app match: blank rule matches nothing");
+}
+
+/*---------------- Automation precedence (#f1) ----------------*/
+{
+    var appRules = new List<AutomationRule> { new() { Process = "cs2", Profile = "Game" } };
+    var hit = new SensorHit(SensorSources.CpuTemp, "Alert", 90, 85, true);
+
+    AutomationInputs Make(bool locked = false, bool night = false, bool sensor = false, bool app = false) => new()
+    {
+        Locked = locked,
+        LockLightsOff = true,
+        InNightWindow = night,
+        NightOverride = false,
+        NightIdleOnly = false,
+        IdleSeconds = 0,
+        NightIdleThreshold = 600,
+        NightEnd = "07:00",
+        AppSwitchEnabled = true,
+        ForegroundProcess = app ? "cs2" : "notepad",
+        ForegroundIsSelf = false,
+        AppRules = appRules,
+        Sensor = sensor ? hit : null,
+        SensorUnavailable = null,
+    };
+
+    Equal(AutomationMode.Base, AutomationDecision.Resolve(Make()).Mode, "precedence: nothing yields Base");
+    Equal(AutomationMode.App, AutomationDecision.Resolve(Make(app: true)).Mode, "precedence: app rule");
+    Equal(AutomationMode.Sensor, AutomationDecision.Resolve(Make(sensor: true)).Mode, "precedence: sensor alone");
+    Equal(AutomationMode.Sensor, AutomationDecision.Resolve(Make(sensor: true, app: true)).Mode, "precedence: sensor beats app");
+    Equal(AutomationMode.Night, AutomationDecision.Resolve(Make(night: true, sensor: true, app: true)).Mode, "precedence: night beats sensor");
+    Equal(AutomationMode.Locked, AutomationDecision.Resolve(Make(locked: true, night: true, sensor: true, app: true)).Mode, "precedence: locked beats all");
+
+    // The winning profile travels with the mode.
+    Equal("Alert", AutomationDecision.Resolve(Make(sensor: true, app: true)).Profile, "precedence: sensor profile wins");
+    Equal("Game", AutomationDecision.Resolve(Make(app: true)).Profile, "precedence: app profile applies");
+    Check(AutomationDecision.Resolve(Make(night: true)).Profile == null, "precedence: night carries no profile");
+
+    // Unlocking with the sensor still hot lands in Sensor, not Base.
+    Equal(AutomationMode.Sensor, AutomationDecision.Resolve(Make(locked: false, sensor: true)).Mode,
+        "precedence: unlock into a live sensor rule");
+
+    // Lock without the lights-off setting is not an override at all.
+    var noLockOff = Make(locked: true, app: true);
+    noLockOff = new AutomationInputs
+    {
+        Locked = true, LockLightsOff = false, InNightWindow = false, NightOverride = false,
+        NightIdleOnly = false, IdleSeconds = 0, NightIdleThreshold = 600, NightEnd = "07:00",
+        AppSwitchEnabled = true, ForegroundProcess = "cs2", ForegroundIsSelf = false,
+        AppRules = appRules, Sensor = null, SensorUnavailable = null,
+    };
+    Equal(AutomationMode.App, AutomationDecision.Resolve(noLockOff).Mode, "precedence: locked without lights-off is ignored");
+}
+
+/*---------------- Automation night window + status (#f1) ----------------*/
+{
+    AutomationInputs Night(bool idleOnly, double idle, bool over = false) => new()
+    {
+        Locked = false, LockLightsOff = true,
+        InNightWindow = true, NightOverride = over, NightIdleOnly = idleOnly,
+        IdleSeconds = idle, NightIdleThreshold = 600, NightEnd = "07:00",
+        AppSwitchEnabled = false, ForegroundProcess = null, ForegroundIsSelf = false,
+        AppRules = null, Sensor = null, SensorUnavailable = null,
+    };
+    Equal(AutomationMode.Night, AutomationDecision.Resolve(Night(false, 0)).Mode, "night: fires at the start time");
+    Equal(AutomationMode.Base, AutomationDecision.Resolve(Night(true, 60)).Mode, "night: idle-only waits while you are active");
+    Equal(AutomationMode.Night, AutomationDecision.Resolve(Night(true, 700)).Mode, "night: idle-only fires once away");
+    Equal(AutomationMode.Base, AutomationDecision.Resolve(Night(false, 0, over: true)).Mode, "night: override keeps the lights on");
+
+    Check(AutomationDecision.Resolve(Night(false, 0)).Status.Contains("07:00"), "night status names the end time");
+    Check(AutomationDecision.Resolve(Night(false, 0, over: true)).Status.Contains("paused"), "night status explains the override");
+
+    // The sensor status carries the numbers behind the decision.
+    var withSensor = new AutomationInputs
+    {
+        Locked = false, LockLightsOff = true, InNightWindow = false, NightOverride = false,
+        NightIdleOnly = false, IdleSeconds = 0, NightIdleThreshold = 600, NightEnd = "07:00",
+        AppSwitchEnabled = false, ForegroundProcess = null, ForegroundIsSelf = false,
+        AppRules = null, Sensor = new SensorHit(SensorSources.CpuTemp, "Alert", 87, 85, true),
+        SensorUnavailable = null,
+    };
+    Check(AutomationDecision.Resolve(withSensor).Status.Contains("87°C"), "sensor status shows the reading");
+    Check(AutomationDecision.Resolve(withSensor).Status.Contains("'Alert'"), "sensor status names the profile");
+
+    // No reading is explained rather than silently doing nothing.
+    var missing = new AutomationInputs
+    {
+        Locked = false, LockLightsOff = true, InNightWindow = false, NightOverride = false,
+        NightIdleOnly = false, IdleSeconds = 0, NightIdleThreshold = 600, NightEnd = "07:00",
+        AppSwitchEnabled = false, ForegroundProcess = null, ForegroundIsSelf = false,
+        AppRules = null, Sensor = null, SensorUnavailable = SensorSources.CpuTemp,
+    };
+    Check(AutomationDecision.Resolve(missing).Status.Contains("PawnIO"), "missing sensor status mentions PawnIO");
+    Equal(AutomationMode.Base, AutomationDecision.Resolve(missing).Mode, "missing sensor does not change the mode");
+}
+
+/*---------------- No em dashes in automation status copy (#f1) ----------------*/
+{
+    // House style, and these strings are user-visible.
+    var seen = new List<string>();
+    for (int i = 0; i < 4; i++)
+    {
+        var x = new AutomationInputs
+        {
+            Locked = false, LockLightsOff = true,
+            InNightWindow = i == 0, NightOverride = i == 1, NightIdleOnly = i == 2,
+            IdleSeconds = 0, NightIdleThreshold = 600, NightEnd = "07:00",
+            AppSwitchEnabled = true, ForegroundProcess = i == 3 ? "notepad" : null,
+            ForegroundIsSelf = false, AppRules = null, Sensor = null, SensorUnavailable = null,
+        };
+        seen.Add(AutomationDecision.Resolve(x).Status);
+    }
+    Check(seen.TrueForAll(t => !t.Contains('\u2014')), "automation status copy has no em dashes");
 }
 
 Console.WriteLine($"{passed} passed, {failed} failed");

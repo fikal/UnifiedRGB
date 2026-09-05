@@ -626,7 +626,7 @@ round-trip with missing/unknown devices.
 
 ## Tracker
 
-- [ ] 1. Sensor rules (+ `AutomationDecision.Resolve` extracted to Core)
+- [x] 1. Sensor rules (+ `AutomationDecision.Resolve` extracted to Core)
 - [ ] 2. Scheduler (Night mode migrated)
 - [ ] 3. Undo/redo in the LCD designer (`UndoStack<T>`)
 - [ ] 4. Battery for wireless gear (Razer; sensor source for rules)

@@ -131,6 +131,21 @@
                     </ItemsControl>
                     <Button Content="Manage app rules…" Padding="12,5" Margin="24,6,0,0" HorizontalAlignment="Left"
                             Click="ManageRules_Click"/>
+                    <CheckBox IsChecked="{Binding SensorRulesEnabled}" Margin="0,12,0,0">
+                        <TextBlock Text="Switch profiles by sensor. When a temperature, load or fan speed crosses the number you set, its profile applies, and your lighting comes back when it passes."
+                                   TextWrapping="Wrap" MaxWidth="510"/>
+                    </CheckBox>
+                    <ItemsControl ItemsSource="{Binding SensorRules}" Margin="24,8,0,0">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock FontSize="12" Opacity="0.75" Margin="0,0,0,3">
+                                    <Run Text="{Binding Source, Converter={StaticResource SensorLabel}, Mode=OneWay}" FontWeight="SemiBold"/><Run Text=" → "/><Run Text="{Binding Profile, Mode=OneWay}"/>
+                                </TextBlock>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <Button Content="Manage sensor rules…" Padding="12,5" Margin="24,6,0,0" HorizontalAlignment="Left"
+                            Click="ManageSensorRules_Click"/>
                     <TextBlock Text="{Binding AutomationStatus}" Foreground="#FF7FB4FF" FontSize="12"
                                Margin="24,8,0,0" TextWrapping="Wrap"/>
 

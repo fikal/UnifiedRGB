@@ -1191,6 +1191,10 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             r => string.IsNullOrWhiteSpace(r.Process) || string.IsNullOrWhiteSpace(r.Profile)) ?? 0;
         if (purged > 0) _store.SaveSettings();
         foreach (var r in _store.Settings.AutomationRules ?? new()) AutoRules.Add(r);
+        // Rules whose profile has since been deleted stay in the list: the
+        // dialog shows them blank so they can be repointed, and the automation
+        // skips them meanwhile.
+        foreach (var r in _store.Settings.SensorRules ?? new()) SensorRules.Add(r);
         Lcd.Start();
         UnifiedRgb.Core.Effects.ChromaFeed.Start();      // DLL-shim pipe (Wallpaper Engine)
         UnifiedRgb.Core.Net.ChromaRestServer.Start();    // Chroma REST API :54235 (CS2 and modern games)

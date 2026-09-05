@@ -9,7 +9,9 @@ using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using UnifiedRgb.Core;
+using UnifiedRgb.Core.Automation;
 using UnifiedRgb.Core.Devices;
+using UnifiedRgb.Core.Sensors;
 using UnifiedRgb.Core.Effects;
 using UnifiedRgb.Core.Net;
 
@@ -160,6 +162,75 @@ public sealed partial class MainViewModel
     }
 
     public void PersistAutomation() => _store.SaveSettings();
+
+    /*--- sensor rules ---*/
+    public ObservableCollection<SensorRule> SensorRules { get; } = new();
+
+    public bool SensorRulesEnabled
+    {
+        get => _store.Settings.SensorRulesEnabled;
+        set => SetSetting(_store.Settings.SensorRulesEnabled, value, v => _store.Settings.SensorRulesEnabled = v);
+    }
+
+    /// <summary>Does a profile by this name still exist? The automation calls
+    /// this per tick, so it must not allocate the way ProfileNames does.</summary>
+    public bool HasProfile(string name)
+    {
+        foreach (var p in Profiles)
+            if (string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
+    /// <summary>Sources a rule can watch on THIS machine: the headline values
+    /// always, plus whatever board temps and fans the hub has actually found.</summary>
+    public IReadOnlyList<string> SensorSourceChoices
+    {
+        get
+        {
+            SensorHub.Touch();   // a closed Settings pane leaves the lists empty otherwise
+            var list = new List<string>
+            {
+                SensorSources.CpuTemp, SensorSources.GpuTemp, SensorSources.Hottest,
+                SensorSources.CpuLoad, SensorSources.GpuLoad,
+            };
+            foreach (var t in SensorHub.BoardTemps)
+                if (!string.IsNullOrWhiteSpace(t.Name)) list.Add(SensorSources.BoardPrefix + t.Name);
+            foreach (var f in SensorHub.BoardFans)
+                if (!string.IsNullOrWhiteSpace(f.Name)) list.Add(SensorSources.FanPrefix + f.Name);
+            return list;
+        }
+    }
+
+    public void AddSensorRule(SensorRule r)
+    {
+        if (string.IsNullOrWhiteSpace(r.Source) || string.IsNullOrWhiteSpace(r.Profile)) return;
+        (_store.Settings.SensorRules ??= new()).Add(r);
+        SensorRules.Add(r);
+        _store.SaveSettings();
+    }
+
+    public void RemoveSensorRule(SensorRule r)
+    {
+        _store.Settings.SensorRules?.Remove(r);
+        SensorRules.Remove(r);
+        _store.SaveSettings();
+    }
+
+    /// <summary>Reorder: the first firing rule wins, so this is the priority
+    /// the user is editing.</summary>
+    public void MoveSensorRule(SensorRule r, int newIndex)
+    {
+        var list = _store.Settings.SensorRules;
+        if (list == null) return;
+        int old = list.IndexOf(r);
+        if (old < 0) return;
+        newIndex = Math.Clamp(newIndex, 0, list.Count - 1);
+        if (old == newIndex) return;
+        list.RemoveAt(old);
+        list.Insert(newIndex, r);
+        SensorRules.Move(old, newIndex);
+        _store.SaveSettings();
+    }
 
     string _automationStatus = "";
     /// <summary>Live line from the automation watcher (what app it sees and

@@ -9,6 +9,8 @@
         <local:InverseBoolToVisConverter x:Key="BoolToVisInv"/>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         <local:SliderReadout x:Key="SliderReadout"/>
+        <local:AboveIndexConverter x:Key="AboveIndex"/>
+        <local:SensorSourceLabelConverter x:Key="SensorLabel"/>
 
         <!-- No FontFamily here: app-level implicit styles reach INSIDE control
              templates (window-level ones don't), and a forced Segoe UI turns

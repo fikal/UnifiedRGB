@@ -2,23 +2,30 @@ using System.Diagnostics;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using UnifiedRgb.Core;
+using UnifiedRgb.Core.Automation;
+using UnifiedRgb.Core.Sensors;
 
 namespace UnifiedRgb.App.Services;
 
 /*-----------------------------------------------------------*\
 | "It manages itself": a tiny state machine over the lights.  |
 |                                                              |
-|   Locked   — session locked: lights off, restore on unlock.  |
-|   Night    — inside the nightly off-window: lights off.      |
-|   App      — a foreground process matches a rule: apply      |
-|              that rule's profile.                            |
-|   Base     — whatever the user last had (captured the        |
-|              moment we leave Base, restored — frames AND     |
-|              running effects — when we come back).           |
+|   Locked   session locked: lights off, restore on unlock.    |
+|   Night    inside the nightly off-window: lights off.        |
+|   Sensor   a threshold rule is firing (CPU hit 85): apply    |
+|            that rule's profile.                              |
+|   App      a foreground process matches a rule: apply        |
+|            that rule's profile.                              |
+|   Base     whatever the user last had (captured the moment   |
+|            we leave Base, restored, frames AND running       |
+|            effects, when we come back).                      |
 |                                                              |
-| Priority: Locked > Night > App > Base. Transitions only on   |
-| state CHANGE — steady states never re-apply. All on the      |
-| dispatcher; session events come from SystemEvents.           |
+| Priority: Locked > Night > Sensor > App > Base. Transitions  |
+| only on state CHANGE, steady states never re-apply. The      |
+| decision itself is pure and lives in Core                    |
+| (AutomationDecision.Resolve); this class gathers the facts,  |
+| owns the per-rule sensor state, and performs the switch. All |
+| on the dispatcher; session events come from SystemEvents.    |
 \*-----------------------------------------------------------*/
 public sealed class AutomationService : IDisposable
 {
@@ -50,13 +57,19 @@ public sealed class AutomationService : IDisposable
     // window starts means the lights drop right at the start time.
     const double NightIdleSeconds = 600;   // 10 minutes
 
-    enum Mode { Base, App, Night, Locked }
-
     readonly MainViewModel _vm;
     readonly DispatcherTimer _timer;
     bool _locked;
-    Mode _mode = Mode.Base;
+    AutomationMode _mode = AutomationMode.Base;
     string? _activeRuleProfile;
+
+    /*--- sensor rules: the hysteresis state lives here, one entry per rule,
+          reused across ticks so a tick allocates nothing. ---*/
+    readonly Stopwatch _clock = Stopwatch.StartNew();
+    SensorRuleState[] _sensorStates = Array.Empty<SensorRuleState>();
+    double?[] _sensorValues = Array.Empty<double?>();
+    object? _sensorStatesFor;   // the rule list those states belong to
+    Func<string, bool>? _profileExists;   // cached: a closure per tick is a closure too many
     MainViewModel.LightState? _returnPoint;
     // The user acted during the night window: stay awake until the window
     // ends, then re-arm for the next night.
@@ -81,22 +94,22 @@ public sealed class AutomationService : IDisposable
     /// stomp it — the field bug: return-to-Base applied an old profile.</summary>
     void OnUserLighting()
     {
-        if (_selfApplying || _mode == Mode.Base) return;
-        if (_mode == Mode.Night)
+        if (_selfApplying || _mode == AutomationMode.Base) return;
+        if (_mode == AutomationMode.Night)
         {
             // Someone changing colors at 11 PM clearly wants lights.
             _nightOverride = true;
-            Log.Info("auto", "user changed lighting during night mode - staying awake until tomorrow night");
+            Log.Info("auto", "user changed lighting during night mode, staying awake until tomorrow night");
         }
         _returnPoint = null;
-        Log.Info("auto", "lighting changed during an override — keeping it as the new baseline");
+        Log.Info("auto", "lighting changed during an override, keeping it as the new baseline");
     }
 
     /// <summary>Wake lights button: leave night-off and restore what the user
     /// had before the window started; re-arms at the next night window.</summary>
     public void Wake()
     {
-        if (_mode != Mode.Night) return;
+        if (_mode != AutomationMode.Night) return;
         _nightOverride = true;
         Tick();
     }
@@ -114,42 +127,83 @@ public sealed class AutomationService : IDisposable
             var s = _vm.SettingsData;
             bool inNight = s.NightMode && InNightWindow(s);
             if (!inNight) _nightOverride = false;   // re-arm for the next night
-            bool nightArmed = inNight && !_nightOverride;
-            // "Only when I'm away": inside the window, hold the lights until you've
-            // been idle 10 min - so an evening session isn't cut off, and idle time
-            // carried in from before the start counts (lights drop right at start
-            // if you were already away). Active again → lights come back.
-            bool nightOff = nightArmed && (!s.NightIdleOnly || IdleSeconds() >= NightIdleSeconds);
             string? proc = s.AppSwitchEnabled ? ForegroundProcessName() : null;
-            (Mode mode, string? profile) desired =
-                _locked && s.LockLightsOff ? (Mode.Locked, null)
-                : nightOff ? (Mode.Night, null)
-                : s.AppSwitchEnabled && MatchRule(s, proc) is string p ? (Mode.App, p)
-                : (Mode.Base, null);
+            var (sensor, unavailable) = StepSensorRules(s);
 
-            // Live feedback: without this the feature is a black box
-            // ("i dont know how this works").
-            bool self = proc != null && proc.Equals(SelfName, StringComparison.OrdinalIgnoreCase);
-            _vm.AutomationStatus =
-                desired.mode == Mode.Night ? $"Night mode: lights off until {s.NightEnd}"
-                : inNight && _nightOverride ? "Night mode paused (you woke the lights). Resumes tomorrow night."
-                : nightArmed && s.NightIdleOnly ? "Night mode armed — lights turn off after 10 min idle"
-                : !s.AppSwitchEnabled ? ""
-                : proc == null ? "Watching for your listed programs…"
-                : self ? "This window is focused. Switch to another program to test your rules."
-                : desired.profile != null ? $"Foreground app: {proc} → applying profile '{desired.profile}'"
-                : $"Foreground app: {proc} (no matching rule)";
+            var decision = AutomationDecision.Resolve(new AutomationInputs
+            {
+                Locked = _locked,
+                LockLightsOff = s.LockLightsOff,
+                InNightWindow = inNight,
+                NightOverride = _nightOverride,
+                NightIdleOnly = s.NightIdleOnly,
+                IdleSeconds = s.NightIdleOnly ? IdleSeconds() : 0,
+                NightIdleThreshold = NightIdleSeconds,
+                NightEnd = s.NightEnd,
+                AppSwitchEnabled = s.AppSwitchEnabled,
+                ForegroundProcess = proc,
+                ForegroundIsSelf = proc != null && proc.Equals(SelfName, StringComparison.OrdinalIgnoreCase),
+                AppRules = s.AutomationRules,
+                Sensor = sensor,
+                SensorUnavailable = unavailable,
+            });
 
-            if (desired.mode == _mode && desired.profile == _activeRuleProfile) return;
-            Transition(desired.mode, desired.profile);
+            _vm.AutomationStatus = decision.Status;
+            if (decision.Mode == _mode && decision.Profile == _activeRuleProfile) return;
+            Transition(decision.Mode, decision.Profile);
         }
         catch (Exception ex) { Log.Occasional("automation", "auto", $"tick failed: {ex.Message}"); }
     }
 
-    void Transition(Mode next, string? profile)
+    /// <summary>Advance every sensor rule one tick and report the winner.
+    /// Also the gate on the sensor poller: with no enabled rules nothing here
+    /// touches SensorHub, so the hub stays asleep exactly as before.</summary>
+    (SensorHit? Hit, string? Unavailable) StepSensorRules(SettingsData s)
+    {
+        var rules = s.SensorRulesEnabled ? s.SensorRules : null;
+        if (rules == null || rules.Count == 0) return (null, null);
+
+        // Wake only as much of the hub as the rules actually read: a rule on
+        // CPU temperature must not drag in the GPU/board sweep.
+        bool anyEnabled = false, needFull = false;
+        for (int i = 0; i < rules.Count; i++)
+        {
+            if (!rules[i].Enabled) continue;
+            anyEnabled = true;
+            if (SensorSources.NeedsFullSweep(rules[i].Source)) { needFull = true; break; }
+        }
+        if (!anyEnabled) return (null, null);
+        if (needFull) SensorHub.Touch(); else SensorHub.TouchTemps();
+
+        // One state slot per rule. Reset when the list itself changes (added,
+        // removed, reordered) so state never lands on the wrong rule.
+        if (!ReferenceEquals(_sensorStatesFor, rules) || _sensorStates.Length != rules.Count)
+        {
+            _sensorStates = new SensorRuleState[rules.Count];
+            _sensorValues = new double?[rules.Count];
+            _sensorStatesFor = rules;
+        }
+
+        _profileExists ??= _vm.HasProfile;
+        double now = _clock.Elapsed.TotalSeconds;
+        string? unavailable = null;
+        for (int i = 0; i < rules.Count; i++)
+        {
+            var r = rules[i];
+            double? v = r.Enabled ? SensorSources.Read(r.Source) : null;
+            _sensorValues[i] = v;
+            _sensorStates[i] = SensorRuleEvaluator.Step(r, v, _sensorStates[i], now);
+            if (r.Enabled && v == null && unavailable == null) unavailable = r.Source;
+        }
+        var hit = SensorRuleEvaluator.FirstActive(rules, _sensorStates, _sensorValues, _profileExists);
+        // A firing rule outranks the "no reading" note.
+        return (hit, hit == null ? unavailable : null);
+    }
+
+    void Transition(AutomationMode next, string? profile)
     {
         // Leaving Base: remember exactly what the user had.
-        if (_mode == Mode.Base && next != Mode.Base)
+        if (_mode == AutomationMode.Base && next != AutomationMode.Base)
             _returnPoint = _vm.CaptureState();
 
         _selfApplying = true;
@@ -157,17 +211,20 @@ public sealed class AutomationService : IDisposable
         {
         switch (next)
         {
-            case Mode.Locked:
-            case Mode.Night:
+            case AutomationMode.Locked:
+            case AutomationMode.Night:
                 _vm.LightsOff();
-                Log.Info("auto", next == Mode.Locked ? "session locked — lights off" : "night window — lights off");
+                Log.Info("auto", next == AutomationMode.Locked ? "session locked, lights off" : "night window, lights off");
                 break;
-            case Mode.App:
-                _vm.SetPumpLcdOn(true);   // unlocking straight into an app rule must relight the LCD
+            case AutomationMode.Sensor:
+            case AutomationMode.App:
+                _vm.SetPumpLcdOn(true);   // unlocking straight into a rule must relight the LCD
                 if (profile != null && _vm.ApplyProfileByName(profile))
-                    Log.Info("auto", $"foreground app rule — profile '{profile}'");
+                    Log.Info("auto", next == AutomationMode.Sensor
+                        ? $"sensor rule fired, profile '{profile}'"
+                        : $"foreground app rule, profile '{profile}'");
                 break;
-            case Mode.Base:
+            case AutomationMode.Base:
                 if (_returnPoint != null)
                 {
                     _vm.RestoreState(_returnPoint);
@@ -181,9 +238,9 @@ public sealed class AutomationService : IDisposable
         }
         finally { _selfApplying = false; }
         _mode = next;
-        _activeRuleProfile = next == Mode.App ? profile : null;
-        _vm.NightLightsOff = next == Mode.Night;   // drives the wake banner
-        _vm.LightsSuppressed = next is Mode.Locked or Mode.Night;   // scene sequences hold while off
+        _activeRuleProfile = next is AutomationMode.App or AutomationMode.Sensor ? profile : null;
+        _vm.NightLightsOff = next == AutomationMode.Night;   // drives the wake banner
+        _vm.LightsSuppressed = next is AutomationMode.Locked or AutomationMode.Night;   // scene sequences hold while off
     }
 
     // Resolved once: Process.GetCurrentProcess().ProcessName per 2 s tick took
@@ -202,20 +259,6 @@ public sealed class AutomationService : IDisposable
         return start <= end
             ? now >= start && now < end
             : now >= start || now < end;   // wraps midnight (23:00 → 07:00)
-    }
-
-    static string? MatchRule(SettingsData s, string? proc)
-    {
-        var rules = s.AutomationRules;
-        if (rules == null || rules.Count == 0 || string.IsNullOrEmpty(proc)) return null;
-        foreach (var r in rules)
-        {
-            if (string.IsNullOrWhiteSpace(r.Process) || string.IsNullOrWhiteSpace(r.Profile)) continue;
-            string want = r.Process.Trim();
-            if (want.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) want = want[..^4];
-            if (proc.Contains(want, StringComparison.OrdinalIgnoreCase)) return r.Profile;
-        }
-        return null;
     }
 
     static string? ForegroundProcessName()
@@ -263,7 +306,7 @@ public sealed class AutomationService : IDisposable
         _vm.WakeLightsHook = null;   // was left dangling after dispose
         SystemEvents.SessionSwitch -= OnSessionSwitch;
         // Never leave the lights off because we're exiting mid-state.
-        if (_mode is Mode.Locked or Mode.Night && _returnPoint != null)
+        if (_mode is AutomationMode.Locked or AutomationMode.Night && _returnPoint != null)
             try { _vm.RestoreState(_returnPoint); } catch { }
     }
 }

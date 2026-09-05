@@ -1,0 +1,123 @@
+<Window x:Class="UnifiedRgb.App.SensorRulesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Sensor rules" WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ResizeMode="NoResize" SizeToContent="Height" Width="660"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        MouseLeftButtonDown="Drag_Down">
+    <Border x:Name="RootPanel" Background="#FF1B1D24" CornerRadius="12" Padding="22"
+            BorderBrush="#FF2A2E38" BorderThickness="1">
+        <StackPanel>
+            <Grid Margin="0,0,0,4">
+                <TextBlock Text="Sensor rules" FontSize="18" FontWeight="SemiBold"/>
+                <Button Content="✕" HorizontalAlignment="Right" Padding="8,3" Click="Close_Click"/>
+            </Grid>
+            <TextBlock Opacity="0.6" TextWrapping="Wrap" Margin="0,0,0,12"
+                       Text="When a sensor crosses the number you set, its profile applies. When it comes back, your lighting does too. The top firing rule wins, so order is priority."/>
+
+            <CheckBox Content="Watch sensors and switch profiles" IsChecked="{Binding SensorRulesEnabled}"
+                      Margin="0,0,0,12"
+                      ToolTip="Turn this off to keep your rules without acting on them"/>
+
+            <!-- Existing rules. Every part is editable in place: a threshold is a
+                 number people tune, and remove-then-re-add is a poor way to do it. -->
+            <ItemsControl ItemsSource="{Binding SensorRules}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border Background="#FF262932" CornerRadius="8" Padding="10,7" Margin="0,0,0,6">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*" MinWidth="120"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*" MinWidth="110"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+
+                                <CheckBox Grid.Column="0" IsChecked="{Binding Enabled}" VerticalAlignment="Center"
+                                          Margin="0,0,10,0" Click="Rule_Persist"
+                                          ToolTip="Untick to pause this rule"/>
+                                <ComboBox Grid.Column="1" Height="28" VerticalAlignment="Center"
+                                          ItemsSource="{Binding SourceChoices, RelativeSource={RelativeSource AncestorType=Window}}"
+                                          DisplayMemberPath="Label" SelectedValuePath="Id"
+                                          SelectedValue="{Binding Source}"
+                                          SelectionChanged="Rule_Persist"
+                                          ToolTip="Which sensor to watch"/>
+                                <ComboBox Grid.Column="2" Width="112" Height="28" VerticalAlignment="Center" Margin="6,0,0,0"
+                                          SelectedIndex="{Binding Above, Converter={StaticResource AboveIndex}}"
+                                          SelectionChanged="Rule_Persist">
+                                    <ComboBoxItem Content="at or above"/>
+                                    <ComboBoxItem Content="at or below"/>
+                                </ComboBox>
+                                <TextBox Grid.Column="3" Width="56" MinHeight="28" Margin="6,0,0,0"
+                                         VerticalAlignment="Center" HorizontalContentAlignment="Center"
+                                         Text="{Binding Threshold, StringFormat=0.#, UpdateSourceTrigger=LostFocus}"
+                                         LostFocus="Rule_Persist"
+                                         ToolTip="Degrees, percent or RPM, depending on the sensor"/>
+                                <TextBlock Grid.Column="4" Text="→" Opacity="0.6" VerticalAlignment="Center" Margin="10,0"/>
+                                <ComboBox Grid.Column="5" Height="28" VerticalAlignment="Center"
+                                          ItemsSource="{Binding DataContext.ProfileNames, RelativeSource={RelativeSource AncestorType=Window}}"
+                                          SelectedItem="{Binding Profile}"
+                                          SelectionChanged="Rule_Persist"
+                                          ToolTip="Profile to apply while the rule is firing"/>
+                                <Button Grid.Column="6" Content="&#x2191;" Width="28" Height="28" Padding="0"
+                                        VerticalAlignment="Center" Margin="10,0,0,0"
+                                        Click="MoveUp_Click" ToolTip="Higher priority"/>
+                                <Button Grid.Column="7" Content="&#x2193;" Width="28" Height="28" Padding="0"
+                                        VerticalAlignment="Center" Margin="4,0,0,0"
+                                        Click="MoveDown_Click" ToolTip="Lower priority"/>
+                                <Button Grid.Column="8" Content="&#x2715;" Style="{StaticResource Danger}"
+                                        Width="28" Height="28" Padding="0" VerticalAlignment="Center" Margin="6,0,0,0"
+                                        Click="RemoveRule_Click" ToolTip="Remove this rule"/>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <TextBlock x:Name="NoRulesText" Text="No rules yet. Add one below." Opacity="0.5" FontSize="12" Margin="2,0,0,6"/>
+            <TextBlock x:Name="MissingProfileText" Foreground="#FFF0B942" FontSize="11.5" Margin="2,2,0,0"
+                       TextWrapping="Wrap" Visibility="Collapsed"
+                       Text="A rule with an empty profile was pointing at one that has been renamed or deleted. Pick a new profile, or remove the rule. It is skipped meanwhile."/>
+
+            <Border Background="#22FFFFFF" Height="1" Margin="0,12,0,14"/>
+
+            <!-- Add a rule -->
+            <TextBlock Text="ADD A RULE" FontSize="11" FontWeight="SemiBold" Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,0,0,8"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" MinWidth="120"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*" MinWidth="110"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <ComboBox x:Name="SourcePick" Grid.Column="0" Height="28" VerticalAlignment="Center"
+                          DisplayMemberPath="Label" SelectedValuePath="Id"
+                          ToolTip="Which sensor to watch"/>
+                <ComboBox x:Name="DirPick" Grid.Column="1" Width="112" Height="28" VerticalAlignment="Center"
+                          Margin="6,0,0,0" SelectedIndex="0">
+                    <ComboBoxItem Content="at or above"/>
+                    <ComboBoxItem Content="at or below"/>
+                </ComboBox>
+                <TextBox x:Name="ThresholdBox" Grid.Column="2" Width="56" MinHeight="28" Margin="6,0,0,0"
+                         VerticalAlignment="Center" HorizontalContentAlignment="Center" Text="85"
+                         ToolTip="Degrees, percent or RPM, depending on the sensor"/>
+                <TextBlock Grid.Column="3" Text="→" Opacity="0.6" VerticalAlignment="Center" Margin="10,0"/>
+                <ComboBox x:Name="ProfilePick" Grid.Column="4" Height="28" VerticalAlignment="Center"
+                          ItemsSource="{Binding ProfileNames}"
+                          ToolTip="Profile to apply while the rule is firing"/>
+                <Button Grid.Column="5" Content="Add rule" Style="{StaticResource Accent}" Padding="14,0"
+                        Height="28" VerticalAlignment="Center" Margin="10,0,0,0" Click="AddRule_Click"/>
+            </Grid>
+            <TextBlock x:Name="AddHint" Opacity="0.5" FontSize="11" Margin="2,8,0,0" TextWrapping="Wrap"
+                       Text="Pick a sensor, a number and a profile, then hit Add rule. It waits a few seconds before firing, and needs the reading to come back past the number before it releases, so a value sitting on the line cannot flicker your lights."/>
+
+            <TextBlock Text="{Binding AutomationStatus}" Foreground="#FF7FB4FF" FontSize="12" Margin="0,14,0,0" TextWrapping="Wrap"/>
+        </StackPanel>
+    </Border>
+</Window>

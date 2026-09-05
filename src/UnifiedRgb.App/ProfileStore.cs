@@ -2,6 +2,7 @@ using System.IO;
 using System.Text.Json;
 using Microsoft.Win32;
 using UnifiedRgb.Core;
+using UnifiedRgb.Core.Automation;
 
 namespace UnifiedRgb.App;
 
@@ -79,6 +80,10 @@ public sealed class SettingsData
     public string NightEnd { get; set; } = "07:00";
     public bool NightIdleOnly { get; set; }   // night-off waits for 10 min idle instead of firing at the start time
 
+    /// <summary>Threshold rules over the sensors (CPU hits 85, go red).</summary>
+    public bool SensorRulesEnabled { get; set; }
+    public List<SensorRule>? SensorRules { get; set; }
+
     /// <summary>On app exit, switch the Lian Li wireless fans to follow their
     /// mainboard sync wire (e.g. SYS_FAN1) so a hardware curve keeps them
     /// temperature-aware while the app is away.</summary>
@@ -97,14 +102,6 @@ public sealed class SavedPalette
 {
     public string Name { get; set; } = "";
     public string[] Colors { get; set; } = System.Array.Empty<string>();   // hex, no '#'
-}
-
-/// <summary>Foreground-app rule: when a process whose name contains Process
-/// is in the foreground, apply Profile.</summary>
-public sealed class AutomationRule
-{
-    public string Process { get; set; } = "";
-    public string Profile { get; set; } = "";
 }
 
 /// <summary>A device the user disabled: the app never opens it (its whole
