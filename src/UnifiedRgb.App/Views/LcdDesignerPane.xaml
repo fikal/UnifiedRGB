@@ -245,20 +245,28 @@
                                 <StackPanel Visibility="{Binding LcdHasBackground, Converter={StaticResource BoolToVis}}">
                                     <TextBlock Text="SIZE &amp; PLACEMENT" FontSize="11" FontWeight="SemiBold"
                                                Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,16,0,8"/>
+                                    <!-- VerticalAlignment on every child: a WrapPanel stretches
+                                         its items to the tallest one in the line, which made these
+                                         boxes and buttons far taller than their content. -->
                                     <WrapPanel>
                                         <TextBox Text="{Binding LcdBgW, StringFormat=0, UpdateSourceTrigger=LostFocus}" Width="52"
+                                                 VerticalAlignment="Center" Padding="6,3"
                                                  HorizontalContentAlignment="Center" ToolTip="Width (px)"/>
                                         <TextBlock Text="×" Opacity="0.6" VerticalAlignment="Center" Margin="6,0"/>
                                         <TextBox Text="{Binding LcdBgH, StringFormat=0, UpdateSourceTrigger=LostFocus}" Width="52"
+                                                 VerticalAlignment="Center" Padding="6,3"
                                                  HorizontalContentAlignment="Center" ToolTip="Height (px)"/>
                                         <CheckBox Content="Lock aspect" IsChecked="{Binding LcdBgAspectLock}" Margin="12,0,0,0"
                                                   VerticalAlignment="Center"
                                                   ToolTip="Keep the image's shape when resizing (no squash/stretch)"/>
-                                        <Button Content="Fill" Click="BgFill_Click" Padding="10,4" Margin="14,0,0,0"
+                                        <Button Content="Fill" Click="BgFill_Click" Padding="12,3" Margin="14,0,0,0"
+                                                VerticalAlignment="Center"
                                                 ToolTip="Cover the whole screen (crops the overflow)"/>
-                                        <Button Content="Fit" Click="BgFit_Click" Padding="10,4" Margin="6,0,0,0"
+                                        <Button Content="Fit" Click="BgFit_Click" Padding="12,3" Margin="6,0,0,0"
+                                                VerticalAlignment="Center"
                                                 ToolTip="Show the whole image (bars around it)"/>
-                                        <Button Content="Center" Click="BgCenter_Click" Padding="10,4" Margin="6,0,0,0"/>
+                                        <Button Content="Center" Click="BgCenter_Click" Padding="12,3" Margin="6,0,0,0"
+                                                VerticalAlignment="Center"/>
                                     </WrapPanel>
                                     <TextBlock Text="On the preview: drag the image to move it, drag the blue corner grip to resize."
                                                Opacity="0.4" FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap"/>
