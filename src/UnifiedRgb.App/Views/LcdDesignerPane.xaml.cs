@@ -26,6 +26,13 @@ public partial class LcdDesignerPane : UserControl
     void Design_Down(object sender, MouseButtonEventArgs e)
     {
         if (sender is not ListBox lb) return;
+        // Take focus for the canvas. Capturing the mouse from a Preview handler
+        // stops the ListBox focusing itself the way a click normally would, so
+        // focus stayed in whichever box was last used: selecting a Text element
+        // opens one for its content, and Ctrl+Z then went to that box's own text
+        // undo instead of the design. Clicking the canvas means working on the
+        // canvas.
+        lb.Focus();
         var item = ItemsControl.ContainerFromElement(lb, e.OriginalSource as DependencyObject) as ListBoxItem;
         if (item?.DataContext is LcdElement el)
         {

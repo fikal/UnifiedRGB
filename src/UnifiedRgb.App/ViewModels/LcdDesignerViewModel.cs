@@ -261,6 +261,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         if (_lcd == null) return;
         SettleUndo();
         if (_history.Undo(_baseline) is string prev) ApplySnapshot(prev);
+        else Log.Occasional("lcd", "undo-empty", "undo requested with nothing to step back to");
     }
 
     public void Redo()
