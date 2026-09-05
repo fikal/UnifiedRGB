@@ -37,6 +37,10 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     // write reaches the hardware; the partials decide WHAT). The aliases keep
     // the partials' engine/applier calls readable.
     readonly Services.LightingController _lighting = new();
+
+    /// <summary>Charge for wireless gear. Idle unless something wireless is
+    /// attached; see BatteryMonitor.</summary>
+    readonly Services.BatteryMonitor _battery;
     EffectEngine _engine => _lighting.Engine;
     CoalescingApplier _applier => _lighting.Applier;
     static object LaneOf(IRgbDevice d) => Services.LightingController.LaneOf(d);
@@ -1080,6 +1084,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     public MainViewModel()
     {
         _bake = new Services.LianBakeService(_lighting, () => Devices.OfType<LianLiWireless>());
+        _battery = new Services.BatteryMonitor(_lighting.Applier, () => Devices, RefreshBatterySubtitles);
         Cooling = new CoolingViewModel(_store.Settings, _store.SaveSettings,
             isGigabyteBoard: () => Devices.OfType<GigabyteIt5711>().Any(),
             pawnIoMissing: () => PawnIoMissing,
@@ -1465,6 +1470,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             if (savedFrames.TryGetValue(d.Name, out var old)) RestoreFrame(d, old);
 
         ApplyLianSpeed();                                      // carry the saved fan-speed calibration
+        _battery.Rescan();                                     // charge, before the rows are built
         BuildLeftItems();                                      // devices + pump LCD row
         RestoreEffects(savedEffects);
         LandOnRunningLianTarget();

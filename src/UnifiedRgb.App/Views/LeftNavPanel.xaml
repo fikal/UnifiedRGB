@@ -18,7 +18,19 @@
                                 </Style>
                             </StackPanel.Style>
                             <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextWrapping="Wrap"/>
-                            <TextBlock Text="{Binding Subtitle}" Opacity="0.7" FontSize="11" Margin="0,3,0,0"/>
+                            <TextBlock Text="{Binding Subtitle}" Opacity="0.7" FontSize="11" Margin="0,3,0,0">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Style.Triggers>
+                                            <!-- Wireless gear running low: amber, and no dimming. -->
+                                            <DataTrigger Binding="{Binding LowBattery}" Value="True">
+                                                <Setter Property="Foreground" Value="#FFE0A030"/>
+                                                <Setter Property="Opacity" Value="1"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
                         </StackPanel>
                     </DataTemplate>
                 </DockPanel.Resources>

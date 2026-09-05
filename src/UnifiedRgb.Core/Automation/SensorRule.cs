@@ -114,6 +114,7 @@ public static class SensorSources
 
     public const string BoardPrefix = "Board:";   // a motherboard temperature, by name
     public const string FanPrefix = "Fan:";       // a fan RPM, by name
+    public const string BatteryPrefix = "Battery:"; // a wireless device's charge, by name
 
     /// <summary>Human name for the rules UI and the status line.</summary>
     public static string Label(string source) => source switch
@@ -129,6 +130,8 @@ public static class SensorSources
             => "MB " + source[BoardPrefix.Length..].Replace("Temperature", "Temp"),
         // Fan names are already self-describing ("CPU Fan", "Fan #3").
         _ when source.StartsWith(FanPrefix, StringComparison.Ordinal) => source[FanPrefix.Length..],
+        _ when source.StartsWith(BatteryPrefix, StringComparison.Ordinal)
+            => source[BatteryPrefix.Length..] + " battery",
         _ => source,
     };
 
@@ -138,8 +141,16 @@ public static class SensorSources
         CpuLoad or GpuLoad => "%",
         _ when source.StartsWith(FanPrefix, StringComparison.Ordinal) => " RPM",
         _ when source.StartsWith(BoardPrefix, StringComparison.Ordinal) => "°C",
+        _ when source.StartsWith(BatteryPrefix, StringComparison.Ordinal) => "%",
         _ => "",
     };
+
+    /// <summary>True when this source is read out of a SensorHub sweep at all.
+    /// Battery is not: it is pushed in by the app's own slow poller, so a
+    /// battery rule must not wake the temperature poller for a number it
+    /// never looks at.</summary>
+    public static bool NeedsHub(string source) =>
+        !source.StartsWith(BatteryPrefix, StringComparison.Ordinal);
 
     /// <summary>True when reading this source needs SensorHub's full sweep
     /// (GPU load, board temps and fans) rather than the cheap temp-only one.
@@ -174,6 +185,13 @@ public static class SensorSources
             string name = source[FanPrefix.Length..];
             foreach (var f in SensorHub.BoardFans)
                 if (f.Name == name) return f.Rpm;
+            return null;
+        }
+        if (source.StartsWith(BatteryPrefix, StringComparison.Ordinal))
+        {
+            string name = source[BatteryPrefix.Length..];
+            foreach (var b in SensorHub.Batteries)
+                if (b.Name == name) return b.Percent;
             return null;
         }
         return null;

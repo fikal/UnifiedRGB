@@ -629,7 +629,12 @@ round-trip with missing/unknown devices.
 - [x] 1. Sensor rules (+ `AutomationDecision.Resolve` extracted to Core)
 - [x] 2. Scheduler (Night mode migrated)
 - [x] 3. Undo/redo in the LCD designer (`UndoStack<T>`)
-- [ ] 4. Battery for wireless gear (Razer; sensor source for rules)
+- [x] 4. Battery for wireless gear (Razer; sensor source for rules)
+      NOT verified against hardware: no Razer device has been attached to this
+      machine since the spec was written, so the percentage has never been
+      compared with Synapse and charging has never been seen to flip. The bytes
+      match openrazer and the decode is covered by fixture tests. Plug the
+      HyperFlux pad back in and confirm before 1.1.0 ships.
 - [ ] 5. Now-playing LCD widget (+ album art)
 - [ ] 6. Hardware persistence (Gigabyte, ENE, Lian Li wired; Strafe investigated)
 - [ ] 7. OpenRGB SDK server (+ control handoff)

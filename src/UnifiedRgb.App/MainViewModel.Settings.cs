@@ -238,6 +238,10 @@ public sealed partial class MainViewModel
                 if (!string.IsNullOrWhiteSpace(t.Name)) list.Add(SensorSources.BoardPrefix + t.Name);
             foreach (var f in SensorHub.BoardFans)
                 if (!string.IsNullOrWhiteSpace(f.Name)) list.Add(SensorSources.FanPrefix + f.Name);
+            // Only wireless gear that has answered: offering a battery rule for
+            // a device that has no battery would just be a rule that never fires.
+            foreach (var b in SensorHub.Batteries)
+                if (!string.IsNullOrWhiteSpace(b.Name)) list.Add(SensorSources.BatteryPrefix + b.Name);
             return list;
         }
     }

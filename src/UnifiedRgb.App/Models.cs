@@ -52,10 +52,30 @@ public sealed record EffectCategoryVM(string Name, System.Collections.Generic.Li
 
 /// <summary>A row in the left device list: an RGB device, or the pump LCD
 /// (Device == null) which opens the display designer instead of lighting.</summary>
-public sealed class LeftItem
+public sealed class LeftItem : System.ComponentModel.INotifyPropertyChanged
 {
+    public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+    void Notify(string n) => PropertyChanged?.Invoke(this, new(n));
+
     public required string Name { get; init; }
-    public required string Subtitle { get; init; }
+
+    // Settable, not init: a wireless device's charge lands in here every minute
+    // and rebuilding the whole list for it would take the selection with it.
+    string _subtitle = "";
+    public required string Subtitle
+    {
+        get => _subtitle;
+        set { if (_subtitle == value) return; _subtitle = value; Notify(nameof(Subtitle)); }
+    }
+
+    bool _lowBattery;
+    /// <summary>Charge at or below BatteryMonitor.LowPercent and off the
+    /// charger: the subtitle turns amber.</summary>
+    public bool LowBattery
+    {
+        get => _lowBattery;
+        set { if (_lowBattery == value) return; _lowBattery = value; Notify(nameof(LowBattery)); }
+    }
     public IRgbDevice? Device { get; init; }
     public bool IsDisabled { get; init; }
     public bool IsCooling { get; init; }

@@ -93,3 +93,18 @@ public interface IKeyMappedDevice
     /// <summary>Device-wide LED index for a VK code, or -1 if it has no LED.</summary>
     int LedForVk(int vk);
 }
+
+/// <summary>A device that can report its own charge. Wireless gear only:
+/// wired devices simply do not implement it, which is what keeps the poller
+/// off them entirely rather than asking and discarding the answer.</summary>
+public interface IBatteryDevice
+{
+    /// <summary>Charge and whether it is on the charger, or null when the
+    /// device did not answer: asleep, out of range, or firmware without a
+    /// battery. Null is not zero. A mouse that is merely idle must not read
+    /// as flat, or a low-battery rule would fire every night.</summary>
+    BatteryReading? ReadBattery();
+}
+
+/// <param name="Percent">0..100.</param>
+public readonly record struct BatteryReading(int Percent, bool Charging);

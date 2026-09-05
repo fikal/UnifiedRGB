@@ -3,6 +3,14 @@ using UnifiedRgb.Core.Native;
 
 namespace UnifiedRgb.Core.Devices;
 
+// TODO battery: the G403 HERO is wired, so there is nothing to read here. A
+// wireless Logitech would report through HID++ feature 0x1004 (UNIFIED_BATTERY,
+// newer gear: function 0x10 get_status returns percentage + charging state) or
+// 0x1000 (BATTERY_STATUS, older: a level in 0/1/2/3 plus a charging byte).
+// Find the feature index through IRoot the same way the RGB feature is found,
+// then implement IBatteryDevice and BatteryMonitor picks it up with no other
+// change. Untestable until there is hardware, so it is deliberately not guessed.
+
 /// <summary>Logitech G403 HERO mouse (046D:C08F) via HID++ 2.0.
 ///
 /// Long report (0x11, 20 bytes):

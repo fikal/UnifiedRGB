@@ -1,3 +1,4 @@
+using UnifiedRgb.Core;
 using UnifiedRgb.Core.Devices;
 
 namespace UnifiedRgb.App;
@@ -16,6 +17,30 @@ public sealed partial class MainViewModel
     // when the pane leaves (it used to fire 40x/min for the process lifetime).
     void StartCoolingRefresh() => Cooling.Start();
 
+    /// <summary>"Mouse • 2 LEDs • 74%". The charge is only there for wireless
+    /// gear that has answered; everything else reads exactly as before.</summary>
+    string SubtitleFor(IRgbDevice d)
+    {
+        string s = $"{d.Type} • {d.LedCount} LEDs";
+        if (_battery.Of(d) is not UnifiedRgb.Core.Sensors.SensorHub.BatteryLevel b) return s;
+        return b.Charging ? $"{s} • {b.Percent}% charging" : $"{s} • {b.Percent}%";
+    }
+
+    bool IsLowBattery(IRgbDevice d) =>
+        _battery.Of(d) is { Charging: false } b && b.Percent <= Services.BatteryMonitor.LowPercent;
+
+    /// <summary>A new charge arrived: retitle the rows in place. Rebuilding the
+    /// list instead would drop the selection every minute.</summary>
+    void RefreshBatterySubtitles()
+    {
+        foreach (var item in DeviceItems)
+        {
+            if (item.Device is not IRgbDevice d) continue;
+            item.Subtitle = SubtitleFor(d);
+            item.LowBattery = IsLowBattery(d);
+        }
+    }
+
     void BuildLeftItems()
     {
         // Devices scroll in their own list; the SYSTEM section (Pump LCD,
@@ -23,7 +48,13 @@ public sealed partial class MainViewModel
         // scrolling to reach, no matter how many devices there are.
         DeviceItems.Clear();
         foreach (var d in Devices)
-            DeviceItems.Add(new LeftItem { Name = d.Name, Subtitle = $"{d.Type} • {d.LedCount} LEDs", Device = d });
+            DeviceItems.Add(new LeftItem
+            {
+                Name = d.Name,
+                Subtitle = SubtitleFor(d),
+                LowBattery = IsLowBattery(d),
+                Device = d,
+            });
         foreach (var e in _store.Settings.DisabledDevices ?? new())
             DeviceItems.Add(new LeftItem { Name = e.Name, Subtitle = "disabled", Device = null, IsDisabled = true });
 

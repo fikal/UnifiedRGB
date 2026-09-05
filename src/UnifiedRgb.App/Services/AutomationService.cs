@@ -223,15 +223,20 @@ public sealed class AutomationService : IDisposable
 
         // Wake only as much of the hub as the rules actually read: a rule on
         // CPU temperature must not drag in the GPU/board sweep.
-        bool anyEnabled = false, needFull = false;
+        bool anyEnabled = false, needHub = false, needFull = false;
         for (int i = 0; i < rules.Count; i++)
         {
             if (!rules[i].Enabled) continue;
             anyEnabled = true;
+            // Battery arrives from its own poller, so a battery rule wakes
+            // nothing here at all.
+            if (!SensorSources.NeedsHub(rules[i].Source)) continue;
+            needHub = true;
             if (SensorSources.NeedsFullSweep(rules[i].Source)) { needFull = true; break; }
         }
         if (!anyEnabled) return (null, null);
-        if (needFull) SensorHub.Touch(); else SensorHub.TouchTemps();
+        if (needFull) SensorHub.Touch();
+        else if (needHub) SensorHub.TouchTemps();
 
         // One state slot per rule. Reset when the list itself changes (added,
         // removed, reordered) so state never lands on the wrong rule.

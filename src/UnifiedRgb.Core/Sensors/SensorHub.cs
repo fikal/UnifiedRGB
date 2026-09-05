@@ -80,6 +80,19 @@ public static class SensorHub
     public static BoardTemp[] BoardTemps { get; private set; } = Array.Empty<BoardTemp>();
     public static BoardFan[] BoardFans { get; private set; } = Array.Empty<BoardFan>();
 
+    /// <summary>Charge of a wireless device, by device name.</summary>
+    public sealed record BatteryLevel(string Name, int Percent, bool Charging);
+
+    /// <summary>Latest charge of every wireless device. Pushed in by the app's
+    /// battery poller on its own slow cadence rather than read during a sweep:
+    /// a battery query is a round trip to a sleeping mouse, which has no place
+    /// on a path that runs every second.</summary>
+    public static BatteryLevel[] Batteries { get; private set; } = Array.Empty<BatteryLevel>();
+
+    /// <summary>Replace the published charges (whole-array swap, so a reader
+    /// always sees one consistent set).</summary>
+    public static void PublishBatteries(BatteryLevel[] levels) => Batteries = levels;
+
     /// <summary>Hottest of CPU/GPU — the "how hard is the machine working"
     /// number the temp-reactive lighting rides.</summary>
     public static double? HottestC

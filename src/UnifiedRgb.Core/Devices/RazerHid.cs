@@ -35,7 +35,7 @@ namespace UnifiedRgb.Core.Devices;
 /// when the firmware accepts anything, the count comes from hardware.json
 /// (`RazerLedCounts`, set from the Lighting pane's Razer… dialog) or a guess.
 /// Everything a new pad needs is therefore discoverable from one build.</summary>
-public sealed class RazerHid : IRgbDevice
+public sealed class RazerHid : IRgbDevice, IBatteryDevice
 {
     public const ushort VID = 0x1532;
     const int WIRE_LEN = 90;
@@ -474,6 +474,45 @@ public sealed class RazerHid : IRgbDevice
         var r = Exchange(_hid, rep);
         return r != null && r[1] == ST_OK;
     }
+
+    /*-----------------------------------------------------*\
+    | Battery (wireless models)                             |
+    \*-----------------------------------------------------*/
+
+    /// <summary>Charge and charging flag, or null when the device does not
+    /// answer. Class 0x07: cmd 0x80 is the level, cmd 0x84 the charging flag,
+    /// each in arguments[1] (openrazer's razer_chroma_misc_get_battery_level
+    /// and _get_charging_status). The level is 0..255, not a percentage.
+    ///
+    /// A sleeping wireless mouse answers status 0x04 (timeout) and a wired one
+    /// reports a raw 0, both of which are null here rather than 0%: openrazer
+    /// reports 0 for gear with no measurable battery, and a low-battery rule
+    /// firing every time the mouse naps would be worse than no reading.</summary>
+    public BatteryReading? ReadBattery()
+    {
+        if (_model.Kind == Kind.Pad) return null;      // the pad runs off USB
+        var level = Exchange(_hid, NewReport(_tid, 0x07, 0x80, 0x02));
+        // Nothing usable came back: don't spend a second round trip on a mouse
+        // that is asleep or has no battery to report.
+        if (DecodeBattery(level, null) == null) return null;
+        return DecodeBattery(level, Exchange(_hid, NewReport(_tid, 0x07, 0x84, 0x02)));
+    }
+
+    /// <summary>The two replies as a reading. A missing, short, or unsuccessful
+    /// charging reply is not fatal: the level is the useful half, and "not
+    /// charging" is the safe assumption.</summary>
+    internal static BatteryReading? DecodeBattery(byte[]? level, byte[]? charging)
+    {
+        if (level == null || level.Length <= ARGS + 1 || level[1] != ST_OK) return null;
+        if (level[ARGS + 1] == 0) return null;         // wired, or no battery to measure
+        bool onCharger = charging != null && charging.Length > ARGS + 1
+                         && charging[1] == ST_OK && charging[ARGS + 1] != 0;
+        return new BatteryReading(ScaleCharge(level[ARGS + 1]), onCharger);
+    }
+
+    /// <summary>Razer's 0..255 charge as 0..100, rounded rather than truncated
+    /// so a full battery reads 100 and not 99.</summary>
+    internal static int ScaleCharge(byte raw) => (raw * 100 + 127) / 255;
 
     /// <summary>Battery 0-100, or null (wired / unsupported).</summary>
     public int? BatteryPercent()
