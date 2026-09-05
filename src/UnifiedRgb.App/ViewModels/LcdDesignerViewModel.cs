@@ -25,10 +25,12 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     readonly DispatcherTimer _lcdSave = new() { Interval = TimeSpan.FromMilliseconds(700) };
 
     public LcdDesignerViewModel(Func<bool> isOnScreen, Func<bool> lightsSuppressed,
-        Func<string, bool> applyProfile, Func<IEnumerable<string>> profileNames)
+        Func<string, bool> applyProfile, Func<IEnumerable<string>> profileNames,
+        Func<string?> currentProfile)
     {
         _isOnScreen = isOnScreen; _lightsSuppressed = lightsSuppressed;
         _applyProfile = applyProfile; _profileNames = profileNames;
+        _currentProfile = currentProfile;
 
         AddTimeCommand     = new RelayCommand(_ => AddElement(LcdElementKind.Time), _ => Available);
         AddDateCommand     = new RelayCommand(_ => AddElement(LcdElementKind.Date), _ => Available);
@@ -500,6 +502,8 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    readonly Func<string?> _currentProfile;
+
     void ApplySceneAction(SceneAction a)
     {
         // Lights deliberately off (locked / night): hold the step. Applying a
@@ -508,14 +512,22 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         // LCD blank. The sequencer keeps ticking; the next step after the
         // lights return applies normally.
         if (_lightsSuppressed()) return;
+        // Re-applying what is already on is not free: loading a profile stops
+        // and restarts every effect channel, so a step that names the running
+        // profile visibly resets the animation instead of leaving it alone.
+        // Steps that genuinely change nothing now just tick past.
         if (!string.IsNullOrEmpty(a.Scene) &&
-            _scenes.Scenes.FirstOrDefault(x => x.Name == a.Scene) is LcdScene sc)
+            _scenes.Scenes.FirstOrDefault(x => x.Name == a.Scene) is LcdScene sc &&
+            // Only safe to skip when the show itself put this screen up. If the
+            // user has been editing, the live design is no longer that scene.
+            !(_liveIsShowScene && _selectedSceneName == sc.Name))
         {
             _selectedSceneName = sc.Name;   // reflect without re-loading twice
             OnChanged(nameof(SelectedSceneName));
             LoadDesignIntoEditor(SceneStore.Clone(sc.Design), fromShow: true);
         }
-        if (!string.IsNullOrEmpty(a.Profile))
+        if (!string.IsNullOrEmpty(a.Profile) &&
+            !string.Equals(_currentProfile(), a.Profile, StringComparison.OrdinalIgnoreCase))
             _applyProfile(a.Profile);
     }
 

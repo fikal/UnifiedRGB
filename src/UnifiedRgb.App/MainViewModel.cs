@@ -1088,7 +1088,8 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             isOnScreen: () => ShowLcdPanel,   // visibility, not selection: Settings covers the pane
             lightsSuppressed: () => LightsSuppressed,
             applyProfile: ApplyProfileByName,
-            profileNames: () => Profiles.Select(p => p.Name));
+            profileNames: () => Profiles.Select(p => p.Name),
+            currentProfile: () => SelectedProfile?.Name);
         ApplyToTargetCommand = new RelayCommand(_ => ApplyToTarget(), _ => HasSelection);
         ApplyToAllCommand    = new RelayCommand(_ => ApplyModeToAll(), _ => Devices.Count > 0);
         PickSwatchCommand    = new RelayCommand(o => { if (o is Rgb c) SetColor(c); });
