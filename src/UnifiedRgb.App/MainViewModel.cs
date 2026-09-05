@@ -927,7 +927,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             int v = Clamp(value);
             var (h, s, _) = ColorWheel.RgbToHsv(Color.FromRgb((byte)_r, (byte)_g, (byte)_b));
             var c = ColorWheel.HsvToRgb(h, s, v / 255.0);
-            SetColor(new Rgb(c.R, c.G, c.B));
+            SetColor(new Rgb(c.R, c.G, c.B), fromBrightness: true);
         }
     }
 
@@ -1225,8 +1225,24 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     | Central color update: sync every view of the color,   |
     | then live-apply if enabled.                           |
     \*-----------------------------------------------------*/
-    void SetColor(Rgb c)
+    /// <summary>Full white is every channel at maximum, which is the heaviest
+    /// current an ARGB header can be asked for, and it is the easiest thing in
+    /// the app to hit by accident: one swatch, or the middle of the wheel,
+    /// followed by "All devices". Choosing white lands at 60% instead. The tint
+    /// is preserved so a warm white stays warm.</summary>
+    const double WhiteSafeScale = 0.6;
+
+    static Rgb SoftenWhite(Rgb c) =>
+        c.R < 240 || c.G < 240 || c.B < 240
+            ? c
+            : new Rgb((byte)(c.R * WhiteSafeScale), (byte)(c.G * WhiteSafeScale), (byte)(c.B * WhiteSafeScale));
+
+    /// <param name="fromBrightness">The brightness slider is an explicit choice
+    /// about level, so it is never capped. Every other path (wheel, hex, R/G/B,
+    /// swatches) is picking a colour, and gets the white guard.</param>
+    void SetColor(Rgb c, bool fromBrightness = false)
     {
+        if (!fromBrightness) c = SoftenWhite(c);
         UpdateColorViews(c);
         if (_selectionChanging) return;   // sync views only — never write mid-switch
 

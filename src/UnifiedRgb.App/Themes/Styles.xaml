@@ -8,6 +8,7 @@
         <local:BoolToWeightConverter x:Key="BoolWeight"/>
         <local:InverseBoolToVisConverter x:Key="BoolToVisInv"/>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <local:SliderReadout x:Key="SliderReadout"/>
 
         <!-- No FontFamily here: app-level implicit styles reach INSIDE control
              templates (window-level ones don't), and a forced Segoe UI turns
@@ -91,13 +92,31 @@
 
         <!-- Dark slider: accent-filled track + round thumb -->
         <Style TargetType="Slider">
-            <Setter Property="Height" Value="22"/>
+            <Setter Property="Height" Value="38"/>
             <Setter Property="IsMoveToPointEnabled" Value="True"/>
             <EventSetter Event="PreviewKeyDown" Handler="MouseOnly_PreviewKeyDown"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Slider">
-                        <Grid VerticalAlignment="Center" Background="Transparent">
+                      <Grid Background="Transparent">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <!-- Live numeric value, so a slider is never a mystery
+                             position. Sliders that carry a unit declare it with
+                             local:Sl.Unit; the rest render as a plain number. -->
+                        <TextBlock Grid.Row="0" HorizontalAlignment="Right" Margin="0,0,1,2"
+                                   FontSize="11" Opacity="0.75" IsHitTestVisible="False">
+                            <TextBlock.Text>
+                                <MultiBinding Converter="{StaticResource SliderReadout}">
+                                    <Binding Path="Value" RelativeSource="{RelativeSource TemplatedParent}"/>
+                                    <Binding Path="Maximum" RelativeSource="{RelativeSource TemplatedParent}"/>
+                                    <Binding Path="(local:Sl.Unit)" RelativeSource="{RelativeSource TemplatedParent}"/>
+                                </MultiBinding>
+                            </TextBlock.Text>
+                        </TextBlock>
+                        <Grid Grid.Row="1" VerticalAlignment="Center" Background="Transparent">
                             <Border Height="5" CornerRadius="2.5" Background="#FF2A2D38"/>
                             <Track x:Name="PART_Track">
                                 <Track.DecreaseRepeatButton>
@@ -164,6 +183,7 @@
                                 </Track.Thumb>
                             </Track>
                         </Grid>
+                      </Grid>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>

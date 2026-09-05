@@ -102,6 +102,9 @@
                                             MouseLeftButtonDown="BgGrip_Down" MouseMove="BgGrip_Move"
                                             MouseLeftButtonUp="BgGrip_Up" LostMouseCapture="BgGrip_LostCapture"/>
                                 </Canvas>
+                                <!-- Alignment guides drawn while dragging an item.
+                                     Topmost and click-through so it never eats input. -->
+                                <Canvas x:Name="GuideLayer" IsHitTestVisible="False"/>
                             </Grid>
                         </Border>
                         <TextBlock Text="Drag items to place them · click to select" Opacity="0.45"
@@ -173,7 +176,7 @@
                             </StackPanel>
 
                             <TextBlock Text="Size" Opacity="0.7" Margin="0,14,0,2"/>
-                            <Slider Minimum="10" Maximum="120" Value="{Binding SelectedElement.FontSize}"/>
+                            <Slider Minimum="10" Maximum="120" Value="{Binding SelectedElement.FontSize}" local:Sl.Unit="px"/>
 
                             <CheckBox Content="Bold" IsChecked="{Binding SelectedElement.Bold}" Margin="0,10,0,0"/>
 

@@ -92,9 +92,8 @@
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="Master brightness" Opacity="0.7" VerticalAlignment="Center" Margin="0,0,12,0"/>
                         <Slider Width="220" Minimum="0.1" Maximum="1" VerticalAlignment="Center"
-                                IsSnapToTickEnabled="True" TickFrequency="0.05"
+                                IsSnapToTickEnabled="True" TickFrequency="0.05" local:Sl.Unit="%"
                                 Value="{Binding MasterBrightness, UpdateSourceTrigger=PropertyChanged}"/>
-                        <TextBlock Text="{Binding MasterBrightnessText}" VerticalAlignment="Center" Margin="12,0,0,0" MinWidth="40"/>
                     </StackPanel>
                     <TextBlock Opacity="0.55" FontSize="12" Margin="0,10,0,0"
                                Text="Global hotkey (works in games): Ctrl+Alt+↑/↓ master brightness"/>

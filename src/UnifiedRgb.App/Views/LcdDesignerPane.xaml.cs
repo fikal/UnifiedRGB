@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -51,9 +52,11 @@ public partial class LcdDesignerPane : UserControl
         if (_drag != null)
         {
             var p = e.GetPosition(lb);
+            double x = Clamp(_startX + (p.X - _dragOrigin.X), 0, 312);
+            double y = Clamp(_startY + (p.Y - _dragOrigin.Y), 0, 232);
+            (x, y) = SnapToGuides(lb, _drag, x, y);
             // One notification (= one panel render) per move, not X then Y.
-            _drag.MoveTo(Clamp(_startX + (p.X - _dragOrigin.X), 0, 312),
-                         Clamp(_startY + (p.Y - _dragOrigin.Y), 0, 232));
+            _drag.MoveTo(x, y);
         }
         else if (_bgDrag)
         {
@@ -69,7 +72,95 @@ public partial class LcdDesignerPane : UserControl
         if (_drag == null && !_bgDrag) return;
         _drag = null; _bgDrag = false;
         if (sender is ListBox lb) lb.ReleaseMouseCapture();
+        GuideLayer.Children.Clear();
         VM.TouchLcd();
+    }
+
+    /*-----------------------------------------------------*    | Alignment guides, the way a forms designer does it:   |
+    | while an item is dragged, its edges and centre are    |
+    | compared against every other item and against the     |
+    | screen itself. Anything within a few pixels snaps,    |
+    | and the line it snapped to is drawn.                  |
+    \*-----------------------------------------------------*/
+
+    const double SnapDistance = 4;      // how close before it grabs
+    const double ScreenW = 320, ScreenH = 240;
+
+    /// <summary>Rendered bounds of an element on the canvas. Size comes from the
+    /// container because it depends on the text and font, which the element
+    /// itself does not know.</summary>
+    static Rect? BoundsOf(ListBox lb, LcdElement el)
+    {
+        if (lb.ItemContainerGenerator.ContainerFromItem(el) is not FrameworkElement fe) return null;
+        if (fe.ActualWidth <= 0 || fe.ActualHeight <= 0) return null;
+        return new Rect(el.X, el.Y, fe.ActualWidth, fe.ActualHeight);
+    }
+
+    /// <summary>Snap a proposed position to nearby edges/centres and draw the
+    /// guides for whatever it lined up with. Returns the adjusted position.</summary>
+    (double X, double Y) SnapToGuides(ListBox lb, LcdElement drag, double x, double y)
+    {
+        GuideLayer.Children.Clear();
+        if (BoundsOf(lb, drag) is not { } self) return (x, y);
+        double w = self.Width, h = self.Height;
+
+        // Every line worth snapping to: the screen's own edges and centre, plus
+        // the three edges of each other element on both axes.
+        var vertical = new List<double> { 0, ScreenW / 2, ScreenW };
+        var horizontal = new List<double> { 0, ScreenH / 2, ScreenH };
+        foreach (var other in VM.LcdElements)
+        {
+            if (ReferenceEquals(other, drag)) continue;
+            if (BoundsOf(lb, other) is not { } r) continue;
+            vertical.Add(r.Left); vertical.Add(r.Left + r.Width / 2); vertical.Add(r.Right);
+            horizontal.Add(r.Top); horizontal.Add(r.Top + r.Height / 2); horizontal.Add(r.Bottom);
+        }
+
+        // The dragged item can align by its left edge, its centre or its right
+        // edge; offset says where the item's origin ends up for each.
+        double? hitX = Nearest(vertical, new[] { x, x + w / 2, x + w }, out double dx);
+        if (hitX is { } gx) x += dx;
+        double? hitY = Nearest(horizontal, new[] { y, y + h / 2, y + h }, out double dy);
+        if (hitY is { } gy) y += dy;
+
+        if (hitX is { } vx) DrawGuide(vx, 0, vx, ScreenH);
+        if (hitY is { } vy) DrawGuide(0, vy, ScreenW, vy);
+        return (x, y);
+    }
+
+    /// <summary>Closest line to any of the item's three anchors, if one is within
+    /// SnapDistance. `delta` is how far the item must move to sit on it.</summary>
+    static double? Nearest(List<double> lines, double[] anchors, out double delta)
+    {
+        double best = SnapDistance, chosen = 0; bool found = false;
+        delta = 0;
+        foreach (double line in lines)
+            foreach (double a in anchors)
+            {
+                double d = Math.Abs(line - a);
+                if (d > best) continue;
+                best = d; chosen = line; delta = line - a; found = true;
+            }
+        return found ? chosen : null;
+    }
+
+    void DrawGuide(double x1, double y1, double x2, double y2) =>
+        GuideLayer.Children.Add(new System.Windows.Shapes.Line
+        {
+            X1 = x1, Y1 = y1, X2 = x2, Y2 = y2,
+            Stroke = GuideBrush, StrokeThickness = 1, SnapsToDevicePixels = true,
+        });
+
+    // Magenta, the colour every forms designer uses for this, and nothing else
+    // on this dark canvas looks like it.
+    static readonly System.Windows.Media.Brush GuideBrush = CreateGuideBrush();
+
+    static System.Windows.Media.Brush CreateGuideBrush()
+    {
+        var b = new System.Windows.Media.SolidColorBrush(
+            System.Windows.Media.Color.FromRgb(0xFF, 0x3C, 0xE0));
+        b.Freeze();
+        return b;
     }
 
     /// <summary>Alt+Tab / a popup mid-drag: capture leaves without a MouseUp,
@@ -78,6 +169,7 @@ public partial class LcdDesignerPane : UserControl
     {
         if (_drag == null && !_bgDrag) return;
         _drag = null; _bgDrag = false;
+        GuideLayer.Children.Clear();
         VM.TouchLcd();
     }
 

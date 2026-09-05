@@ -245,10 +245,8 @@
                                         <TextBlock Text="Fixed duty" Opacity="0.6" HorizontalAlignment="Center"/>
                                         <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
                                             <Slider Width="260" Minimum="{Binding EditingFan.MinDuty}" Maximum="100" VerticalAlignment="Center"
-                                                    IsSnapToTickEnabled="True" TickFrequency="5"
+                                                    IsSnapToTickEnabled="True" TickFrequency="5" local:Sl.Unit="%"
                                                     Value="{Binding EditingFan.DutyPercent, UpdateSourceTrigger=PropertyChanged}"/>
-                                            <TextBlock Text="{Binding EditingFan.DutyPercent, StringFormat={}{0}%}"
-                                                       FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" Margin="14,0,0,0" MinWidth="40"/>
                                         </StackPanel>
                                     </StackPanel>
                                     <TextBlock Text="This fan follows the motherboard's own (BIOS) curve."

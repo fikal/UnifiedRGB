@@ -15,10 +15,8 @@
                                     Visibility="{Binding ShowLianSpeed, Converter={StaticResource BoolToVis}}">
                             <TextBlock Text="Fan speed" VerticalAlignment="Center" Opacity="0.7" Margin="0,0,8,0"/>
                             <Slider Width="120" Minimum="0.3" Maximum="4" Value="{Binding LianSpeedScale}"
-                                    VerticalAlignment="Center"
+                                    VerticalAlignment="Center" local:Sl.Unit="x"
                                     ToolTip="Drag until the fan animation keeps pace with your other lights (right = slower)."/>
-                            <TextBlock Text="{Binding LianSpeedText}" VerticalAlignment="Center" Opacity="0.7"
-                                       Margin="8,0,0,0" MinWidth="34"/>
                         </StackPanel>
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,14,0"
                                     Visibility="{Binding ShowLianUniChannel, Converter={StaticResource BoolToVis}}">
@@ -204,7 +202,7 @@
                                 <local:ColorWheel Width="190" Height="190" HorizontalAlignment="Left"
                                                   SelectedColor="{Binding WheelColor, Mode=TwoWay}"/>
                                 <TextBlock Text="Brightness" Opacity="0.7" Margin="0,10,0,0"/>
-                                <Slider Minimum="0" Maximum="255" Value="{Binding Brightness}" Margin="0,2,0,8"/>
+                                <Slider Minimum="0" Maximum="255" Value="{Binding Brightness}" Margin="0,2,0,8" local:Sl.Unit="%"/>
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="46"/>
@@ -283,7 +281,7 @@
                                             <local:ColorWheel Width="164" Height="164" HorizontalAlignment="Center"
                                                               SelectedColor="{Binding WheelColor, Mode=TwoWay}"/>
                                             <TextBlock Text="Brightness" Opacity="0.7" Margin="0,8,0,0"/>
-                                            <Slider Minimum="0" Maximum="255" Value="{Binding Brightness}" Margin="0,2,0,6"/>
+                                            <Slider Minimum="0" Maximum="255" Value="{Binding Brightness}" Margin="0,2,0,6" local:Sl.Unit="%"/>
                                             <!-- Compact preview + hex (the global TextBox padding is
                                                  too tall for a pop-up) -->
                                             <Grid>
@@ -321,7 +319,7 @@
                             <StackPanel Visibility="{Binding ShowSpeedInMain, Converter={StaticResource BoolToVis}}"
                                         Margin="0,14,0,0">
                                 <TextBlock Text="{Binding SpeedLabel}" Opacity="0.7" Margin="0,0,0,2"/>
-                                <Slider Minimum="0.1" Maximum="4" Value="{Binding EffectSpeed}"
+                                <Slider Minimum="0.1" Maximum="4" Value="{Binding EffectSpeed}" local:Sl.Unit="x"
                                         ToolTip="How hard the lights react to sound. Low = only the peaks, high = always moving."/>
                             </StackPanel>
 
@@ -338,7 +336,7 @@
                                 Visibility="{Binding IsCustomPattern, Converter={StaticResource BoolToVis}}">
                         <TextBlock Text="Pattern" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,10"/>
                         <TextBlock Text="Speed" Opacity="0.7" Margin="0,0,0,2"/>
-                        <Slider Minimum="0.1" Maximum="4" Value="{Binding EffectSpeed}"/>
+                        <Slider Minimum="0.1" Maximum="4" Value="{Binding EffectSpeed}" local:Sl.Unit="x"/>
                         <TextBlock Text="Pattern color" Opacity="0.7" Margin="0,12,0,4"/>
                         <ComboBox ItemsSource="{Binding PatternColorModes}" SelectedItem="{Binding SelectedPatternColor}"/>
                         <TextBlock Text="Motion" Opacity="0.7" Margin="0,12,0,4"/>

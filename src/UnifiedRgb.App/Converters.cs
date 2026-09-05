@@ -61,3 +61,38 @@ public sealed class InverseBoolToVisConverter : System.Windows.Data.IValueConver
     public object ConvertBack(object value, Type t, object p, System.Globalization.CultureInfo c)
         => throw new NotSupportedException();
 }
+
+/// <summary>Unit hint for the readout the Slider template draws above its
+/// track. Sliders carry very different meanings (a 0-1 fraction, a 0-255
+/// channel, a 0.1-4 multiplier), so the value alone can't be formatted
+/// sensibly; each slider says what it is and <see cref="SliderReadout"/>
+/// renders it.</summary>
+public static class Sl
+{
+    public static readonly DependencyProperty UnitProperty =
+        DependencyProperty.RegisterAttached("Unit", typeof(string), typeof(Sl), new PropertyMetadata(null));
+
+    public static string? GetUnit(DependencyObject o) => (string?)o.GetValue(UnitProperty);
+    public static void SetUnit(DependencyObject o, string? v) => o.SetValue(UnitProperty, v);
+}
+
+/// <summary>Formats a slider's value for display: (value, maximum, unit).</summary>
+public sealed class SliderReadout : System.Windows.Data.IMultiValueConverter
+{
+    public object Convert(object[] v, Type t, object? p, System.Globalization.CultureInfo c)
+    {
+        if (v.Length < 3 || v[0] is not double val || v[1] is not double max) return "";
+        return (v[2] as string) switch
+        {
+            // A fraction of the slider's own range reads as a percentage; a
+            // 0-255 channel does too, just scaled differently.
+            "%" => $"{Math.Round(max <= 1.0 ? val * 100 : val / max * 100)}%",
+            "x" => $"{val:0.0}×",
+            "px" => $"{Math.Round(val)} px",
+            _ => $"{Math.Round(val)}",
+        };
+    }
+
+    public object[] ConvertBack(object v, Type[] t, object? p, System.Globalization.CultureInfo c)
+        => throw new NotSupportedException();
+}
