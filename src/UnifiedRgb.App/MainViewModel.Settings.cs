@@ -163,6 +163,47 @@ public sealed partial class MainViewModel
 
     public void PersistAutomation() => _store.SaveSettings();
 
+    /*--- schedules ---*/
+    public ObservableCollection<ScheduleRule> Schedules { get; } = new();
+
+    public void AddSchedule(ScheduleRule r)
+    {
+        (_store.Settings.Schedules ??= new()).Add(r);
+        Schedules.Add(r);
+        _store.SaveSettings();
+        OnChanged(nameof(ScheduleSummary));
+    }
+
+    public void RemoveSchedule(ScheduleRule r)
+    {
+        _store.Settings.Schedules?.Remove(r);
+        Schedules.Remove(r);
+        _store.SaveSettings();
+        OnChanged(nameof(ScheduleSummary));
+    }
+
+    /// <summary>"Next: lights off at 23:00" for the Settings line, so the
+    /// feature says what it is about to do without opening the editor.</summary>
+    public string ScheduleSummary
+    {
+        get
+        {
+            var next = ScheduleRule.NextChange(_store.Settings.Schedules, DateTime.Now);
+            if (next is not (DateTime when, ScheduleRule rule)) return "Nothing scheduled.";
+            string what = rule.Action == ScheduleAction.LightsOff
+                ? "lights off"
+                : $"profile '{rule.Profile}'";
+            string day = when.Date == DateTime.Today ? "today"
+                : when.Date == DateTime.Today.AddDays(1) ? "tomorrow"
+                : when.DayOfWeek.ToString();
+            return $"Next: {what} {day} at {rule.Start}.";
+        }
+    }
+
+    /// <summary>The summary is computed, so it has to be asked to refresh once
+    /// the editor closes.</summary>
+    public void RefreshScheduleSummary() => OnChanged(nameof(ScheduleSummary));
+
     /*--- sensor rules ---*/
     public ObservableCollection<SensorRule> SensorRules { get; } = new();
 

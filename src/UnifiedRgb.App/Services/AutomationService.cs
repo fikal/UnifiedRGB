@@ -11,7 +11,8 @@ namespace UnifiedRgb.App.Services;
 | "It manages itself": a tiny state machine over the lights.  |
 |                                                              |
 |   Locked   session locked: lights off, restore on unlock.    |
-|   Night    inside the nightly off-window: lights off.        |
+|   Schedule a timed window is open: lights off, or apply its  |
+|            profile. Night mode is one of these now.          |
 |   Sensor   a threshold rule is firing (CPU hit 85): apply    |
 |            that rule's profile.                              |
 |   App      a foreground process matches a rule: apply        |
@@ -20,7 +21,8 @@ namespace UnifiedRgb.App.Services;
 |            we leave Base, restored, frames AND running       |
 |            effects, when we come back).                      |
 |                                                              |
-| Priority: Locked > Night > Sensor > App > Base. Transitions  |
+| Priority: Locked > Schedule(off) > Sensor > Schedule(profile) |
+| > App > Base. Transitions                                    |
 | only on state CHANGE, steady states never re-apply. The      |
 | decision itself is pure and lives in Core                    |
 | (AutomationDecision.Resolve); this class gathers the facts,  |
@@ -71,9 +73,9 @@ public sealed class AutomationService : IDisposable
     object? _sensorStatesFor;   // the rule list those states belong to
     Func<string, bool>? _profileExists;   // cached: a closure per tick is a closure too many
     MainViewModel.LightState? _returnPoint;
-    // The user acted during the night window: stay awake until the window
-    // ends, then re-arm for the next night.
-    bool _nightOverride;
+    // The user acted during a lights-off window: stay awake until every such
+    // window has closed, then re-arm for the next one.
+    bool _scheduleOverride;
 
     bool _selfApplying;   // our own profile applies must not clear the return point
 
@@ -95,11 +97,11 @@ public sealed class AutomationService : IDisposable
     void OnUserLighting()
     {
         if (_selfApplying || _mode == AutomationMode.Base) return;
-        if (_mode == AutomationMode.Night)
+        if (_mode == AutomationMode.ScheduleOff)
         {
             // Someone changing colors at 11 PM clearly wants lights.
-            _nightOverride = true;
-            Log.Info("auto", "user changed lighting during night mode, staying awake until tomorrow night");
+            _scheduleOverride = true;
+            Log.Info("auto", "user changed lighting during a scheduled dark window, staying awake until it ends");
         }
         _returnPoint = null;
         Log.Info("auto", "lighting changed during an override, keeping it as the new baseline");
@@ -109,8 +111,8 @@ public sealed class AutomationService : IDisposable
     /// had before the window started; re-arms at the next night window.</summary>
     public void Wake()
     {
-        if (_mode != AutomationMode.Night) return;
-        _nightOverride = true;
+        if (_mode != AutomationMode.ScheduleOff) return;
+        _scheduleOverride = true;
         Tick();
     }
 
@@ -125,8 +127,7 @@ public sealed class AutomationService : IDisposable
         try
         {
             var s = _vm.SettingsData;
-            bool inNight = s.NightMode && InNightWindow(s);
-            if (!inNight) _nightOverride = false;   // re-arm for the next night
+            var sched = EvaluateSchedules(s);
             string? proc = s.AppSwitchEnabled ? ForegroundProcessName() : null;
             var (sensor, unavailable) = StepSensorRules(s);
 
@@ -134,12 +135,11 @@ public sealed class AutomationService : IDisposable
             {
                 Locked = _locked,
                 LockLightsOff = s.LockLightsOff,
-                InNightWindow = inNight,
-                NightOverride = _nightOverride,
-                NightIdleOnly = s.NightIdleOnly,
-                IdleSeconds = s.NightIdleOnly ? IdleSeconds() : 0,
-                NightIdleThreshold = NightIdleSeconds,
-                NightEnd = s.NightEnd,
+                ScheduleOff = sched.Off,
+                ScheduleProfile = sched.Profile,
+                SchedulePaused = sched.Paused,
+                ScheduleWaitingIdle = sched.WaitingIdle,
+                ScheduleEnd = sched.End,
                 AppSwitchEnabled = s.AppSwitchEnabled,
                 ForegroundProcess = proc,
                 ForegroundIsSelf = proc != null && proc.Equals(SelfName, StringComparison.OrdinalIgnoreCase),
@@ -153,6 +153,57 @@ public sealed class AutomationService : IDisposable
             Transition(decision.Mode, decision.Profile);
         }
         catch (Exception ex) { Log.Occasional("automation", "auto", $"tick failed: {ex.Message}"); }
+    }
+
+    /// <summary>Which timed windows are open right now.
+    ///
+    /// The idle clock is only read when some open window actually asks for it,
+    /// so the usual tick still costs one Win32 call for the foreground window
+    /// and nothing else.</summary>
+    (ScheduleHit? Off, ScheduleHit? Profile, bool Paused, bool WaitingIdle, string End)
+        EvaluateSchedules(SettingsData s)
+    {
+        var rules = s.Schedules;
+        if (rules == null || rules.Count == 0)
+        {
+            _scheduleOverride = false;
+            return (null, null, false, false, "");
+        }
+
+        var now = DateTime.Now;
+        ScheduleHit? off = null, profile = null;
+        bool anyOffWindow = false, waitingIdle = false;
+        string end = "";
+
+        for (int i = 0; i < rules.Count; i++)
+        {
+            var r = rules[i];
+            if (!r.Enabled || !ScheduleRule.InWindow(r, now)) continue;
+
+            if (r.Action == ScheduleAction.LightsOff)
+            {
+                anyOffWindow = true;
+                if (end.Length == 0) end = r.End;
+                // "Only when I'm away": hold the lights until the machine has
+                // been idle, so an evening session is never cut off. Idle time
+                // carried in from before the window counts, so an already-away
+                // machine drops right at the start time.
+                if (r.IdleOnly && IdleSeconds() < NightIdleSeconds) { waitingIdle = true; continue; }
+                if (off == null) off = new ScheduleHit(r.End, null);
+            }
+            else if (profile == null && !string.IsNullOrWhiteSpace(r.Profile) && _vm.HasProfile(r.Profile!))
+            {
+                if (r.IdleOnly && IdleSeconds() < NightIdleSeconds) continue;
+                profile = new ScheduleHit(r.End, r.Profile);
+            }
+        }
+
+        // The override pauses the dark until every lights-off window has closed,
+        // then re-arms for the next one.
+        if (!anyOffWindow) _scheduleOverride = false;
+        if (_scheduleOverride) { off = null; waitingIdle = false; }
+
+        return (off, profile, anyOffWindow && _scheduleOverride, off == null && waitingIdle, end);
     }
 
     /// <summary>Advance every sensor rule one tick and report the winner.
@@ -212,17 +263,21 @@ public sealed class AutomationService : IDisposable
         switch (next)
         {
             case AutomationMode.Locked:
-            case AutomationMode.Night:
+            case AutomationMode.ScheduleOff:
                 _vm.LightsOff();
-                Log.Info("auto", next == AutomationMode.Locked ? "session locked, lights off" : "night window, lights off");
+                Log.Info("auto", next == AutomationMode.Locked ? "session locked, lights off" : "scheduled window, lights off");
                 break;
             case AutomationMode.Sensor:
+            case AutomationMode.ScheduleProfile:
             case AutomationMode.App:
                 _vm.SetPumpLcdOn(true);   // unlocking straight into a rule must relight the LCD
                 if (profile != null && _vm.ApplyProfileByName(profile))
-                    Log.Info("auto", next == AutomationMode.Sensor
-                        ? $"sensor rule fired, profile '{profile}'"
-                        : $"foreground app rule, profile '{profile}'");
+                    Log.Info("auto", next switch
+                    {
+                        AutomationMode.Sensor => $"sensor rule fired, profile '{profile}'",
+                        AutomationMode.ScheduleProfile => $"scheduled window, profile '{profile}'",
+                        _ => $"foreground app rule, profile '{profile}'",
+                    });
                 break;
             case AutomationMode.Base:
                 if (_returnPoint != null)
@@ -238,9 +293,10 @@ public sealed class AutomationService : IDisposable
         }
         finally { _selfApplying = false; }
         _mode = next;
-        _activeRuleProfile = next is AutomationMode.App or AutomationMode.Sensor ? profile : null;
-        _vm.NightLightsOff = next == AutomationMode.Night;   // drives the wake banner
-        _vm.LightsSuppressed = next is AutomationMode.Locked or AutomationMode.Night;   // scene sequences hold while off
+        _activeRuleProfile = next is AutomationMode.App or AutomationMode.Sensor
+            or AutomationMode.ScheduleProfile ? profile : null;
+        _vm.NightLightsOff = next == AutomationMode.ScheduleOff;   // drives the wake banner
+        _vm.LightsSuppressed = next is AutomationMode.Locked or AutomationMode.ScheduleOff;   // scene sequences hold while off
     }
 
     // Resolved once: Process.GetCurrentProcess().ProcessName per 2 s tick took
@@ -250,16 +306,6 @@ public sealed class AutomationService : IDisposable
     // Foreground pid -> name, so an unchanged foreground window costs no
     // GetProcessById (another full process-table snapshot) per tick.
     static uint _lastPid; static string? _lastName;
-
-    static bool InNightWindow(SettingsData s)
-    {
-        if (!TimeSpan.TryParse(s.NightStart, out var start) ||
-            !TimeSpan.TryParse(s.NightEnd, out var end)) return false;
-        var now = DateTime.Now.TimeOfDay;
-        return start <= end
-            ? now >= start && now < end
-            : now >= start || now < end;   // wraps midnight (23:00 → 07:00)
-    }
 
     static string? ForegroundProcessName()
     {
@@ -306,7 +352,7 @@ public sealed class AutomationService : IDisposable
         _vm.WakeLightsHook = null;   // was left dangling after dispose
         SystemEvents.SessionSwitch -= OnSessionSwitch;
         // Never leave the lights off because we're exiting mid-state.
-        if (_mode is AutomationMode.Locked or AutomationMode.Night && _returnPoint != null)
+        if (_mode is AutomationMode.Locked or AutomationMode.ScheduleOff && _returnPoint != null)
             try { _vm.RestoreState(_returnPoint); } catch { }
     }
 }

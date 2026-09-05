@@ -29,6 +29,13 @@ public partial class SettingsPane : UserControl
         Dialogs.ShowBlurred(owner, new AppRulesWindow(VM) { Owner = owner });
     }
 
+    void ManageSchedules_Click(object sender, RoutedEventArgs e)
+    {
+        var owner = Owner;
+        Dialogs.ShowBlurred(owner, new SchedulesWindow(VM) { Owner = owner });
+        VM.RefreshScheduleSummary();
+    }
+
     void ManageSensorRules_Click(object sender, RoutedEventArgs e)
     {
         var owner = Owner;

@@ -10,6 +10,7 @@
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         <local:SliderReadout x:Key="SliderReadout"/>
         <local:AboveIndexConverter x:Key="AboveIndex"/>
+        <local:ActionIndexConverter x:Key="ActionIndex"/>
         <local:SensorSourceLabelConverter x:Key="SensorLabel"/>
 
         <!-- No FontFamily here: app-level implicit styles reach INSIDE control

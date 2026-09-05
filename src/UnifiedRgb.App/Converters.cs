@@ -72,6 +72,18 @@ public sealed class AboveIndexConverter : System.Windows.Data.IValueConverter
         => v is int i && i == 0;
 }
 
+/// <summary>Schedule action dropdown: lights off is the first item.</summary>
+public sealed class ActionIndexConverter : System.Windows.Data.IValueConverter
+{
+    public object Convert(object v, Type t, object? p, System.Globalization.CultureInfo c)
+        => v is UnifiedRgb.Core.Automation.ScheduleAction.Profile ? 1 : 0;
+
+    public object ConvertBack(object v, Type t, object? p, System.Globalization.CultureInfo c)
+        => v is int i && i == 1
+            ? UnifiedRgb.Core.Automation.ScheduleAction.Profile
+            : UnifiedRgb.Core.Automation.ScheduleAction.LightsOff;
+}
+
 /// <summary>Sensor id to its readable name ("CpuTemp" to "CPU temp").</summary>
 public sealed class SensorSourceLabelConverter : System.Windows.Data.IValueConverter
 {

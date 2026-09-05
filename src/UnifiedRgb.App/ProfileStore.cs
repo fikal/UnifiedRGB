@@ -74,11 +74,16 @@ public sealed class SettingsData
     public List<AutomationRule>? AutomationRules { get; set; }
     /// <summary>Lights off while the session is locked; restore on unlock.</summary>
     public bool LockLightsOff { get; set; } = true;
-    /// <summary>Lights off on a nightly schedule.</summary>
+    /*--- Night mode became one row of the scheduler. These four are still
+          written so an older build keeps working, but nothing reads them after
+          the one-shot migration below. ---*/
     public bool NightMode { get; set; }
     public string NightStart { get; set; } = "23:00";
     public string NightEnd { get; set; } = "07:00";
-    public bool NightIdleOnly { get; set; }   // night-off waits for 10 min idle instead of firing at the start time
+    public bool NightIdleOnly { get; set; }
+
+    /// <summary>Timed windows: lights off, or a profile, on chosen days.</summary>
+    public List<ScheduleRule>? Schedules { get; set; }
 
     /// <summary>Threshold rules over the sensors (CPU hits 85, go red).</summary>
     public bool SensorRulesEnabled { get; set; }
@@ -128,6 +133,33 @@ public sealed class ProfileStore
     public List<Profile> Profiles { get; } = new();
     public SettingsData Settings { get; private set; } = new();
 
+    /// <summary>Night mode is now one schedule. Carry an existing setup over so
+    /// upgrading changes nothing the user can see.
+    ///
+    /// Runs whenever Schedules is missing rather than once behind a flag: an
+    /// older build strips fields it does not know, so a downgrade-then-upgrade
+    /// arrives here with the legacy fields intact and Schedules gone, and the
+    /// right answer then is to rebuild it. The legacy fields keep their values
+    /// for exactly that reason.</summary>
+    /// <returns>True when the file needs writing back.</returns>
+    static bool MigrateNightMode(SettingsData s)
+    {
+        if (s.Schedules != null) return false;
+        s.Schedules = new();
+        if (!s.NightMode) return true;
+        s.Schedules.Add(new ScheduleRule
+        {
+            Enabled = true,
+            Days = 0x7F,
+            Start = s.NightStart,
+            End = s.NightEnd,
+            Action = ScheduleAction.LightsOff,
+            IdleOnly = s.NightIdleOnly,
+        });
+        Log.Info("settings", $"night mode migrated to a schedule ({s.NightStart} to {s.NightEnd})");
+        return true;
+    }
+
     public ProfileStore()
     {
         Directory.CreateDirectory(Dir);
@@ -143,6 +175,10 @@ public sealed class ProfileStore
             foreach (var e in p.Effects ?? new()) e.Device ??= "";
         }
         Settings = LoadJson<SettingsData>(SettingsPath, "settings.json") ?? new();
+        // Write the migration back straight away. Settings are only saved when
+        // something changes, so otherwise an upgraded night schedule would live
+        // in memory until the user happened to touch an unrelated setting.
+        if (MigrateNightMode(Settings)) SaveSettings();
     }
 
     /// <summary>Read a JSON store; null when absent or unreadable. A CORRUPT

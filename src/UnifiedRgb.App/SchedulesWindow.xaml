@@ -1,0 +1,92 @@
+<Window x:Class="UnifiedRgb.App.SchedulesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:UnifiedRgb.App"
+        Title="Schedules" WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ResizeMode="NoResize" SizeToContent="Height" Width="700"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        MouseLeftButtonDown="Drag_Down">
+    <Border x:Name="RootPanel" Background="#FF1B1D24" CornerRadius="12" Padding="22"
+            BorderBrush="#FF2A2E38" BorderThickness="1">
+        <StackPanel>
+            <Grid Margin="0,0,0,4">
+                <TextBlock Text="Schedules" FontSize="18" FontWeight="SemiBold"/>
+                <Button Content="✕" HorizontalAlignment="Right" Padding="8,3" Click="Close_Click"/>
+            </Grid>
+            <TextBlock Opacity="0.6" TextWrapping="Wrap" Margin="0,0,0,12"
+                       Text="Lights off, or a profile, between two times on the days you pick. A window that ends before it starts runs overnight."/>
+
+            <ItemsControl ItemsSource="{Binding Schedules}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border Background="#FF262932" CornerRadius="8" Padding="10,8" Margin="0,0,0,6">
+                            <StackPanel>
+                                <!-- Days -->
+                                <Grid>
+                                    <StackPanel Orientation="Horizontal">
+                                        <CheckBox IsChecked="{Binding Enabled}" VerticalAlignment="Center"
+                                                  Margin="0,0,12,0" Click="Rule_Persist"
+                                                  ToolTip="Untick to pause this schedule"/>
+                                        <CheckBox Content="M" IsChecked="{Binding Mon}" Click="Rule_Persist" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                                        <CheckBox Content="T" IsChecked="{Binding Tue}" Click="Rule_Persist" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                                        <CheckBox Content="W" IsChecked="{Binding Wed}" Click="Rule_Persist" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                                        <CheckBox Content="T" IsChecked="{Binding Thu}" Click="Rule_Persist" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                                        <CheckBox Content="F" IsChecked="{Binding Fri}" Click="Rule_Persist" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                                        <CheckBox Content="S" IsChecked="{Binding Sat}" Click="Rule_Persist" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                                        <CheckBox Content="S" IsChecked="{Binding Sun}" Click="Rule_Persist" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                    <Button Content="&#x2715;" Style="{StaticResource Danger}" HorizontalAlignment="Right"
+                                            Width="28" Height="28" Padding="0" VerticalAlignment="Center"
+                                            Click="RemoveRule_Click" ToolTip="Remove this schedule"/>
+                                </Grid>
+
+                                <!-- Window and action -->
+                                <Grid Margin="0,8,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*" MinWidth="120"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <ComboBox Grid.Column="0" Width="86" Height="28" VerticalAlignment="Center"
+                                              SelectedItem="{Binding Start}" SelectionChanged="Rule_Persist"
+                                              ItemsSource="{x:Static local:MainViewModel.TimeOptions}"/>
+                                    <TextBlock Grid.Column="1" Text="to" Opacity="0.7" VerticalAlignment="Center" Margin="8,0"/>
+                                    <ComboBox Grid.Column="2" Width="86" Height="28" VerticalAlignment="Center"
+                                              SelectedItem="{Binding End}" SelectionChanged="Rule_Persist"
+                                              ItemsSource="{x:Static local:MainViewModel.TimeOptions}"/>
+                                    <ComboBox Grid.Column="3" Width="112" Height="28" VerticalAlignment="Center" Margin="12,0,0,0"
+                                              SelectedIndex="{Binding Action, Converter={StaticResource ActionIndex}}"
+                                              SelectionChanged="Rule_Persist">
+                                        <ComboBoxItem Content="lights off"/>
+                                        <ComboBoxItem Content="apply profile"/>
+                                    </ComboBox>
+                                    <ComboBox Grid.Column="4" Height="28" VerticalAlignment="Center" Margin="8,0,0,0"
+                                              IsEnabled="{Binding IsProfileAction}"
+                                              ItemsSource="{Binding DataContext.ProfileNames, RelativeSource={RelativeSource AncestorType=Window}}"
+                                              SelectedItem="{Binding Profile}" SelectionChanged="Rule_Persist"
+                                              ToolTip="Which profile this window applies"/>
+                                    <CheckBox Grid.Column="5" Content="only when away" IsChecked="{Binding IdleOnly}"
+                                              VerticalAlignment="Center" Margin="12,0,0,0" Click="Rule_Persist"
+                                              ToolTip="Wait for 10 minutes of no keyboard or mouse before acting"/>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <TextBlock x:Name="NoRulesText" Text="Nothing scheduled." Opacity="0.5" FontSize="12" Margin="2,0,0,6"/>
+
+            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                <Button Content="Add lights off" Padding="14,0" Height="28" VerticalAlignment="Center"
+                        Click="AddOff_Click"/>
+                <Button Content="Add profile window" Padding="14,0" Height="28" VerticalAlignment="Center"
+                        Margin="8,0,0,0" Click="AddProfile_Click"/>
+            </StackPanel>
+
+            <TextBlock Text="{Binding AutomationStatus}" Foreground="#FF7FB4FF" FontSize="12" Margin="0,14,0,0" TextWrapping="Wrap"/>
+        </StackPanel>
+    </Border>
+</Window>

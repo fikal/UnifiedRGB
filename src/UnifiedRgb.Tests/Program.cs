@@ -1120,21 +1120,121 @@ static string TempDir()
         "app match: blank rule matches nothing");
 }
 
+/*---------------- Schedules: window math (#f2) ----------------*/
+{
+    // Monday is bit 0. A window that ends before it starts runs overnight and
+    // belongs to the day it STARTED.
+    ScheduleRule Night(int days = 0x7F) => new() { Start = "23:00", End = "07:00", Days = days };
+    ScheduleRule Evening(int days = 0x1F) => new() { Start = "18:00", End = "20:00", Days = days, Action = ScheduleAction.Profile, Profile = "Evening" };
+
+    var monday = new DateTime(2026, 9, 7);      // a Monday
+    var tuesday = new DateTime(2026, 9, 8);
+    var saturday = new DateTime(2026, 9, 12);
+
+    Equal(0, ScheduleRule.BitOf(DayOfWeek.Monday), "days: Monday is bit 0");
+    Equal(6, ScheduleRule.BitOf(DayOfWeek.Sunday), "days: Sunday is bit 6");
+    Equal(5, ScheduleRule.BitOf(DayOfWeek.Saturday), "days: Saturday is bit 5");
+
+    // Same-day window.
+    Check(ScheduleRule.InWindow(Evening(), monday.AddHours(19)), "window: inside a weekday evening");
+    Check(!ScheduleRule.InWindow(Evening(), monday.AddHours(17)), "window: before it opens");
+    Check(!ScheduleRule.InWindow(Evening(), monday.AddHours(20)), "window: the end is exclusive");
+    Check(!ScheduleRule.InWindow(Evening(), saturday.AddHours(19)), "window: not on a day it does not run");
+
+    // Overnight window, the acceptance case.
+    Check(ScheduleRule.InWindow(Night(), monday.AddHours(23.5)), "overnight: open on the evening it starts");
+    Check(ScheduleRule.InWindow(Night(), tuesday.AddHours(1)), "overnight: still open after midnight");
+    Check(!ScheduleRule.InWindow(Night(), tuesday.AddHours(8)), "overnight: closed after the end time");
+
+    // 01:00 Tuesday belongs to MONDAY's window, so only Monday's bit matters.
+    int mondayOnly = 1 << 0, tuesdayOnly = 1 << 1;
+    Check(ScheduleRule.InWindow(Night(mondayOnly), tuesday.AddHours(1)), "overnight: 01:00 Tue runs on Monday's bit");
+    Check(!ScheduleRule.InWindow(Night(tuesdayOnly), tuesday.AddHours(1)), "overnight: Tuesday's bit does not cover 01:00 Tue");
+    Check(ScheduleRule.InWindow(Night(tuesdayOnly), tuesday.AddHours(23.5)), "overnight: Tuesday's bit covers Tue evening");
+
+    // Degenerate and disabled rules never open.
+    Check(!ScheduleRule.InWindow(new ScheduleRule { Start = "12:00", End = "12:00" }, monday.AddHours(12)), "window: zero length never opens");
+    Check(!ScheduleRule.InWindow(new ScheduleRule { Start = "bad", End = "07:00" }, monday.AddHours(1)), "window: unparseable time never opens");
+    Check(!ScheduleRule.InWindow(Night(0), monday.AddHours(23.5)), "window: no days selected never opens");
+
+    // IsActive folds in Enabled and the idle wait.
+    var idle = Night(); idle.IdleOnly = true;
+    Check(!ScheduleRule.IsActive(idle, monday.AddHours(23.5), 60, 600), "active: idle-only waits while you are here");
+    Check(ScheduleRule.IsActive(idle, monday.AddHours(23.5), 700, 600), "active: idle-only fires once away");
+    var offRule = Night(); offRule.Enabled = false;
+    Check(!ScheduleRule.IsActive(offRule, monday.AddHours(23.5), 0, 600), "active: a disabled rule never fires");
+}
+
+/*---------------- Schedules: next change and description (#f2) ----------------*/
+{
+    var monday = new DateTime(2026, 9, 7, 12, 0, 0);
+    var evening = new ScheduleRule { Start = "18:00", End = "20:00", Days = 0x1F, Action = ScheduleAction.Profile, Profile = "Evening" };
+    var night = new ScheduleRule { Start = "23:00", End = "07:00", Days = 0x7F };
+
+    var next = ScheduleRule.NextChange(new[] { night, evening }, monday);
+    Check(next != null && next.Value.When == monday.Date.AddHours(18), "next: the sooner of two windows wins");
+    Check(next != null && ReferenceEquals(next.Value.Rule, evening), "next: reports which rule it is");
+
+    // Past today's start, it rolls to the next day the rule runs.
+    var late = new DateTime(2026, 9, 11, 21, 0, 0);      // Friday evening, after 18:00
+    var afterFri = ScheduleRule.NextChange(new[] { evening }, late);
+    Equal(new DateTime(2026, 9, 14, 18, 0, 0), afterFri?.When ?? default, "next: weekday rule skips the weekend");
+
+    Check(ScheduleRule.NextChange(Array.Empty<ScheduleRule>(), monday) == null, "next: nothing scheduled");
+    var disabled = new ScheduleRule { Enabled = false, Start = "18:00", End = "20:00" };
+    Check(ScheduleRule.NextChange(new[] { disabled }, monday) == null, "next: disabled rules are ignored");
+
+    Equal("Every day", ScheduleRule.DaysText(0x7F), "days text: every day");
+    Equal("Weekdays", ScheduleRule.DaysText(0x1F), "days text: weekdays");
+    Equal("Weekends", ScheduleRule.DaysText(0x60), "days text: weekends");
+    Equal("Mon Wed Fri", ScheduleRule.DaysText(0b0010101), "days text: a custom set");
+    Equal("Every day 23:00 to 07:00, lights off", ScheduleRule.Describe(night), "describe: a lights-off window");
+    Equal("Weekdays 18:00 to 20:00, apply Evening", ScheduleRule.Describe(evening), "describe: a profile window");
+}
+
+/*---------------- Schedules: day bits round-trip (#f2) ----------------*/
+{
+    // The editor toggles seven check boxes; the file stores one int.
+    var r = new ScheduleRule { Days = 0 };
+    r.Mon = true; r.Wed = true; r.Sun = true;
+    Equal(0b1000101, r.Days, "day bits: setting flags builds the mask");
+    Check(r.Mon && r.Wed && r.Sun && !r.Tue && !r.Sat, "day bits: reading flags back");
+    r.Mon = false;
+    Equal(0b1000100, r.Days, "day bits: clearing a flag");
+
+    // Days is what persists; the flags are view sugar and must not be written.
+    string json = JsonSerializer.Serialize(new ScheduleRule { Days = 0x1F, Start = "18:00", End = "20:00", Action = ScheduleAction.Profile, Profile = "Evening", IdleOnly = true });
+    foreach (var f in new[] { "Days", "Start", "End", "Action", "Profile", "IdleOnly", "Enabled" })
+        Check(json.Contains($"\"{f}\""), $"ScheduleRule json carries {f}");
+    foreach (var f in new[] { "Mon", "Tue", "IsProfileAction" })
+        Check(!json.Contains($"\"{f}\""), $"ScheduleRule json omits the view-only {f}");
+
+    var back = JsonSerializer.Deserialize<ScheduleRule>(json)!;
+    Equal(0x1F, back.Days, "ScheduleRule round-trip: days");
+    Equal(ScheduleAction.Profile, back.Action, "ScheduleRule round-trip: action");
+    Equal("Evening", back.Profile, "ScheduleRule round-trip: profile");
+    Check(back.IdleOnly, "ScheduleRule round-trip: idle only");
+
+    var bare = JsonSerializer.Deserialize<ScheduleRule>("{}")!;
+    Check(bare.Enabled && bare.Days == 0x7F, "ScheduleRule defaults: enabled, every day");
+    Equal(ScheduleAction.LightsOff, bare.Action, "ScheduleRule defaults to lights off");
+}
+
 /*---------------- Automation precedence (#f1) ----------------*/
 {
     var appRules = new List<AutomationRule> { new() { Process = "cs2", Profile = "Game" } };
     var hit = new SensorHit(SensorSources.CpuTemp, "Alert", 90, 85, true);
 
-    AutomationInputs Make(bool locked = false, bool night = false, bool sensor = false, bool app = false) => new()
+    AutomationInputs Make(bool locked = false, bool off = false, bool sensor = false,
+                          bool app = false, bool schedProfile = false, bool lockOff = true) => new()
     {
         Locked = locked,
-        LockLightsOff = true,
-        InNightWindow = night,
-        NightOverride = false,
-        NightIdleOnly = false,
-        IdleSeconds = 0,
-        NightIdleThreshold = 600,
-        NightEnd = "07:00",
+        LockLightsOff = lockOff,
+        ScheduleOff = off ? new ScheduleHit("07:00", null) : null,
+        ScheduleProfile = schedProfile ? new ScheduleHit("22:00", "Evening") : null,
+        SchedulePaused = false,
+        ScheduleWaitingIdle = false,
+        ScheduleEnd = "07:00",
         AppSwitchEnabled = true,
         ForegroundProcess = app ? "cs2" : "notepad",
         ForegroundIsSelf = false,
@@ -1145,55 +1245,55 @@ static string TempDir()
 
     Equal(AutomationMode.Base, AutomationDecision.Resolve(Make()).Mode, "precedence: nothing yields Base");
     Equal(AutomationMode.App, AutomationDecision.Resolve(Make(app: true)).Mode, "precedence: app rule");
+    Equal(AutomationMode.ScheduleProfile, AutomationDecision.Resolve(Make(schedProfile: true)).Mode, "precedence: scheduled profile");
+    Equal(AutomationMode.ScheduleProfile, AutomationDecision.Resolve(Make(schedProfile: true, app: true)).Mode, "precedence: scheduled profile beats app");
     Equal(AutomationMode.Sensor, AutomationDecision.Resolve(Make(sensor: true)).Mode, "precedence: sensor alone");
     Equal(AutomationMode.Sensor, AutomationDecision.Resolve(Make(sensor: true, app: true)).Mode, "precedence: sensor beats app");
-    Equal(AutomationMode.Night, AutomationDecision.Resolve(Make(night: true, sensor: true, app: true)).Mode, "precedence: night beats sensor");
-    Equal(AutomationMode.Locked, AutomationDecision.Resolve(Make(locked: true, night: true, sensor: true, app: true)).Mode, "precedence: locked beats all");
+    Equal(AutomationMode.Sensor, AutomationDecision.Resolve(Make(sensor: true, schedProfile: true)).Mode, "precedence: sensor beats a scheduled profile");
+    Equal(AutomationMode.ScheduleOff, AutomationDecision.Resolve(Make(off: true, sensor: true, app: true)).Mode, "precedence: scheduled dark beats sensor");
+    Equal(AutomationMode.Locked, AutomationDecision.Resolve(Make(locked: true, off: true, sensor: true, app: true)).Mode, "precedence: locked beats all");
 
     // The winning profile travels with the mode.
     Equal("Alert", AutomationDecision.Resolve(Make(sensor: true, app: true)).Profile, "precedence: sensor profile wins");
     Equal("Game", AutomationDecision.Resolve(Make(app: true)).Profile, "precedence: app profile applies");
-    Check(AutomationDecision.Resolve(Make(night: true)).Profile == null, "precedence: night carries no profile");
+    Equal("Evening", AutomationDecision.Resolve(Make(schedProfile: true, app: true)).Profile, "precedence: scheduled profile applies");
+    Check(AutomationDecision.Resolve(Make(off: true)).Profile == null, "precedence: scheduled dark carries no profile");
 
     // Unlocking with the sensor still hot lands in Sensor, not Base.
     Equal(AutomationMode.Sensor, AutomationDecision.Resolve(Make(locked: false, sensor: true)).Mode,
         "precedence: unlock into a live sensor rule");
 
     // Lock without the lights-off setting is not an override at all.
-    var noLockOff = Make(locked: true, app: true);
-    noLockOff = new AutomationInputs
-    {
-        Locked = true, LockLightsOff = false, InNightWindow = false, NightOverride = false,
-        NightIdleOnly = false, IdleSeconds = 0, NightIdleThreshold = 600, NightEnd = "07:00",
-        AppSwitchEnabled = true, ForegroundProcess = "cs2", ForegroundIsSelf = false,
-        AppRules = appRules, Sensor = null, SensorUnavailable = null,
-    };
-    Equal(AutomationMode.App, AutomationDecision.Resolve(noLockOff).Mode, "precedence: locked without lights-off is ignored");
+    Equal(AutomationMode.App, AutomationDecision.Resolve(Make(locked: true, app: true, lockOff: false)).Mode,
+        "precedence: locked without lights-off is ignored");
 }
 
 /*---------------- Automation night window + status (#f1) ----------------*/
 {
-    AutomationInputs Night(bool idleOnly, double idle, bool over = false) => new()
+    // The caller decides whether a window is open; these are the four shapes
+    // it can hand in.
+    AutomationInputs Sched(bool off, bool paused = false, bool waiting = false) => new()
     {
         Locked = false, LockLightsOff = true,
-        InNightWindow = true, NightOverride = over, NightIdleOnly = idleOnly,
-        IdleSeconds = idle, NightIdleThreshold = 600, NightEnd = "07:00",
+        ScheduleOff = off ? new ScheduleHit("07:00", null) : null,
+        ScheduleProfile = null, SchedulePaused = paused, ScheduleWaitingIdle = waiting,
+        ScheduleEnd = "07:00",
         AppSwitchEnabled = false, ForegroundProcess = null, ForegroundIsSelf = false,
         AppRules = null, Sensor = null, SensorUnavailable = null,
     };
-    Equal(AutomationMode.Night, AutomationDecision.Resolve(Night(false, 0)).Mode, "night: fires at the start time");
-    Equal(AutomationMode.Base, AutomationDecision.Resolve(Night(true, 60)).Mode, "night: idle-only waits while you are active");
-    Equal(AutomationMode.Night, AutomationDecision.Resolve(Night(true, 700)).Mode, "night: idle-only fires once away");
-    Equal(AutomationMode.Base, AutomationDecision.Resolve(Night(false, 0, over: true)).Mode, "night: override keeps the lights on");
+    Equal(AutomationMode.ScheduleOff, AutomationDecision.Resolve(Sched(true)).Mode, "schedule: open window turns the lights off");
+    Equal(AutomationMode.Base, AutomationDecision.Resolve(Sched(false, waiting: true)).Mode, "schedule: waiting for idle leaves the lights on");
+    Equal(AutomationMode.Base, AutomationDecision.Resolve(Sched(false, paused: true)).Mode, "schedule: an override keeps the lights on");
 
-    Check(AutomationDecision.Resolve(Night(false, 0)).Status.Contains("07:00"), "night status names the end time");
-    Check(AutomationDecision.Resolve(Night(false, 0, over: true)).Status.Contains("paused"), "night status explains the override");
+    Check(AutomationDecision.Resolve(Sched(true)).Status.Contains("07:00"), "schedule status names the end time");
+    Check(AutomationDecision.Resolve(Sched(false, paused: true)).Status.Contains("paused"), "schedule status explains the override");
+    Check(AutomationDecision.Resolve(Sched(false, waiting: true)).Status.Contains("idle"), "schedule status explains the idle wait");
 
     // The sensor status carries the numbers behind the decision.
     var withSensor = new AutomationInputs
     {
-        Locked = false, LockLightsOff = true, InNightWindow = false, NightOverride = false,
-        NightIdleOnly = false, IdleSeconds = 0, NightIdleThreshold = 600, NightEnd = "07:00",
+        Locked = false, LockLightsOff = true, ScheduleOff = null, ScheduleProfile = null,
+        SchedulePaused = false, ScheduleWaitingIdle = false, ScheduleEnd = "",
         AppSwitchEnabled = false, ForegroundProcess = null, ForegroundIsSelf = false,
         AppRules = null, Sensor = new SensorHit(SensorSources.CpuTemp, "Alert", 87, 85, true),
         SensorUnavailable = null,
@@ -1204,8 +1304,8 @@ static string TempDir()
     // No reading is explained rather than silently doing nothing.
     var missing = new AutomationInputs
     {
-        Locked = false, LockLightsOff = true, InNightWindow = false, NightOverride = false,
-        NightIdleOnly = false, IdleSeconds = 0, NightIdleThreshold = 600, NightEnd = "07:00",
+        Locked = false, LockLightsOff = true, ScheduleOff = null, ScheduleProfile = null,
+        SchedulePaused = false, ScheduleWaitingIdle = false, ScheduleEnd = "",
         AppSwitchEnabled = false, ForegroundProcess = null, ForegroundIsSelf = false,
         AppRules = null, Sensor = null, SensorUnavailable = SensorSources.CpuTemp,
     };
@@ -1222,8 +1322,9 @@ static string TempDir()
         var x = new AutomationInputs
         {
             Locked = false, LockLightsOff = true,
-            InNightWindow = i == 0, NightOverride = i == 1, NightIdleOnly = i == 2,
-            IdleSeconds = 0, NightIdleThreshold = 600, NightEnd = "07:00",
+            ScheduleOff = i == 0 ? new ScheduleHit("07:00", null) : null,
+            ScheduleProfile = null, SchedulePaused = i == 1, ScheduleWaitingIdle = i == 2,
+            ScheduleEnd = "07:00",
             AppSwitchEnabled = true, ForegroundProcess = i == 3 ? "notepad" : null,
             ForegroundIsSelf = false, AppRules = null, Sensor = null, SensorUnavailable = null,
         };
