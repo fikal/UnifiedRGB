@@ -42,6 +42,24 @@ public static class SensorHub
     static bool _sourcesOpened;
 
     public sealed record BoardTemp(string Name, double? TempC);
+
+    static bool _inventoryLogged;
+
+    /// <summary>Name and first reading of every board sensor, once per run.
+    /// Super I/O chips expose more temperature slots than the board wires up,
+    /// and the spares carry names like "Temperature #4"; this is how we tell
+    /// which ones are real, here and in a support bundle.</summary>
+    static void LogBoardInventory()
+    {
+        if (_inventoryLogged) return;
+        _inventoryLogged = true;
+        try
+        {
+            Log.Info("lhm", "board temps: " + string.Join(", ",
+                BoardTemps.Select(t => $"{t.Name}={(t.TempC is double c ? c.ToString("0.#") : "null")}")));
+        }
+        catch { }
+    }
     public sealed record BoardFan(string Name, int? Rpm, bool CanControl);
 
     // Latest snapshot. Nullable<double>/<int> are 16/8-byte structs, so a plain
@@ -222,6 +240,7 @@ public static class SensorHub
             {
                 lhm.Refresh();
                 BoardTemps = lhm.Temps.Select(t => new BoardTemp(t.Name, t.Value)).ToArray();
+                LogBoardInventory();
                 if (uiActive)
                 {
                     BoardFans = lhm.Fans.Select(f => new BoardFan(f.Name, f.CurrentRpm, f.CanControl)).ToArray();

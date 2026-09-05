@@ -1085,8 +1085,8 @@ static string TempDir()
     Equal("CPU temp", SensorSources.Label(SensorSources.CpuTemp), "source label: cpu temp");
     Equal("°C", SensorSources.Unit(SensorSources.CpuTemp), "source unit: cpu temp");
     Equal("%", SensorSources.Unit(SensorSources.GpuLoad), "source unit: gpu load");
-    Equal("Fan #2", SensorSources.Label(SensorSources.BoardPrefix + "Fan #2"), "source label: board temp strips the prefix");
-    Equal("CPU Fan RPM", SensorSources.Label(SensorSources.FanPrefix + "CPU Fan"), "source label: fan reads as RPM");
+    Equal("Motherboard: Temperature #3", SensorSources.Label(SensorSources.BoardPrefix + "Temperature #3"), "source label: board temp says it is the motherboard");
+    Equal("Fan: CPU Fan", SensorSources.Label(SensorSources.FanPrefix + "CPU Fan"), "source label: fan is qualified");
 
     // Only the sources that need the expensive sweep should ask for it.
     Check(!SensorSources.NeedsFullSweep(SensorSources.CpuTemp), "gating: cpu temp uses the cheap touch");

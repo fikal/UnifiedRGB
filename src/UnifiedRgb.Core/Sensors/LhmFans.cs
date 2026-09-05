@@ -106,17 +106,46 @@ public sealed class LhmFans : IDisposable
                 foreach (var s in sub.Sensors.Where(s => s.SensorType == SensorType.Fan))
                     _fans.Add(new Fan
                     {
-                        Name = s.Name,
+                        Name = Unique(_fanNames, s.Name, sub.Name),
                         Rpm = s,
                         // Pair the fan tach with the control of the same index
                         // (LHM numbers a header's fan + control alike).
                         Control = controls.GetValueOrDefault(s.Index),
                     });
                 foreach (var s in sub.Sensors.Where(s => s.SensorType == SensorType.Temperature))
-                    _temps.Add(new Temp { Name = s.Name, Sensor = s });
+                    _temps.Add(new Temp { Name = Unique(_tempNames, s.Name, sub.Name), Sensor = s });
                 foreach (var s in sub.Sensors.Where(s => s.SensorType == SensorType.Voltage))
-                    _voltages.Add(new Temp { Name = s.Name, Sensor = s });
+                    _voltages.Add(new Temp { Name = Unique(_voltNames, s.Name, sub.Name), Sensor = s });
             }
+    }
+
+    readonly HashSet<string> _fanNames = new(StringComparer.OrdinalIgnoreCase);
+    readonly HashSet<string> _tempNames = new(StringComparer.OrdinalIgnoreCase);
+    readonly HashSet<string> _voltNames = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Keep sensor names unique across chips. The FIRST use of a name
+    /// keeps it exactly: fan labels and fan curves are stored by name, so
+    /// renaming an existing sensor would orphan the user's settings. Only the
+    /// later collisions get qualified with their chip.</summary>
+    static string Unique(HashSet<string> used, string name, string chip)
+    {
+        if (used.Add(name)) return name;
+        string qualified = $"{name} ({ShortChip(chip)})";
+        if (used.Add(qualified)) return qualified;
+        for (int n = 2; ; n++)
+        {
+            string numbered = $"{qualified} {n}";
+            if (used.Add(numbered)) return numbered;
+        }
+    }
+
+    /// <summary>"ITE IT8792E" to "IT8792E": the part that tells two otherwise
+    /// identical sensors apart, without the vendor noise.</summary>
+    static string ShortChip(string chip)
+    {
+        if (string.IsNullOrWhiteSpace(chip)) return "2nd";
+        int space = chip.LastIndexOf(' ');
+        return space >= 0 && space < chip.Length - 1 ? chip[(space + 1)..] : chip;
     }
 
     static IEnumerable<IHardware> Flatten(IHardware h)

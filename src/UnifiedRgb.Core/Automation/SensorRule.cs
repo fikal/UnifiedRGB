@@ -123,8 +123,10 @@ public static class SensorSources
         Hottest => "Hottest of CPU/GPU",
         CpuLoad => "CPU load",
         GpuLoad => "GPU load",
-        _ when source.StartsWith(BoardPrefix, StringComparison.Ordinal) => source[BoardPrefix.Length..],
-        _ when source.StartsWith(FanPrefix, StringComparison.Ordinal) => source[FanPrefix.Length..] + " RPM",
+        // Qualified, because a bare "Temperature #3" in a list next to "CPU temp"
+        // says nothing about what it measures.
+        _ when source.StartsWith(BoardPrefix, StringComparison.Ordinal) => "Motherboard: " + source[BoardPrefix.Length..],
+        _ when source.StartsWith(FanPrefix, StringComparison.Ordinal) => "Fan: " + source[FanPrefix.Length..],
         _ => source,
     };
 
