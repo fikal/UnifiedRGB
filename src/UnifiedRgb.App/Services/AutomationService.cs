@@ -203,9 +203,12 @@ public sealed class AutomationService : IDisposable
         }
 
         // The override pauses the dark until every lights-off window has closed,
-        // then re-arms for the next one.
+        // then re-arms for the next one. It silences the profile windows with it:
+        // waking the lights is the user saying they want THEIR lighting, and
+        // handing them a scheduled profile a second later is not that. Scheduling
+        // resumes once the dark window they overrode has passed.
         if (!anyOffWindow) _scheduleOverride = false;
-        if (_scheduleOverride) { off = null; waitingIdle = false; }
+        if (_scheduleOverride) { off = null; profile = null; waitingIdle = false; }
 
         return (off, profile, anyOffWindow && _scheduleOverride, off == null && waitingIdle, end);
     }

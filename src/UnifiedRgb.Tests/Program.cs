@@ -1251,6 +1251,11 @@ static string TempDir()
     Equal(AutomationMode.Sensor, AutomationDecision.Resolve(Make(sensor: true, app: true)).Mode, "precedence: sensor beats app");
     Equal(AutomationMode.Sensor, AutomationDecision.Resolve(Make(sensor: true, schedProfile: true)).Mode, "precedence: sensor beats a scheduled profile");
     Equal(AutomationMode.ScheduleOff, AutomationDecision.Resolve(Make(off: true, sensor: true, app: true)).Mode, "precedence: scheduled dark beats sensor");
+    // Overlapping windows: dark wins outright, and the profile takes over only
+    // once the dark window closes.
+    Equal(AutomationMode.ScheduleOff, AutomationDecision.Resolve(Make(off: true, schedProfile: true)).Mode, "precedence: scheduled dark beats a scheduled profile");
+    Check(AutomationDecision.Resolve(Make(off: true, schedProfile: true)).Profile == null, "precedence: an overlapped profile is not applied");
+    Equal(AutomationMode.ScheduleProfile, AutomationDecision.Resolve(Make(off: false, schedProfile: true)).Mode, "precedence: the profile takes over when the dark closes");
     Equal(AutomationMode.Locked, AutomationDecision.Resolve(Make(locked: true, off: true, sensor: true, app: true)).Mode, "precedence: locked beats all");
 
     // The winning profile travels with the mode.
