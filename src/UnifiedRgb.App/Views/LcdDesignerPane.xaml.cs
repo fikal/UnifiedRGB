@@ -38,7 +38,7 @@ public partial class LcdDesignerPane : UserControl
         {
             // Before the first pixel of movement: undo returns to where the
             // element was when the drag began, not part way through it.
-            VM.CaptureUndoNow();
+            VM.BeginGesture();
             VM.SelectedElement = el;
             _drag = el;
             _dragOrigin = e.GetPosition(lb);
@@ -49,7 +49,7 @@ public partial class LcdDesignerPane : UserControl
         // Pressed empty canvas: drag the background itself.
         if (VM.LcdHasBackground)
         {
-            VM.CaptureUndoNow();
+            VM.BeginGesture();
             _bgDrag = true;
             _dragOrigin = e.GetPosition(lb);
             _bgStartX = VM.LcdBgX; _bgStartY = VM.LcdBgY;
@@ -87,6 +87,7 @@ public partial class LcdDesignerPane : UserControl
         _drag = null; _bgDrag = false;
         if (sender is ListBox lb) lb.ReleaseMouseCapture();
         GuideLayer.Children.Clear();
+        VM.EndGesture();
         VM.TouchLcd();
     }
 
@@ -184,6 +185,7 @@ public partial class LcdDesignerPane : UserControl
         if (_drag == null && !_bgDrag) return;
         _drag = null; _bgDrag = false;
         GuideLayer.Children.Clear();
+        VM.EndGesture();
         VM.TouchLcd();
     }
 
@@ -194,7 +196,7 @@ public partial class LcdDesignerPane : UserControl
 
     void BgGrip_Down(object sender, MouseButtonEventArgs e)
     {
-        VM.CaptureUndoNow();
+        VM.BeginGesture();
         if (sender is not FrameworkElement fe) return;
         _gripDrag = true;
         _gripOrigin = e.GetPosition(this);
@@ -217,6 +219,7 @@ public partial class LcdDesignerPane : UserControl
         if (!_gripDrag) return;
         _gripDrag = false;
         (sender as FrameworkElement)?.ReleaseMouseCapture();
+        VM.EndGesture();
         VM.TouchLcd();
         e.Handled = true;
     }
@@ -225,6 +228,7 @@ public partial class LcdDesignerPane : UserControl
     {
         if (!_gripDrag) return;
         _gripDrag = false;
+        VM.EndGesture();
         VM.TouchLcd();
     }
 

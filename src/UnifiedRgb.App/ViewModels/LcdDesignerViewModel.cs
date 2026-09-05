@@ -231,17 +231,35 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
 
     string Snapshot() => _lcd == null ? "" : JsonSerializer.Serialize(_lcd.Design);
 
-    /// <summary>Call BEFORE a deliberate action: a drag, an add, a delete, a
-    /// background change. Always records, because these are never a continuation
-    /// of anything. Coalescing them was a bug: dragging within half a second of
-    /// any property change (a colour box writing back as the selection moved,
-    /// say) folded the drag into that burst and left nothing to undo.</summary>
+    /// <summary>Call BEFORE a one-shot action: an add, a delete, a background
+    /// change. Always records, because these are never a continuation of
+    /// anything. Coalescing them was a bug: acting within half a second of any
+    /// property change (a colour box writing back as the selection moved, say)
+    /// folded the action into that burst and left nothing to undo.</summary>
     public void CaptureUndoNow()
     {
         if (_lcd == null) return;
         SettleUndo();                 // close any open burst: _baseline is now current
         _history.Push(_baseline);
-        _undoSettle.Start();          // this gesture's own edits join THIS entry
+        _undoSettle.Start();
+    }
+
+    /// <summary>Mouse down on the canvas. Everything until EndGesture is ONE
+    /// undo step; the stack owns the bookkeeping.</summary>
+    public void BeginGesture()
+    {
+        if (_lcd == null || _history.InGesture) return;
+        SettleUndo();            // _baseline is the design as you grabbed it
+        _history.BeginGesture(_baseline);
+    }
+
+    /// <summary>Mouse up, or capture lost to an Alt+Tab.</summary>
+    public void EndGesture()
+    {
+        if (!_history.InGesture) return;
+        _history.EndGesture();
+        _undoSettle.Stop();
+        _baseline = Snapshot();
     }
 
     /// <summary>Call BEFORE a property edit. The first in a burst records; the
@@ -249,6 +267,13 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     public void CaptureUndo()
     {
         if (_lcd == null) return;
+        if (_history.InGesture)
+        {
+            // The first movement records where the drag started; the rest of it
+            // is the same entry, however long the drag runs or pauses.
+            _history.GestureEdit();
+            return;
+        }
         if (_undoSettle.IsEnabled)
         {
             _undoSettle.Stop(); _undoSettle.Start();
@@ -441,6 +466,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         {
             if (_lcd == null) return;
             var d = _lcd.Design;
+            CaptureUndo();
             d.BgW = Math.Round(Math.Clamp(value, 8, 2000));
             if (d.BgAspectLock) d.BgH = Math.Round(d.BgW / BgAspect);
             NotifyBgRect(); TouchLcd();
@@ -477,12 +503,14 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     public void MoveBg(double x, double y)
     {
         if (_lcd == null) return;
+        CaptureUndo();
         _lcd.Design.BgX = Math.Round(x); _lcd.Design.BgY = Math.Round(y);
         NotifyBgRect(); TouchLcd();
     }
     public void SetBgSize(double w, double h)
     {
         if (_lcd == null) return;
+        CaptureUndo();          // the grip drag writes here, not through LcdBgW
         var d = _lcd.Design;
         d.BgW = Math.Round(Math.Clamp(w, 8, 2000));
         d.BgH = d.BgAspectLock ? Math.Round(d.BgW / BgAspect) : Math.Round(Math.Clamp(h, 8, 2000));

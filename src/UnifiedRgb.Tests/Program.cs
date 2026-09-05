@@ -1181,6 +1181,53 @@ static string TempDir()
     Equal(after, h.Redo(before), "redo: the newer design comes back intact");
 }
 
+/*---------------- UndoStack: a drag is one undo step (#f3) ----------------*/
+{
+    // The reported bug: a drag that pauses part way through (lining an element
+    // up against a snap guide) used to split into several undo steps, so one
+    // Ctrl+Z only walked back part of the move. Mouse down to mouse up is one
+    // entry, however many moves and however long it takes.
+    var h = new UndoStack<string>();
+    h.BeginGesture("x=0");
+    Check(h.InGesture, "gesture: mouse down opens a gesture");
+    for (int x = 1; x <= 40; x++) h.GestureEdit();     // every mouse move
+    h.EndGesture();
+    Equal(1, h.Count, "gesture: forty moves are one undo step");
+    Equal("x=0", h.Undo("x=40"), "gesture: undo returns to where the drag began");
+
+    // A click that selects but moves nothing must not leave a dead step behind,
+    // because Push clears redo and the user would silently lose their redo.
+    var sel = new UndoStack<string>();
+    sel.Push("a");
+    sel.Undo("b");                                     // redo now holds "b"
+    Check(sel.CanRedo, "gesture: redo available before the click");
+    sel.BeginGesture("a");
+    sel.EndGesture();                                  // no GestureEdit: nothing moved
+    Equal(0, sel.Count, "gesture: a click that moves nothing records nothing");
+    Check(sel.CanRedo, "gesture: a click that moves nothing keeps redo alive");
+
+    // Two separate drags are two separate steps.
+    var two = new UndoStack<string>();
+    two.BeginGesture("p0"); two.GestureEdit(); two.GestureEdit(); two.EndGesture();
+    two.BeginGesture("p1"); two.GestureEdit(); two.EndGesture();
+    Equal(2, two.Count, "gesture: each drag is its own step");
+    Equal("p1", two.Undo("p2"), "gesture: undo walks back one drag at a time");
+    Equal("p0", two.Undo("p1"), "gesture: and then the one before it");
+
+    // Edits outside a gesture are the caller's business, not the stack's.
+    var loose = new UndoStack<string>();
+    loose.GestureEdit();
+    Equal(0, loose.Count, "gesture: an edit with no gesture open records nothing");
+
+    // Capture lost to an Alt+Tab ends the gesture; the next drag is new.
+    var lost = new UndoStack<string>();
+    lost.BeginGesture("a"); lost.GestureEdit();
+    lost.EndGesture();
+    Check(!lost.InGesture, "gesture: EndGesture closes it");
+    lost.BeginGesture("b"); lost.GestureEdit(); lost.EndGesture();
+    Equal(2, lost.Count, "gesture: a drag after a lost capture is its own step");
+}
+
 /*---------------- Schedules: window math (#f2) ----------------*/
 {
     // Monday is bit 0. A window that ends before it starts runs overnight and

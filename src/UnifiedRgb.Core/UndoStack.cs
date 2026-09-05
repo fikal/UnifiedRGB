@@ -62,11 +62,51 @@ public sealed class UndoStack<T>
         return next;
     }
 
+    // --- gestures ---
+    //
+    // A mouse drag is ONE undo step: where the thing was when you grabbed it,
+    // to where it is when you let go. Not a timer's idea of one step, because a
+    // drag with a pause in the middle is still one drag, and the pause is
+    // usually the user lining something up against a guide.
+
+    T? _gestureBefore;
+    bool _inGesture, _gestureRecorded;
+
+    public bool InGesture => _inGesture;
+
+    /// <summary>Mouse down. Nothing is recorded yet: a gesture that turns out
+    /// to move nothing (a plain selection click) must not leave a dead undo
+    /// step behind, or redo would be dropped for nothing too.</summary>
+    public void BeginGesture(T before)
+    {
+        _gestureBefore = before;
+        _inGesture = true;
+        _gestureRecorded = false;
+    }
+
+    /// <summary>Call for every change while the gesture runs. The first one
+    /// records the state it started from; the rest are the same step.</summary>
+    public void GestureEdit()
+    {
+        if (!_inGesture || _gestureRecorded) return;
+        _gestureRecorded = true;
+        Push(_gestureBefore!);
+    }
+
+    /// <summary>Mouse up, or capture lost.</summary>
+    public void EndGesture()
+    {
+        _inGesture = false;
+        _gestureRecorded = false;
+        _gestureBefore = default;
+    }
+
     public void Clear()
     {
         if (_undo.Count == 0 && _redo.Count == 0) return;
         _undo.Clear();
         _redo.Clear();
+        EndGesture();
         Changed?.Invoke();
     }
 }
