@@ -193,7 +193,11 @@ public sealed class AutomationService : IDisposable
             }
             else if (profile == null && !string.IsNullOrWhiteSpace(r.Profile) && _vm.HasProfile(r.Profile!))
             {
-                if (r.IdleOnly && IdleSeconds() < NightIdleSeconds) continue;
+                // IdleOnly is deliberately ignored here: it means "do not cut my
+                // session short", which only makes sense for going dark. The
+                // editor hides it for a profile window, so an unread flag on one
+                // is either migrated or hand-edited and must not silently stop
+                // the rule from ever firing.
                 profile = new ScheduleHit(r.End, r.Profile);
             }
         }

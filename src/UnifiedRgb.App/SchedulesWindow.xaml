@@ -58,7 +58,7 @@
                                     <ComboBox Grid.Column="2" Width="86" Height="28" VerticalAlignment="Center"
                                               SelectedItem="{Binding End}" SelectionChanged="Rule_Persist"
                                               ItemsSource="{x:Static local:MainViewModel.TimeOptions}"/>
-                                    <ComboBox Grid.Column="3" Width="112" Height="28" VerticalAlignment="Center" Margin="12,0,0,0"
+                                    <ComboBox Grid.Column="3" Width="134" Height="28" VerticalAlignment="Center" Margin="12,0,0,0"
                                               SelectedIndex="{Binding Action, Converter={StaticResource ActionIndex}}"
                                               SelectionChanged="Rule_Persist">
                                         <ComboBoxItem Content="lights off"/>
@@ -71,6 +71,7 @@
                                               ToolTip="Which profile this window applies"/>
                                     <CheckBox Grid.Column="5" Content="only when away" IsChecked="{Binding IdleOnly}"
                                               VerticalAlignment="Center" Margin="14,0,0,0" HorizontalAlignment="Left"
+                                              Visibility="{Binding IsProfileAction, Converter={StaticResource BoolToVisInv}}"
                                               Click="Rule_Persist"
                                               ToolTip="Wait for 10 minutes of no keyboard or mouse before acting"/>
                                 </Grid>
