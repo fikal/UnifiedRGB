@@ -285,19 +285,23 @@
                                 <TextBlock Text="LOAD" FontSize="11" FontWeight="SemiBold"
                                            Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,16,0,8"/>
                                 <StackPanel Orientation="Horizontal">
-                                    <ComboBox Width="180" ItemsSource="{Binding SceneNames}"
+                                    <ComboBox Width="180" Height="28" VerticalAlignment="Center"
+                                              ItemsSource="{Binding SceneNames}"
                                               SelectedItem="{Binding SelectedSceneName}"
                                               ToolTip="Pick a screen to load it"/>
-                                    <Button Content="Delete" Style="{StaticResource Danger}" Padding="10,4"
+                                    <Button Content="Delete" Style="{StaticResource Danger}" Padding="14,0"
+                                            Height="28" VerticalAlignment="Center"
                                             Margin="8,0,0,0" Click="DeleteScene_Click"/>
                                 </StackPanel>
 
                                 <TextBlock Text="SAVE" FontSize="11" FontWeight="SemiBold"
                                            Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,16,0,8"/>
                                 <StackPanel Orientation="Horizontal">
-                                    <TextBox Width="180" Text="{Binding SceneNameInput, UpdateSourceTrigger=PropertyChanged}"
+                                    <TextBox Width="180" Height="28" Padding="6,3" VerticalAlignment="Center"
+                                             Text="{Binding SceneNameInput, UpdateSourceTrigger=PropertyChanged}"
                                              ToolTip="Name for the screen"/>
-                                    <Button Content="Save screen" Style="{StaticResource Accent}" Padding="12,4"
+                                    <Button Content="Save screen" Style="{StaticResource Accent}" Padding="14,0"
+                                            Height="28" VerticalAlignment="Center"
                                             Margin="8,0,0,0" Click="SaveScene_Click"/>
                                 </StackPanel>
                                 <TextBlock Text="New name = new screen. Empty name = update the loaded one."
@@ -316,15 +320,17 @@
                                 <TextBlock Text="SHOW" FontSize="11" FontWeight="SemiBold"
                                            Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,0,0,8"/>
                                 <StackPanel Orientation="Horizontal">
-                                    <ComboBox Width="180" ItemsSource="{Binding Sequences}"
+                                    <ComboBox Width="180" Height="28" VerticalAlignment="Center"
+                                              ItemsSource="{Binding Sequences}"
                                               SelectedItem="{Binding SelectedSequence}"/>
-                                    <TextBox Width="140" Margin="8,0,0,0"
+                                    <TextBox Width="140" Height="28" Padding="6,3" VerticalAlignment="Center"
+                                             Margin="8,0,0,0"
                                              Text="{Binding SceneNameInput, UpdateSourceTrigger=PropertyChanged}"
                                              ToolTip="Name for a new show"/>
-                                    <Button Content="New" Padding="12,0" Height="32" VerticalAlignment="Center"
+                                    <Button Content="New" Padding="14,0" Height="28" VerticalAlignment="Center"
                                             Margin="8,0,0,0" Click="NewSequence_Click"
                                             ToolTip="Create a show with the typed name"/>
-                                    <Button Content="Delete" Style="{StaticResource Danger}" Padding="12,0" Height="32"
+                                    <Button Content="Delete" Style="{StaticResource Danger}" Padding="14,0" Height="28"
                                             VerticalAlignment="Center" Margin="6,0,0,0" Click="DeleteSequence_Click"/>
                                 </StackPanel>
 
@@ -336,24 +342,26 @@
                                 <ItemsControl ItemsSource="{Binding SequenceActions}">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
-                                            <Border Background="#FF262932" CornerRadius="8" Padding="10,7" Margin="0,0,0,6">
+                                            <Border Background="#FF262932" CornerRadius="8" Padding="10,5" Margin="0,0,0,6">
                                                 <StackPanel Orientation="Horizontal">
                                                     <TextBlock Text="wait" Opacity="0.7" VerticalAlignment="Center"/>
-                                                    <!-- Explicit dark fill (the app TextBox color matches the step
-                                                         card); no fixed Height - the style's padding needs ~34px and
-                                                         a shorter box clips the digits out of view -->
-                                                    <TextBox Width="44" Margin="6,0,4,0" VerticalAlignment="Center"
+                                                    <!-- Explicit dark fill: the app TextBox color matches the step
+                                                         card. Pinning the height is only safe because the padding is
+                                                         trimmed with it; the style's default 6,7 needs ~34px and
+                                                         clips the digits in a shorter box. -->
+                                                    <TextBox Width="44" Height="28" Padding="6,3"
+                                                             Margin="6,0,4,0" VerticalAlignment="Center"
                                                              HorizontalContentAlignment="Center"
                                                              Background="#FF15171D"
                                                              Text="{Binding DelaySeconds, UpdateSourceTrigger=LostFocus, StringFormat=0.#}"/>
                                                     <TextBlock Text="sec" Opacity="0.7" VerticalAlignment="Center" Margin="0,0,14,0"/>
                                                     <TextBlock Text="screen" Opacity="0.7" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                                                    <ComboBox Width="130" VerticalAlignment="Center"
+                                                    <ComboBox Width="130" Height="28" VerticalAlignment="Center"
                                                               ItemsSource="{Binding DataContext.Lcd.SceneChoices, RelativeSource={RelativeSource AncestorType=Window}}"
                                                               SelectedItem="{Binding Scene, TargetNullValue=(no change)}"
                                                               ToolTip="What the pump screen shows on this step"/>
                                                     <TextBlock Text="lights" Opacity="0.7" VerticalAlignment="Center" Margin="12,0,6,0"/>
-                                                    <ComboBox Width="130" VerticalAlignment="Center"
+                                                    <ComboBox Width="130" Height="28" VerticalAlignment="Center"
                                                               ItemsSource="{Binding DataContext.Lcd.ProfileChoices, RelativeSource={RelativeSource AncestorType=Window}}"
                                                               SelectedItem="{Binding Profile, TargetNullValue=(no change)}"
                                                               ToolTip="What the lights do on this step"/>
@@ -371,9 +379,9 @@
                                 </ItemsControl>
 
                                 <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                                    <Button Content="+ Add step" Padding="12,0" Height="32" VerticalAlignment="Center" Click="AddAction_Click"/>
+                                    <Button Content="+ Add step" Padding="14,0" Height="28" VerticalAlignment="Center" Click="AddAction_Click"/>
                                     <Button Content="{Binding RunButtonText}" Style="{StaticResource Accent}"
-                                            Padding="18,0" Height="32" VerticalAlignment="Center" Margin="10,0,0,0" Click="RunSequence_Click"/>
+                                            Padding="18,0" Height="28" VerticalAlignment="Center" Margin="10,0,0,0" Click="RunSequence_Click"/>
                                     <CheckBox Content="Start with the app" IsChecked="{Binding SequenceActiveAtStartup}"
                                               VerticalAlignment="Center" Margin="14,0,0,0"
                                               ToolTip="This show starts by itself when UnifiedRGB opens"/>
