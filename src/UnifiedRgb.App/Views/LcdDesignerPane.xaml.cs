@@ -181,8 +181,10 @@ public partial class LcdDesignerPane : UserControl
 
     void BgGrip_Down(object sender, MouseButtonEventArgs e)
     {
-        VM.BeginGesture();
         if (sender is not FrameworkElement fe) return;
+        // After the guard: an early return would leave a gesture open forever,
+        // and every later edit would fold into a step nobody can reach.
+        VM.BeginGesture();
         _gripDrag = true;
         _gripOrigin = e.GetPosition(this);
         _gripStartW = VM.LcdBgW; _gripStartH = VM.LcdBgH;

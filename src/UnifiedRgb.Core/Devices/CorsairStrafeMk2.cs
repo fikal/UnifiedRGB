@@ -303,8 +303,10 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
     /// against 0x02, per OpenRGB's CORSAIR_LIGHTING_CONTROL_HARDWARE.
     ///
     /// Flagged rather than assumed final, because "Apply now" can be pressed
-    /// with the app still running: the next frame re-runs the init and takes
-    /// the keyboard back.</summary>
+    /// with the app still running: the next FRAME re-runs the init and takes
+    /// the keyboard back. Note that a keyboard sitting on a static colour with
+    /// no effect running has no next frame, so it stays on its onboard profile
+    /// until something actually changes its lighting.</summary>
     public void ReturnToHardware()
     {
         lock (_writeLock)

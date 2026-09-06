@@ -301,6 +301,7 @@ public partial class MainWindow : Window
         // because the panes are mouse-first and swallow keys on their list
         // controls; a window-level PreviewKeyDown tunnels ahead of all that.
         if (Keyboard.Modifiers == ModifierKeys.Control && _vm.ShowLcdPanel &&
+            !_vm.Lcd.InGesture &&        // not mid-drag: it would swap the element being held
             Keyboard.FocusedElement is not TextBox)
         {
             if (e.Key == Key.Z) { _vm.Lcd.Undo(); e.Handled = true; return; }
@@ -308,7 +309,8 @@ public partial class MainWindow : Window
         }
         // Ctrl+Shift+Z is the other redo people reach for.
         if (Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) &&
-            e.Key == Key.Z && _vm.ShowLcdPanel && Keyboard.FocusedElement is not TextBox)
+            e.Key == Key.Z && _vm.ShowLcdPanel && !_vm.Lcd.InGesture &&
+            Keyboard.FocusedElement is not TextBox)
         {
             _vm.Lcd.Redo();
             e.Handled = true;

@@ -55,7 +55,7 @@
                                 <Button Grid.Column="4" Content="Apply now" Padding="12,5" Margin="8,0,0,0"
                                         VerticalAlignment="Center" Click="ApplyNow_Click"
                                         IsEnabled="{Binding CanApplyNow}"
-                                        ToolTip="Send it now so you can see it. The app takes over again on its next write."/>
+                                        ToolTip="Send it now so you can see it. The app takes this device back the next time its lighting changes."/>
                             </Grid>
                         </Border>
                     </DataTemplate>

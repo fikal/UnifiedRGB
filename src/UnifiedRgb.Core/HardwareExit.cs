@@ -80,7 +80,10 @@ public static class HardwareExit
             case ExitMode.Static:
             {
                 if (!caps.HasFlag(HardwareExitCaps.Static)) return null;
-                var c = Rgb.FromHex(behavior.ColorHex);
+                // TryFromHex, not FromHex: this class promises to be forgiving,
+                // and a hand-edited hardware.json with a bad colour should leave
+                // the device alone rather than throw on the way out.
+                if (!Rgb.TryFromHex(behavior.ColorHex, out var c)) return null;
                 hw.SetHardwareStatic(c);
                 return $"static #{c.ToHex()}";
             }

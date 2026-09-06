@@ -1842,13 +1842,23 @@ static string TempDir()
     // registers. This pins the cap to the hardware layout rather than to a
     // number someone remembered.
     Equal(0x8021, EneDram.REG_MODE, "ene: mode register");
-    // The last byte the capped write touches stays below REG_DIRECT...
-    Check(EneDram.REG_COLORS_EFFECT + 3 * EneDram.EFFECT_COLOR_LEDS - 1 < EneDram.REG_DIRECT,
-          "ene: the capped effect color write stays inside its own window");
-    // ...and one more LED would not: its third byte lands on REG_MODE itself,
-    // which is the whole reason the cap is not the stick's LED count.
-    Check(EneDram.REG_COLORS_EFFECT + 3 * (EneDram.EFFECT_COLOR_LEDS + 1) - 1 >= EneDram.REG_MODE,
-          "ene: a sixth LED would write into the direct and mode registers");
+
+    // The effect window is PAIRED with the direct one, per generation. Writing
+    // V1's effect register on a V2 stick puts the colour in a bank the V2
+    // effect engine never reads, so the mode changes and the colour does not.
+    // The earlier version of this test compared two constants from the same
+    // file, which passed for any pair someone wrote down.
+    Equal(0x8010, EneDram.REG_COLORS_EFFECT_V1, "ene: v1 effect colors");
+    Equal(0x8160, EneDram.REG_COLORS_EFFECT_V2, "ene: v2 effect colors");
+    Equal(5, EneDram.EffectColorLeds(EneDram.REG_COLORS_EFFECT_V1), "ene: v1 holds five leds in 15 bytes");
+    Equal(10, EneDram.EffectColorLeds(EneDram.REG_COLORS_EFFECT_V2), "ene: v2 holds ten in 30");
+
+    // V1's window is the tight one: the last byte of a fifth LED stays below
+    // REG_DIRECT, and a sixth would land on the direct and mode registers.
+    int v1Last = EneDram.REG_COLORS_EFFECT_V1 + 3 * EneDram.EffectColorLeds(EneDram.REG_COLORS_EFFECT_V1) - 1;
+    Check(v1Last < EneDram.REG_DIRECT, "ene: the v1 cap stays inside its own window");
+    Check(EneDram.REG_COLORS_EFFECT_V1 + 3 * 6 - 1 >= EneDram.REG_MODE,
+          "ene: a sixth led on v1 would write into the direct and mode registers");
 }
 
 /*---------------- Now-playing line (#f5) ----------------*/

@@ -24,7 +24,10 @@ public sealed class BatteryMonitor
     readonly Action _changed;
     readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromSeconds(60) };
     readonly object _lock = new();
-    readonly Dictionary<string, SensorHub.BatteryLevel> _levels = new();
+    /// <summary>Keyed by the device itself, not by its name. Two devices can
+    /// share a name (a Razer mouse and its own dongle both report the model
+    /// name), and one shared slot made them overwrite each other every poll.</summary>
+    readonly Dictionary<IRgbDevice, SensorHub.BatteryLevel> _levels = new();
 
     public BatteryMonitor(CoalescingApplier applier, Func<IReadOnlyList<IRgbDevice>> devices, Action changed)
     {
@@ -52,11 +55,20 @@ public sealed class BatteryMonitor
         Poll();                      // don't make the user wait a minute for the first one
     }
 
+    /// <summary>Stop polling for good. Called on the way out, BEFORE the device
+    /// handles close: a tick that got through afterwards would read from a
+    /// disposed handle.</summary>
+    public void Stop()
+    {
+        _timer.Stop();
+        lock (_lock) _levels.Clear();
+    }
+
     /// <summary>Latest charge for a device, or null when it has no battery or
     /// has not answered yet.</summary>
     public SensorHub.BatteryLevel? Of(IRgbDevice d)
     {
-        lock (_lock) return _levels.TryGetValue(d.Name, out var l) ? l : null;
+        lock (_lock) return _levels.TryGetValue(d, out var l) ? l : null;
     }
 
     void Poll()
@@ -73,18 +85,18 @@ public sealed class BatteryMonitor
                 bool changed;
                 lock (_lock)
                 {
-                    _levels.TryGetValue(dev.Name, out var was);
+                    _levels.TryGetValue(dev, out var was);
                     if (reading is BatteryReading b)
                     {
                         var now = new SensorHub.BatteryLevel(dev.Name, b.Percent, b.Charging);
                         changed = was != now;
-                        _levels[dev.Name] = now;
+                        _levels[dev] = now;
                     }
                     else
                     {
                         // No answer: keep nothing rather than a stale number a
                         // rule would keep acting on.
-                        changed = _levels.Remove(dev.Name);
+                        changed = _levels.Remove(dev);
                     }
                 }
                 if (!changed) return;

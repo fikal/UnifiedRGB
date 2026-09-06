@@ -491,11 +491,19 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
     public BatteryReading? ReadBattery()
     {
         if (_model.Kind == Kind.Pad) return null;      // the pad runs off USB
-        var level = Exchange(_hid, NewReport(_tid, 0x07, 0x80, 0x02));
-        // Nothing usable came back: don't spend a second round trip on a mouse
-        // that is asleep or has no battery to report.
-        if (DecodeBattery(level, null) == null) return null;
-        return DecodeBattery(level, Exchange(_hid, NewReport(_tid, 0x07, 0x84, 0x02)));
+        // Under the write lock like every other transaction on this handle.
+        // Dispose takes the same lock before closing the handle, so without it
+        // a poll of a SLEEPING mouse (each exchange retries with sleeps, and a
+        // control transfer to a napping device stalls in the class driver) can
+        // still be in flight when the handle closes underneath it.
+        lock (_writeLock)
+        {
+            var level = Exchange(_hid, NewReport(_tid, 0x07, 0x80, 0x02));
+            // Nothing usable came back: don't spend a second round trip on a
+            // mouse that is asleep or has no battery to report.
+            if (DecodeBattery(level, null) == null) return null;
+            return DecodeBattery(level, Exchange(_hid, NewReport(_tid, 0x07, 0x84, 0x02)));
+        }
     }
 
     /// <summary>The two replies as a reading. A missing, short, or unsuccessful

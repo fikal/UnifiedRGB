@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using UnifiedRgb.Core;
 
@@ -50,6 +51,36 @@ public partial class ExitBehaviorWindow : Window
         _vm.ApplyExitBehaviorNow(row.Device, row.Current);
     }
 
+    /// <summary>Closing with the X or Alt+F4 does not raise LostFocus on a
+    /// text box being edited, so a typed colour would be dropped. The class
+    /// promises every edit sticks; this is what keeps that true.</summary>
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        base.OnClosing(e);
+        // Push a pending edit through its binding first, then persist.
+        if (Keyboard.FocusedElement is TextBox box)
+            box.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
+
+        var config = HardwareConfig.Load();
+        bool changed = false;
+        foreach (var row in Rows)
+        {
+            var behavior = row.Current;
+            if (behavior.Mode == ExitMode.KeepLast) changed |= config.ExitBehaviors.Remove(row.Name);
+            else
+            {
+                config.ExitBehaviors.TryGetValue(row.Name, out var saved);
+                if (saved == null || saved.Mode != behavior.Mode
+                    || saved.ColorHex != behavior.ColorHex || saved.Effect != behavior.Effect)
+                {
+                    config.ExitBehaviors[row.Name] = behavior;
+                    changed = true;
+                }
+            }
+        }
+        if (changed) config.Save();
+    }
+
     void Drag_Down(object sender, MouseButtonEventArgs e)
     {
         if (e.ButtonState == MouseButtonState.Pressed) DragMove();
@@ -96,8 +127,10 @@ public sealed class ExitRow : INotifyPropertyChanged
             // would leave the swatch showing the old colour while the config
             // took the typo.
             string clean = Rgb.TryFromHex(value, out var c) ? c.ToHex() : _colorHex;
-            if (_colorHex == clean) return;
             _colorHex = clean;
+            // Notified even when the value did not change, so a typo snaps the
+            // box back to the colour actually held instead of leaving the text
+            // and the swatch disagreeing.
             Notify(nameof(ColorHex));
         }
     }

@@ -1594,6 +1594,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         if (_store.Settings.LianHandoffOnExit)
             try { LianLiWireless.Instance?.FollowPwmLine(); } catch { }
         Cooling.Stop(); _bake.Stop();
+        _battery.Stop();          // no more polls onto handles that are about to close
         // Flush a pending debounced settings save so a drag right before exit sticks.
         if (_settingsSaveTimer?.IsEnabled == true) { _settingsSaveTimer.Stop(); _store.SaveSettings(); }
         // Each step isolated: one throw here used to skip the rest (port 54235
@@ -1645,25 +1646,34 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         var configured = UnifiedRgb.Core.HardwareConfig.Load().ExitBehaviors;
         if (configured == null || configured.Count == 0) return;
 
-        var clock = System.Diagnostics.Stopwatch.StartNew();
-        foreach (var device in Devices)
+        // On a worker, with the UI thread waiting on a deadline rather than on
+        // the writes. Checking the clock BETWEEN devices only bounds how many
+        // are started: one blocked write is unbounded, and an ENE write can
+        // block on the machine-wide SMBus mutex that any other RGB tool may be
+        // holding. On the logoff path that would be the thing that costs the
+        // session, so the wait is what gets the budget.
+        var devices = Devices.ToArray();
+        var worker = new Thread(() =>
         {
-            if (clock.ElapsedMilliseconds > 2000)
+            foreach (var device in devices)
             {
-                UnifiedRgb.Core.Log.Warn("exit", "out of time: some devices keep their last colors");
-                return;
+                if (!configured.TryGetValue(device.Name, out var behavior)) continue;
+                try
+                {
+                    if (UnifiedRgb.Core.HardwareExit.Apply(device, behavior) is string what)
+                        UnifiedRgb.Core.Log.Info("exit", $"{device.Name}: {what}");
+                }
+                catch (Exception ex)
+                {
+                    UnifiedRgb.Core.Log.Warn("exit", $"{device.Name}: {ex.Message}");
+                }
             }
-            if (!configured.TryGetValue(device.Name, out var behavior)) continue;
-            try
-            {
-                if (UnifiedRgb.Core.HardwareExit.Apply(device, behavior) is string what)
-                    UnifiedRgb.Core.Log.Info("exit", $"{device.Name}: {what}");
-            }
-            catch (Exception ex)
-            {
-                UnifiedRgb.Core.Log.Warn("exit", $"{device.Name}: {ex.Message}");
-            }
-        }
+        })
+        { IsBackground = true, Name = "exit-behaviors" };
+
+        worker.Start();
+        if (!worker.Join(2000))
+            UnifiedRgb.Core.Log.Warn("exit", "out of time: some devices keep their last colors");
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

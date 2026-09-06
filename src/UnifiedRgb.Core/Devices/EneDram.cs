@@ -23,11 +23,22 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
     // project): a mode register, and effect colours in a SEPARATE window from
     // the direct-mode colours.
     internal const ushort REG_MODE = 0x8021;
-    internal const ushort REG_COLORS_EFFECT = 0x8010;
-    // 15 bytes, and the very next register is REG_DIRECT. Writing a sixth LED
-    // would run straight into the direct and mode registers, so the effect
-    // colour write is capped here rather than at the stick's LED count.
-    internal const int EFFECT_COLOR_LEDS = 5;
+
+    // The effect colour window is PAIRED with the direct one: a V1 controller
+    // has direct at 0x8000 and effects at 0x8010, 15 bytes each; a V2 has
+    // direct at 0x8100 and effects at 0x8160, 30 bytes each. Writing V1's
+    // effect register on a V2 stick puts the colour in a bank the V2 effect
+    // engine does not read, so the mode switch works and the colour is
+    // whatever the firmware happened to have. DDR5 sticks are V2.
+    internal const ushort REG_COLORS_EFFECT_V1 = 0x8010;
+    internal const ushort REG_COLORS_EFFECT_V2 = 0x8160;
+
+    /// <summary>How many LEDs fit in each effect window: 15 and 30 bytes, three
+    /// bytes per LED. Derived rather than remembered, because overrunning V1's
+    /// window walks straight into REG_DIRECT and REG_MODE.</summary>
+    internal const int EFFECT_BYTES_V1 = 15, EFFECT_BYTES_V2 = 30;
+    internal static int EffectColorLeds(ushort effectReg) =>
+        (effectReg == REG_COLORS_EFFECT_V1 ? EFFECT_BYTES_V1 : EFFECT_BYTES_V2) / 3;
     const byte MODE_STATIC = 1, MODE_BREATHING = 2, MODE_FLASHING = 3,
                MODE_SPECTRUM = 4, MODE_RAINBOW = 5;
     const ushort REG_APPLY = 0x80A0;
@@ -62,6 +73,7 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
     readonly PawnSmbus _bus;
     readonly byte _addr;
     readonly ushort _directReg;
+    readonly ushort _effectReg;
     readonly int _ledCount;
     readonly LedPos[] _positions;
     bool _directOn;
@@ -84,7 +96,9 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
         _bus = lease.Bus;
         _addr = addr;
         _ledCount = ledCount;
-        _directReg = V1Versions.Contains(version) ? REG_COLORS_DIRECT_V1 : REG_COLORS_DIRECT_V2;
+        bool v1 = V1Versions.Contains(version);
+        _directReg = v1 ? REG_COLORS_DIRECT_V1 : REG_COLORS_DIRECT_V2;
+        _effectReg = v1 ? REG_COLORS_EFFECT_V1 : REG_COLORS_EFFECT_V2;
         Name = name;
         Zones = new[] { new RgbZone { Name = "DRAM", Offset = 0, Count = ledCount } };
         _positions = new LedPos[ledCount];
@@ -229,8 +243,9 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
         {
             Span<byte> triple = stackalloc byte[3];
             triple[0] = color.R; triple[1] = color.B; triple[2] = color.G;   // same order as direct
-            for (int i = 0; i < Math.Min(_ledCount, EFFECT_COLOR_LEDS); i++)
-                RegWriteBlock((ushort)(REG_COLORS_EFFECT + i * 3), triple);
+            int slots = Math.Min(_ledCount, EffectColorLeds(_effectReg));
+            for (int i = 0; i < slots; i++)
+                RegWriteBlock((ushort)(_effectReg + i * 3), triple);
 
             RegWrite(_bus, _addr, REG_MODE, mode);
             RegWrite(_bus, _addr, REG_DIRECT, 0x00);

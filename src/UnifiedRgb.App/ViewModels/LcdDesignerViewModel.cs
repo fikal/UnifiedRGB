@@ -245,6 +245,11 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     readonly DispatcherTimer _undoSettle = new() { Interval = TimeSpan.FromMilliseconds(500) };
     string _baseline = "";
 
+    /// <summary>True while the mouse is down on the canvas. Undo is refused
+    /// during a drag: it would rebuild the element list under the hand that is
+    /// holding one.</summary>
+    public bool InGesture => _history.InGesture;
+
     public bool CanUndo => _history.CanUndo;
     public bool CanRedo => _history.CanRedo;
 
@@ -504,6 +509,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
             if (_lcd == null) return;
             var d = _lcd.Design;
             d.BgH = Math.Round(Math.Clamp(value, 8, 2000));
+            CaptureUndo();
             if (d.BgAspectLock) d.BgW = Math.Round(d.BgH * BgAspect);
             NotifyBgRect(); TouchLcd();
         }
@@ -516,6 +522,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
             if (_lcd == null) return;
             _lcd.Design.BgAspectLock = value;
             // Re-locking snaps the height back onto the image's aspect.
+            CaptureUndo();
             if (value) _lcd.Design.BgH = Math.Round(_lcd.Design.BgW / BgAspect);
             NotifyBgRect(); TouchLcd();
         }
@@ -711,7 +718,10 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         // A show replacing the canvas is not an edit: it must not record an
         // undo entry, and the baseline has to follow it or the next real edit
         // would undo to a design that is no longer on screen.
-        if (fromShow) { _undoSettle.Stop(); _baseline = Snapshot(); }
+        // A show replacing the canvas also invalidates any drag in progress:
+        // its remembered snapshot is of a design that is no longer on screen,
+        // and recording it later would undo to something the user never saw.
+        if (fromShow) { _history.EndGesture(); _undoSettle.Stop(); _baseline = Snapshot(); }
         if (fromShow) { _liveIsShowScene = true; _clockSecond = -1; _lcd.Refresh(); }
         else TouchLcd();
     }

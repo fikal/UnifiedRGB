@@ -103,10 +103,13 @@ public sealed class UndoStack<T>
 
     public void Clear()
     {
+        // Before the early return: an open gesture has to be closed even when
+        // there is nothing to clear, or it stays latched and the next edit
+        // folds into a step that no longer exists.
+        EndGesture();
         if (_undo.Count == 0 && _redo.Count == 0) return;
         _undo.Clear();
         _redo.Clear();
-        EndGesture();
         Changed?.Invoke();
     }
 }
