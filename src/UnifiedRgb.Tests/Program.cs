@@ -1121,6 +1121,293 @@ static string TempDir()
         "app match: blank rule matches nothing");
 }
 
+/*---------------- Snap guides, shared by both editors (#f9) ----------------*/
+{
+    // Lines to snap to: the surface's edges and centre, plus each item's.
+    var lines = SnapGuides.Lines(1000, new[] { (100.0, 50.0) });
+    Check(lines.Contains(0) && lines.Contains(500) && lines.Contains(1000), "snap: the surface offers its edges and centre");
+    Check(lines.Contains(100) && lines.Contains(125) && lines.Contains(150), "snap: and each item its edges and centre");
+
+    // An item's leading edge pulls to a nearby line.
+    var (v, line) = SnapGuides.Snap(97, 40, lines);
+    Equal(100.0, v, "snap: the leading edge pulls into line");
+    Equal(100.0, line, "snap: and reports what it met");
+
+    // So does its centre and its trailing edge.
+    var (byCentre, _) = SnapGuides.Snap(478, 40, lines);
+    Equal(480.0, byCentre, "snap: the centre pulls too");
+    var (byTrailing, _) = SnapGuides.Snap(63, 40, lines);
+    Equal(60.0, byTrailing, "snap: and the trailing edge");
+
+    // Far from anything, nothing moves. This is what lets you place something
+    // deliberately a few units off an edge.
+    var (free, noLine) = SnapGuides.Snap(300, 40, lines);
+    Equal(300.0, free, "snap: nothing near means nothing moves");
+    Check(noLine == null, "snap: and no guide is drawn");
+
+    // Just outside the threshold is still free; just inside pulls.
+    Equal(100.0 + SnapGuides.Threshold + 1, SnapGuides.Snap(100 + SnapGuides.Threshold + 1, 10, new List<double> { 100 }).Value,
+          "snap: outside the threshold is left alone");
+    Equal(100.0, SnapGuides.Snap(100 + SnapGuides.Threshold - 1, 10, new List<double> { 100 }).Value,
+          "snap: inside it pulls");
+
+    // The closest line wins when several are in range.
+    Equal(100.0, SnapGuides.Snap(101, 10, new List<double> { 100, 130 }).Value,
+          "snap: the nearer of two lines wins");
+    Equal(130.0, SnapGuides.Snap(129, 10, new List<double> { 100, 130 }).Value,
+          "snap: whichever side it is on");
+    // Dead heats resolve to the last line offered rather than arbitrarily:
+    // it is not a meaningful choice, but it is a repeatable one.
+    var (tied, which) = SnapGuides.Snap(102, 10, new List<double> { 100, 104 });
+    Equal(104.0, tied, "snap: a dead heat resolves the same way every time");
+    Check(which != null, "snap: and still reports a line");
+
+    double delta;
+    Check(SnapGuides.Nearest(new List<double>(), new[] { 5.0 }, out delta) == null, "snap: no lines, no snap");
+    Equal(0.0, delta, "snap: and no movement");
+}
+
+/*---------------- Whole-desk canvas: effects carry across (#f9) ----------------*/
+{
+    // The point of the feature: two devices side by side on the desk get
+    // coordinates that continue from one into the other, so one wave crosses
+    // both instead of restarting. Without the canvas each device spans 0..1 on
+    // its own and the wave starts over.
+    var layout = new CanvasLayout { Enabled = true, Width = 1000, Height = 1000 };
+    layout.Items.Add(new CanvasItem { Device = "Left", X = 0, Y = 400, W = 400, H = 200 });
+    layout.Items.Add(new CanvasItem { Device = "Right", X = 600, Y = 400, W = 400, H = 200 });
+
+    var left = new FakeDevice { Name = "Left", LedCount = 10 };
+    var right = new FakeDevice { Name = "Right", LedCount = 10 };
+
+    var l = CanvasMapper.Positions(left, 0, 10, layout)!;
+    var r = CanvasMapper.Positions(right, 0, 10, layout)!;
+
+    // Every LED of the left device is left of every LED of the right one.
+    Check(l[^1].X < r[0].X, "desk: the left device ends before the right one begins");
+    Check(l[0].X < l[^1].X, "desk: and runs left to right itself");
+
+    // Without the canvas both span the same 0..1, which is exactly the
+    // restarting behaviour the desk view fixes.
+    var plainLeft = EffectEngine.ZonePositions(left, 0, 10);
+    var plainRight = EffectEngine.ZonePositions(right, 0, 10);
+    Check(Math.Abs(plainLeft[0].X - plainRight[0].X) < 1e-6,
+          "desk: without a canvas both devices start at the same coordinate");
+    Check(Math.Abs(plainLeft[^1].X - plainRight[^1].X) < 1e-6,
+          "desk: and end at the same one, which is why a wave restarts");
+
+    // A device placed further right maps further right: the ordering is the
+    // arrangement, not the device list.
+    layout.ItemFor("Left")!.X = 600;
+    layout.ItemFor("Right")!.X = 0;
+    var swappedL = CanvasMapper.Positions(left, 0, 10, layout)!;
+    var swappedR = CanvasMapper.Positions(right, 0, 10, layout)!;
+    Check(swappedR[^1].X < swappedL[0].X, "desk: moving a device moves where the effect reaches it");
+}
+
+/*---------------- Led overrides reach the engine (#f9) ----------------*/
+{
+    // ZonePositions is what every channel renders against, so an override has
+    // to win there or the feature does nothing.
+    var device = new FakeDevice { Name = "Strip", LedCount = 6 };
+    var before = EffectEngine.ZonePositions(device, 0, 6);
+
+    var layout = new CanvasLayout { Enabled = false, Width = 1000, Height = 1000 };
+    layout.Items.Add(new CanvasItem
+    {
+        Device = "Strip",
+        LedLayout = new LedLayoutOverride { Shape = "grid", Cols = 3, Rows = 2 },
+    });
+    var previous = CanvasLayout.Current;
+    CanvasLayout.Current = layout;
+    try
+    {
+        var after = EffectEngine.ZonePositions(device, 0, 6);
+        // A 3x2 grid is two rows, so the Y coordinates now differ; the flat
+        // fallback had them all on one line.
+        Check(Math.Abs(before[0].Y - before[5].Y) < 1e-6, "override: the fallback is flat");
+        Check(Math.Abs(after[0].Y - after[5].Y) > 0.5, "override: the grid is not");
+        // And it applies with the canvas OFF: fixing a shape is useful on its own.
+        Check(!layout.Enabled, "override: with the desk switched off");
+    }
+    finally { CanvasLayout.Current = previous; }
+
+    // Back to normal once the override is gone.
+    var plain = EffectEngine.ZonePositions(device, 0, 6);
+    Check(Math.Abs(plain[0].Y - plain[5].Y) < 1e-6, "override: removing it restores the fallback");
+}
+
+/*---------------- Whole-desk canvas: mapping (#f9) ----------------*/
+{
+    // A 100x100 device at (100,100) on a 1000x1000 desk: local (0,0) is its
+    // top-left corner, so it lands at desk 0.1,0.1.
+    var item = new CanvasItem { Device = "D", X = 100, Y = 100, W = 100, H = 100 };
+    bool Near(LedPos a, double x, double y) => Math.Abs(a.X - x) < 1e-5 && Math.Abs(a.Y - y) < 1e-5;
+
+    Check(Near(CanvasMapper.Map(new LedPos(0, 0), item, 1000, 1000), 0.1, 0.1), "canvas: top-left corner");
+    Check(Near(CanvasMapper.Map(new LedPos(1, 1), item, 1000, 1000), 0.2, 0.2), "canvas: bottom-right corner");
+    Check(Near(CanvasMapper.Map(new LedPos(0.5f, 0.5f), item, 1000, 1000), 0.15, 0.15), "canvas: the middle");
+
+    // Rotation turns the device's layout inside its rectangle. 90 clockwise
+    // sends the top-left corner to the top-right.
+    var r90 = new CanvasItem { X = 0, Y = 0, W = 1000, H = 1000, Rotation = 90 };
+    Check(Near(CanvasMapper.Map(new LedPos(0, 0), r90, 1000, 1000), 1, 0), "canvas: 90 sends top-left to top-right");
+    Check(Near(CanvasMapper.Map(new LedPos(1, 0), r90, 1000, 1000), 1, 1), "canvas: and top-right to bottom-right");
+
+    var r180 = new CanvasItem { X = 0, Y = 0, W = 1000, H = 1000, Rotation = 180 };
+    Check(Near(CanvasMapper.Map(new LedPos(0, 0), r180, 1000, 1000), 1, 1), "canvas: 180 sends top-left to bottom-right");
+
+    var r270 = new CanvasItem { X = 0, Y = 0, W = 1000, H = 1000, Rotation = 270 };
+    Check(Near(CanvasMapper.Map(new LedPos(0, 0), r270, 1000, 1000), 0, 1), "canvas: 270 sends top-left to bottom-left");
+
+    // Four 90s are a full turn.
+    var full = new CanvasItem { X = 0, Y = 0, W = 1000, H = 1000, Rotation = 360 };
+    Check(Near(CanvasMapper.Map(new LedPos(0.25f, 0.75f), full, 1000, 1000), 0.25, 0.75), "canvas: 360 is no rotation");
+    var negative = new CanvasItem { X = 0, Y = 0, W = 1000, H = 1000, Rotation = -90 };
+    Check(Near(CanvasMapper.Map(new LedPos(0, 0), negative, 1000, 1000), 0, 1), "canvas: -90 is the same as 270");
+    var junk = new CanvasItem { X = 0, Y = 0, W = 1000, H = 1000, Rotation = 45 };
+    Check(Near(CanvasMapper.Map(new LedPos(0.25f, 0.75f), junk, 1000, 1000), 0.25, 0.75), "canvas: a rotation we do not do is no rotation");
+
+    var flipX = new CanvasItem { X = 0, Y = 0, W = 1000, H = 1000, FlipX = true };
+    Check(Near(CanvasMapper.Map(new LedPos(0, 0.25f), flipX, 1000, 1000), 1, 0.25), "canvas: flipX mirrors left to right");
+    var flipY = new CanvasItem { X = 0, Y = 0, W = 1000, H = 1000, FlipY = true };
+    Check(Near(CanvasMapper.Map(new LedPos(0.25f, 0), flipY, 1000, 1000), 0.25, 1), "canvas: flipY mirrors top to bottom");
+
+    // Flip happens BEFORE rotation. Doing it after would mirror a different
+    // axis than the button the user pressed.
+    var both = new CanvasItem { X = 0, Y = 0, W = 1000, H = 1000, FlipX = true, Rotation = 90 };
+    Check(Near(CanvasMapper.Map(new LedPos(0, 0), both, 1000, 1000), 1, 1), "canvas: flip is applied before rotation");
+
+    // A device the desk does not know about renders as it always has.
+    var layout = new CanvasLayout { Enabled = true, Width = 1000, Height = 1000 };
+    layout.Items.Add(new CanvasItem { Device = "Known", X = 0, Y = 0, W = 500, H = 500 });
+    var known = new FakeDevice { Name = "Known", LedCount = 4 };
+    var unknown = new FakeDevice { Name = "Stranger", LedCount = 4 };
+    Check(CanvasMapper.Positions(unknown, 0, 4, layout) == null, "canvas: an unplaced device falls back");
+    Check(CanvasMapper.Positions(known, 0, 4, layout) != null, "canvas: a placed device maps");
+
+    // Off means off: byte-identical to the old behaviour is the whole promise.
+    layout.Enabled = false;
+    Check(CanvasMapper.Positions(known, 0, 4, layout) == null, "canvas: disabled falls back");
+    Check(CanvasMapper.Positions(known, 0, 4, null) == null, "canvas: no layout at all falls back");
+    layout.Enabled = true;
+
+    // A device in the left half of the desk maps into the left half, which is
+    // what makes a wave carry from one device to the next.
+    var mapped = CanvasMapper.Positions(known, 0, 4, layout)!;
+    Equal(4, mapped.Length, "canvas: one position per led");
+    foreach (var q in mapped)
+        Check(q.X >= 0 && q.X <= 0.5f && q.Y >= 0 && q.Y <= 0.5f, "canvas: it lands inside its own rectangle");
+}
+
+/*---------------- Whole-desk canvas: led layouts (#f9) ----------------*/
+{
+    bool Near(LedPos a, double x, double y) => Math.Abs(a.X - x) < 1e-5 && Math.Abs(a.Y - y) < 1e-5;
+
+    var strip = CanvasMapper.FromOverride(new LedLayoutOverride { Shape = "strip" }, 5)!;
+    Equal(5, strip.Length, "layout: a strip has one position per led");
+    Check(Near(strip[0], 0, 0.5), "layout: strip starts at the left");
+    Check(Near(strip[4], 1, 0.5), "layout: and ends at the right");
+    Check(Near(strip[2], 0.5, 0.5), "layout: evenly spaced");
+
+    var one = CanvasMapper.FromOverride(new LedLayoutOverride { Shape = "strip" }, 1)!;
+    Check(Near(one[0], 0.5, 0.5), "layout: a single led sits in the middle, not at an edge");
+
+    var ring = CanvasMapper.FromOverride(new LedLayoutOverride { Shape = "ring" }, 4)!;
+    Equal(4, ring.Length, "layout: a ring has one position per led");
+    Check(Near(ring[0], 0.5, 0), "layout: a ring starts at the top");
+    Check(Near(ring[1], 1, 0.5), "layout: and runs clockwise");
+    Check(Near(ring[2], 0.5, 1), "layout: through the bottom");
+    Check(Near(ring[3], 0, 0.5), "layout: and back up the left");
+
+    // Serpentine: every other row is wired backwards, so led 3 of a 3-wide
+    // grid sits under led 2, not under led 0.
+    var straight = CanvasMapper.FromOverride(
+        new LedLayoutOverride { Shape = "grid", Cols = 3, Rows = 2 }, 6)!;
+    Check(Near(straight[0], 0, 0), "layout: grid starts top-left");
+    Check(Near(straight[2], 1, 0), "layout: across the first row");
+    Check(Near(straight[3], 0, 1), "layout: then back to the left on the next");
+
+    var snake = CanvasMapper.FromOverride(
+        new LedLayoutOverride { Shape = "grid", Cols = 3, Rows = 2, Serpentine = true }, 6)!;
+    Check(Near(snake[2], 1, 0), "layout: serpentine first row is the same");
+    Check(Near(snake[3], 1, 1), "layout: but the second row starts where the first ended");
+    Check(Near(snake[5], 0, 1), "layout: and ends where it would have started");
+
+    // A description that cannot hold the LEDs is refused rather than half
+    // applied: a wrong layout is worse than the fallback.
+    Check(CanvasMapper.FromOverride(new LedLayoutOverride { Shape = "grid", Cols = 2, Rows = 2 }, 9) == null,
+          "layout: a grid too small for the leds is refused");
+    Check(CanvasMapper.FromOverride(new LedLayoutOverride { Shape = "spiral" }, 4) == null,
+          "layout: an unknown shape is refused");
+    Check(CanvasMapper.FromOverride(null, 4) == null, "layout: no override is no override");
+    Check(CanvasMapper.FromOverride(new LedLayoutOverride { Shape = "strip" }, 0) == null,
+          "layout: a device with no leds is refused");
+}
+
+/*---------------- Whole-desk canvas: layout file (#f9) ----------------*/
+{
+    var layout = new CanvasLayout { Enabled = true, Width = 1600, Height = 900 };
+    var devices = new IRgbDevice[]
+    {
+        new FakeDevice { Name = "Board", LedCount = 50 },
+        new FakeDevice { Name = "Keeb", LedCount = 116 },
+    };
+    layout.AutoArrange(devices);
+    Equal(2, layout.Items.Count, "canvas: every device gets a place");
+
+    // Running it again must not shuffle a desk the user has arranged.
+    var moved = layout.ItemFor("Board")!;
+    moved.X = 42; moved.Y = 43;
+    layout.AutoArrange(devices);
+    Equal(2, layout.Items.Count, "canvas: arranging again adds nothing");
+    Equal(42.0, layout.ItemFor("Board")!.X, "canvas: and leaves a placed device alone");
+
+    // A new device turning up later gets a place without disturbing the rest.
+    layout.AutoArrange(new IRgbDevice[] { new FakeDevice { Name = "Fans", LedCount = 80 } });
+    Equal(3, layout.Items.Count, "canvas: a new device is placed");
+    Equal(42.0, layout.ItemFor("Board")!.X, "canvas: the others do not move");
+
+    // Everything lands on the desk, never off the edge.
+    foreach (var it in layout.Items)
+    {
+        Check(it.X >= 0 && it.Y >= 0, "canvas: nothing is placed above or left of the desk");
+        Check(it.X + it.W <= layout.Width + 0.001, "canvas: nothing hangs off the right");
+        Check(it.Y + it.H <= layout.Height + 0.001, "canvas: nothing hangs off the bottom");
+    }
+
+    // A device that has gone away keeps its entry, in case it comes back.
+    layout.AutoArrange(new IRgbDevice[] { new FakeDevice { Name = "Keeb", LedCount = 116 } });
+    Check(layout.ItemFor("Fans") != null, "canvas: an absent device keeps its place");
+
+    // The file: a round trip has to keep every field, including the override.
+    layout.ItemFor("Fans")!.LedLayout = new LedLayoutOverride
+    { Shape = "grid", Cols = 8, Rows = 10, Serpentine = true };
+    layout.ItemFor("Keeb")!.Rotation = 270;
+    layout.ItemFor("Keeb")!.FlipY = true;
+
+    string json = JsonSerializer.Serialize(layout, new JsonSerializerOptions { WriteIndented = true });
+    var back = JsonSerializer.Deserialize<CanvasLayout>(json)!;
+    Equal(layout.Items.Count, back.Items.Count, "canvas: the items survive a round trip");
+    Equal(270, back.ItemFor("Keeb")!.Rotation, "canvas: rotation survives");
+    Check(back.ItemFor("Keeb")!.FlipY, "canvas: flip survives");
+    Equal(8, back.ItemFor("Fans")!.LedLayout!.Cols, "canvas: the led override survives");
+    Check(back.ItemFor("Fans")!.LedLayout!.Serpentine, "canvas: including serpentine");
+    Equal(42.0, back.ItemFor("Board")!.X, "canvas: and the positions");
+
+    // An older file, written before any of this existed.
+    var old = JsonSerializer.Deserialize<CanvasLayout>("{}")!;
+    Check(!old.Enabled, "canvas: an empty file is a disabled canvas");
+    Equal(0, old.Items.Count, "canvas: with nothing placed");
+    Equal(1600, old.Width, "canvas: and a default desk size");
+
+    // A clone must not share items with the original: the editor's undo
+    // depends on snapshots that do not move when the live layout does.
+    var clone = layout.Clone();
+    clone.ItemFor("Board")!.X = 999;
+    Equal(42.0, layout.ItemFor("Board")!.X, "canvas: a clone is independent");
+}
+
 /*---------------- CS2 game state (#f8) ----------------*/
 {
     // A payload shaped like the real thing: keys taken from a maintained CS2

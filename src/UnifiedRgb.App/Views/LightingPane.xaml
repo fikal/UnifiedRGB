@@ -306,13 +306,15 @@
                                 </Popup>
                             </StackPanel>
 
-                            <!-- Apply (static only) + All devices (any mode) -->
+                            <!-- Apply (static only) + All devices / Whole desk (any mode) -->
                             <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
                                 <Button Content="Apply" Style="{StaticResource Accent}"
                                         Command="{Binding ApplyToTargetCommand}" Margin="0,0,8,0"
                                         Visibility="{Binding IsStaticMode, Converter={StaticResource BoolToVis}}"/>
                                 <Button Content="All devices" Command="{Binding ApplyToAllCommand}"
                                         ToolTip="Put this exact mode (color or effect, with its settings) on every device"/>
+                                <Button Content="Whole desk" Command="{Binding ApplyToDeskCommand}" Margin="8,0,0,0"
+                                        ToolTip="Run it across every device as one image, so a wave carries from one to the next. Arrange the desk in Settings."/>
                             </StackPanel>
 
                             <!-- Speed (preset animated modes; "Punch" for audio) -->

@@ -1,0 +1,76 @@
+<Window x:Class="UnifiedRgb.App.CanvasWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Your desk" WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ResizeMode="NoResize" SizeToContent="Height" Width="900"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Border x:Name="RootPanel" Background="#FF1B1D24" CornerRadius="12" Padding="22"
+            BorderBrush="#FF2A2E38" BorderThickness="1">
+        <StackPanel>
+            <Grid Margin="0,0,0,4" MouseLeftButtonDown="Drag_Down">
+                <TextBlock Text="Your desk" FontSize="18" FontWeight="SemiBold"/>
+                <Button Content="✕" HorizontalAlignment="Right" Padding="8,3" Click="Close_Click"/>
+            </Grid>
+            <TextBlock Opacity="0.6" TextWrapping="Wrap" Margin="0,0,0,12"
+                       Text="Arrange your devices the way they sit in front of you. An effect run on the whole desk then flows across them in that order instead of restarting on each one."/>
+
+            <CheckBox Content="Render effects across the desk" IsChecked="{Binding CanvasEnabled}"
+                      Margin="0,0,0,10"
+                      ToolTip="Off means every effect renders per device, exactly as before"/>
+
+            <!-- The desk. Devices are dragged here; the grip on each resizes. -->
+            <Border Background="#FF101219" CornerRadius="8" BorderBrush="#FF2A2E38" BorderThickness="1"
+                    Padding="1">
+                <Canvas x:Name="Desk" Height="450" ClipToBounds="True" Background="Transparent"
+                        MouseLeftButtonDown="Desk_Down" MouseMove="Desk_Move"
+                        MouseLeftButtonUp="Desk_Up" MouseLeave="Desk_Up"/>
+            </Border>
+
+            <WrapPanel Margin="0,12,0,0">
+                <Button Content="Auto arrange" Click="AutoArrange_Click" Margin="0,0,8,8"
+                        ToolTip="Put every device back in a sensible starting place"/>
+                <Button Content="Rotate" Click="Rotate_Click" Margin="0,0,8,8"
+                        ToolTip="Turn the selected device a quarter turn"/>
+                <Button Content="Flip across" Click="FlipX_Click" Margin="0,0,8,8"/>
+                <Button Content="Flip down" Click="FlipY_Click" Margin="0,0,8,8"/>
+                <Button Content="&#x21B6;" Width="30" Height="28" Padding="0" Margin="8,0,8,8"
+                        Click="Undo_Click" ToolTip="Undo (Ctrl+Z)"/>
+                <Button Content="&#x21B7;" Width="30" Height="28" Padding="0" Margin="0,0,8,8"
+                        Click="Redo_Click" ToolTip="Redo (Ctrl+Y)"/>
+            </WrapPanel>
+
+            <TextBlock x:Name="SelectionText" Opacity="0.75" FontSize="12" Margin="0,4,0,0"
+                       TextWrapping="Wrap"/>
+
+            <!-- Per-device LED shape, for devices whose driver cannot know it. -->
+            <Border Background="#FF262932" CornerRadius="8" Padding="10,8" Margin="0,10,0,0">
+                <StackPanel>
+                    <TextBlock Text="LED SHAPE" FontSize="11" FontWeight="SemiBold"
+                               Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,0,0,6"/>
+                    <TextBlock Opacity="0.6" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8"
+                               Text="Only needed when a device's LEDs are not where the app thinks. A strip taped along a GPU is a line; a fan is a ring."/>
+                    <StackPanel Orientation="Horizontal">
+                        <ComboBox x:Name="ShapePick" Width="120" Height="28" VerticalAlignment="Center"
+                                  SelectionChanged="Shape_Changed">
+                            <ComboBoxItem Content="As detected"/>
+                            <ComboBoxItem Content="Strip"/>
+                            <ComboBoxItem Content="Ring"/>
+                            <ComboBoxItem Content="Grid"/>
+                        </ComboBox>
+                        <TextBlock Text="columns" VerticalAlignment="Center" Margin="12,0,6,0"
+                                   Opacity="0.75" FontSize="12"/>
+                        <TextBox x:Name="ColsBox" Width="52" MinHeight="28" VerticalAlignment="Center"
+                                 HorizontalContentAlignment="Center" LostFocus="Shape_Changed"/>
+                        <TextBlock Text="rows" VerticalAlignment="Center" Margin="12,0,6,0"
+                                   Opacity="0.75" FontSize="12"/>
+                        <TextBox x:Name="RowsBox" Width="52" MinHeight="28" VerticalAlignment="Center"
+                                 HorizontalContentAlignment="Center" LostFocus="Shape_Changed"/>
+                        <CheckBox x:Name="SerpentineBox" Content="Snakes back" VerticalAlignment="Center"
+                                  Margin="12,0,0,0" Click="Shape_Changed"
+                                  ToolTip="Every other row is wired backwards, which most matrices are"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </Border>
+</Window>

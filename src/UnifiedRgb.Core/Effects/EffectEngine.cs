@@ -18,6 +18,10 @@ public sealed class EffectEngine
         public int Count { get; internal init; }
         public IEffect Effect { get; internal init; } = null!;
 
+        /// <summary>True when this channel renders against desk coordinates
+        /// rather than its own. Carried so a profile can save it.</summary>
+        public bool Canvas { get; internal init; }
+
         // Live-tunable while running.
         public double Speed;
         public Rgb BaseColor;
@@ -54,8 +58,13 @@ public sealed class EffectEngine
 
     /// <summary>Start an effect on [offset, offset+count) of a device, replacing
     /// any overlapping channel on that device.</summary>
+    /// <summary>positions overrides the device-local coordinates, which is how
+    /// a desk-wide effect is expressed: the channel renders against where the
+    /// device sits on the canvas rather than against its own bounding box.
+    /// Computed once here, never per frame.</summary>
     public Channel Start(IRgbDevice dev, int offset, int count, Rgb[] baseFrame,
-                         IEffect effect, double speed, Rgb baseColor)
+                         IEffect effect, double speed, Rgb baseColor,
+                         LedPos[]? positions = null)
     {
         StopRange(dev, offset, count);
 
@@ -63,7 +72,8 @@ public sealed class EffectEngine
         {
             Device = dev, Offset = offset, Count = count, Effect = effect,
             Speed = speed, BaseColor = baseColor,
-            Pos = ZonePositions(dev, offset, count),
+            Pos = positions ?? ZonePositions(dev, offset, count),
+            Canvas = positions != null,
             LastFrame = new Rgb[count],
             // Held by reference, not cloned: a static colour picked later on a
             // sibling zone of a non-zone device (G403 Wheel/Logo) used to be
@@ -338,7 +348,13 @@ public sealed class EffectEngine
     public static LedPos[] ZonePositions(IRgbDevice dev, int offset, int count)
     {
         LedPos[] src;
-        if (dev.LedPositions is { Count: > 0 } p && p.Count == dev.LedCount)
+        // A hand-described layout beats the driver's idea of the shape: a strip
+        // taped along a GPU is a line whatever its header reports. Applies with
+        // the canvas on or off, since fixing a shape is useful on its own.
+        var over = CanvasMapper.FromOverride(CanvasLayout.LedLayoutFor(dev.Name), dev.LedCount);
+        if (over != null)
+            src = over;
+        else if (dev.LedPositions is { Count: > 0 } p && p.Count == dev.LedCount)
             src = p.ToArray();
         else
         {

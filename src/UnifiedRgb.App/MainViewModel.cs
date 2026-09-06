@@ -1082,6 +1082,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public ICommand ApplyToTargetCommand { get; }
     public ICommand ApplyToAllCommand { get; }
+    public ICommand ApplyToDeskCommand { get; }
     public ICommand PickSwatchCommand { get; }
     public ICommand RescanCommand { get; }
     public ICommand SaveProfileCommand { get; }
@@ -1093,6 +1094,9 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         _bake = new Services.LianBakeService(_lighting, () => Devices.OfType<LianLiWireless>());
         _battery = new Services.BatteryMonitor(_lighting.Applier, () => Devices, RefreshBatterySubtitles);
+        // Before anything renders: the layout decides what coordinates every
+        // effect sees, and an LED override applies whether the desk is on or not.
+        UnifiedRgb.Core.Effects.CanvasLayout.Current = UnifiedRgb.Core.Effects.CanvasLayout.Load();
         Cooling = new CoolingViewModel(_store.Settings, _store.SaveSettings,
             isGigabyteBoard: () => Devices.OfType<GigabyteIt5711>().Any(),
             pawnIoMissing: () => PawnIoMissing,
@@ -1105,6 +1109,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             currentProfile: () => SelectedProfile?.Name);
         ApplyToTargetCommand = new RelayCommand(_ => ApplyToTarget(), _ => HasSelection);
         ApplyToAllCommand    = new RelayCommand(_ => ApplyModeToAll(), _ => Devices.Count > 0);
+        ApplyToDeskCommand   = new RelayCommand(_ => ApplyModeToDesk(), _ => Devices.Count > 0);
         PickSwatchCommand    = new RelayCommand(o => { if (o is Rgb c) SetColor(c); });
         RescanCommand        = new RelayCommand(_ => Rescan());
         SaveProfileCommand   = new RelayCommand(_ => SaveProfile(),
@@ -1353,7 +1358,11 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     /// <summary>Start (or stop, for Static) one effect channel on a single device
     /// range, replacing any overlapping channel. Shared by the single-target and
     /// all-fans fan-out paths.</summary>
-    void ApplyFxRange(IRgbDevice dev, int off, int count, TargetFx fx, EffectChoice choice)
+    /// <summary>canvas renders the range against where the device sits on the
+    /// desk instead of against its own shape, which is what makes one wave
+    /// carry from the keyboard to the fans.</summary>
+    void ApplyFxRange(IRgbDevice dev, int off, int count, TargetFx fx, EffectChoice choice,
+                      bool canvas = false)
     {
         // Assignments this range replaces (overlap on the same device) fall
         // back to Static so their pills read correctly when revisited.
@@ -1388,7 +1397,8 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             bc = new Rgb(255, 255, 255);
             UpdateColorViews(bc);
         }
-        fx.Channel = _engine.Start(dev, off, count, FrameFor(dev), effect, SignedSpeed(fx), bc);
+        fx.Channel = _engine.Start(dev, off, count, FrameFor(dev), effect, SignedSpeed(fx), bc,
+                                   canvas ? CanvasPositions(dev, off, count) : null);
         RequestLianRebake();
         MarkDirty();
     }
@@ -1397,6 +1407,52 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     /// <summary>"All devices" applies the CURRENT MODE everywhere: the static
     /// color in Static mode, or the running effect (with its speed, tint and
     /// pattern settings) as a whole-device channel on every device.</summary>
+    /// <summary>Desk coordinates for a range, or null when the canvas is off
+    /// or this device has no place on it. Null falls back to the device's own
+    /// coordinates, so a desk effect on an unplaced device still runs.</summary>
+    LedPos[]? CanvasPositions(IRgbDevice dev, int off, int count)
+        => CanvasMapper.Positions(dev, off, count, UnifiedRgb.Core.Effects.CanvasLayout.Current);
+
+    /// <summary>"Whole desk": the current effect on every device, rendered as
+    /// one image across the canvas. The same path as All devices, except the
+    /// coordinates come from where each device sits.</summary>
+    void ApplyModeToDesk()
+    {
+        var layout = UnifiedRgb.Core.Effects.CanvasLayout.Current;
+        if (layout is not { Enabled: true })
+        {
+            // Asking for a desk effect is asking for a desk: turn it on and
+            // place anything not placed yet, rather than doing nothing.
+            layout ??= new UnifiedRgb.Core.Effects.CanvasLayout();
+            layout.Enabled = true;
+            layout.AutoArrange(Devices);
+            layout.Save();
+            UnifiedRgb.Core.Effects.CanvasLayout.Current = layout;
+            OnChanged(nameof(CanvasEnabled));
+        }
+
+        var srcFx = CurrentFx();
+        var choice = ChoiceOf(srcFx);
+        if (choice.Effect == null) { ApplyToAll(); return; }
+
+        foreach (var dev in Devices)
+        {
+            if (choice.Category == "Keyboard" && dev.Type != DeviceType.Keyboard) continue;
+            var fx = FxFor(dev, 0, dev.LedCount);
+            fx.Choice = choice;
+            CopyTargetSettings(srcFx, fx, choice);
+            ApplyFxRange(dev, 0, dev.LedCount, fx, choice, canvas: true);
+        }
+        LandOnWholeLianDevice();
+        // One clock, one start: the whole point is that the devices are phases
+        // of a single image, not several copies of an effect.
+        _engine.RestartClock();
+        NotifyModeChanged();
+        _bake.ForgetSignatures();
+        RequestLianRebake();
+        MarkDirty();
+    }
+
     void ApplyModeToAll()
     {
         var srcFx = CurrentFx();
@@ -1482,6 +1538,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         _battery.Rescan();                                     // charge, before the rows are built
         SyncSdkServer();                                       // SDK clients hold stale instances
         StartGsi();                                            // game state, if the user has it on
+        SyncCanvas();                                          // a new device needs a place on the desk
         BuildLeftItems();                                      // devices + pump LCD row
         RestoreEffects(savedEffects);
         LandOnRunningLianTarget();

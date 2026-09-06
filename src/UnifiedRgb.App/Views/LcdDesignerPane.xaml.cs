@@ -119,45 +119,30 @@ public partial class LcdDesignerPane : UserControl
         if (BoundsOf(lb, drag) is not { } self) return (x, y);
         double w = self.Width, h = self.Height;
 
-        // Every line worth snapping to: the screen's own edges and centre, plus
-        // the three edges of each other element on both axes.
-        var vertical = new List<double> { 0, ScreenW / 2, ScreenW };
-        var horizontal = new List<double> { 0, ScreenH / 2, ScreenH };
+        // Everything else on the screen, as (start, size) on each axis. The
+        // snapping itself is shared with the desk canvas: see Core/SnapGuides.
+        var acrossX = new List<(double, double)>();
+        var acrossY = new List<(double, double)>();
         foreach (var other in VM.LcdElements)
         {
             if (ReferenceEquals(other, drag)) continue;
             if (BoundsOf(lb, other) is not { } r) continue;
-            vertical.Add(r.Left); vertical.Add(r.Left + r.Width / 2); vertical.Add(r.Right);
-            horizontal.Add(r.Top); horizontal.Add(r.Top + r.Height / 2); horizontal.Add(r.Bottom);
+            acrossX.Add((r.Left, r.Width));
+            acrossY.Add((r.Top, r.Height));
         }
 
-        // The dragged item can align by its left edge, its centre or its right
-        // edge; offset says where the item's origin ends up for each.
-        double? hitX = Nearest(vertical, new[] { x, x + w / 2, x + w }, out double dx);
-        if (hitX is { } gx) x += dx;
-        double? hitY = Nearest(horizontal, new[] { y, y + h / 2, y + h }, out double dy);
-        if (hitY is { } gy) y += dy;
+        var (sx, lineX) = UnifiedRgb.Core.SnapGuides.Snap(
+            x, w, UnifiedRgb.Core.SnapGuides.Lines(ScreenW, acrossX), SnapDistance);
+        var (sy, lineY) = UnifiedRgb.Core.SnapGuides.Snap(
+            y, h, UnifiedRgb.Core.SnapGuides.Lines(ScreenH, acrossY), SnapDistance);
 
-        if (hitX is { } vx) DrawGuide(vx, 0, vx, ScreenH);
-        if (hitY is { } vy) DrawGuide(0, vy, ScreenW, vy);
-        return (x, y);
+        if (lineX is { } vx) DrawGuide(vx, 0, vx, ScreenH);
+        if (lineY is { } vy) DrawGuide(0, vy, ScreenW, vy);
+        return (sx, sy);
     }
 
     /// <summary>Closest line to any of the item's three anchors, if one is within
     /// SnapDistance. `delta` is how far the item must move to sit on it.</summary>
-    static double? Nearest(List<double> lines, double[] anchors, out double delta)
-    {
-        double best = SnapDistance, chosen = 0; bool found = false;
-        delta = 0;
-        foreach (double line in lines)
-            foreach (double a in anchors)
-            {
-                double d = Math.Abs(line - a);
-                if (d > best) continue;
-                best = d; chosen = line; delta = line - a; found = true;
-            }
-        return found ? chosen : null;
-    }
 
     void DrawGuide(double x1, double y1, double x2, double y2) =>
         GuideLayer.Children.Add(new System.Windows.Shapes.Line

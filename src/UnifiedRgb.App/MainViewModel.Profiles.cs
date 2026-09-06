@@ -51,6 +51,7 @@ public sealed partial class MainViewModel
                 PatternReverse = fx.Pattern?.Reverse ?? false,
                 PatternPalette = isPattern || isRipple || isPalette
                     ? fx.Palette.Select(c => c.ToHex()).ToArray() : null,
+                Canvas = ch.Canvas,
             });
         }
         return list;
@@ -117,7 +118,12 @@ public sealed partial class MainViewModel
             }
             var effect = ResolveEffect(fx, choice);
 
-            fx.Channel = _engine.Start(dev, a.Offset, a.Count, FrameFor(dev), effect, SignedSpeed(fx), baseColor);
+            // A desk assignment only maps if the desk is still on and the
+            // device still has a place on it; otherwise it comes back as an
+            // ordinary per-device effect rather than not at all.
+            fx.Channel = _engine.Start(dev, a.Offset, a.Count, FrameFor(dev), effect,
+                                       SignedSpeed(fx), baseColor,
+                                       a.Canvas ? CanvasPositions(dev, a.Offset, a.Count) : null);
         }
         NotifyModeChanged();
         RequestLianRebake();

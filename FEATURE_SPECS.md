@@ -657,5 +657,10 @@ round-trip with missing/unknown devices.
       libraries, the config written to the real CS2 folders and read back,
       and POSTs to the live app accepted (valid token) and rejected (forged).
       NOT played: nobody has watched the lights react to real damage.
-- [ ] 9. Whole-desk canvas (+ LED layout overrides, shared snap guides)
+- [x] 9. Whole-desk canvas (+ LED layout overrides, shared snap guides)
+      Auto-arrange verified against the real rig: all 7 devices placed sensibly
+      and inside the desk. The mapping, the LED shape generators and the
+      continuity claim (a wave crossing two devices instead of restarting) are
+      covered by tests. NOT seen: nobody has watched a wave roll off the
+      keyboard onto the fans on real hardware.
 - [ ] Website/README updated, 1.1.0 released

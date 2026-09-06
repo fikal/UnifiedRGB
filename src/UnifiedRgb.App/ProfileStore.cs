@@ -22,6 +22,11 @@ public sealed class EffectAssignment
     public double PatternDensity { get; set; } = 1.0;
     public bool PatternReverse { get; set; }
     public string[]? PatternPalette { get; set; }
+
+    /// <summary>Rendered across the desk rather than against the device's own
+    /// shape. Additive: an older build reading this file ignores it and the
+    /// effect simply runs per-device, which is what it did before.</summary>
+    public bool Canvas { get; set; }
 }
 
 /// <summary>A saved lighting setup: per-device LED frames, keyed by device

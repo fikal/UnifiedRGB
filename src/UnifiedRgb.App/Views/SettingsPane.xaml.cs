@@ -42,6 +42,12 @@ public partial class SettingsPane : UserControl
         Dialogs.ShowBlurred(owner, new SensorRulesWindow(VM) { Owner = owner });
     }
 
+    void ArrangeDesk_Click(object sender, RoutedEventArgs e)
+    {
+        var owner = Owner;
+        Dialogs.ShowBlurred(owner, new CanvasWindow(VM) { Owner = owner });
+    }
+
     void InstallCs2_Click(object sender, RoutedEventArgs e)
         => Dialogs.Info(Owner, "Counter-Strike 2", VM.InstallCs2Config());
 

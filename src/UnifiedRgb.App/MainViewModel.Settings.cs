@@ -388,6 +388,58 @@ public sealed partial class MainViewModel
         return UnifiedRgb.Core.Games.GsiConfig.Build($"http://localhost:{port}", GsiToken);
     }
 
+    /*-----------------------------------------------------*\
+    | The desk canvas.                                       |
+    \*-----------------------------------------------------*/
+
+    public UnifiedRgb.Core.Effects.CanvasLayout Canvas =>
+        UnifiedRgb.Core.Effects.CanvasLayout.Current ??= UnifiedRgb.Core.Effects.CanvasLayout.Load();
+
+    public bool CanvasEnabled
+    {
+        get => Canvas.Enabled;
+        set
+        {
+            if (Canvas.Enabled == value) return;
+            var layout = Canvas;
+            layout.Enabled = value;
+            if (value) layout.AutoArrange(Devices);
+            layout.Save();
+            OnChanged(nameof(CanvasEnabled));
+            OnChanged(nameof(CanvasStatus));
+            // Running channels were started against the old coordinates, so
+            // they have to be rebuilt to pick up the change.
+            ReapplyEffects();
+        }
+    }
+
+    public string CanvasStatus => Canvas.Enabled
+        ? $"On. {Canvas.Items.Count} device(s) placed on a {Canvas.Width} by {Canvas.Height} desk."
+        : "Off. Effects render per device, exactly as they always have.";
+
+    /// <summary>Give any newly detected device a place on the desk. Without
+    /// this, a device attached after the desk was arranged would have no
+    /// position, so a desk-wide effect would quietly leave it out.</summary>
+    void SyncCanvas()
+    {
+        var layout = UnifiedRgb.Core.Effects.CanvasLayout.Current;
+        if (layout is not { Enabled: true }) return;
+        int before = layout.Items.Count;
+        layout.AutoArrange(Devices);
+        if (layout.Items.Count != before) layout.Save();
+    }
+
+    /// <summary>What a device is showing now, for the desk editor's LED dots.</summary>
+    public Rgb[] ComposedFrameFor(IRgbDevice device) => _lighting.ComposedFrame(device);
+
+    /// <summary>Restart every running channel so a layout change takes effect
+    /// without the user having to re-pick anything.</summary>
+    public void ReapplyEffects()
+    {
+        var saved = CaptureEffects();
+        RestoreEffects(saved);
+    }
+
     /// <summary>Does a profile by this name still exist? The automation calls
     /// this per tick, so it must not allocate the way ProfileNames does.</summary>
     public bool HasProfile(string name)

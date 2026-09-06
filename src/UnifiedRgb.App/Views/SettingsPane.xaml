@@ -142,6 +142,16 @@
 
                     <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
 
+                    <TextBlock Text="Your desk" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                    <TextBlock Opacity="0.75" FontSize="12" TextWrapping="Wrap" MaxWidth="510"
+                               Text="Place your devices the way they sit in front of you, then run an effect on the whole desk: a wave rolls off the keyboard and up the fans instead of restarting on each one."/>
+                    <Button Content="Arrange your desk…" Padding="12,5" Margin="0,6,0,0" HorizontalAlignment="Left"
+                            Click="ArrangeDesk_Click"/>
+                    <TextBlock Text="{Binding CanvasStatus}" Foreground="#FF7FB4FF" FontSize="12"
+                               Margin="0,8,0,0" TextWrapping="Wrap" MaxWidth="510"/>
+
+                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
+
                     <TextBlock Text="Games" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
                     <CheckBox IsChecked="{Binding Cs2Enabled}">
                         <TextBlock Text="Counter-Strike 2. Your health, the bomb and flashbangs drive the lights. Uses Valve's Game State Integration, so nothing is injected or read from memory."
