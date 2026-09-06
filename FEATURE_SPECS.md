@@ -663,4 +663,6 @@ round-trip with missing/unknown devices.
       continuity claim (a wave crossing two devices instead of restarting) are
       covered by tests. NOT seen: nobody has watched a wave roll off the
       keyboard onto the fans on real hardware.
-- [ ] Website/README updated, 1.1.0 released
+- [x] Website/README updated
+- [ ] 1.1.0 released  (deliberately NOT done: the hardware-facing parts of
+      features 4, 6, 8 and 9 have not been watched on real hardware yet)

@@ -73,12 +73,48 @@ on Auto are never touched, so BIOS profiles and GPU tools stay in control.
 
 <img src="docs/img/cooling.png" width="850" alt="Cooling panel with temperature gauges, fan list, and curve editor">
 
+### One effect across your whole desk
+
+Arrange your devices the way they actually sit in front of you, then run an
+effect on the desk instead of on each device. A wave rolls off the keyboard,
+across the mouse and up the case fans as one image, in the order they are
+really in, rather than restarting on every device.
+
+The same screen fixes the other half of that problem: telling UnifiedRGB where
+a device's LEDs physically are. A strip taped along a GPU is a line, a fan is a
+ring, a matrix usually snakes back on every other row. Say so once and every
+effect renders correctly on it.
+
+### Lights that react to what you are doing
+
+Rules on temperature, load, fan speed or a wireless device's battery: cross the
+number and a profile applies, drop back and your lighting returns. Schedules
+for lights-off windows or a profile between two times on the days you pick.
+Wireless gear shows its charge in the sidebar, amber when it is running low.
+
+**Counter-Strike 2** drives the lights from the game's own state: health runs
+green to red, molotov damage flickers amber, and a planted bomb pulses faster
+as the fuse runs down. It uses Valve's Game State Integration, so nothing is
+injected and nothing is read from memory.
+
+### It plays well with what you already use
+
+UnifiedRGB can act as an **OpenRGB SDK server**, so anything written for
+OpenRGB drives your lighting unchanged: Home Assistant, game mods, phone
+remotes, Stream Deck plugins. An app that takes a device over gets it, and your
+lighting comes back the moment it disconnects. Loopback only unless you
+explicitly allow the network, because that protocol has no password.
+
+It also **hands your hardware back when it closes**. Instead of leaving
+whatever frame happened to be last, each device can be left on a color, turned
+off, or told to resume its own saved profile.
+
 ### Quality of life, everywhere
 
 Profiles with global hotkeys (`Ctrl+Alt+1…9`, they work in games) ·
-per-app auto-switching · night mode with an idle gate · master brightness ·
-per-device disable · first-run wizard · starts with Windows, lives in the
-tray.
+per-app auto-switching · schedules and sensor rules · master brightness ·
+per-device disable · undo and redo in the LCD designer · first-run wizard ·
+starts with Windows, lives in the tray.
 
 ### Fast is a feature
 

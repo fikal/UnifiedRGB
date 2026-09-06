@@ -117,6 +117,43 @@
 
   <div class="cards">
     <div class="card">
+      <h4>One effect across your whole desk</h4>
+      <p>
+        Arrange your devices the way they sit in front of you, then run an
+        effect on the desk instead of on each device. A wave rolls off the
+        keyboard and up the case fans as one image, in the order they are
+        really in.
+      </p>
+      <p>
+        It is also where you say where a device's LEDs physically are: a strip
+        taped along a GPU is a line, a fan is a ring.
+      </p>
+    </div>
+    <div class="card">
+      <h4>Lights that react</h4>
+      <p>
+        Rules on temperature, load, fan speed or a wireless battery. Schedules
+        for lights out or a profile between two times. Counter-Strike 2 drives
+        them from the game's own state, not by watching your screen.
+      </p>
+    </div>
+    <div class="card">
+      <h4>Works with your other tools</h4>
+      <p>
+        UnifiedRGB can speak the OpenRGB protocol, so anything written for it
+        drives your lighting unchanged: Home Assistant, game mods, phone
+        remotes, Stream Deck. Your lighting returns the moment they disconnect.
+      </p>
+    </div>
+    <div class="card">
+      <h4>It hands your hardware back</h4>
+      <p>
+        Closing it does not have to leave whatever frame happened to be last.
+        Each device can be left on a color, switched off, or told to resume its
+        own saved profile.
+      </p>
+    </div>
+    <div class="card">
       <h4>Fast is a feature</h4>
       <p>
         Under 5% of one core with the window open, near silent in the tray.
@@ -251,6 +288,22 @@
             <td class="yes">Its whole specialty</td>
           </tr>
           <tr>
+            <th>Other apps can drive your lights</th>
+            <td class="me yes">Yes, built in<br><small>speaks the OpenRGB protocol, so tools written for it work unchanged</small></td>
+            <td class="yes">Yes, it defines the protocol</td>
+            <td class="warn">It connects to OpenRGB,<br>rather than being driven</td>
+            <td class="warn">It connects to OpenRGB,<br>rather than being driven</td>
+            <td class="warn">It connects to OpenRGB,<br>rather than being driven</td>
+          </tr>
+          <tr>
+            <th>Reacts to what is happening in a game</th>
+            <td class="me yes">Yes, from the game's own state<br><small>CS2, via Valve's Game State Integration</small></td>
+            <td class="no">No, lighting only</td>
+            <td class="yes">Yes, by reading your screen</td>
+            <td class="yes">Yes, through its plugins</td>
+            <td class="yes">Yes, its specialty</td>
+          </tr>
+          <tr>
             <th>Account to use it</th>
             <td class="me yes">Never</td>
             <td class="yes">Never</td>
@@ -293,8 +346,9 @@
         </li>
         <li>
           <strong>SignalRGB</strong> has a bigger device library, a huge
-          catalogue of effects, and more per-game integrations. Its canvas model,
-          one effect painted across your whole desk, is slicker than anything here.
+          catalogue of effects, and more per-game integrations. We have a desk
+          canvas now, but theirs is the more polished one and has had far longer
+          to prove itself.
         </li>
         <li>
           <strong>Artemis</strong> has the deepest customisation engine of the
@@ -303,12 +357,15 @@
         </li>
         <li>
           <strong>Aurora</strong> owns per-game lighting. It reads real in-game
-          state for supported titles instead of sampling the screen.
+          state across a long list of titles; we read it for Counter-Strike 2
+          and nothing else yet.
         </li>
         <li>
           <strong>Vendor apps</strong> remain the only route to firmware updates,
-          onboard profiles that survive with no software running, macros, DPI
-          stages, and actuation points. They also have support staff.
+          macros, and actuation points. We can now leave a device on a color or
+          hand it back to its own saved profile when we close, but they are still
+          the ones that write those profiles in the first place. They also have
+          support staff.
         </li>
         <li>
           <strong>UnifiedRGB is young.</strong> Public since September 2026.
