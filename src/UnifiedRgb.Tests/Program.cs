@@ -1120,6 +1120,32 @@ static string TempDir()
         "app match: blank rule matches nothing");
 }
 
+/*---------------- Now-playing line (#f5) ----------------*/
+{
+    Equal("Radiohead · Karma Police", NowPlayingText.Compose("Radiohead", "Karma Police"),
+          "now playing: artist and title");
+    Equal("Karma Police", NowPlayingText.Compose(null, "Karma Police"), "now playing: title only");
+    Equal("Radiohead", NowPlayingText.Compose("Radiohead", ""), "now playing: artist only");
+    Equal("", NowPlayingText.Compose(null, null), "now playing: nothing playing is empty");
+    Equal("", NowPlayingText.Compose("   ", " "), "now playing: whitespace is nothing");
+    Equal("A · B", NowPlayingText.Compose("  A  ", "  B  "), "now playing: ends are trimmed");
+
+    // A separator that reads as part of a name is worse than none. No dashes.
+    Check(!NowPlayingText.Separator.Contains('-') && !NowPlayingText.Separator.Contains('—'),
+          "now playing: the separator is not a dash");
+
+    Equal("abc", NowPlayingText.Ellipsize("abc", 3), "ellipsis: what fits is left alone");
+    Equal("abc…", NowPlayingText.Ellipsize("abcdef", 4), "ellipsis: cut to the budget");
+    Equal("ab…", NowPlayingText.Ellipsize("ab cdef", 4), "ellipsis: no space stranded before it");
+    Equal("…", NowPlayingText.Ellipsize("abcdef", 1), "ellipsis: a budget of one");
+    Equal("", NowPlayingText.Ellipsize("abcdef", 0), "ellipsis: no budget at all");
+
+    // A podcast episode title should never reach the typesetter whole.
+    var epic = NowPlayingText.Compose("Some Podcast", new string('x', 500));
+    Equal(NowPlayingText.MaxChars, epic.Length, "now playing: a huge title is capped");
+    Check(epic.EndsWith('…'), "now playing: and marked as cut");
+}
+
 /*---------------- Razer battery decode (#f4) ----------------*/
 {
     // A reply buffer: [1] = status, arguments[0] at index 9, so the byte both

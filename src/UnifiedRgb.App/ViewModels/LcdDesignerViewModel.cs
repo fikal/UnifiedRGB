@@ -42,6 +42,8 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         AddNetSpeedCommand = new RelayCommand(_ => AddElement(LcdElementKind.NetSpeed), _ => Available);
         AddClockCommand    = new RelayCommand(_ => AddElement(LcdElementKind.AnalogClock), _ => Available);
         AddWeatherCommand  = new RelayCommand(_ => AddElement(LcdElementKind.Weather), _ => Available);
+        AddNowPlayingCommand = new RelayCommand(_ => AddElement(LcdElementKind.NowPlaying), _ => Available);
+        AddAlbumArtCommand   = new RelayCommand(_ => AddElement(LcdElementKind.AlbumArt), _ => Available);
         DeleteElementCommand    = new RelayCommand(_ => DeleteElement(), _ => HasElement);
         ChooseBackgroundCommand = new RelayCommand(_ => ChooseBackground(), _ => Available);
         ClearBackgroundCommand  = new RelayCommand(_ => ClearBackground(), _ => Available);
@@ -57,6 +59,8 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     public ICommand AddNetSpeedCommand { get; }
     public ICommand AddClockCommand { get; }
     public ICommand AddWeatherCommand { get; }
+    public ICommand AddNowPlayingCommand { get; }
+    public ICommand AddAlbumArtCommand { get; }
     public ICommand DeleteElementCommand { get; }
     public ICommand ChooseBackgroundCommand { get; }
     public ICommand ClearBackgroundCommand { get; }
@@ -162,19 +166,24 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
 
     void LcdElementChanged(object? s, PropertyChangedEventArgs args)
     {
-        // After the fact, so this records _baseline (the pre-burst design) and
-        // coalesces the rest of the burst into that one entry.
-        CaptureUndo();
-        // Live editor pushes are NOT user edits. ClockImage especially: it is
+        // Live editor pushes are NOT user edits. DrawnImage especially: it is
         // set from RefreshDisplays on every render tick, and reacting with
-        // TouchLcd() -> Refresh() -> Ticked -> RefreshDisplays -> ClockImage
-        // would recurse to a stack overflow the moment an analog clock was on
-        // screen with the designer open.
-        if (args.PropertyName is nameof(LcdElement.Display) or nameof(LcdElement.ClockImage)) return;
-        // Label/ClockSize are derived notifications raised alongside every
-        // setter; reacting to them doubled the LCD renders per drag step (4 per
-        // mouse-move for an X+Y change).
-        if (args.PropertyName is nameof(LcdElement.Label) or nameof(LcdElement.ClockSize)) return;
+        // TouchLcd() -> Refresh() -> Ticked -> RefreshDisplays -> DrawnImage
+        // would recurse to a stack overflow the moment a clock or cover art was
+        // on screen with the designer open.
+        if (args.PropertyName is nameof(LcdElement.Display) or nameof(LcdElement.DrawnImage)) return;
+        // Label/ClockSize/DrawnSize/EditorMaxWidth are derived notifications
+        // raised alongside every setter; reacting to them doubled the LCD
+        // renders per drag step (4 per mouse-move for an X+Y change).
+        if (args.PropertyName is nameof(LcdElement.Label) or nameof(LcdElement.ClockSize)
+            or nameof(LcdElement.DrawnSize) or nameof(LcdElement.EditorMaxWidth)) return;
+
+        // Only now, past the live pushes: a real edit. Recording BEFORE the
+        // guards meant the clock face and the ticking time pushed an undo entry
+        // every second the designer was open, so within a minute the whole
+        // history was snapshots of an unchanged design and Ctrl+Z did nothing
+        // visible.
+        CaptureUndo();
         if (ReferenceEquals(s, _selectedElement) && args.PropertyName == nameof(LcdElement.ColorHex))
         { OnChanged(nameof(SelectedElementColor)); NotifyElemRgb(); }
         TouchLcd();
@@ -199,11 +208,21 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         {
             if (e.Kind == LcdElementKind.AnalogClock)
             {
-                if (clockDue || e.ClockImage == null) e.ClockImage = LcdController.RenderClockImage(e);
+                if (clockDue || e.DrawnImage == null) e.DrawnImage = LcdController.RenderClockImage(e);
+            }
+            else if (e.Kind == LcdElementKind.AlbumArt)
+            {
+                MediaService.EnsureStarted();
+                var art = MediaService.Art;
+                if (!ReferenceEquals(art, e.DrawnImage)) e.DrawnImage = art;
             }
             else
             {
                 var text = _lcd.ElementText(e);
+                // Nothing playing: show the label so the element stays visible
+                // and grabbable in the editor even though the panel draws
+                // nothing. Only now-playing can come back empty.
+                if (text.Length == 0 && e.Kind == LcdElementKind.NowPlaying) text = e.Label;
                 if (text != e.Display) e.Display = text;   // the setter notifies unconditionally
             }
         }
@@ -353,6 +372,8 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
                 LcdElementKind.Time => 60,
                 LcdElementKind.AnalogClock => 55,       // radius -> 110px face
                 LcdElementKind.NetSpeed or LcdElementKind.Weather => 26,
+                LcdElementKind.NowPlaying => 22,
+                LcdElementKind.AlbumArt => 90,          // a 90px square of cover
                 _ => 32,
             },
             Bold = kind == LcdElementKind.Time,
@@ -364,10 +385,13 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
                 LcdElementKind.FanRpm => "FFB84C",
                 LcdElementKind.NetSpeed => "8AD0FF",
                 LcdElementKind.Weather => "FFD27A",
+                LcdElementKind.NowPlaying => "D9A6FF",
                 _ => "FFFFFF",
             },
         };
         if (kind == LcdElementKind.AnalogClock) { e.X = 100; e.Y = 60; }
+        if (kind == LcdElementKind.NowPlaying) { e.X = 20; e.Y = 200; }   // a caption line, low and wide
+        if (kind == LcdElementKind.AlbumArt) { e.X = 115; e.Y = 40; }
         _lcd.Design.Elements.Add(e);
         LcdElements.Add(e); Hook(e);
         SelectedElement = e;

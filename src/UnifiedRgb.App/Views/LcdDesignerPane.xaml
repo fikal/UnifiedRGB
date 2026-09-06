@@ -79,17 +79,25 @@
                                     <ListBox.ItemTemplate>
                                         <DataTemplate>
                                             <Grid>
-                                                <!-- Drawn elements (analog clock) show a live face image;
-                                                     everything else is typeset text. -->
+                                                <!-- Drawn elements (analog clock, album art) show a live
+                                                     image; everything else is typeset text. -->
                                                 <TextBlock Text="{Binding Display}"
                                                            FontFamily="Segoe UI"
                                                            FontSize="{Binding FontSize}"
                                                            FontWeight="{Binding Bold, Converter={StaticResource BoolWeight}}"
                                                            Foreground="{Binding ColorHex, Converter={StaticResource HexBrush}}"
-                                                           Visibility="{Binding IsClock, Converter={StaticResource BoolToVisInv}}"/>
-                                                <Image Source="{Binding ClockImage}"
-                                                       Width="{Binding ClockSize}" Height="{Binding ClockSize}"
-                                                       Visibility="{Binding IsClock, Converter={StaticResource BoolToVis}}"/>
+                                                           MaxWidth="{Binding EditorMaxWidth}"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           Visibility="{Binding IsDrawn, Converter={StaticResource BoolToVisInv}}"/>
+                                                <!-- Nothing playing yet: an empty frame, so the element can
+                                                     still be seen and dragged. -->
+                                                <Border Width="{Binding DrawnSize}" Height="{Binding DrawnSize}"
+                                                        Background="#22FFFFFF" BorderBrush="#55FFFFFF"
+                                                        BorderThickness="1" CornerRadius="3"
+                                                        Visibility="{Binding IsAlbumArt, Converter={StaticResource BoolToVis}}"/>
+                                                <Image Source="{Binding DrawnImage}" Stretch="Uniform"
+                                                       Width="{Binding DrawnSize}" Height="{Binding DrawnSize}"
+                                                       Visibility="{Binding IsDrawn, Converter={StaticResource BoolToVis}}"/>
                                             </Grid>
                                         </DataTemplate>
                                     </ListBox.ItemTemplate>
@@ -169,6 +177,8 @@
                                     <Button Content="+ Net"      Command="{Binding AddNetSpeedCommand}" Margin="0,0,8,8"/>
                                     <Button Content="+ Clock"    Command="{Binding AddClockCommand}" Margin="0,0,8,8"/>
                                     <Button Content="+ Weather"  Command="{Binding AddWeatherCommand}" Margin="0,0,8,8"/>
+                                    <Button Content="+ Now Playing" Command="{Binding AddNowPlayingCommand}" Margin="0,0,8,8"/>
+                                    <Button Content="+ Album Art" Command="{Binding AddAlbumArtCommand}" Margin="0,0,8,8"/>
                                     <Button Content="+ Text"     Command="{Binding AddTextCommand}" Margin="0,0,8,8"/>
                                 </WrapPanel>
 

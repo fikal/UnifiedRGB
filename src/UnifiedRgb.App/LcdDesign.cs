@@ -8,7 +8,7 @@ namespace UnifiedRgb.App;
 // Persisted by NAME (integers still accepted on read) so inserting or
 // reordering a member can never silently remap every saved design and scene.
 [JsonConverter(typeof(JsonStringEnumConverter))]
-public enum LcdElementKind { Time, Date, CpuTemp, Text, GpuTemp, FanRpm, NetSpeed, AnalogClock, Weather }
+public enum LcdElementKind { Time, Date, CpuTemp, Text, GpuTemp, FanRpm, NetSpeed, AnalogClock, Weather, NowPlaying, AlbumArt }
 
 /// <summary>One positioned text element on the pump display. Coordinates are the
 /// top-left corner in landscape space (0..320 x, 0..240 y), which is exactly how
@@ -21,7 +21,11 @@ public sealed class LcdElement : INotifyPropertyChanged
     public string Text { get => _text; set { _text = value; Changed(); } }
 
     double _x = 90, _y = 100;
-    public double X { get => _x; set { _x = value; Changed(); } }
+    public double X
+    {
+        get => _x;
+        set { _x = value; Changed(); PropertyChanged?.Invoke(this, new(nameof(EditorMaxWidth))); }
+    }
     public double Y { get => _y; set { _y = value; Changed(); } }
 
     /// <summary>Both coordinates in ONE notification (the empty name = "every
@@ -37,7 +41,12 @@ public sealed class LcdElement : INotifyPropertyChanged
     public double FontSize
     {
         get => _fontSize;
-        set { _fontSize = value; Changed(); PropertyChanged?.Invoke(this, new(nameof(ClockSize))); }
+        set
+        {
+            _fontSize = value; Changed();
+            PropertyChanged?.Invoke(this, new(nameof(ClockSize)));
+            PropertyChanged?.Invoke(this, new(nameof(DrawnSize)));
+        }
     }
 
     string _colorHex = "FFFFFF";
@@ -57,6 +66,8 @@ public sealed class LcdElement : INotifyPropertyChanged
         LcdElementKind.NetSpeed => "Network",
         LcdElementKind.AnalogClock => "Clock",
         LcdElementKind.Weather => "Weather",
+        LcdElementKind.NowPlaying => "Now playing",
+        LcdElementKind.AlbumArt => "Album art",
         _ => string.IsNullOrWhiteSpace(Text) ? "Text" : Text,
     };
 
@@ -68,14 +79,33 @@ public sealed class LcdElement : INotifyPropertyChanged
     /// FontSize slider drives the radius, so one control sizes every element.</summary>
     [JsonIgnore] public double ClockSize => FontSize * 2;
 
-    // Live-rendered clock face for the WYSIWYG editor, refreshed each tick along
-    // with Display. Not persisted, and does not trigger a device re-render.
-    ImageSource? _clockImage;
+    /// <summary>Album art is painted too, so it takes the same editor path as
+    /// the clock: an image box instead of a text block.</summary>
+    [JsonIgnore] public bool IsAlbumArt => Kind == LcdElementKind.AlbumArt;
+
+    [JsonIgnore] public bool IsDrawn => IsClock || IsAlbumArt;
+
+    /// <summary>Side of a drawn element's box. Album art gets a square of
+    /// FontSize that the cover is fitted inside, so the box you drag is exactly
+    /// the space it occupies and the snap guides line up with what renders.</summary>
+    [JsonIgnore] public double DrawnSize => IsAlbumArt ? FontSize : ClockSize;
+
+    /// <summary>Editor-only width budget: how much panel is left to the right
+    /// of this element. Only the now-playing line is trimmed to it; everything
+    /// else is left exactly as it renders today.</summary>
     [JsonIgnore]
-    public ImageSource? ClockImage
+    public double EditorMaxWidth =>
+        Kind == LcdElementKind.NowPlaying ? Math.Max(8, 320 - X) : double.PositiveInfinity;
+
+    // Live-rendered image for the WYSIWYG editor (a clock face, or cover art),
+    // refreshed each tick along with Display. Not persisted, and does not
+    // trigger a device re-render.
+    ImageSource? _drawnImage;
+    [JsonIgnore]
+    public ImageSource? DrawnImage
     {
-        get => _clockImage;
-        set { _clockImage = value; PropertyChanged?.Invoke(this, new(nameof(ClockImage))); }
+        get => _drawnImage;
+        set { _drawnImage = value; PropertyChanged?.Invoke(this, new(nameof(DrawnImage))); }
     }
 
     // Live rendered text, refreshed each second for the WYSIWYG editor. Not

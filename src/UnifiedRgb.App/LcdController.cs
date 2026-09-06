@@ -153,7 +153,8 @@ public sealed class LcdController : IDisposable
         LcdElementKind.FanRpm => FanRpmText(),
         LcdElementKind.NetSpeed => NetMeter.Read(),
         LcdElementKind.Weather => WeatherText(),
-        LcdElementKind.AnalogClock => "",           // drawn, not typeset
+        LcdElementKind.NowPlaying => MediaLine(),
+        LcdElementKind.AnalogClock or LcdElementKind.AlbumArt => "",   // drawn, not typeset
         _ => e.Text ?? "",
     };
 
@@ -161,6 +162,24 @@ public sealed class LcdController : IDisposable
     {
         WeatherService.EnsureStarted();
         return WeatherService.Current;
+    }
+
+    /// <summary>Cover art fitted inside a FontSize square at the element's
+    /// corner: the box the designer drags is the space it takes, whatever
+    /// shape the player handed over.</summary>
+    static void DrawArt(DrawingContext dc, LcdElement e, BitmapSource art)
+    {
+        double box = e.FontSize;
+        if (box < 1 || art.PixelWidth <= 0 || art.PixelHeight <= 0) return;
+        double scale = Math.Min(box / art.PixelWidth, box / art.PixelHeight);
+        double w = art.PixelWidth * scale, h = art.PixelHeight * scale;
+        dc.DrawImage(art, new Rect(e.X + (box - w) / 2, e.Y + (box - h) / 2, w, h));
+    }
+
+    static string MediaLine()
+    {
+        MediaService.EnsureStarted();
+        return MediaService.Line;
     }
 
     static string GpuTempText()
@@ -227,7 +246,16 @@ public sealed class LcdController : IDisposable
                     DrawClock(dc, e.X + r, e.Y + r, r, ParseColor(e.ColorHex), DateTime.Now);
                     continue;
                 }
-                var ft = Format(ElementText(e), e);
+                if (e.Kind == LcdElementKind.AlbumArt)
+                {
+                    MediaService.EnsureStarted();
+                    if (MediaService.Art is BitmapSource art) DrawArt(dc, e, art);
+                    continue;                       // nothing playing: nothing drawn
+                }
+                // A track title can be longer than the panel is wide, so the
+                // now-playing line is trimmed to what is left to its right.
+                double maxW = e.Kind == LcdElementKind.NowPlaying ? Math.Max(8, LW - e.X) : 0;
+                var ft = Format(ElementText(e), e, maxW);
                 dc.DrawText(ft, new Point(e.X, e.Y));
             }
         }
@@ -417,15 +445,17 @@ public sealed class LcdController : IDisposable
 
     sealed class FtCache
     {
-        public string? Text; public double Size; public bool Bold; public string? Hex;
+        public string? Text; public double Size; public bool Bold; public string? Hex; public double MaxW;
         public FormattedText? Ft;
     }
     static readonly System.Runtime.CompilerServices.ConditionalWeakTable<LcdElement, FtCache> _ftCache = new();
 
-    public static FormattedText Format(string text, LcdElement e)
+    /// <summary>maxWidth 0 leaves the text untrimmed, exactly as before.</summary>
+    public static FormattedText Format(string text, LcdElement e, double maxWidth = 0)
     {
         var c = _ftCache.GetOrCreateValue(e);
-        if (c.Ft != null && c.Text == text && c.Size == e.FontSize && c.Bold == e.Bold && c.Hex == e.ColorHex)
+        if (c.Ft != null && c.Text == text && c.Size == e.FontSize && c.Bold == e.Bold
+            && c.Hex == e.ColorHex && c.MaxW == maxWidth)
             return c.Ft;
         var brush = new SolidColorBrush(ParseColor(e.ColorHex));
         brush.Freeze();
@@ -435,7 +465,13 @@ public sealed class LcdController : IDisposable
         // the previous size after Tick's one rate-limited log line.
         var ft = new FormattedText(text, System.Globalization.CultureInfo.InvariantCulture,
             FlowDirection.LeftToRight, e.Bold ? TfBold : TfNormal, e.FontSize, brush, 1.0);
-        c.Text = text; c.Size = e.FontSize; c.Bold = e.Bold; c.Hex = e.ColorHex;
+        if (maxWidth > 0)
+        {
+            ft.MaxTextWidth = maxWidth;
+            ft.MaxLineCount = 1;
+            ft.Trimming = TextTrimming.CharacterEllipsis;
+        }
+        c.Text = text; c.Size = e.FontSize; c.Bold = e.Bold; c.Hex = e.ColorHex; c.MaxW = maxWidth;
         c.Ft = ft;
         return ft;
     }
