@@ -142,6 +142,21 @@
 
                     <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
 
+                    <TextBlock Text="Other apps" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                    <CheckBox IsChecked="{Binding SdkServerEnabled}">
+                        <TextBlock Text="Let other apps control your lighting (OpenRGB SDK). Anything written for OpenRGB works: Home Assistant, game mods, phone remotes, Stream Deck."
+                                   TextWrapping="Wrap" MaxWidth="510"/>
+                    </CheckBox>
+                    <CheckBox IsChecked="{Binding SdkServerLan}" Margin="24,8,0,0"
+                              IsEnabled="{Binding SdkServerEnabled}">
+                        <TextBlock Text="Accept connections from the network. This protocol has no password: anyone who can reach this PC can set your lights."
+                                   TextWrapping="Wrap" MaxWidth="486"/>
+                    </CheckBox>
+                    <TextBlock Text="{Binding SdkServerStatus}" Foreground="#FF7FB4FF" FontSize="12"
+                               Margin="24,8,0,0" TextWrapping="Wrap" MaxWidth="486"/>
+
+                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
+
                     <TextBlock Text="Devices" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
                     <TextBlock Opacity="0.75" FontSize="12" TextWrapping="Wrap" MaxWidth="510"
                                Text="Closing UnifiedRGB leaves whatever was on screen last. Pick a color or hand a device back to its own firmware instead."/>

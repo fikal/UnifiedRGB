@@ -94,6 +94,14 @@ public sealed class SettingsData
     /// temperature-aware while the app is away.</summary>
     public bool LianHandoffOnExit { get; set; }
 
+    /// <summary>Let other software drive our lighting over OpenRGB's network
+    /// protocol. Off by default: opening a port is the user's call.</summary>
+    public bool SdkServerEnabled { get; set; }
+
+    /// <summary>Accept SDK clients from the network, not just this machine.
+    /// The protocol has no authentication, so this is opt-in on top of opt-in.</summary>
+    public bool SdkServerLan { get; set; }
+
     /// <summary>Starred effects shown as pills (null = built-in defaults).</summary>
     public List<string>? FavoriteEffects { get; set; }
 

@@ -1120,6 +1120,157 @@ static string TempDir()
         "app match: blank rule matches nothing");
 }
 
+/*---------------- OpenRGB SDK server (#f7) ----------------*/
+{
+    // The header is the only thing separating a real client from whatever else
+    // finds the port.
+    var head = new byte[OpenRgbProtocol.HeaderBytes];
+    OpenRgbProtocol.WriteHeader(head, 3, OpenRgbProtocol.PktUpdateLeds, 42);
+    var read = OpenRgbProtocol.ReadHeader(head);
+    Check(read is { Device: 3, PacketId: 1050, Size: 42 }, "orgb: header round-trips");
+    Equal((byte)'O', head[0], "orgb: magic");
+    head[1] = (byte)'X';
+    Check(OpenRgbProtocol.ReadHeader(head) == null, "orgb: a bad magic is rejected");
+    Check(OpenRgbProtocol.ReadHeader(new byte[4]) == null, "orgb: a short header is rejected");
+
+    // Colors are 0x00BBGGRR on the wire.
+    Equal(0x00FF5030u, OpenRgbProtocol.ToWire(new Rgb(0x30, 0x50, 0xFF)), "orgb: color packs as BGR");
+    Equal(new Rgb(0x30, 0x50, 0xFF), OpenRgbProtocol.FromWire(0x00FF5030u), "orgb: and unpacks again");
+
+    Equal(0, OpenRgbProtocol.DeviceTypeOf(DeviceType.Motherboard), "orgb: motherboard is 0");
+    Equal(1, OpenRgbProtocol.DeviceTypeOf(DeviceType.Dram), "orgb: dram is 1");
+    Equal(5, OpenRgbProtocol.DeviceTypeOf(DeviceType.Keyboard), "orgb: keyboard is 5");
+    Equal(3, OpenRgbProtocol.DeviceTypeOf(DeviceType.Fan), "orgb: fans read as coolers");
+
+    // The blob has to be the exact inverse of the parser we already ship, so
+    // round-trip it through that rather than re-asserting the layout by hand.
+    var zoned = new FakeZonedDevice
+    {
+        Name = "Test Board",
+        Zones2 = new[] { ("Header 1", 8), ("Header 2", 4), ("Logo", 1) },
+    };
+    var frame = new Rgb[13];
+    for (int i = 0; i < frame.Length; i++) frame[i] = new Rgb((byte)(i * 5), (byte)(i * 3), (byte)i);
+
+    var blob = OpenRgbProtocol.WriteDevice(zoned, frame, 1);
+    var parsed = OpenRgbClient.ParseDevice(0, blob);
+    Equal("Test Board", parsed.Name, "orgb: name survives");
+    Equal("Test", parsed.Vendor, "orgb: vendor survives");
+    Equal(13, parsed.LedCount, "orgb: led count survives");
+    Equal(3, parsed.Zones.Count, "orgb: zone count survives");
+    Equal("Header 1", parsed.Zones[0].Name, "orgb: zone name survives");
+    Equal(8, parsed.Zones[0].LedCount, "orgb: zone size survives");
+    Equal(1, parsed.Zones[1].Type, "orgb: a multi-led zone is linear");
+    Equal(0, parsed.Zones[2].Type, "orgb: a single-led zone is single");
+    Equal(13, parsed.Colors.Length, "orgb: a color per led");
+    Equal(OpenRgbProtocol.ToWire(frame[7]), parsed.Colors[7], "orgb: the colors are the frame");
+
+    // v0 has no vendor field. Writing the v1 blob to a v0 client would shift
+    // every string after the name by one field.
+    var v0 = OpenRgbProtocol.WriteDevice(zoned, frame, 0);
+    Check(v0.Length < blob.Length, "orgb: the v0 blob omits the vendor string");
+
+    // A device whose zones do not tile its LEDs would let a client write past
+    // the end of one, so it is collapsed to a single zone instead.
+    var ragged = new FakeZonedDevice { Name = "Ragged", Zones2 = new[] { ("Partial", 3) }, Leds = 10 };
+    var rzones = OpenRgbProtocol.ZonesOf(ragged);
+    Equal(1, rzones.Count, "orgb: zones that do not cover the device collapse to one");
+    Equal(10, rzones[0].Count, "orgb: and that one covers everything");
+
+    var none = new FakeZonedDevice { Name = "Bare", Zones2 = Array.Empty<(string, int)>(), Leds = 4 };
+    Equal(1, OpenRgbProtocol.ZonesOf(none).Count, "orgb: a device with no zones still gets one");
+}
+
+/*---------------- SDK client handoff (#f7) ----------------*/
+{
+    // Writing claims a device; the claim lapses on silence or disconnect.
+    var own = new ExternalOwnership<string>(silenceSeconds: 5);
+    Check(own.Claim("board", client: 1, now: 0), "handoff: the first write claims the device");
+    Check(!own.Claim("board", client: 1, now: 1), "handoff: the same client writing again does not re-claim");
+    Check(own.IsOwned("board"), "handoff: and it is owned");
+    Equal(1, own.OwnerOf("board"), "handoff: by that client");
+
+    // Still writing: the claim holds well past the silence window.
+    Equal(0, own.Expire(4).Count, "handoff: a live client keeps its device");
+    own.Claim("board", 1, 4);
+    Equal(0, own.Expire(8).Count, "handoff: writing again pushes the deadline out");
+
+    // Gone quiet: released, once.
+    var lapsed = own.Expire(9.1);
+    Equal(1, lapsed.Count, "handoff: silence releases the device");
+    Equal("board", lapsed[0], "handoff: the right one");
+    Check(!own.IsOwned("board"), "handoff: and it is free again");
+    Equal(0, own.Expire(100).Count, "handoff: a released device is not released twice");
+
+    // Disconnect drops everything that client held, without waiting.
+    own.Claim("board", 1, 10);
+    own.Claim("ram", 1, 10);
+    own.Claim("keeb", 2, 10);
+    Equal(2, own.ReleaseClient(1).Count, "handoff: a disconnect frees only that client's devices");
+    Check(own.IsOwned("keeb"), "handoff: the other client keeps its own");
+    Equal(2, own.OwnerOf("keeb"), "handoff: still owned by client 2");
+
+    // Last writer wins: there is no way to tell the loser it lost.
+    Check(own.Claim("keeb", 3, 11), "handoff: another client can take a device over");
+    Equal(3, own.OwnerOf("keeb"), "handoff: and becomes the owner");
+    Equal(0, own.ReleaseClient(2).Count, "handoff: the old owner has nothing left to free");
+
+    Equal(1, own.ReleaseAll().Count, "handoff: a rescan frees everything");
+    Equal(0, own.Count, "handoff: leaving nothing owned");
+}
+
+/*---------------- SDK server end to end (#f7) ----------------*/
+{
+    // Our own client against our own server over a real loopback socket. This
+    // is the part unit tests cannot reach: framing, version negotiation, and a
+    // write actually arriving as the colors that were sent.
+    var host = new StubOrgbHost();
+    host.Add(new FakeZonedDevice { Name = "Board", Zones2 = new[] { ("Header 1", 4), ("Logo", 1) } });
+    host.Add(new FakeZonedDevice { Name = "Sticks", Zones2 = new[] { ("Stick", 8) } });
+
+    using var server = new OpenRgbServer(host, silenceSeconds: 0.4);
+    int port = server.Start(listenOnLan: false, port: 27423);
+    Equal(27423, port, "orgb e2e: the server bound the port it was given");
+
+    using (var client = OpenRgbClient.Connect("127.0.0.1", port))
+    {
+        Equal(1u, client.ServerVersion, "orgb e2e: negotiated protocol 1");
+        Equal(2, client.GetControllerCount(), "orgb e2e: both devices are listed");
+
+        var dev = client.GetControllerData(0);
+        Equal("Board", dev.Name, "orgb e2e: the device name arrives");
+        Equal(5, dev.LedCount, "orgb e2e: with its led count");
+        Equal(2, dev.Zones.Count, "orgb e2e: and its zones");
+        Equal("Header 1", dev.Zones[0].Name, "orgb e2e: named correctly");
+
+        // A whole-device write.
+        client.SetCustomMode(0);
+        var want = new[] { new Rgb(255, 0, 0), new Rgb(0, 255, 0), new Rgb(0, 0, 255),
+                           new Rgb(10, 20, 30), new Rgb(40, 50, 60) };
+        client.UpdateLeds(0, want);
+        Check(host.WaitForWrite("Board"), "orgb e2e: the write arrives");
+        Equal(1, host.BeginCount("Board"), "orgb e2e: and claims the device once");
+        var got = host.LastWrite("Board");
+        Equal(0, got.Offset, "orgb e2e: a full write starts at zero");
+        Equal(5, got.Colors.Count, "orgb e2e: all five leds");
+        Equal(new Rgb(0, 0, 255), got.Colors[2], "orgb e2e: the colors survive the wire");
+
+        // A zone write lands at that zone's offset, not at zero.
+        host.Reset();
+        client.UpdateZoneLeds(0, 1, new[] { new Rgb(9, 9, 9) });
+        Check(host.WaitForWrite("Board"), "orgb e2e: the zone write arrives");
+        Equal(4, host.LastWrite("Board").Offset, "orgb e2e: at the zone's offset");
+        Equal(1, host.BeginCount("Board"), "orgb e2e: still one claim, not a second");
+
+        // Writing again keeps the claim alive rather than restoring underneath.
+        Equal(0, host.EndCount("Board"), "orgb e2e: nothing restored while the client writes");
+    }
+
+    // The client disconnected: the device goes back to the user without waiting
+    // out the silence timer.
+    Check(host.WaitForEnd("Board"), "orgb e2e: disconnecting restores the lighting");
+}
+
 /*---------------- Exit behaviors (#f6) ----------------*/
 {
     // Stored in hardware.json, so it has to survive a round trip by NAME.
@@ -1680,6 +1831,75 @@ sealed class FakeHardwareDevice : IRgbDevice, IHardwareModes
     public void SetHardwareStatic(Rgb color) => StaticSet = color;
     public void SetHardwareEffect(string name, Rgb? color) => EffectSet = (name, color);
     public void ReturnToHardware() => HandbackCount++;
+}
+
+/// <summary>A device with declared zones, for the SDK blob tests.</summary>
+sealed class FakeZonedDevice : IRgbDevice
+{
+    public string Name { get; init; } = "Zoned";
+    public string Vendor => "Test";
+    public DeviceType Type => DeviceType.Motherboard;
+    public (string Name, int Count)[] Zones2 { get; init; } = Array.Empty<(string, int)>();
+    public int? Leds { get; init; }
+    public int LedCount => Leds ?? Zones2.Sum(z => z.Count);
+    public IReadOnlyList<RgbZone> Zones
+    {
+        get
+        {
+            var list = new List<RgbZone>();
+            int off = 0;
+            foreach (var (n, c) in Zones2) { list.Add(new RgbZone { Name = n, Offset = off, Count = c }); off += c; }
+            return list;
+        }
+    }
+    public void SetColors(IReadOnlyList<Rgb> colors) { }
+    public void Dispose() { }
+}
+
+/// <summary>An IOpenRgbHost that records what the server asked it to do.</summary>
+sealed class StubOrgbHost : IOpenRgbHost
+{
+    readonly List<IRgbDevice> _devices = new();
+    readonly object _lock = new();
+    readonly Dictionary<string, int> _begins = new();
+    readonly Dictionary<string, int> _ends = new();
+    readonly Dictionary<string, (int Offset, IReadOnlyList<Rgb> Colors)> _writes = new();
+
+    public void Add(IRgbDevice d) => _devices.Add(d);
+    public IReadOnlyList<IRgbDevice> Devices => _devices;
+    public IReadOnlyList<Rgb> ColorsOf(IRgbDevice device) => new Rgb[device.LedCount];
+
+    public void BeginExternal(IRgbDevice device)
+    {
+        lock (_lock) _begins[device.Name] = _begins.GetValueOrDefault(device.Name) + 1;
+    }
+    public void PushExternal(IRgbDevice device, int offset, IReadOnlyList<Rgb> colors)
+    {
+        lock (_lock) _writes[device.Name] = (offset, colors);
+    }
+    public void EndExternal(IRgbDevice device)
+    {
+        lock (_lock) _ends[device.Name] = _ends.GetValueOrDefault(device.Name) + 1;
+    }
+
+    public int BeginCount(string name) { lock (_lock) return _begins.GetValueOrDefault(name); }
+    public int EndCount(string name) { lock (_lock) return _ends.GetValueOrDefault(name); }
+    public (int Offset, IReadOnlyList<Rgb> Colors) LastWrite(string name)
+    {
+        lock (_lock) return _writes.TryGetValue(name, out var w) ? w : (-1, Array.Empty<Rgb>());
+    }
+    public void Reset() { lock (_lock) _writes.Clear(); }
+
+    // The server answers on its own threads, so the test waits rather than
+    // assuming the reply has landed by the time the call returns.
+    public bool WaitForWrite(string name) => Wait(() => LastWrite(name).Offset >= 0);
+    public bool WaitForEnd(string name) => Wait(() => EndCount(name) > 0);
+
+    static bool Wait(Func<bool> until)
+    {
+        for (int i = 0; i < 200; i++) { if (until()) return true; Thread.Sleep(10); }
+        return false;
+    }
 }
 
 sealed class FakeDevice : IRgbDevice

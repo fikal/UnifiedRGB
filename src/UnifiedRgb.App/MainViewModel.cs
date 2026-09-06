@@ -41,6 +41,14 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     /// <summary>Charge for wireless gear. Idle unless something wireless is
     /// attached; see BatteryMonitor.</summary>
     readonly Services.BatteryMonitor _battery;
+
+    /// <summary>The UI thread, captured at construction. Socket threads use it
+    /// to get back here.</summary>
+    readonly System.Windows.Threading.Dispatcher _dispatcher =
+        System.Windows.Threading.Dispatcher.CurrentDispatcher;
+
+    UnifiedRgb.Core.Net.OpenRgbServer? _sdkServer;
+    Services.OpenRgbHost? _sdkHost;
     EffectEngine _engine => _lighting.Engine;
     CoalescingApplier _applier => _lighting.Applier;
     static object LaneOf(IRgbDevice d) => Services.LightingController.LaneOf(d);
@@ -1471,6 +1479,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
 
         ApplyLianSpeed();                                      // carry the saved fan-speed calibration
         _battery.Rescan();                                     // charge, before the rows are built
+        SyncSdkServer();                                       // SDK clients hold stale instances
         BuildLeftItems();                                      // devices + pump LCD row
         RestoreEffects(savedEffects);
         LandOnRunningLianTarget();
@@ -1525,6 +1534,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // stayed bound, device handles stayed open).
         static void Safely(Action a) { try { a(); } catch (Exception ex) { UnifiedRgb.Core.Log.Warn("shutdown", ex.Message); } }
         Safely(() => _lighting.StopAndDrain());   // the exit-restore writes must finish before the handles go
+        Safely(() => { _sdkServer?.Dispose(); _sdkServer = null; });   // stop taking SDK writes
         Safely(ApplyExitBehaviors);               // ...and before the handles close
         Safely(_manager.Dispose);
         Safely(Lcd.Dispose);   // saves the design, releases the panel + the PawnIO temp reader

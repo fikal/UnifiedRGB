@@ -45,6 +45,11 @@ public sealed partial class MainViewModel
         Dirty = _dirty,
     };
 
+    /// <summary>Stop our effects on one device, leaving every other device
+    /// running. Used when an SDK client takes a device over: two writers on one
+    /// lane would just fight.</summary>
+    public void StopEffectsOn(IRgbDevice device) => _engine.StopRange(device, 0, device.LedCount);
+
     public void RestoreState(LightState s)
     {
         _engine.StopAll();   // before the static writes (see LoadProfile)
@@ -211,6 +216,76 @@ public sealed partial class MainViewModel
     {
         get => _store.Settings.SensorRulesEnabled;
         set => SetSetting(_store.Settings.SensorRulesEnabled, value, v => _store.Settings.SensorRulesEnabled = v);
+    }
+
+    /*-----------------------------------------------------*\
+    | OpenRGB SDK server: other software driving our lights. |
+    \*-----------------------------------------------------*/
+
+    public bool SdkServerEnabled
+    {
+        get => _store.Settings.SdkServerEnabled;
+        set
+        {
+            if (_store.Settings.SdkServerEnabled == value) return;
+            SetSetting(_store.Settings.SdkServerEnabled, value, v => _store.Settings.SdkServerEnabled = v);
+            RestartSdkServer();
+        }
+    }
+
+    public bool SdkServerLan
+    {
+        get => _store.Settings.SdkServerLan;
+        set
+        {
+            if (_store.Settings.SdkServerLan == value) return;
+            SetSetting(_store.Settings.SdkServerLan, value, v => _store.Settings.SdkServerLan = v);
+            RestartSdkServer();   // the bind address changed
+        }
+    }
+
+    /// <summary>What the settings pane shows under the toggle: where we are
+    /// listening and who is connected.</summary>
+    public string SdkServerStatus
+    {
+        get
+        {
+            if (!SdkServerEnabled) return "Off.";
+            if (_sdkServer is not { Running: true }) return "Could not open a port.";
+            string where = SdkServerLan ? "on the network" : "on this machine";
+            var names = _sdkServer.ClientNames;
+            string who = names.Count == 0 ? "No clients connected."
+                       : names.Count == 1 ? $"Connected: {names[0]}."
+                       : $"Connected: {string.Join(", ", names)}.";
+            return $"Listening {where} on port {_sdkServer.Port}. {who}";
+        }
+    }
+
+    void RestartSdkServer()
+    {
+        _sdkServer?.Dispose();
+        _sdkServer = null;
+        if (!SdkServerEnabled) { OnChanged(nameof(SdkServerStatus)); return; }
+
+        _sdkHost ??= new Services.OpenRgbHost(this, _lighting, System.Windows.Threading.Dispatcher.CurrentDispatcher);
+        _sdkHost.SetDevices(Devices);
+        var server = new UnifiedRgb.Core.Net.OpenRgbServer(_sdkHost);
+        // Fired from a socket thread; the status line is a UI binding.
+        server.ClientsChanged += () => _dispatcher.BeginInvoke(() => OnChanged(nameof(SdkServerStatus)));
+        server.Start(SdkServerLan);
+        _sdkServer = server;
+        OnChanged(nameof(SdkServerStatus));
+    }
+
+    /// <summary>Called after every detect, including the first. Starts the
+    /// server if the user has it on, and tells any connected client that the
+    /// device instances it was addressing have been replaced.</summary>
+    void SyncSdkServer()
+    {
+        if (!SdkServerEnabled) return;
+        if (_sdkServer == null) { RestartSdkServer(); return; }
+        _sdkHost?.SetDevices(Devices);
+        _sdkServer.DeviceListChanged();
     }
 
     /// <summary>Does a profile by this name still exist? The automation calls

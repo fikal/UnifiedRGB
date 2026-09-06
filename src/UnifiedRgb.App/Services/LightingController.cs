@@ -84,6 +84,41 @@ public sealed class LightingController
         else PushFrame(dev);
     }
 
+    /// <summary>Paint a frame an SDK client sent us, without disturbing the
+    /// user's stored colors: what they had is coming back when the client goes
+    /// away, so this must not overwrite the thing we restore FROM.
+    ///
+    /// Master brightness still applies. A client asking for full white on a rig
+    /// the user has dimmed to 20% should not be the one thing that ignores the
+    /// slider.</summary>
+    public void PushExternalFrame(IRgbDevice dev, int offset, IReadOnlyList<Rgb> colors)
+    {
+        int count = Math.Min(colors.Count, Math.Max(0, dev.LedCount - offset));
+        if (count <= 0) return;
+
+        var slice = new Rgb[count];
+        for (int i = 0; i < count; i++) slice[i] = colors[i];
+        Master.Scale(slice);
+
+        // A partial write goes out as a zone where the device can do that;
+        // otherwise the slice is merged over what the device is showing, so a
+        // zone write does not black everything outside it.
+        if (offset == 0 && count == dev.LedCount)
+        {
+            Applier.Post(LaneOf(dev), (dev, "ext"), () => dev.SetColors(slice));
+            return;
+        }
+        if (dev is IZoneWritable zw)
+        {
+            Applier.Post(LaneOf(dev), (dev, "ext", offset), () => zw.SetZone(offset, slice));
+            return;
+        }
+        var whole = (Rgb[])FrameFor(dev).Clone();
+        Master.Scale(whole);
+        for (int i = 0; i < count && offset + i < whole.Length; i++) whole[offset + i] = slice[i];
+        Applier.Post(LaneOf(dev), (dev, "ext"), () => dev.SetColors(whole));
+    }
+
     /// <summary>Black the device WITHOUT touching its stored frame (lights-off).</summary>
     public void PushBlack(IRgbDevice dev)
     {

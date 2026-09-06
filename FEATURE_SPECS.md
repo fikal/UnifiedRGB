@@ -644,7 +644,14 @@ round-trip with missing/unknown devices.
       Exit from the tray, and check the rig before 1.1.0 ships.
       Note: the spec's ENE effect-colour register (0x8160) was WRONG. It is
       0x8010, 15 bytes, and REG_DIRECT/REG_MODE sit immediately after it.
-- [ ] 7. OpenRGB SDK server (+ control handoff)
+- [x] 7. OpenRGB SDK server (+ control handoff)
+      Verified against the live app: an external client listed all 7 devices with
+      correct types, LED counts and zones, and a write claimed a device and was
+      released on disconnect. Not yet tried with OpenRGB's own GUI (its exe is
+      GUI-subsystem, so a CLI run prints nothing to a pipe).
+      Note: the spec's UNKNOWN device type was 19; it is 21 in current OpenRGB.
+      Protocol v0 also has NO vendor field, so the blob omits it when a client
+      negotiates down, or every string after the name shifts by one.
 - [ ] 8. CS2 Game State Integration
 - [ ] 9. Whole-desk canvas (+ LED layout overrides, shared snap guides)
 - [ ] Website/README updated, 1.1.0 released
