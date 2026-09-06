@@ -1685,6 +1685,13 @@ static string TempDir()
     // The client disconnected: the device goes back to the user without waiting
     // out the silence timer.
     Check(host.WaitForEnd("Board"), "orgb e2e: disconnecting restores the lighting");
+
+    // A rescan drops every claim at once WITHOUT an EndExternal each, because
+    // the device instances are gone. The host has to be told, or it waits for
+    // releases that never come and never restores the user's lighting again.
+    Equal(0, host.ResetCount, "orgb e2e: nothing reset yet");
+    server.DeviceListChanged();
+    Equal(1, host.ResetCount, "orgb e2e: a rescan unwinds the takeover");
 }
 
 /*---------------- Exit behaviors (#f6) ----------------*/
@@ -2297,6 +2304,8 @@ sealed class StubOrgbHost : IOpenRgbHost
     {
         lock (_lock) _ends[device.Name] = _ends.GetValueOrDefault(device.Name) + 1;
     }
+    public int ResetCount;
+    public void ResetExternal() { lock (_lock) ResetCount++; }
 
     public int BeginCount(string name) { lock (_lock) return _begins.GetValueOrDefault(name); }
     public int EndCount(string name) { lock (_lock) return _ends.GetValueOrDefault(name); }

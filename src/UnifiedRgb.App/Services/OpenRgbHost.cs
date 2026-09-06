@@ -75,6 +75,24 @@ public sealed class OpenRgbHost : IOpenRgbHost
         _lighting.PushExternalFrame(device, offset, colors);
     }
 
+    /// <summary>A rescan dropped every claim at once. Put the user's lighting
+    /// back and forget the takeover: the snapshot is keyed by device name, and
+    /// names are stable across a rescan, so it lands on the new instances.</summary>
+    public void ResetExternal()
+    {
+        _ui.InvokeAsync(() =>
+        {
+            MainViewModel.LightState? restore;
+            lock (_gate)
+            {
+                restore = _snapshot;
+                _snapshot = null;
+                _externalCount = 0;
+            }
+            if (restore != null) _vm.RestoreState(restore);
+        });
+    }
+
     public void EndExternal(IRgbDevice device)
     {
         _ui.InvokeAsync(() =>

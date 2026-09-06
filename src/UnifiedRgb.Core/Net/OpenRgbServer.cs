@@ -26,6 +26,12 @@ public interface IOpenRgbHost
 
     /// <summary>The client is gone: put the user's lighting back.</summary>
     void EndExternal(IRgbDevice device);
+
+    /// <summary>Every claim was dropped at once without an EndExternal each,
+    /// because the device instances they referred to no longer exist. The host
+    /// has to unwind whatever it was holding, or it waits forever for releases
+    /// that are never coming.</summary>
+    void ResetExternal();
 }
 
 /*-----------------------------------------------------------*\
@@ -148,6 +154,12 @@ public sealed class OpenRgbServer : IDisposable
     public void DeviceListChanged()
     {
         lock (_gate) _owned.ReleaseAll();   // the old instances: nothing to restore onto
+        // Those releases skipped EndExternal, so the host is still counting
+        // devices that no longer exist. Without this it never reaches zero
+        // again and the user's lighting is never restored, not even when the
+        // client later disconnects.
+        try { _host.ResetExternal(); }
+        catch (Exception ex) { Log.Warn("orgb-server", $"reset after rescan: {ex.Message}"); }
         Broadcast(OpenRgbProtocol.PktDeviceListUpdated, Array.Empty<byte>());
     }
 
