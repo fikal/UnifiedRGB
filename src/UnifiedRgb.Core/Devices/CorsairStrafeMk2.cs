@@ -6,7 +6,7 @@ namespace UnifiedRgb.Core.Devices;
 /// Ported from the hardware-proven StrafeInit probe: the MK.2 firmware needs a
 /// K70-MK2-generation init handshake before it accepts software colors, which
 /// mainstream OpenRGB misses (bug #1641). Sends full-keyboard 24-bit color.</summary>
-public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice
+public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareModes
 {
     // Lazy: static initializers run in TEXTUAL order, and the Vk table this
     // reads is declared further down — an eager initializer here null-refs
@@ -290,10 +290,41 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice
     readonly byte[] _bCh = new byte[168];
     readonly byte[] _pktBuf = new byte[PKT];
 
+    /// <summary>Only the handback. A static colour would be a software-mode
+    /// frame, which is exactly the state we are leaving, so it is no more
+    /// durable than "keeps its last colors" already is.</summary>
+    public HardwareExitCaps ExitCaps => HardwareExitCaps.ReturnToHardware;
+    public IReadOnlyList<string> HardwareEffects => Array.Empty<string>();
+    public void SetHardwareStatic(Rgb color) { }
+    public void SetHardwareEffect(string name, Rgb? color) { }
+
+    /// <summary>Put the keyboard back on its onboard profile. The counterpart
+    /// of RunInit's two software-mode packets, with the hardware value: 0x01
+    /// against 0x02, per OpenRGB's CORSAIR_LIGHTING_CONTROL_HARDWARE.
+    ///
+    /// Flagged rather than assumed final, because "Apply now" can be pressed
+    /// with the app still running: the next frame re-runs the init and takes
+    /// the keyboard back.</summary>
+    public void ReturnToHardware()
+    {
+        lock (_writeLock)
+        {
+            var p = new byte[PKT]; p[1] = 0x07; p[2] = 0x05; p[3] = 0x01; p[5] = 0x03;
+            _hid.Write(p);
+            Thread.Sleep(10);
+            Send(0x07, 0x04, 0x01);
+            _needInit = true;
+            _last = null;                 // repaint, don't dedup against a frame it is no longer showing
+        }
+    }
+
+    bool _needInit;
+
     public void SetColors(IReadOnlyList<Rgb> colors)
     {
         lock (_writeLock)
         {
+            if (_needInit) { _needInit = false; RunInit(); }
             int n = colors.Count;
             if (_last != null && _last.Length == n)
             {

@@ -1,0 +1,69 @@
+<Window x:Class="UnifiedRgb.App.ExitBehaviorWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="When the app is closed" WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ResizeMode="NoResize" SizeToContent="Height" Width="700"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        MouseLeftButtonDown="Drag_Down">
+    <Border x:Name="RootPanel" Background="#FF1B1D24" CornerRadius="12" Padding="22"
+            BorderBrush="#FF2A2E38" BorderThickness="1">
+        <StackPanel>
+            <Grid Margin="0,0,0,4">
+                <TextBlock Text="When the app is closed" FontSize="18" FontWeight="SemiBold"/>
+                <Button Content="✕" HorizontalAlignment="Right" Padding="8,3" Click="Close_Click"/>
+            </Grid>
+            <TextBlock Opacity="0.6" TextWrapping="Wrap" Margin="0,0,0,12"
+                       Text="Closing UnifiedRGB normally leaves whatever was on screen last. Pick what each device should show instead."/>
+
+            <ItemsControl ItemsSource="{Binding Rows, RelativeSource={RelativeSource AncestorType=Window}}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border Background="#FF262932" CornerRadius="8" Padding="10,7" Margin="0,0,0,6">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" MinWidth="150"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+
+                                <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0">
+                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                    <TextBlock Text="{Binding Note}" Opacity="0.55" FontSize="11"
+                                               Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                </StackPanel>
+
+                                <ComboBox Grid.Column="1" Width="196" Height="28" VerticalAlignment="Center"
+                                          ItemsSource="{Binding Choices}" DisplayMemberPath="Label"
+                                          SelectedIndex="{Binding SelectedIndex}"
+                                          IsEnabled="{Binding Supported}"
+                                          SelectionChanged="Row_Changed"
+                                          ToolTip="What this device shows once the app stops driving it"/>
+
+                                <Border Grid.Column="2" Width="24" Height="24" CornerRadius="4" Margin="8,0,0,0"
+                                        VerticalAlignment="Center" BorderBrush="#55FFFFFF" BorderThickness="1"
+                                        Background="{Binding ColorHex, Converter={StaticResource HexBrush}}"
+                                        Visibility="{Binding NeedsColor, Converter={StaticResource BoolToVis}}"/>
+                                <TextBox Grid.Column="3" Width="78" MinHeight="28" Margin="6,0,0,0"
+                                         VerticalAlignment="Center" HorizontalContentAlignment="Center"
+                                         Text="{Binding ColorHex, UpdateSourceTrigger=LostFocus}"
+                                         LostFocus="Row_Changed"
+                                         Visibility="{Binding NeedsColor, Converter={StaticResource BoolToVis}}"
+                                         ToolTip="Hex color, like 3050FF"/>
+
+                                <Button Grid.Column="4" Content="Apply now" Padding="12,5" Margin="8,0,0,0"
+                                        VerticalAlignment="Center" Click="ApplyNow_Click"
+                                        IsEnabled="{Binding CanApplyNow}"
+                                        ToolTip="Send it now so you can see it. The app takes over again on its next write."/>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <TextBlock Opacity="0.5" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0"
+                       Text="Applied on the way out, with a two second budget so signing out is never held up."/>
+        </StackPanel>
+    </Border>
+</Window>

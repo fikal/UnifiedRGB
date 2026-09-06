@@ -636,7 +636,14 @@ round-trip with missing/unknown devices.
       match openrazer and the decode is covered by fixture tests. Plug the
       HyperFlux pad back in and confirm before 1.1.0 ships.
 - [x] 5. Now-playing LCD widget (+ album art)
-- [ ] 6. Hardware persistence (Gigabyte, ENE, Lian Li wired; Strafe investigated)
+- [x] 6. Hardware persistence (Gigabyte, ENE, Lian Li wired, Strafe handback)
+      Commands verified against primary sources and covered by tests, but the
+      visual hold is NOT confirmed: the app runs elevated and a non-elevated
+      shell cannot close it gracefully, so the exit path has never been watched
+      on real hardware. Use Settings > When the app is closed > Apply now, then
+      Exit from the tray, and check the rig before 1.1.0 ships.
+      Note: the spec's ENE effect-colour register (0x8160) was WRONG. It is
+      0x8010, 15 bytes, and REG_DIRECT/REG_MODE sit immediately after it.
 - [ ] 7. OpenRGB SDK server (+ control handoff)
 - [ ] 8. CS2 Game State Integration
 - [ ] 9. Whole-desk canvas (+ LED layout overrides, shared snap guides)

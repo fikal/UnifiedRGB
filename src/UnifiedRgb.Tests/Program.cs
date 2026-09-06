@@ -1120,6 +1120,115 @@ static string TempDir()
         "app match: blank rule matches nothing");
 }
 
+/*---------------- Exit behaviors (#f6) ----------------*/
+{
+    // Stored in hardware.json, so it has to survive a round trip by NAME.
+    var opts = new JsonSerializerOptions { WriteIndented = true };
+    var saved = new ExitBehavior { Mode = ExitMode.Effect, ColorHex = "3050FF", Effect = "Rainbow" };
+    string json = JsonSerializer.Serialize(saved, opts);
+    Check(json.Contains("\"Effect\""), "exit: the mode is written as a name, not a number");
+    var back = JsonSerializer.Deserialize<ExitBehavior>(json)!;
+    Equal(ExitMode.Effect.ToString(), back.Mode.ToString(), "exit: mode round-trips");
+    Equal("3050FF", back.ColorHex, "exit: color round-trips");
+    Equal("Rainbow", back.Effect, "exit: effect name round-trips");
+
+    // An older config, written before this feature existed, has no behaviors.
+    var none = JsonSerializer.Deserialize<ExitBehavior>("{}")!;
+    Equal(ExitMode.KeepLast.ToString(), none.Mode.ToString(), "exit: the default is today's behavior");
+
+    var board = new FakeHardwareDevice { Name = "Board", ExitCaps = HardwareExitCaps.Static };
+    var stick = new FakeHardwareDevice
+    {
+        Name = "Stick",
+        ExitCaps = HardwareExitCaps.Static | HardwareExitCaps.Effects,
+        HardwareEffects = new[] { "Breathing", "Rainbow" },
+    };
+    var keeb = new FakeHardwareDevice { Name = "Keeb", ExitCaps = HardwareExitCaps.ReturnToHardware };
+    var plain = new FakeDevice { Name = "Plain" };
+
+    // Nothing configured, and KeepLast, both send nothing at all: a device the
+    // user never touched must not be written to on the way out.
+    Check(HardwareExit.Apply(board, null) == null, "exit: no config sends nothing");
+    Check(HardwareExit.Apply(board, new ExitBehavior { Mode = ExitMode.KeepLast }) == null,
+          "exit: keep-last sends nothing");
+    Check(board.StaticSet == null, "exit: and the device was not touched");
+
+    HardwareExit.Apply(board, new ExitBehavior { Mode = ExitMode.Static, ColorHex = "3050FF" });
+    Equal(Rgb.FromHex("3050FF"), board.StaticSet, "exit: static sends the chosen color");
+    HardwareExit.Apply(board, new ExitBehavior { Mode = ExitMode.Off });
+    Equal(Rgb.Black, board.StaticSet, "exit: off is static black");
+
+    // Asking a device for something it cannot do leaves it alone rather than
+    // throwing on the way out of the process.
+    Check(HardwareExit.Apply(board, new ExitBehavior { Mode = ExitMode.Effect, Effect = "Rainbow" }) == null,
+          "exit: an effect on a static-only device does nothing");
+    Check(HardwareExit.Apply(keeb, new ExitBehavior { Mode = ExitMode.Static, ColorHex = "FFFFFF" }) == null,
+          "exit: a static on a handback-only device does nothing");
+    Check(HardwareExit.Apply(plain, new ExitBehavior { Mode = ExitMode.Static }) == null,
+          "exit: a device with no firmware modes does nothing");
+
+    HardwareExit.Apply(stick, new ExitBehavior { Mode = ExitMode.Effect, Effect = "rainbow", ColorHex = "FF0000" });
+    Check(stick.EffectSet is { Name: "Rainbow" }, "exit: effect names match case-insensitively");
+    Equal(Rgb.FromHex("FF0000"), stick.EffectSet!.Value.Color, "exit: the effect gets its color");
+
+    // An effect renamed or dropped by a driver update must not silently become
+    // a different one.
+    stick.EffectSet = null;
+    Check(HardwareExit.Apply(stick, new ExitBehavior { Mode = ExitMode.Effect, Effect = "Gone" }) == null,
+          "exit: an effect the device no longer has does nothing");
+    Check(stick.EffectSet == null, "exit: and nothing was sent instead");
+
+    HardwareExit.Apply(keeb, new ExitBehavior { Mode = ExitMode.ReturnToHardware });
+    Equal(1, keeb.HandbackCount, "exit: handback reaches the device");
+
+    // What the dropdown offers comes from the device.
+    Equal(1, HardwareExit.Choices(plain).Count, "exit: an unsupported device offers only keep-last");
+    var boardChoices = HardwareExit.Choices(board);
+    Equal(3, boardChoices.Count, "exit: static-only offers keep-last, static and off");
+    Equal("Keeps its last colors", HardwareExit.Label(boardChoices[0]), "exit: keep-last is listed first");
+    Equal(5, HardwareExit.Choices(stick).Count, "exit: static plus two effects");
+    Equal(2, HardwareExit.Choices(keeb).Count, "exit: keep-last and the saved profile");
+    Check(HardwareExit.NeedsColor(new ExitBehavior { Mode = ExitMode.Static }), "exit: static needs a color");
+    Check(!HardwareExit.NeedsColor(new ExitBehavior { Mode = ExitMode.Off }), "exit: off does not");
+
+    // Gigabyte: the hardware-static path sends the SAME static-effect packet
+    // the per-frame path does, so pin the layout once. Colors go out B,G,R.
+    var pkt = new byte[GigabyteIt5711.PacketBytes];
+    GigabyteIt5711.FillZoneEffect(pkt, 5, new Rgb(0x30, 0x50, 0xFF), null);
+    Equal(0xCC, pkt[0], "gigabyte: report id");
+    Equal(0x25, pkt[1], "gigabyte: zone 5 is register 0x20 + 5");
+    Equal(0x20, pkt[2], "gigabyte: zone bitmask low byte");
+    Equal(0x00, pkt[3], "gigabyte: zone bitmask high byte");
+    Equal(1, pkt[11], "gigabyte: static effect");
+    Equal(0xFF, pkt[12], "gigabyte: full brightness");
+    Equal(0xFF, pkt[14], "gigabyte: blue first");
+    Equal(0x50, pkt[15], "gigabyte: then green");
+    Equal(0x30, pkt[16], "gigabyte: then red");
+
+    // Zone 9 and up move to the second register block.
+    GigabyteIt5711.FillZoneEffect(pkt, 9, Rgb.Black, null);
+    Equal(0x91, pkt[1], "gigabyte: zone 9 is register 0x90 + 1");
+
+    // A streamed header is addressed by effect index on the way out, not by
+    // the header number it streams on. Confusing the two would light the
+    // wrong output.
+    Equal(5, GigabyteIt5711.EffectIndexOfHeader(1), "gigabyte: header 1 is effect 5");
+    Equal(8, GigabyteIt5711.EffectIndexOfHeader(4), "gigabyte: header 4 is effect 8");
+
+    // ENE: the effect colour window is 15 bytes and REG_DIRECT sits directly
+    // after it, so a sixth LED would write straight into the direct and mode
+    // registers. This pins the cap to the hardware layout rather than to a
+    // number someone remembered.
+    Equal(0x8021, EneDram.REG_MODE, "ene: mode register");
+    // The last byte the capped write touches stays below REG_DIRECT...
+    Check(EneDram.REG_COLORS_EFFECT + 3 * EneDram.EFFECT_COLOR_LEDS - 1 < EneDram.REG_DIRECT,
+          "ene: the capped effect color write stays inside its own window");
+    // ...and one more LED would not: its third byte lands on REG_MODE itself,
+    // which is the whole reason the cap is not the stick's LED count.
+    Check(EneDram.REG_COLORS_EFFECT + 3 * (EneDram.EFFECT_COLOR_LEDS + 1) - 1 >= EneDram.REG_MODE,
+          "ene: a sixth LED would write into the direct and mode registers");
+}
+
 /*---------------- Now-playing line (#f5) ----------------*/
 {
     Equal("Radiohead · Karma Police", NowPlayingText.Compose("Radiohead", "Karma Police"),
@@ -1548,6 +1657,31 @@ return failed;
 
 /// <summary>Non-zone device that records every full-frame write with its
 /// start timestamp; WriteDelayMs simulates a slow HID/USB write.</summary>
+/// <summary>A device with firmware modes, recording what it was told to do on
+/// the way out. Caps and effect list are settable so one class covers a board
+/// (static only), a DRAM stick (static + effects) and a keyboard (handback).</summary>
+sealed class FakeHardwareDevice : IRgbDevice, IHardwareModes
+{
+    public string Name { get; init; } = "FakeHw";
+    public string Vendor => "Test";
+    public DeviceType Type => DeviceType.Other;
+    public int LedCount => 1;
+    public IReadOnlyList<RgbZone> Zones => new[] { new RgbZone { Name = "All", Offset = 0, Count = 1 } };
+    public void SetColors(IReadOnlyList<Rgb> colors) { }
+    public void Dispose() { }
+
+    public HardwareExitCaps ExitCaps { get; init; } = HardwareExitCaps.Static;
+    public IReadOnlyList<string> HardwareEffects { get; init; } = Array.Empty<string>();
+
+    public Rgb? StaticSet;
+    public (string Name, Rgb? Color)? EffectSet;
+    public int HandbackCount;
+
+    public void SetHardwareStatic(Rgb color) => StaticSet = color;
+    public void SetHardwareEffect(string name, Rgb? color) => EffectSet = (name, color);
+    public void ReturnToHardware() => HandbackCount++;
+}
+
 sealed class FakeDevice : IRgbDevice
 {
     public string Name { get; init; } = "Fake";

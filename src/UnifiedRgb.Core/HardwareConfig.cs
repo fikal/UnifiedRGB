@@ -34,6 +34,11 @@ public sealed class HardwareConfig
     /// a configured value beats the frame-width probe and the guess.</summary>
     public Dictionary<string, int> RazerLedCounts { get; set; } = new();
 
+    /// <summary>What each device is left showing when the app closes, keyed by
+    /// device name. Absent means "keeps its last colors", which is what every
+    /// device did before this existed.</summary>
+    public Dictionary<string, ExitBehavior> ExitBehaviors { get; set; } = new();
+
     static readonly string PathName = AppPaths.Config("hardware.json");
 
     static readonly JsonSerializerOptions Opts = new() { WriteIndented = true };

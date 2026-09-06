@@ -13,12 +13,23 @@ namespace UnifiedRgb.Core.Devices;
 /// Detection remaps each DIMM's controller from 0x77 to its own address
 /// (slot index 0x80F8 / address 0x80F9), then probes the candidate list.
 /// Requires elevation (PawnIO).</summary>
-public sealed class EneDram : IRgbDevice
+public sealed class EneDram : IRgbDevice, IHardwareModes
 {
     const ushort REG_DEVICE_NAME = 0x1000;
     const ushort REG_CONFIG_TABLE = 0x1C00;
     const int CONFIG_LED_COUNT = 0x02;
-    const ushort REG_DIRECT = 0x8020;
+    internal const ushort REG_DIRECT = 0x8020;
+    // Onboard effect engine (OpenRGB's ENESMBusController, GPL-2.0 like this
+    // project): a mode register, and effect colours in a SEPARATE window from
+    // the direct-mode colours.
+    internal const ushort REG_MODE = 0x8021;
+    internal const ushort REG_COLORS_EFFECT = 0x8010;
+    // 15 bytes, and the very next register is REG_DIRECT. Writing a sixth LED
+    // would run straight into the direct and mode registers, so the effect
+    // colour write is capped here rather than at the stick's LED count.
+    internal const int EFFECT_COLOR_LEDS = 5;
+    const byte MODE_STATIC = 1, MODE_BREATHING = 2, MODE_FLASHING = 3,
+               MODE_SPECTRUM = 4, MODE_RAINBOW = 5;
     const ushort REG_APPLY = 0x80A0;
     const ushort REG_SLOT_INDEX = 0x80F8;
     const ushort REG_I2C_ADDRESS = 0x80F9;
@@ -184,6 +195,54 @@ public sealed class EneDram : IRgbDevice
 
     /// <summary>Verbose write-path diagnostic: enable direct, write red, read
     /// everything back from both color register banks.</summary>
+    /*-----------------------------------------------------*\
+    | Hardware persistence.                                  |
+    \*-----------------------------------------------------*/
+
+    static readonly string[] Effects = { "Breathing", "Flashing", "Spectrum cycle", "Rainbow" };
+
+    public HardwareExitCaps ExitCaps => HardwareExitCaps.Static | HardwareExitCaps.Effects;
+    public IReadOnlyList<string> HardwareEffects => Effects;
+
+    /// <summary>Nothing to go back to: the stick has no saved profile, only
+    /// whichever mode was last written to it.</summary>
+    public void ReturnToHardware() { }
+
+    public void SetHardwareStatic(Rgb color) => SetOnboardMode(MODE_STATIC, color);
+
+    public void SetHardwareEffect(string name, Rgb? color) => SetOnboardMode(name switch
+    {
+        "Breathing" => MODE_BREATHING,
+        "Flashing" => MODE_FLASHING,
+        "Spectrum cycle" => MODE_SPECTRUM,
+        "Rainbow" => MODE_RAINBOW,
+        _ => MODE_STATIC,
+    }, color ?? Rgb.White);
+
+    /// <summary>Hand the LEDs to the stick's own effect engine: colours first,
+    /// then the mode, then direct mode OFF (which is what actually transfers
+    /// control), then apply. Speed and direction are left at whatever the
+    /// firmware has, rather than guessed at.</summary>
+    void SetOnboardMode(byte mode, Rgb color)
+    {
+        lock (_writeLock)
+        {
+            Span<byte> triple = stackalloc byte[3];
+            triple[0] = color.R; triple[1] = color.B; triple[2] = color.G;   // same order as direct
+            for (int i = 0; i < Math.Min(_ledCount, EFFECT_COLOR_LEDS); i++)
+                RegWriteBlock((ushort)(REG_COLORS_EFFECT + i * 3), triple);
+
+            RegWrite(_bus, _addr, REG_MODE, mode);
+            RegWrite(_bus, _addr, REG_DIRECT, 0x00);
+            RegWrite(_bus, _addr, REG_APPLY, 0x01);
+
+            // The next launch has to re-enable direct mode and repaint: both of
+            // these describe a stick state we have just replaced.
+            _directOn = false;
+            _last = null;
+        }
+    }
+
     public string Diagnose()
     {
         var sb = new System.Text.StringBuilder();

@@ -1525,12 +1525,59 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // stayed bound, device handles stayed open).
         static void Safely(Action a) { try { a(); } catch (Exception ex) { UnifiedRgb.Core.Log.Warn("shutdown", ex.Message); } }
         Safely(() => _lighting.StopAndDrain());   // the exit-restore writes must finish before the handles go
+        Safely(ApplyExitBehaviors);               // ...and before the handles close
         Safely(_manager.Dispose);
         Safely(Lcd.Dispose);   // saves the design, releases the panel + the PawnIO temp reader
         Safely(UnifiedRgb.Core.Sensors.SensorHub.Shutdown);   // closes LHM (unloads its ring0 service) + the PawnIO sensor handles
         Safely(UnifiedRgb.Core.Net.ChromaRestServer.Stop);   // release :54235 cleanly
         Safely(OpenRgbLink.Shutdown);
         Safely(OpenRgbManager.Stop);
+    }
+
+    /// <summary>Send one device's exit behavior right now, so the user can see
+    /// what they picked. Posted on the device's lane rather than written here,
+    /// because the effect engine may be mid-frame on the same transport. For a
+    /// streamed device the app takes back over on its next write, which is the
+    /// point: this is a preview, not a mode.</summary>
+    public void ApplyExitBehaviorNow(IRgbDevice device, UnifiedRgb.Core.ExitBehavior behavior)
+    {
+        _applier.Post(LaneOf(device), ("exit-preview", device), () =>
+        {
+            try { UnifiedRgb.Core.HardwareExit.Apply(device, behavior); }
+            catch (Exception ex) { UnifiedRgb.Core.Log.Warn("exit", $"{device.Name}: {ex.Message}"); }
+        });
+    }
+
+    /// <summary>Hand each configured device to its own firmware on the way out.
+    ///
+    /// Runs after the applier has drained (so nothing races these writes) and
+    /// before the handles close. Time-boxed: this also runs on the logoff path,
+    /// where Windows gives the process a limited window before it is killed, and
+    /// a wedged SMBus write must not be what costs the user their session.</summary>
+    void ApplyExitBehaviors()
+    {
+        var configured = UnifiedRgb.Core.HardwareConfig.Load().ExitBehaviors;
+        if (configured == null || configured.Count == 0) return;
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        foreach (var device in Devices)
+        {
+            if (clock.ElapsedMilliseconds > 2000)
+            {
+                UnifiedRgb.Core.Log.Warn("exit", "out of time: some devices keep their last colors");
+                return;
+            }
+            if (!configured.TryGetValue(device.Name, out var behavior)) continue;
+            try
+            {
+                if (UnifiedRgb.Core.HardwareExit.Apply(device, behavior) is string what)
+                    UnifiedRgb.Core.Log.Info("exit", $"{device.Name}: {what}");
+            }
+            catch (Exception ex)
+            {
+                UnifiedRgb.Core.Log.Warn("exit", $"{device.Name}: {ex.Message}");
+            }
+        }
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

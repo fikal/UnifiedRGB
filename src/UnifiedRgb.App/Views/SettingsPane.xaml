@@ -142,6 +142,14 @@
 
                     <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
 
+                    <TextBlock Text="Devices" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                    <TextBlock Opacity="0.75" FontSize="12" TextWrapping="Wrap" MaxWidth="510"
+                               Text="Closing UnifiedRGB leaves whatever was on screen last. Pick a color or hand a device back to its own firmware instead."/>
+                    <Button Content="When the app is closed…" Padding="12,5" Margin="0,6,0,0" HorizontalAlignment="Left"
+                            Click="ManageExitBehavior_Click"/>
+
+                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
+
                     <TextBlock Text="Support" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
                     <TextBlock Text="Something not working? Describe it and hit Report. A diagnostic bundle is saved to your Desktop and a GitHub issue opens prefilled — drag the file in and post it."
                                Opacity="0.6" TextWrapping="Wrap" Margin="0,0,0,8"/>

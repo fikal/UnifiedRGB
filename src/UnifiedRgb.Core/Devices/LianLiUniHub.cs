@@ -15,7 +15,7 @@ namespace UnifiedRgb.Core.Devices;
 /// (lianli-uni-layout.json) - innerPerFan/outerPerFan/fanCount, plus a `tune`
 /// flag that paints a per-fan colour probe so the layout can be dialed in live
 /// without rebuilding.</summary>
-public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice
+public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IHardwareModes
 {
     const ushort VID = 0x0CF2, PID = 0xA102;
     const byte TxId = 0xE0;
@@ -378,6 +378,26 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice
         commit[0] = TxId; commit[1] = (byte)(0x10 + ch);
         commit[2] = ModeStatic; commit[3] = Speed000; commit[4] = DirLtr; commit[5] = Bright100;
         _hid.Write(commit);
+    }
+
+    /*-----------------------------------------------------*\
+    | Hardware persistence.                                  |
+    \*-----------------------------------------------------*/
+
+    /// <summary>The hub is not a stream: it holds the last committed frame and
+    /// keeps showing it, which is why a colour set here survives the app
+    /// closing. Effects live in L-Connect's own indices and are not driven
+    /// from here, so static is all this offers.</summary>
+    public HardwareExitCaps ExitCaps => HardwareExitCaps.Static;
+    public IReadOnlyList<string> HardwareEffects => Array.Empty<string>();
+    public void SetHardwareEffect(string name, Rgb? color) { }
+    public void ReturnToHardware() { }
+
+    public void SetHardwareStatic(Rgb color)
+    {
+        var frame = new Rgb[LedCount];
+        Array.Fill(frame, color);
+        SetColors(frame);          // the commit packet already says "static mode"
     }
 
     public void Dispose()

@@ -42,5 +42,11 @@ public partial class SettingsPane : UserControl
         Dialogs.ShowBlurred(owner, new SensorRulesWindow(VM) { Owner = owner });
     }
 
+    void ManageExitBehavior_Click(object sender, RoutedEventArgs e)
+    {
+        var owner = Owner;
+        Dialogs.ShowBlurred(owner, new ExitBehaviorWindow(VM) { Owner = owner });
+    }
+
     void SendSupport_Click(object sender, RoutedEventArgs e) => VM.SendToSupport();
 }

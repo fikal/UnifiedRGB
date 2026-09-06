@@ -14,7 +14,7 @@ namespace UnifiedRgb.Core.Devices;
 /// Protocol ported from OpenRGB's GigabyteRGBFusion2USBController: 64-byte HID
 /// feature reports, report ID 0xCC, on the usage-page 0xFF89 / usage 0x00CC
 /// collection.</summary>
-public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable
+public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
 {
     readonly object _writeLock = new();
     // Control-report buffer for Cc/SendZoneEffect, reused under _writeLock the
@@ -368,27 +368,86 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable
     {
         lock (_writeLock)   // the CLI probe calls this unlocked; the frame path already holds it
         {
-            var pkt = _ctlPkt;
-            Array.Clear(pkt);
-            pkt[0] = REPORT_ID;
-            pkt[1] = (byte)(led < 8 ? 0x20 + led : 0x90 + (led - 8));
-            uint zone0 = 1u << led;
-            pkt[2] = (byte)(zone0 & 0xFF);
-            pkt[3] = (byte)((zone0 >> 8) & 0xFF);
-            pkt[11] = EFFECT_STATIC;
-            pkt[12] = 0xFF;
-            pkt[14] = c.B;
-            pkt[15] = c.G;
-            pkt[16] = c.R;
-            if (timing != null)
-                foreach (var (off, val) in timing)
-                    if (off is > 3 and < BUF) pkt[off] = val;
-            _hid.SetFeature(pkt);
+            FillZoneEffect(_ctlPkt, led, c, timing);
+            _hid.SetFeature(_ctlPkt);
         }
     }
 
+    /// <summary>The static-colour effect packet, filled into a reused buffer.
+    /// One builder so the hardware-persistence path and the per-frame static
+    /// path cannot drift apart: they are the same bytes, addressed by effect
+    /// index.</summary>
+    internal static void FillZoneEffect(byte[] pkt, int led, Rgb c, (int Offset, byte Value)[]? timing)
+    {
+        Array.Clear(pkt);
+        pkt[0] = REPORT_ID;
+        pkt[1] = (byte)(led < 8 ? 0x20 + led : 0x90 + (led - 8));
+        uint zone0 = 1u << led;
+        pkt[2] = (byte)(zone0 & 0xFF);
+        pkt[3] = (byte)((zone0 >> 8) & 0xFF);
+        pkt[11] = EFFECT_STATIC;
+        pkt[12] = 0xFF;
+        pkt[14] = c.B;
+        pkt[15] = c.G;
+        pkt[16] = c.R;
+        if (timing != null)
+            foreach (var (off, val) in timing)
+                if (off is > 3 and < BUF) pkt[off] = val;
+    }
+
+    /// <summary>Buffer size for a control packet (the tests build one).</summary>
+    internal const int PacketBytes = BUF;
+
+    /// <summary>Effect index for a streamed header, which is NOT the header
+    /// number it uses in direct mode. Getting these two confused would light
+    /// the wrong output on the way out.</summary>
+    internal static int EffectIndexOfHeader(int header) => HeaderEffectIdx[header];
+
     /// <summary>CLI probe support: commit pending zone effects.</summary>
     public void ApplyNow() { lock (_writeLock) ApplyEffect(); }
+
+    /*-----------------------------------------------------*\
+    | Hardware persistence: what the board shows once we     |
+    | stop streaming.                                        |
+    \*-----------------------------------------------------*/
+
+    /// <summary>Static only. The board does have onboard effects, but which
+    /// one RGB Fusion last saved is not readable, so "its own profile" would
+    /// be a promise this driver cannot keep.</summary>
+    public HardwareExitCaps ExitCaps => HardwareExitCaps.Static;
+    public IReadOnlyList<string> HardwareEffects => Array.Empty<string>();
+    public void SetHardwareEffect(string name, Rgb? color) { }
+    public void ReturnToHardware() { }
+
+    /// <summary>Leave every output on one colour with no host driving it.
+    ///
+    /// The fan headers are the interesting half: while we stream they are in
+    /// direct mode with their onboard effects disabled, and direct mode stops
+    /// the moment the process does. So they are switched back to the firmware's
+    /// own static effect (each header has an effect index of its own) and the
+    /// disable mask is cleared, which is what makes the colour survive.</summary>
+    public void SetHardwareStatic(Rgb color)
+    {
+        lock (_writeLock)
+        {
+            foreach (var def in ZoneDefs)
+            {
+                // A streamed header is addressed by its effect index here, not
+                // by the header number it uses in direct mode.
+                int effectIdx = def.Kind == ZoneKind.Fan ? HeaderEffectIdx[def.Id] : def.Id;
+                SendZoneEffect(effectIdx, color, null);
+            }
+            _effectDisabled = 0;
+            Cc(0x32, 0x00);          // hand the headers back to the effect engine
+            ApplyEffect();
+
+            // The next launch must re-establish direct mode and repaint from
+            // scratch: both caches now describe a board state we just replaced.
+            _directInit = false;
+            Array.Clear(_lastStatic);
+            _lastFan.Clear();
+        }
+    }
 
     /*-----------------------------------------------------*\
     | Diagnostics (CLI): direct-stream + header scan.        |
