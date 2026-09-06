@@ -26,6 +26,18 @@ public sealed class OpenRgbHost : IOpenRgbHost
     MainViewModel.LightState? _snapshot;
     int _externalCount;
 
+    /// <summary>The app is going down. Restoring is both pointless and unsafe
+    /// from here: the callback is queued to a dispatcher that will not pump
+    /// again, and if it did run it would write to handles that are already
+    /// closed.</summary>
+    volatile bool _shuttingDown;
+
+    public void Shutdown()
+    {
+        _shuttingDown = true;
+        lock (_gate) { _snapshot = null; _externalCount = 0; }
+    }
+
     public OpenRgbHost(MainViewModel vm, LightingController lighting, Dispatcher ui)
     {
         _vm = vm;
@@ -80,6 +92,7 @@ public sealed class OpenRgbHost : IOpenRgbHost
     /// names are stable across a rescan, so it lands on the new instances.</summary>
     public void ResetExternal()
     {
+        if (_shuttingDown) return;
         _ui.InvokeAsync(() =>
         {
             MainViewModel.LightState? restore;
@@ -95,6 +108,7 @@ public sealed class OpenRgbHost : IOpenRgbHost
 
     public void EndExternal(IRgbDevice device)
     {
+        if (_shuttingDown) return;
         _ui.InvokeAsync(() =>
         {
             MainViewModel.LightState? restore = null;

@@ -56,6 +56,16 @@ public sealed class OpenRgbServer : IDisposable
     /// default port.</summary>
     public const int AlternatePort = 6743;
 
+    /// <summary>A thread and a socket each, and this port can be opened to the
+    /// LAN. Real use is a handful; anything past this is someone finding out
+    /// what happens when they open ten thousand connections.</summary>
+    const int MaxClients = 16;
+
+    /// <summary>A client that connects and then goes silent must not park a
+    /// thread forever, and one that stops reading must not wedge a write.</summary>
+    const int ClientReadTimeoutMs = 120_000;
+    const int ClientWriteTimeoutMs = 3_000;
+
     readonly IOpenRgbHost _host;
 
     /// <summary>Claims. Touched from every client thread and the sweep timer,
@@ -177,7 +187,18 @@ public sealed class OpenRgbServer : IDisposable
             catch { break; }          // stopped, or the listener died
 
             var client = new Client(Interlocked.Increment(ref _nextClientId), tcp);
-            lock (_gate) _clients.Add(client);
+            bool room;
+            lock (_gate)
+            {
+                room = _clients.Count < MaxClients;
+                if (room) _clients.Add(client);
+            }
+            if (!room)
+            {
+                Log.Occasional("orgb-full", "orgb-server", $"refusing a connection: already serving {MaxClients}");
+                client.Close();
+                continue;
+            }
             ClientsChanged?.Invoke();
 
             var thread = new Thread(() => Serve(client)) { IsBackground = true, Name = "orgb-client" };
@@ -191,6 +212,8 @@ public sealed class OpenRgbServer : IDisposable
         {
             client.Tcp.NoDelay = true;
             var stream = client.Tcp.GetStream();
+            stream.ReadTimeout = ClientReadTimeoutMs;
+            stream.WriteTimeout = ClientWriteTimeoutMs;
             var header = new byte[OpenRgbProtocol.HeaderBytes];
 
             while (!_stopping)
@@ -269,7 +292,15 @@ public sealed class OpenRgbServer : IDisposable
             case OpenRgbProtocol.PktControllerData:
             {
                 var device = DeviceAt(deviceIndex);
-                if (device == null) break;
+                if (device == null)
+                {
+                    // A client holding an index from before a rescan. It is
+                    // blocked on a read, so say something rather than nothing.
+                    Log.Occasional("orgb-index", "orgb-server",
+                                   $"a client asked for device {deviceIndex}, which does not exist");
+                    Send(stream, deviceIndex, OpenRgbProtocol.PktDeviceListUpdated, Array.Empty<byte>());
+                    break;
+                }
                 var blob = OpenRgbProtocol.WriteDevice(device, _host.ColorsOf(device), client.Version);
                 Send(stream, deviceIndex, OpenRgbProtocol.PktControllerData, blob);
                 break;
@@ -281,6 +312,10 @@ public sealed class OpenRgbServer : IDisposable
 
             case OpenRgbProtocol.PktUpdateZoneLeds:
                 ApplyWrite(client, deviceIndex, payload, zoneWrite: true);
+                break;
+
+            case OpenRgbProtocol.PktUpdateSingleLed:
+                ApplySingleLed(client, deviceIndex, payload);
                 break;
 
             case OpenRgbProtocol.PktSetCustomMode:
@@ -327,16 +362,40 @@ public sealed class OpenRgbServer : IDisposable
 
         // Claiming has to happen before the paint, so the user's lighting is
         // saved before anything overwrites it.
-        bool claimed;
-        lock (_gate) claimed = _owned.Claim(device, client.Id, Now);
-        if (claimed)
-        {
-            Log.Info("orgb-server", $"'{client.Name}' is now driving {device.Name}");
-            try { _host.BeginExternal(device); }
-            catch (Exception ex) { Log.Warn("orgb-server", $"begin {device.Name}: {ex.Message}"); }
-        }
+        Claimed(client, device);
         try { _host.PushExternal(device, offset, colors); }
         catch (Exception ex) { Log.Warn("orgb-server", $"write {device.Name}: {ex.Message}"); }
+    }
+
+    /// <summary>One LED: u32 payload length, i32 led index, then one colour.
+    /// Home Assistant and Stream Deck integrations use this, and without it
+    /// they were silently ignored AND never claimed the device, so the silence
+    /// sweep tore their session down underneath them.</summary>
+    void ApplySingleLed(Client client, uint deviceIndex, byte[] payload)
+    {
+        var device = DeviceAt(deviceIndex);
+        if (device == null) return;
+        if (payload.Length < 4 + 4 + 4) return;
+
+        int led = BitConverter.ToInt32(payload, 4);
+        if (led < 0 || led >= device.LedCount) return;
+        var color = OpenRgbProtocol.FromWire(BitConverter.ToUInt32(payload, 8));
+
+        Claimed(client, device);
+        try { _host.PushExternal(device, led, new[] { color }); }
+        catch (Exception ex) { Log.Warn("orgb-server", $"write {device.Name}: {ex.Message}"); }
+    }
+
+    /// <summary>Take the device for this client, saving the user's lighting the
+    /// first time. Shared by every write path.</summary>
+    void Claimed(Client client, IRgbDevice device)
+    {
+        bool taken;
+        lock (_gate) taken = _owned.Claim(device, client.Id, Now);
+        if (!taken) return;
+        Log.Info("orgb-server", $"'{client.Name}' is now driving {device.Name}");
+        try { _host.BeginExternal(device); }
+        catch (Exception ex) { Log.Warn("orgb-server", $"begin {device.Name}: {ex.Message}"); }
     }
 
     void SweepExpired()
@@ -365,15 +424,24 @@ public sealed class OpenRgbServer : IDisposable
 
     static double Now => Environment.TickCount64 / 1000.0;
 
+    /// <summary>Tell every client something. Off the calling thread, always:
+    /// this is called from the UI thread on a rescan, and a client that has
+    /// stopped reading its socket would otherwise block that thread inside
+    /// Write and freeze the whole app.</summary>
     void Broadcast(uint packetId, byte[] payload)
     {
         List<Client> clients;
         lock (_gate) clients = new List<Client>(_clients);
-        foreach (var c in clients)
+        if (clients.Count == 0) return;
+
+        ThreadPool.QueueUserWorkItem(_ =>
         {
-            try { Send(c.Tcp.GetStream(), 0, packetId, payload); }
-            catch { /* it will fall out of the list on its own thread */ }
-        }
+            foreach (var c in clients)
+            {
+                try { Send(c.Tcp.GetStream(), 0, packetId, payload); }
+                catch { /* it will fall out of the list on its own thread */ }
+            }
+        });
     }
 
     static void Send(NetworkStream stream, uint device, uint packetId, byte[] payload)

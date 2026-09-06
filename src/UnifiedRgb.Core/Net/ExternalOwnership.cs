@@ -25,17 +25,23 @@ public sealed class ExternalOwnership<TDevice> where TDevice : notnull
     public bool IsOwned(TDevice device) => _owners.ContainsKey(device);
     public int? OwnerOf(TDevice device) => _owners.TryGetValue(device, out var o) ? o.Client : null;
 
-    /// <summary>A client wrote to a device. True the first time, which is the
-    /// caller's cue to save the user's lighting and stop its own effects on it;
-    /// later writes just push the deadline out.</summary>
+    /// <summary>A client wrote to a device. True only when the device was not
+    /// externally controlled at all a moment ago, which is the caller's cue to
+    /// save the user's lighting and stop its own effects on it.
+    ///
+    /// A second client taking the device over returns FALSE: the device was
+    /// already external, so there is nothing new to save and nothing new to
+    /// stop. Returning true there leaked a takeover that no release would ever
+    /// balance, because the old owner's disconnect frees nothing, and the
+    /// user's lighting then never came back at all.
+    ///
+    /// Last writer wins between clients, since the protocol has no way to tell
+    /// the loser it lost.</summary>
     public bool Claim(TDevice device, int client, double now)
     {
-        // A second client writing to a device takes it over rather than being
-        // refused: last writer wins is at least predictable, and the protocol
-        // has no way to tell the loser anything anyway.
-        bool isNew = !_owners.TryGetValue(device, out var held) || held.Client != client;
+        bool wasFree = !_owners.ContainsKey(device);
         _owners[device] = (client, now);
-        return isNew;
+        return wasFree;
     }
 
     /// <summary>Devices whose owner has gone quiet, released as a side effect.

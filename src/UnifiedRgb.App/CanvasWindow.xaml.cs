@@ -24,6 +24,8 @@ public partial class CanvasWindow : Window
 
     CanvasItem? _selected;
     CanvasItem? _drag;
+    string? _gestureBefore;      // the layout as the drag began, recorded on the first move
+    bool _gestureRecorded;
     bool _resizing;
     Point _grabOffset;
     bool _suppressShapeEvents;
@@ -40,8 +42,12 @@ public partial class CanvasWindow : Window
         DataContext = vm;
 
         // Anything attached since the layout was last saved needs a place, or
-        // it would be invisible here and unaffected by a desk effect.
+        // it would be invisible here and unaffected by a desk effect. Saved
+        // right away: opening the window and closing it must not leave the
+        // layout and the file disagreeing about which devices are placed.
+        int before = _layout.Items.Count;
         _layout.AutoArrange(vm.Devices);
+        if (_layout.Items.Count != before) _layout.Save();
 
         Loaded += (_, _) => { Redraw(); UpdateSelectionUi(); };
         SizeChanged += (_, _) => Redraw();
@@ -128,7 +134,7 @@ public partial class CanvasWindow : Window
     {
         // Where each LED sits inside the device, through the same mapping the
         // engine uses, so the dots are exactly where the light will be.
-        var local = EffectEngine.ZonePositions(device, 0, device.LedCount);
+        var local = EffectEngine.DevicePositions(device, 0, device.LedCount);
         var colors = _vm.ComposedFrameFor(device);
 
         // A dot per LED gets unreadable past a few dozen on a small rectangle;
@@ -167,7 +173,8 @@ public partial class CanvasWindow : Window
 
         if (hit?.Tag as string == "grip" && _selected != null)
         {
-            PushUndo();
+            _gestureBefore = Snapshot();
+            _gestureRecorded = false;
             _resizing = true;
             _drag = _selected;
             Desk.CaptureMouse();
@@ -185,7 +192,11 @@ public partial class CanvasWindow : Window
 
         if (picked == null) { Redraw(); return; }
 
-        PushUndo();
+        // Remembered, not recorded. A click that selects without moving
+        // anything must not leave an identical snapshot on the stack for the
+        // next Ctrl+Z to walk into, which is the bug the LCD designer had.
+        _gestureBefore = Snapshot();
+        _gestureRecorded = false;
         _drag = picked;
         _grabOffset = new Point(p.X - picked.X * _scale, p.Y - picked.Y * _scale);
         Desk.CaptureMouse();
@@ -201,10 +212,20 @@ public partial class CanvasWindow : Window
         if (_drag == null || e.LeftButton != MouseButtonState.Pressed) return;
         var p = e.GetPosition(Desk);
 
+        // The first actual movement records where the drag started; everything
+        // after it is the same undo step, however long the drag runs.
+        if (!_gestureRecorded && _gestureBefore != null)
+        {
+            _gestureRecorded = true;
+            _history.Push(_gestureBefore);
+        }
+
         if (_resizing)
         {
-            _drag.W = Math.Clamp(p.X / _scale - _drag.X, 20, _layout.Width - _drag.X);
-            _drag.H = Math.Clamp(p.Y / _scale - _drag.Y, 20, _layout.Height - _drag.Y);
+            // Math.Clamp throws when min exceeds max, which a hand-edited
+            // canvas.json can arrange by parking an item past the right edge.
+            _drag.W = Math.Clamp(p.X / _scale - _drag.X, 20, Math.Max(20, _layout.Width - _drag.X));
+            _drag.H = Math.Clamp(p.Y / _scale - _drag.Y, 20, Math.Max(20, _layout.Height - _drag.Y));
         }
         else
         {
@@ -252,10 +273,13 @@ public partial class CanvasWindow : Window
     void Desk_Up(object sender, MouseEventArgs e)
     {
         if (_drag == null) return;
+        bool moved = _gestureRecorded;
         _drag = null;
         _resizing = false;
+        _gestureBefore = null;
+        _gestureRecorded = false;
         Desk.ReleaseMouseCapture();
-        Commit();
+        if (moved) Commit();       // a click that moved nothing changed nothing
         Redraw();
     }
 

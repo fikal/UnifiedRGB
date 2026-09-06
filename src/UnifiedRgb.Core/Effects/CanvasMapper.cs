@@ -43,9 +43,11 @@ public static class CanvasMapper
         var item = layout.ItemFor(device.Name);
         if (item == null) return null;
 
-        // The range's own local coordinates first, so a zone still renders as
-        // its own shape; then every point moved onto the desk.
-        var local = EffectEngine.ZonePositions(device, offset, count);
+        // The range in the DEVICE's frame, not renormalized to itself: a zone
+        // has to land on its own part of the device's rectangle, or two zones
+        // of one device would both stretch across the whole of it and render
+        // at the same phase.
+        var local = EffectEngine.DevicePositions(device, offset, count);
         var desk = new LedPos[local.Length];
         for (int i = 0; i < local.Length; i++)
             desk[i] = Map(local[i], item, layout.Width, layout.Height);

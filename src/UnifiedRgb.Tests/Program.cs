@@ -1205,6 +1205,41 @@ static string TempDir()
     Check(swappedR[^1].X < swappedL[0].X, "desk: moving a device moves where the effect reaches it");
 }
 
+/*---------------- Whole-desk canvas: zones keep their place (#f9) ----------------*/
+{
+    // ZonePositions renormalizes a range to its own bounding box, which is
+    // right for a per-device effect: a zone should fill its own span. It is
+    // wrong for the desk, where it would stretch every zone across the whole
+    // device rectangle so two zones rendered at the same phase, which is the
+    // restarting the desk view exists to stop.
+    var device = new FakeDevice { Name = "Strip", LedCount = 10 };
+
+    var firstHalf = EffectEngine.ZonePositions(device, 0, 5);
+    var secondHalf = EffectEngine.ZonePositions(device, 5, 5);
+    Check(Math.Abs(firstHalf[0].X - secondHalf[0].X) < 1e-6,
+          "zones: renormalized, both halves start at the same coordinate");
+
+    var firstDev = EffectEngine.DevicePositions(device, 0, 5);
+    var secondDev = EffectEngine.DevicePositions(device, 5, 5);
+    Check(firstDev[^1].X < secondDev[0].X,
+          "zones: in device coordinates the first half ends before the second begins");
+    Check(firstDev[0].X < 0.01f, "zones: and the first starts at the device's own start");
+    Check(secondDev[^1].X > 0.99f, "zones: and the second ends at its end");
+
+    // Which is what the canvas mapping uses, so two zones of one device land on
+    // different parts of its rectangle on the desk.
+    var layout = new CanvasLayout { Enabled = true, Width = 1000, Height = 1000 };
+    layout.Items.Add(new CanvasItem { Device = "Strip", X = 0, Y = 0, W = 1000, H = 100 });
+    var deskFirst = CanvasMapper.Positions(device, 0, 5, layout)!;
+    var deskSecond = CanvasMapper.Positions(device, 5, 5, layout)!;
+    Check(deskFirst[^1].X < deskSecond[0].X, "zones: and they stay apart on the desk");
+
+    // A whole-device range is unaffected either way.
+    var whole = CanvasMapper.Positions(device, 0, 10, layout)!;
+    Equal(10, whole.Length, "zones: a whole-device range still maps every led");
+    Check(whole[0].X < whole[^1].X, "zones: running the length of its rectangle");
+}
+
 /*---------------- Led overrides reach the engine (#f9) ----------------*/
 {
     // ZonePositions is what every channel renders against, so an override has
@@ -1627,9 +1662,22 @@ static string TempDir()
     Equal(2, own.OwnerOf("keeb"), "handoff: still owned by client 2");
 
     // Last writer wins: there is no way to tell the loser it lost.
-    Check(own.Claim("keeb", 3, 11), "handoff: another client can take a device over");
-    Equal(3, own.OwnerOf("keeb"), "handoff: and becomes the owner");
+    Check(!own.Claim("keeb", 3, 11), "handoff: a takeover is not a fresh claim");
+    Equal(3, own.OwnerOf("keeb"), "handoff: but the new client owns it");
     Equal(0, own.ReleaseClient(2).Count, "handoff: the old owner has nothing left to free");
+
+    // Why a takeover must not read as a fresh claim: the caller saves the
+    // user's lighting on a true and restores it on the matching release. The
+    // old owner's disconnect frees nothing, so a second true would never be
+    // balanced and the lighting would never come back at all.
+    var pair = new ExternalOwnership<string>(silenceSeconds: 5);
+    int taken = 0;
+    if (pair.Claim("ram", 1, 0)) taken++;
+    if (pair.Claim("ram", 2, 1)) taken++;      // client 2 takes it from client 1
+    Equal(1, taken, "handoff: one device taken once, however many clients pass it around");
+    Equal(0, pair.ReleaseClient(1).Count, "handoff: the displaced client frees nothing");
+    Equal(1, pair.ReleaseClient(2).Count, "handoff: the holder frees it");
+    Check(!pair.IsOwned("ram"), "handoff: and it is free, so the lighting comes back");
 
     Equal(1, own.ReleaseAll().Count, "handoff: a rescan frees everything");
     Equal(0, own.Count, "handoff: leaving nothing owned");

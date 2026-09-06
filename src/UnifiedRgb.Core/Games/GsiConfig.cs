@@ -98,7 +98,27 @@ public static class GsiConfig
 
     /// <summary>Every cfg folder a CS2 install has under the known libraries.
     /// Empty when the game is not installed.</summary>
+    static List<string>? _cachedFolders;
+    static long _cachedAt;
+
+    /// <summary>Cached for a minute: this is read by a settings binding that
+    /// refreshes whenever the game connects or drops, and each uncached call is
+    /// a registry read plus a file read plus a Directory.Exists per library.
+    /// Games do not move between libraries while you watch.</summary>
     public static List<string> Cs2CfgFolders()
+    {
+        if (_cachedFolders != null && Environment.TickCount64 - _cachedAt < 60_000)
+            return _cachedFolders;
+        var found = ScanCs2CfgFolders();
+        _cachedFolders = found;
+        _cachedAt = Environment.TickCount64;
+        return found;
+    }
+
+    /// <summary>Forget the cache, after installing or removing the config.</summary>
+    public static void ForgetCs2Folders() => _cachedFolders = null;
+
+    static List<string> ScanCs2CfgFolders()
     {
         var folders = new List<string>();
         foreach (string root in LibraryRoots())

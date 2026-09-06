@@ -307,6 +307,7 @@ public sealed partial class MainViewModel
                 // Take the config out too: leaving it behind means the game
                 // keeps posting to a port nothing is listening on, and pays the
                 // timeout on every update.
+                UnifiedRgb.Core.Games.GsiConfig.ForgetCs2Folders();
                 UnifiedRgb.Core.Games.GsiConfig.Uninstall();
                 _gsi?.Dispose(); _gsi = null;
                 UnifiedRgb.Core.Effects.Cs2Effect.Server = null;
@@ -370,6 +371,7 @@ public sealed partial class MainViewModel
         StartGsi();
         if (_gsi is not { Running: true }) return "The listener could not open a port, so there is nothing to point the game at.";
 
+        UnifiedRgb.Core.Games.GsiConfig.ForgetCs2Folders();   // the user may have just installed the game
         var written = UnifiedRgb.Core.Games.GsiConfig.Install(
             $"http://localhost:{_gsi.Port}", GsiToken, out string? error);
         OnChanged(nameof(Cs2Status));

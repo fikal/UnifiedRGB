@@ -346,6 +346,21 @@ public sealed class EffectEngine
     /// the geometry every channel renders against, also used by the app to
     /// render a range outside the engine.</summary>
     public static LedPos[] ZonePositions(IRgbDevice dev, int offset, int count)
+        => RangePositions(dev, offset, count, normalize: true);
+
+    /// <summary>The same range in the DEVICE's own 0..1 frame, without
+    /// renormalizing to the range's bounding box.
+    ///
+    /// This is the difference between "what shape is this zone" and "where on
+    /// the device is it". Renormalizing is right for a per-device effect, where
+    /// a zone should fill its own span. It is wrong for the desk, where two
+    /// zones of one device would both stretch across the device's whole
+    /// rectangle and render at the same phase, which is exactly the restarting
+    /// the desk view exists to stop.</summary>
+    public static LedPos[] DevicePositions(IRgbDevice dev, int offset, int count)
+        => RangePositions(dev, offset, count, normalize: false);
+
+    static LedPos[] RangePositions(IRgbDevice dev, int offset, int count, bool normalize)
     {
         LedPos[] src;
         // A hand-described layout beats the driver's idea of the shape: a strip
@@ -370,6 +385,11 @@ public sealed class EffectEngine
             var q = src[Math.Min(offset + i, src.Length - 1)];
             minX = Math.Min(minX, q.X); maxX = Math.Max(maxX, q.X);
             minY = Math.Min(minY, q.Y); maxY = Math.Max(maxY, q.Y);
+        }
+        if (!normalize)
+        {
+            for (int i = 0; i < count; i++) zone[i] = src[Math.Min(offset + i, src.Length - 1)];
+            return zone;
         }
         float rx = maxX - minX, ry = maxY - minY;
         for (int i = 0; i < count; i++)

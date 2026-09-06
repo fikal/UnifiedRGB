@@ -28,7 +28,9 @@ public sealed class GsiServer : IDisposable
     volatile bool _stopping;
 
     long _lastPostTicks;
-    GameState _state = GameState.Empty;
+    // Read from effect worker threads every frame, written by the listener
+    // thread. Volatile so a worker cannot see a stale reference indefinitely.
+    volatile GameState _state = GameState.Empty;
 
     public int Port { get; private set; }
     public string Token { get; private set; } = "";
@@ -93,6 +95,10 @@ public sealed class GsiServer : IDisposable
     public void Stop()
     {
         _stopping = true;
+        // Before the handles go, so a worker reading State sees "nothing
+        // playing" rather than the last frame of a game that has closed.
+        _state = GameState.Empty;
+        Interlocked.Exchange(ref _lastPostTicks, 0);
         try { _listener?.Stop(); } catch { }
         try { _listener?.Close(); } catch { }
         _listener = null;
@@ -115,11 +121,25 @@ public sealed class GsiServer : IDisposable
         }
     }
 
+    /// <summary>A full update with every section we ask for is a few KB. This
+    /// is loose enough for any real payload and tight enough that a local
+    /// process cannot hand us a gigabyte: the token is checked on the PARSED
+    /// content, so the read itself has to be bounded on its own.</summary>
+    const int MaxBodyBytes = 512 * 1024;
+
     void Handle(HttpListenerContext ctx)
     {
+        if (ctx.Request.ContentLength64 > MaxBodyBytes)
+        {
+            Log.Occasional("gsi-big", "gsi", $"ignoring a {ctx.Request.ContentLength64} byte post");
+            ctx.Response.StatusCode = 413;
+            try { ctx.Response.Close(); } catch { }
+            return;
+        }
+
         string body;
         using (var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8))
-            body = reader.ReadToEnd();
+            body = ReadBounded(reader);
 
         // The game does not read the response, but it does wait for one, and
         // its timeout is the frame budget it is willing to spend. Answer first
@@ -127,6 +147,11 @@ public sealed class GsiServer : IDisposable
         ctx.Response.StatusCode = 200;
         ctx.Response.ContentLength64 = 0;
         try { ctx.Response.Close(); } catch { }
+
+        // Stopped while this request was in flight: dropping it here is what
+        // keeps Connected false and State empty after a stop, instead of the
+        // listener thread resurrecting both for another ten seconds.
+        if (_stopping) return;
 
         var parsed = GsiParser.Parse(body, Token);
         if (parsed == null)
@@ -147,6 +172,22 @@ public sealed class GsiServer : IDisposable
             Log.Info("gsi", "game connected");
             Connectedchanged?.Invoke();
         }
+    }
+
+    /// <summary>Reads at most MaxBodyBytes, for a sender that lies about (or
+    /// omits) its content length.</summary>
+    static string ReadBounded(StreamReader reader)
+    {
+        var buffer = new char[8192];
+        var sb = new System.Text.StringBuilder();
+        int total = 0, n;
+        while ((n = reader.Read(buffer, 0, buffer.Length)) > 0)
+        {
+            total += n;
+            if (total > MaxBodyBytes) return "";
+            sb.Append(buffer, 0, n);
+        }
+        return sb.ToString();
     }
 
     /// <summary>A token for a fresh install. Not a secret worth defending, but

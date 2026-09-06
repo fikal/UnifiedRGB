@@ -14,7 +14,11 @@ public sealed class LightingController
 {
     public EffectEngine Engine { get; } = new();
     public CoalescingApplier Applier { get; } = new();
-    readonly Dictionary<IRgbDevice, Rgb[]> _frames = new();
+    /// <summary>Concurrent because an SDK client's write reaches FrameFor from
+    /// a socket thread, while the UI thread inserts into it constantly and a
+    /// rescan clears it. A plain Dictionary here was a torn-read waiting to
+    /// happen: concurrent insert and read is the classic spin-forever bug.</summary>
+    readonly System.Collections.Concurrent.ConcurrentDictionary<IRgbDevice, Rgb[]> _frames = new();
 
     /// <summary>Which applier lane a device writes on. Parallel lanes keep
     /// every device changing at the same moment on profile flips; devices
@@ -28,15 +32,7 @@ public sealed class LightingController
     };
 
     /// <summary>The device's stored static frame (created black on first use).</summary>
-    public Rgb[] FrameFor(IRgbDevice d)
-    {
-        if (!_frames.TryGetValue(d, out var f))
-        {
-            f = new Rgb[d.LedCount];
-            _frames[d] = f;
-        }
-        return f;
-    }
+    public Rgb[] FrameFor(IRgbDevice d) => _frames.GetOrAdd(d, static k => new Rgb[k.LedCount]);
 
     /// <summary>Drop every stored frame and idle applier lane (device instances
     /// are being replaced; both are keyed by instance). Call after StopAndDrain.</summary>

@@ -1429,6 +1429,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             layout.Save();
             UnifiedRgb.Core.Effects.CanvasLayout.Current = layout;
             OnChanged(nameof(CanvasEnabled));
+            OnChanged(nameof(CanvasStatus));
         }
 
         var srcFx = CurrentFx();
@@ -1516,6 +1517,12 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         var savedEffects = CaptureEffects();
         var savedFrames = Devices.ToDictionary(d => d.Name, d => (Rgb[])FrameFor(d).Clone());
 
+        // The SDK server goes first. StopAndDrain below is the guard against
+        // writing to a handle that is about to close, and a socket thread posts
+        // straight past it: it would queue work AFTER the drain and land on a
+        // disposed device. Clients reconnect once the new list is up.
+        _sdkServer?.Dispose();
+        _sdkServer = null;
         _lighting.StopAndDrain();   // queued static writes must not land on disposed handles
         _targetFx.Clear();          // device instances are replaced
         _manager.Dispose();
@@ -1593,8 +1600,17 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // stayed bound, device handles stayed open).
         static void Safely(Action a) { try { a(); } catch (Exception ex) { UnifiedRgb.Core.Log.Warn("shutdown", ex.Message); } }
         Safely(() => _lighting.StopAndDrain());   // the exit-restore writes must finish before the handles go
+        // Order matters: tell the host we are going down BEFORE stopping the
+        // server, or its per-device releases queue a restore onto a dispatcher
+        // that will never pump again.
+        Safely(() => _sdkHost?.Shutdown());
         Safely(() => { _sdkServer?.Dispose(); _sdkServer = null; });   // stop taking SDK writes
-        Safely(() => { _gsi?.Dispose(); _gsi = null; });
+        Safely(() =>
+        {
+            UnifiedRgb.Core.Effects.Cs2Effect.Server = null;   // before the dispose, not after
+            _gsi?.Dispose();
+            _gsi = null;
+        });
         Safely(ApplyExitBehaviors);               // ...and before the handles close
         Safely(_manager.Dispose);
         Safely(Lcd.Dispose);   // saves the design, releases the panel + the PawnIO temp reader
