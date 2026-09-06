@@ -85,13 +85,41 @@ public static class HidNative
         return (nul >= 0 ? s[..nul] : s).Trim();
     }
 
+    const int ERROR_ACCESS_DENIED = 5;
+
+    /// <summary>Open a HID device for reading and writing.
+    ///
+    /// Falls back to a ZERO-ACCESS handle when the device is already held by
+    /// something else, which on a Razer machine means Synapse: it takes the
+    /// mouse and its charging pad, and CreateFile then returns ACCESS_DENIED.
+    /// A handle opened with no access rights still serves HidD_SetFeature and
+    /// HidD_GetFeature, because those are IOCTLs rather than reads and writes,
+    /// and the whole Razer protocol is feature reports. So the fallback is the
+    /// difference between driving those devices alongside Synapse and not
+    /// seeing them at all.
+    ///
+    /// It cannot carry output reports, so a device driven by ReadFile or
+    /// WriteFile is degraded rather than working: the handle says so, and Write
+    /// refuses loudly instead of silently doing nothing.</summary>
     public static HidHandle Open(string path)
     {
         var h = CreateFile(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
             IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, IntPtr.Zero);
-        if (h.IsInvalid)
-            throw new IOException($"Failed to open HID device (err {Marshal.GetLastWin32Error()})");
-        return new HidHandle(h);
+        if (!h.IsInvalid) return new HidHandle(h);
+
+        int err = Marshal.GetLastWin32Error();
+        if (err != ERROR_ACCESS_DENIED)
+            throw new IOException($"Failed to open HID device (err {err})");
+
+        var shared = CreateFile(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
+            IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, IntPtr.Zero);
+        if (shared.IsInvalid)
+            throw new IOException($"Failed to open HID device (err {err}, and shared too: {Marshal.GetLastWin32Error()})");
+
+        Log.Occasional("hid-shared", "hid",
+                       "another program holds a device; opened it for feature reports only "
+                       + "(close vendor software if it does not respond)");
+        return new HidHandle(shared, featureOnly: true);
     }
 
     /// <summary>Overlapped I/O with event-based waits. The previous
@@ -101,6 +129,11 @@ public static class HidNative
     public sealed class HidHandle : IDisposable
     {
         readonly SafeFileHandle _handle;
+
+        /// <summary>Opened with no access rights because something else holds
+        /// the device. Feature reports work; output reports do not.</summary>
+        public bool FeatureOnly { get; }
+
         readonly ManualResetEvent _rdEvent = new(false), _wrEvent = new(false);
         readonly IntPtr _rdOv, _wrOv;
         readonly object _rdLock = new(), _wrLock = new();
@@ -110,9 +143,10 @@ public static class HidNative
 
         public bool IsDisposed => _disposed;
 
-        public HidHandle(SafeFileHandle handle)
+        public HidHandle(SafeFileHandle handle, bool featureOnly = false)
         {
             _handle = handle;
+            FeatureOnly = featureOnly;
             _rdOv = Marshal.AllocHGlobal(OvSize);
             _wrOv = Marshal.AllocHGlobal(OvSize);
         }
@@ -152,6 +186,16 @@ public static class HidNative
             // of the P/Invoke call. Pin it ourselves for the whole operation, or
             // the GC can move it mid-write and corrupt the heap (ExecutionEngine-
             // Exception under GC pressure, e.g. LCD streaming while fans re-bake).
+            if (FeatureOnly)
+            {
+                // No access rights: ReadFile/WriteFile cannot succeed on this
+                // handle. Silence here would look like a device that accepts
+                // frames and shows nothing.
+                Log.Occasional("hid-featureonly", "hid",
+                               "a device is held by another program, so output reports cannot be sent to it");
+                return false;
+            }
+
             var pin = GCHandle.Alloc(buf, GCHandleType.Pinned);
             try
             {
