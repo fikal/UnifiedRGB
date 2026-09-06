@@ -42,6 +42,24 @@ public partial class SettingsPane : UserControl
         Dialogs.ShowBlurred(owner, new SensorRulesWindow(VM) { Owner = owner });
     }
 
+    void InstallCs2_Click(object sender, RoutedEventArgs e)
+        => Dialogs.Info(Owner, "Counter-Strike 2", VM.InstallCs2Config());
+
+    /// <summary>For when writing the file failed, or the game lives somewhere
+    /// we cannot write: show exactly what to save and where.</summary>
+    void ShowCs2Config_Click(object sender, RoutedEventArgs e)
+    {
+        var folders = UnifiedRgb.Core.Games.GsiConfig.Cs2CfgFolders();
+        string where = folders.Count > 0
+            ? string.Join(Environment.NewLine, folders)
+            : @"<Steam library>\steamapps\common\Counter-Strike Global Offensive\game\csgo\cfg";
+        string body = $"Save this as {UnifiedRgb.Core.Games.GsiConfig.FileName} in:"
+                    + Environment.NewLine + where
+                    + Environment.NewLine + Environment.NewLine
+                    + VM.Cs2ConfigText();
+        Dialogs.Info(Owner, "gamestate_integration_unifiedrgb.cfg", body);
+    }
+
     void ManageExitBehavior_Click(object sender, RoutedEventArgs e)
     {
         var owner = Owner;

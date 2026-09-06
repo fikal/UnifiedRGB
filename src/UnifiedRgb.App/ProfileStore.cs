@@ -98,6 +98,13 @@ public sealed class SettingsData
     /// protocol. Off by default: opening a port is the user's call.</summary>
     public bool SdkServerEnabled { get; set; }
 
+    /// <summary>Listen for Counter-Strike 2 game state.</summary>
+    public bool Cs2Enabled { get; set; }
+
+    /// <summary>The shared secret in the game's config file. Generated once and
+    /// kept, so re-installing the config does not invalidate an existing one.</summary>
+    public string? GsiToken { get; set; }
+
     /// <summary>Accept SDK clients from the network, not just this machine.
     /// The protocol has no authentication, so this is opt-in on top of opt-in.</summary>
     public bool SdkServerLan { get; set; }

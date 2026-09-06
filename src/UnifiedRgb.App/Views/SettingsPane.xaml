@@ -142,6 +142,25 @@
 
                     <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
 
+                    <TextBlock Text="Games" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                    <CheckBox IsChecked="{Binding Cs2Enabled}">
+                        <TextBlock Text="Counter-Strike 2. Your health, the bomb and flashbangs drive the lights. Uses Valve's Game State Integration, so nothing is injected or read from memory."
+                                   TextWrapping="Wrap" MaxWidth="510"/>
+                    </CheckBox>
+                    <StackPanel Orientation="Horizontal" Margin="24,6,0,0">
+                        <Button Content="Install CS2 config…" Padding="12,5" Click="InstallCs2_Click"
+                                IsEnabled="{Binding Cs2Enabled}"/>
+                        <Button Content="Show config" Padding="12,5" Margin="8,0,0,0" Click="ShowCs2Config_Click"
+                                IsEnabled="{Binding Cs2Enabled}"
+                                ToolTip="The file contents, to place by hand"/>
+                    </StackPanel>
+                    <TextBlock Text="{Binding Cs2Status}" Foreground="#FF7FB4FF" FontSize="12"
+                               Margin="24,8,0,0" TextWrapping="Wrap" MaxWidth="486"/>
+                    <TextBlock Text="Then pick the CS2 effect on a device, under Game."
+                               Opacity="0.6" FontSize="12" Margin="24,4,0,0" TextWrapping="Wrap" MaxWidth="486"/>
+
+                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
+
                     <TextBlock Text="Other apps" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
                     <CheckBox IsChecked="{Binding SdkServerEnabled}">
                         <TextBlock Text="Let other apps control your lighting (OpenRGB SDK). Anything written for OpenRGB works: Home Assistant, game mods, phone remotes, Stream Deck."

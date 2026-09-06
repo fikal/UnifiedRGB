@@ -8,6 +8,7 @@ using UnifiedRgb.Core;
 using UnifiedRgb.Core.Automation;
 using UnifiedRgb.Core.Devices;
 using UnifiedRgb.Core.Effects;
+using UnifiedRgb.Core.Games;
 using UnifiedRgb.Core.Input;
 using UnifiedRgb.Core.Native;
 using UnifiedRgb.Core.Net;
@@ -1118,6 +1119,134 @@ static string TempDir()
     // A half-filled rule must never swallow every process.
     Check(AutomationRule.Match(new List<AutomationRule> { new() { Process = "", Profile = "X" } }, "anything") == null,
         "app match: blank rule matches nothing");
+}
+
+/*---------------- CS2 game state (#f8) ----------------*/
+{
+    // A payload shaped like the real thing: keys taken from a maintained CS2
+    // GSI library, not guessed.
+    string Live(string bomb = "", string phase = "live", int health = 100, int flashed = 0,
+                string activity = "playing", string weapons = "") =>
+        "{" +
+        "\"provider\":{\"name\":\"Counter-Strike: Global Offensive\",\"appid\":730}," +
+        "\"map\":{\"mode\":\"competitive\",\"name\":\"de_mirage\",\"phase\":\"live\",\"round\":7}," +
+        "\"round\":{\"phase\":\"" + phase + "\"" + (bomb.Length > 0 ? ",\"bomb\":\"" + bomb + "\"" : "") + "}," +
+        "\"player\":{\"steamid\":\"7656119\",\"name\":\"ryan\",\"team\":\"CT\",\"activity\":\"" + activity + "\"," +
+        "\"state\":{\"health\":" + health + ",\"armor\":95,\"helmet\":true,\"flashed\":" + flashed +
+        ",\"smoked\":0,\"burning\":0,\"money\":3200,\"round_kills\":2,\"round_killhs\":1,\"equip_value\":4700}" +
+        (weapons.Length > 0 ? ",\"weapons\":" + weapons : "") + "}," +
+        "\"auth\":{\"token\":\"secret123\"}}";
+
+    var s1 = GsiParser.Parse(Live(), "secret123");
+    Check(s1 != null, "cs2: a live payload parses");
+    Equal(100, s1!.Health, "cs2: health");
+    Equal(95, s1.Armor, "cs2: armor");
+    Equal(3200, s1.Money, "cs2: money");
+    Equal(2, s1.RoundKills, "cs2: round kills");
+    Check(s1.Playing, "cs2: playing");
+    Check(s1.Team == Team.CT, "cs2: team");
+    Check(s1.Phase == RoundPhase.Live, "cs2: round phase");
+    Check(s1.Bomb == BombState.None, "cs2: no bomb");
+
+    // The token is the only thing stopping another local program posting fake
+    // states, so a wrong one is a rejection, not a warning.
+    Check(GsiParser.Parse(Live(), "wrong") == null, "cs2: a bad token is rejected");
+    Check(GsiParser.Parse(Live(), "") != null, "cs2: no expected token means no check");
+    Check(GsiParser.Parse("not json at all", "secret123") == null, "cs2: junk is rejected");
+    Check(GsiParser.Parse("[1,2,3]", "") == null, "cs2: a non-object is rejected");
+
+    // Partial payloads are normal: the game sends only what changed.
+    var partial = GsiParser.Parse("{\"round\":{\"phase\":\"freezetime\"}}", "");
+    Check(partial != null, "cs2: a partial payload parses");
+    Check(partial!.Phase == RoundPhase.FreezeTime, "cs2: with what it does carry");
+    Equal(0, partial.Health, "cs2: and defaults for what it does not");
+
+    // A field arriving as the wrong type must not throw on the render path.
+    var wrongType = GsiParser.Parse("{\"player\":{\"state\":{\"health\":\"100\"}}}", "");
+    Check(wrongType != null, "cs2: a wrongly typed field does not throw");
+    Equal(0, wrongType!.Health, "cs2: it just reads as missing");
+
+    Check(GsiParser.Parse(Live(bomb: "planted"), "")!.Bomb == BombState.Planted, "cs2: bomb planted");
+    Check(GsiParser.Parse(Live(bomb: "defused"), "")!.Bomb == BombState.Defused, "cs2: bomb defused");
+    Check(GsiParser.Parse(Live(bomb: "exploded"), "")!.Bomb == BombState.Exploded, "cs2: bomb exploded");
+    Check(GsiParser.Parse(Live(phase: "over"), "")!.Phase == RoundPhase.Over, "cs2: round over");
+    Check(!GsiParser.Parse(Live(activity: "menu"), "")!.Playing, "cs2: in the menu is not playing");
+
+    var dead = GsiParser.Parse(Live(health: 0), "");
+    Equal(0, dead!.Health, "cs2: a dead player reads zero health");
+
+    // Weapons arrive as an object keyed weapon_0.., and the slot numbers are
+    // not stable, so the active one is found by state.
+    string rifle = "{\"weapon_0\":{\"name\":\"weapon_knife\",\"type\":\"Knife\",\"state\":\"holstered\"}," +
+                   "\"weapon_1\":{\"name\":\"weapon_ak47\",\"type\":\"Rifle\",\"ammo_clip\":7," +
+                   "\"ammo_clip_max\":30,\"ammo_reserve\":60,\"state\":\"active\"}}";
+    var armed = GsiParser.Parse(Live(weapons: rifle), "");
+    Equal(7, armed!.AmmoClip, "cs2: the active weapon's clip");
+    Equal(30, armed.AmmoClipMax, "cs2: and its capacity");
+    Check(Math.Abs(armed.AmmoFraction - 7.0 / 30.0) < 1e-9, "cs2: ammo fraction");
+
+    // A knife has no magazine: it must not read as out of ammo, or every knife
+    // round would sit there pulsing a low-ammo warning.
+    string knifeOnly = "{\"weapon_0\":{\"name\":\"weapon_knife\",\"type\":\"Knife\",\"state\":\"active\"}}";
+    var knife = GsiParser.Parse(Live(weapons: knifeOnly), "");
+    Equal(-1, knife!.AmmoClip, "cs2: a knife reports no magazine");
+    Equal(1.0, knife.AmmoFraction, "cs2: so nothing warns about it");
+
+    var noWeapons = GsiParser.Parse(Live(), "");
+    Equal(1.0, noWeapons!.AmmoFraction, "cs2: no weapon section is not low ammo");
+
+    Equal(255, GsiParser.Parse(Live(flashed: 255), "")!.Flashed, "cs2: flash amount");
+
+    // The config the game reads.
+    string cfg = GsiConfig.Build("http://localhost:27180", "abc123");
+    Check(cfg.Contains("http://localhost:27180"), "cs2 cfg: the uri");
+    Check(cfg.Contains("abc123"), "cs2 cfg: the token");
+    Check(cfg.Contains("\"player_state\""), "cs2 cfg: asks for player state");
+    Check(cfg.Contains("\"player_weapons\""), "cs2 cfg: asks for weapons");
+    Check(cfg.Contains("\"round\""), "cs2 cfg: asks for the round");
+    Check(cfg.Contains("\"heartbeat\""), "cs2 cfg: asks for a heartbeat, which is what detects the game closing");
+    Equal("gamestate_integration_unifiedrgb.cfg", GsiConfig.FileName, "cs2 cfg: the file name the game looks for");
+
+    // libraryfolders.vdf escapes its backslashes.
+    Equal(@"E:\SteamLibrary", GsiConfig.PathFromVdfLine("\t\t\"path\"\t\t\"E:\\\\SteamLibrary\""),
+          "cs2: a library path is unescaped");
+    Check(GsiConfig.PathFromVdfLine("\t\t\"apps\"") == null, "cs2: other lines are ignored");
+    Check(GsiConfig.PathFromVdfLine("") == null, "cs2: an empty line is ignored");
+
+    // Tokens should differ per machine.
+    Check(GsiServer.NewToken() != GsiServer.NewToken(), "cs2: tokens are not shared between installs");
+    Equal(16, GsiServer.NewToken().Length, "cs2: token length");
+}
+
+/*---------------- CS2 listener end to end (#f8) ----------------*/
+{
+    // POST to the real listener the way the game does.
+    using var gsi = new GsiServer();
+    int port = gsi.Start("tok-e2e", preferredPort: 27581);
+    Check(port > 0, "cs2 e2e: the listener bound a port");
+    Check(!gsi.Connected, "cs2 e2e: nothing has posted yet");
+
+    using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+    string payload = "{\"round\":{\"phase\":\"live\",\"bomb\":\"planted\"}," +
+                     "\"player\":{\"activity\":\"playing\",\"team\":\"T\",\"state\":{\"health\":42}}," +
+                     "\"auth\":{\"token\":\"tok-e2e\"}}";
+    var reply = http.PostAsync($"http://localhost:{port}/",
+                    new System.Net.Http.StringContent(payload)).GetAwaiter().GetResult();
+    Equal(200, (int)reply.StatusCode, "cs2 e2e: the game gets its 200 back");
+
+    bool arrived = false;
+    for (int i = 0; i < 200 && !arrived; i++) { arrived = gsi.State.Health == 42; Thread.Sleep(10); }
+    Check(arrived, "cs2 e2e: the state arrives");
+    Check(gsi.Connected, "cs2 e2e: and the game counts as connected");
+    Check(gsi.State.Bomb == BombState.Planted, "cs2 e2e: with the bomb state");
+    Check(gsi.State.Team == Team.T, "cs2 e2e: and the team");
+
+    // A post signed with the wrong token changes nothing.
+    string forged = "{\"player\":{\"state\":{\"health\":1}},\"auth\":{\"token\":\"nope\"}}";
+    http.PostAsync($"http://localhost:{port}/", new System.Net.Http.StringContent(forged))
+        .GetAwaiter().GetResult();
+    Thread.Sleep(150);
+    Equal(42, gsi.State.Health, "cs2 e2e: a forged post is ignored");
 }
 
 /*---------------- OpenRGB SDK server (#f7) ----------------*/

@@ -1163,6 +1163,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             new EffectChoice { Name = "Screen Ambient", Effect = new ScreenSync(),   Category = "Ambient" },
             new EffectChoice { Name = "Time Warmth",    Effect = new TimeWarmth(),   Category = "Ambient" },
             new EffectChoice { Name = "Chroma Sync",    Effect = new ChromaSync(),   Category = "Ambient" },
+            new EffectChoice { Name = "CS2",            Effect = new Cs2Effect(),    Category = "Game" },
             new EffectChoice { Name = "Twinkle",        Effect = new Twinkle(),      Category = "Party" },
             new EffectChoice { Name = "Disco",          Effect = new Disco(),        Category = "Party" },
             new EffectChoice { Name = "Police",         Effect = new Police(),       Category = "Party" },
@@ -1480,6 +1481,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         ApplyLianSpeed();                                      // carry the saved fan-speed calibration
         _battery.Rescan();                                     // charge, before the rows are built
         SyncSdkServer();                                       // SDK clients hold stale instances
+        StartGsi();                                            // game state, if the user has it on
         BuildLeftItems();                                      // devices + pump LCD row
         RestoreEffects(savedEffects);
         LandOnRunningLianTarget();
@@ -1535,6 +1537,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         static void Safely(Action a) { try { a(); } catch (Exception ex) { UnifiedRgb.Core.Log.Warn("shutdown", ex.Message); } }
         Safely(() => _lighting.StopAndDrain());   // the exit-restore writes must finish before the handles go
         Safely(() => { _sdkServer?.Dispose(); _sdkServer = null; });   // stop taking SDK writes
+        Safely(() => { _gsi?.Dispose(); _gsi = null; });
         Safely(ApplyExitBehaviors);               // ...and before the handles close
         Safely(_manager.Dispose);
         Safely(Lcd.Dispose);   // saves the design, releases the panel + the PawnIO temp reader

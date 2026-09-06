@@ -288,6 +288,106 @@ public sealed partial class MainViewModel
         _sdkServer.DeviceListChanged();
     }
 
+    /*-----------------------------------------------------*\
+    | Counter-Strike 2 game state.                           |
+    \*-----------------------------------------------------*/
+
+    UnifiedRgb.Core.Games.GsiServer? _gsi;
+
+    public bool Cs2Enabled
+    {
+        get => _store.Settings.Cs2Enabled;
+        set
+        {
+            if (_store.Settings.Cs2Enabled == value) return;
+            SetSetting(_store.Settings.Cs2Enabled, value, v => _store.Settings.Cs2Enabled = v);
+            if (value) StartGsi();
+            else
+            {
+                // Take the config out too: leaving it behind means the game
+                // keeps posting to a port nothing is listening on, and pays the
+                // timeout on every update.
+                UnifiedRgb.Core.Games.GsiConfig.Uninstall();
+                _gsi?.Dispose(); _gsi = null;
+                UnifiedRgb.Core.Effects.Cs2Effect.Server = null;
+            }
+            OnChanged(nameof(Cs2Status));
+        }
+    }
+
+    /// <summary>The token in the game's config. Made once and kept, so
+    /// re-installing does not orphan a config written earlier.</summary>
+    string GsiToken
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(_store.Settings.GsiToken))
+            {
+                _store.Settings.GsiToken = UnifiedRgb.Core.Games.GsiServer.NewToken();
+                _store.SaveSettings();
+            }
+            return _store.Settings.GsiToken!;
+        }
+    }
+
+    public string Cs2Status
+    {
+        get
+        {
+            if (!Cs2Enabled) return "Off.";
+            if (_gsi is not { Running: true }) return "Could not open a port.";
+            if (_gsi.Connected)
+            {
+                var s = _gsi.State;
+                string where = s.Playing ? $"in game, {s.Health} health" : "in game";
+                return $"Connected: {where}.";
+            }
+            return UnifiedRgb.Core.Games.GsiConfig.Cs2CfgFolders().Count == 0
+                ? "Counter-Strike 2 was not found. Install the config by hand, or install the game first."
+                : "Waiting for the game. Start CS2 with the config installed.";
+        }
+    }
+
+    void StartGsi()
+    {
+        if (!Cs2Enabled) return;
+        if (_gsi is { Running: true }) return;
+
+        var server = new UnifiedRgb.Core.Games.GsiServer();
+        int port = server.Start(GsiToken);
+        if (port == 0) { OnChanged(nameof(Cs2Status)); return; }
+
+        // Fired from the listener thread; the status line is a UI binding.
+        server.Connectedchanged += () => _dispatcher.BeginInvoke(() => OnChanged(nameof(Cs2Status)));
+        _gsi = server;
+        UnifiedRgb.Core.Effects.Cs2Effect.Server = server;
+    }
+
+    /// <summary>Write the game's config file. Returns what to show the user:
+    /// the paths written, or why it could not be.</summary>
+    public string InstallCs2Config()
+    {
+        StartGsi();
+        if (_gsi is not { Running: true }) return "The listener could not open a port, so there is nothing to point the game at.";
+
+        var written = UnifiedRgb.Core.Games.GsiConfig.Install(
+            $"http://localhost:{_gsi.Port}", GsiToken, out string? error);
+        OnChanged(nameof(Cs2Status));
+
+        if (written.Count > 0)
+            return $"Installed to {string.Join(", ", written)}. Restart CS2 if it is running.";
+        return error ?? "Counter-Strike 2 was not found.";
+    }
+
+    /// <summary>The config file's contents, for the user to paste by hand when
+    /// writing it failed (a locked folder, a game on a drive we cannot write).</summary>
+    public string Cs2ConfigText()
+    {
+        StartGsi();
+        int port = _gsi?.Port ?? UnifiedRgb.Core.Games.GsiServer.DefaultPort;
+        return UnifiedRgb.Core.Games.GsiConfig.Build($"http://localhost:{port}", GsiToken);
+    }
+
     /// <summary>Does a profile by this name still exist? The automation calls
     /// this per tick, so it must not allocate the way ProfileNames does.</summary>
     public bool HasProfile(string name)

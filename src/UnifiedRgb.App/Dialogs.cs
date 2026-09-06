@@ -116,6 +116,57 @@ public static class Dialogs
 
     /// <summary>"Save changes to profile X?" — Yes = save, No = discard,
     /// Cancel = abort the close.</summary>
+    /// <summary>Tell the user something, with the body selectable so a path or
+    /// a config file can be copied out. The setup flows lean on this: when
+    /// writing a game's config fails, the only useful answer is the exact text
+    /// and where to put it.</summary>
+    public static void Info(Window? owner, string title, string message)
+    {
+        if (owner == null) return;
+        Window win = null!;
+        (win, var body) = MakeDialog(owner, onEscape: () => win.Close(), onEnter: () => win.Close());
+
+        body.Children.Add(Title(title));
+
+        // A read-only TextBox rather than a TextBlock: selectable, scrollable,
+        // and Ctrl+C works without any extra plumbing.
+        var text = new TextBox
+        {
+            Text = message,
+            IsReadOnly = true,
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.NoWrap,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            MaxHeight = 320,
+            MaxWidth = 620,
+            Margin = new Thickness(0, 10, 0, 0),
+            Background = new SolidColorBrush(Color.FromRgb(0x14, 0x16, 0x1C)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xDD, 0xE1, 0xEA)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x2E, 0x31, 0x40)),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(8, 6, 8, 6),
+            FontFamily = new FontFamily("Consolas"),
+            FontSize = 12,
+        };
+        body.Children.Add(text);
+
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 18, 0, 0),
+        };
+        buttons.Children.Add(Btn("Copy", false, () =>
+        {
+            try { Clipboard.SetText(message); } catch { /* another app owns the clipboard */ }
+        }));
+        buttons.Children.Add(Btn("Close", true, () => win.Close()));
+        body.Children.Add(buttons);
+
+        ShowBlurred(owner, win);
+    }
+
     public static MessageBoxResult AskSaveChanges(Window owner, string profileName)
     {
         var result = MessageBoxResult.Cancel;

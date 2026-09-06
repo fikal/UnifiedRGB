@@ -278,7 +278,7 @@ public sealed class OpenRgbServer : IDisposable
 
             case OpenRgbProtocol.PktResizeZone:
                 // Our zones come from the hardware; a client cannot change them.
-                Log.Occasional("orgb-server", "resize", "a client tried to resize a zone; ignored");
+                Log.Occasional("orgb-resize", "orgb-server", "a client tried to resize a zone; ignored");
                 break;
         }
     }

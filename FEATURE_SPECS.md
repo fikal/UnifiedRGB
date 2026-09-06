@@ -652,6 +652,10 @@ round-trip with missing/unknown devices.
       Note: the spec's UNKNOWN device type was 19; it is 21 in current OpenRGB.
       Protocol v0 also has NO vendor field, so the blob omits it when a client
       negotiates down, or every string after the name shifts by one.
-- [ ] 8. CS2 Game State Integration
+- [x] 8. CS2 Game State Integration
+      Verified as far as it can be without playing: Steam detection, both
+      libraries, the config written to the real CS2 folders and read back,
+      and POSTs to the live app accepted (valid token) and rejected (forged).
+      NOT played: nobody has watched the lights react to real damage.
 - [ ] 9. Whole-desk canvas (+ LED layout overrides, shared snap guides)
 - [ ] Website/README updated, 1.1.0 released
