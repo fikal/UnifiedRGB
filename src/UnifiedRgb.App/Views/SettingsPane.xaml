@@ -9,17 +9,17 @@
          hairlines, which by the time automation, the desk, games and the
          SDK server arrived was a long scroll with no shape to it. -->
     <UserControl.Resources>
-        <Style x:Key="SectionTitle" TargetType="TextBlock">
+        <Style x:Key="SectionTitle" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
             <Setter Property="FontSize" Value="14"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="Margin" Value="0,0,0,8"/>
         </Style>
-        <Style x:Key="Hint" TargetType="TextBlock">
+        <Style x:Key="Hint" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
             <Setter Property="Opacity" Value="0.6"/>
             <Setter Property="FontSize" Value="12"/>
             <Setter Property="TextWrapping" Value="Wrap"/>
         </Style>
-        <Style x:Key="Status" TargetType="TextBlock">
+        <Style x:Key="Status" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
             <Setter Property="Foreground" Value="#FF7FB4FF"/>
             <Setter Property="FontSize" Value="12"/>
             <Setter Property="TextWrapping" Value="Wrap"/>
