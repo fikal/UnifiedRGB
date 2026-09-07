@@ -1,0 +1,91 @@
+{
+  "documentType": "codex-security.scan-manifest",
+  "scan": {
+    "artifacts": [
+      {
+        "mediaType": "application/json",
+        "path": "findings.json",
+        "sha256": "7f3f6bb5f891c7daee0f87f7561b4eecdb5956b120188129b206c67bbc8c9f93"
+      },
+      {
+        "mediaType": "application/json",
+        "path": "coverage.json",
+        "sha256": "f11dc9120c8b01b4d8d42bd0736733924987f526797e521acb3f77c6a8157e4c"
+      }
+    ],
+    "completedAt": "2026-09-07T22:20:16.081075Z",
+    "coverageRef": "coverage.json",
+    "findingsRef": "findings.json",
+    "id": "15d9607f-a2d2-4644-803b-ea59b36dab06",
+    "preservedSources": {
+      "checkpoints/14845e10bd16d9b7565b4d4ddcf7d8997578ce69e5726a1b0f408d989d8d315e.json": "1d4cd3c22b94e53825a50bb5c95a178c26ccc5335573e0fd4b114e4f5cdcd2e0",
+      "checkpoints/1e89c0b4fb76df71456675a3505480770c2398ec7716dc1738d630632a5b4617.json": "b2e7ea11d3b6be0585ac41297ce7621ace632b9af042c7c89cd6b579dd8614ab",
+      "checkpoints/3d0beed2b49d70d662b55c1cb1e595345847f8d7bef7036c4e6395d73cdf5efb.json": "db9d6b1a833a0e8b5db499f72241f344717b0a4716ce792697c18cb4fa783a54",
+      "checkpoints/4b206260cc975bec73e1c3b6287b2df6dbb8e24c73c049922afd63a455f13c2e.json": "4b206260cc975bec73e1c3b6287b2df6dbb8e24c73c049922afd63a455f13c2e",
+      "checkpoints/9f635b0d5d88d0375ad5191a6745d435c6d55529da9eda9ae0fefa9d2d3936ca.json": "3f73ce5af9618b05b54c2d064cd9735df52e4ec781416e210f44a9c497bd5835"
+    },
+    "producer": {
+      "name": "codex-security-plugin",
+      "version": "0.1.23"
+    },
+    "scope": {
+      "excludePaths": [],
+      "includePaths": [
+        "."
+      ],
+      "limitations": [
+        "No active exploit or hardware testing. No dependency-CVE scan. Full repository coverage not claimed."
+      ],
+      "runtimeStatus": "Security paths not executed. Two unrelated lighting composition bugs reproduced with isolated fake devices.",
+      "summary": "Repository-wide request; focused security review with explicitly partial coverage, alongside ordinary repair backlog.",
+      "validationMode": "static source review"
+    },
+    "sealedAt": "2026-09-07T22:20:16.081075Z",
+    "startedAt": "2026-09-07T22:03:59.689149Z",
+    "status": "completed",
+    "target": {
+      "displayName": "UnifiedRgb",
+      "kind": "git_worktree",
+      "revision": "7716aab111436d883829edbcdf75f4e58edbcc2a",
+      "snapshotDigest": "codex-security-snapshot/v1:sha256:0f2bb43efa48048ee5ab6909624e9778b77f7ac6408995c9e7078d264bde071c",
+      "targetId": "target_sha256_abda6e9caeabf825abc71929912f9fa7b11bd991f6f2e10d2c6aef7c19276286"
+    },
+    "threatModel": {
+      "assets": [
+        "Elevated process execution and executable integrity: GUI manifest requires administrator; updater replaces Environment.ProcessPath and relaunches it (src/UnifiedRgb.App/app.manifest:13; src/UnifiedRgb.App/Services/UpdateService.cs:109; src/UnifiedRgb.App/Services/UpdateService.cs:227).",
+        "Hardware lighting and thermal-control availability: fatal exception handling attempts to restore controlled fans to BIOS and shut sensors down (src/UnifiedRgb.App/App.xaml.cs:68). Fan configuration lives at %LOCALAPPDATA%/UnifiedRgb/fan-config.json (src/UnifiedRgb.Core/Sensors/SensorHub.cs:810; src/UnifiedRgb.Core/AppPaths.cs:16).",
+        "User configuration and diagnostic privacy: settings.json, profiles.json, and unifiedrgb.log reside under %APPDATA%/UnifiedRgb (src/UnifiedRgb.App/ProfileStore.cs:152; src/UnifiedRgb.Core/Log.cs:9; src/UnifiedRgb.Core/AppPaths.cs:11). Support exports include hardware diagnostics, app state, current and rotated logs (src/UnifiedRgb.App/Services/SupportService.cs:38; src/UnifiedRgb.App/Services/SupportService.cs:44; src/UnifiedRgb.App/Services/SupportService.cs:58)."
+      ],
+      "assumptions": [
+        "User context requests an actionable document of bugs, exploits, refactorings, smells, CPU and memory issues for another model to fix. No supplied threat model or authoritative knowledge base. Scope policy resolver for src returned empty.",
+        "Updater staging inherits protection of the installed executable directory; that directory is derived from Environment.ProcessPath and is not necessarily Program Files. Random staging names are not an ACL (src/UnifiedRgb.App/Services/UpdateService.cs:109; src/UnifiedRgb.App/Services/UpdateService.cs:117; src/UnifiedRgb.App/Services/UpdateService.cs:122). Actual installation ACLs remain deployment-dependent.",
+        "Private feed source documentation says public update checks skip, but actual UpdateClient falls back to GitHub Releases. Retain this documentation/code disagreement (src/UnifiedRgb.Core/AppPaths.cs:32; src/UnifiedRgb.Core/UpdateClient.cs:43; src/UnifiedRgb.Core/UpdateClient.cs:81).",
+        "OpenRGB introductory comment says --startminimized; actual startup deliberately omits it (src/UnifiedRgb.Core/Net/OpenRgbManager.cs:12; src/UnifiedRgb.Core/Net/OpenRgbManager.cs:171; src/UnifiedRgb.Core/Net/OpenRgbManager.cs:181).",
+        "OpenRGB download is described as pinned but falls back to moving master when the pinned request fails; executable discovery depends on archive contents (src/UnifiedRgb.Core/Net/OpenRgbManager.cs:23; src/UnifiedRgb.Core/Net/OpenRgbManager.cs:57; src/UnifiedRgb.Core/Net/OpenRgbManager.cs:90).",
+        "Bounded architecture pass did not inspect all device protocols, effect lifecycles, native shim exports, image/media parsers, or release script. Those are audit work remaining, not negative findings."
+      ],
+      "attackerCapabilities": [
+        "A local process can attempt Chroma pipe/REST and enabled SDK access without possessing administrator authority; intended color control itself is not an exploit (src/UnifiedRgb.Core/Effects/ChromaSync.cs:100; src/UnifiedRgb.Core/Net/ChromaRestServer.cs:45).",
+        "A network peer can reach the SDK only when LAN listening is enabled and host networking permits it (src/UnifiedRgb.Core/Net/OpenRgbServer.cs:113). No unsupported public Internet deployment is assumed.",
+        "A same-user medium-integrity process may modify per-user configuration and bundle storage; source explicitly recognizes backend.json as user-writable while the app runs elevated (src/UnifiedRgb.Core/AppPaths.cs:66). Any resulting elevated execution claim still needs its complete reachable consumer and prerequisite demonstrated.",
+        "A compromised trusted download publisher/feed can influence downloaded executable bytes. Transport trust, hash comparison, and Authenticode are distinct controls; no publisher compromise is assumed as a discovered vulnerability."
+      ],
+      "securityObjectives": [
+        "Network and IPC inputs should remain constrained to supported color/game-state operations and bounded resource consumption, without escaping into elevated execution or destabilizing thermal control.",
+        "Executable updates and optional helper installation should preserve integrity across download, validation, staging, and actual process creation.",
+        "Diagnostics should leave the machine only through the selected support workflow, with privacy controls applied consistently (src/UnifiedRgb.App/Services/SupportService.cs:74; src/UnifiedRgb.App/Services/SupportService.cs:76).",
+        "Hardware ownership and recovery should prevent conflicting device writes and restore fan control after fatal failure (src/UnifiedRgb.App/App.xaml.cs:17; src/UnifiedRgb.App/App.xaml.cs:68)."
+      ],
+      "summary": "UnifiedRGB is a Windows WPF RGB/fan/LCD controller whose normal GUI requires administrator (src/UnifiedRgb.App/app.manifest:13). GUI startup enforces a same-session singleton (src/UnifiedRgb.App/App.xaml.cs:17), starts Chroma named-pipe and localhost REST ingestion unconditionally (src/UnifiedRgb.App/MainViewModel.cs:1239), and conditionally starts the OpenRGB bridge from persisted settings (src/UnifiedRgb.App/MainViewModel.cs:1257). Core contains device drivers, sensors, effects, networking, updates, and shared persistence; separate CLI and diagnostic programs expose operator/developer workflows (src/UnifiedRgb.Cli/Program.cs:805; src/UnifiedRgb.Diag/Program.cs:21). This is an architecture map, not completed audit coverage.",
+      "trustBoundaries": [
+        "Local or explicitly enabled LAN SDK clients submit RGB protocol packets to elevated GUI. OpenRgbServer binds 127.0.0.1 by default or 0.0.0.0 when LAN is selected; caps clients at 16, packet payloads at 1 MiB, and sets read/write timeouts (src/UnifiedRgb.Core/Net/OpenRgbServer.cs:113; src/UnifiedRgb.Core/Net/OpenRgbServer.cs:62; src/UnifiedRgb.Core/Net/OpenRgbServer.cs:215; src/UnifiedRgb.Core/Net/OpenRgbServer.cs:234). GUI passes its persisted LAN preference at startup (src/UnifiedRgb.App/MainViewModel.Settings.cs:275).",
+        "Chroma hosts submit color data through \\\\.\\pipe\\UnifiedRgbChroma. Pipe ACL grants administrators/system full access and everyone read/write at medium integrity; first-instance protection refuses an already-owned pipe name (src/UnifiedRgb.Core/Effects/ChromaSync.cs:100; src/UnifiedRgb.Core/Effects/ChromaSync.cs:134). Native shim connects to that exact pipe (native/chroma-shim/RzChromaSDK.cpp:165). Separately, Chroma REST listens on http://localhost:54235/ (src/UnifiedRgb.Core/Net/ChromaRestServer.cs:27; src/UnifiedRgb.Core/Net/ChromaRestServer.cs:45).",
+        "CS2 GSI enters through a localhost HttpListener with a persisted shared token and a 512 KiB body limit; parser receives expected token (src/UnifiedRgb.Core/Games/GsiServer.cs:73; src/UnifiedRgb.Core/Games/GsiServer.cs:128; src/UnifiedRgb.Core/Games/GsiServer.cs:156). Token originates in settings and is written into game configuration by explicit setup (src/UnifiedRgb.App/MainViewModel.Settings.cs:325; src/UnifiedRgb.App/MainViewModel.Settings.cs:375).",
+        "Optional OpenRGB executable runs with inherited GUI authority from the first recursively discovered OpenRGB.exe beneath %LOCALAPPDATA%/UnifiedRgb/openrgb. Configuration is %LOCALAPPDATA%/UnifiedRgb/openrgb/config/OpenRGB.json; process uses --server --server-port 6742 --loglevel 6 --config <config directory>. An existing reachable server is reused instead of launching (src/UnifiedRgb.Core/Net/OpenRgbManager.cs:28; src/UnifiedRgb.Core/Net/OpenRgbManager.cs:57; src/UnifiedRgb.Core/Net/OpenRgbManager.cs:113; src/UnifiedRgb.Core/Net/OpenRgbManager.cs:166; src/UnifiedRgb.Core/Net/OpenRgbManager.cs:178).",
+        "Update/support destination selection crosses user configuration into elevated network and execution behavior. %APPDATA%/UnifiedRgb/backend.json fields override assembly metadata independently; HTTPS or loopback HTTP accepted. Configured backend selects private feed, otherwise GitHub Releases (src/UnifiedRgb.Core/AppPaths.cs:54; src/UnifiedRgb.Core/AppPaths.cs:72; src/UnifiedRgb.Core/AppPaths.cs:79; src/UnifiedRgb.Core/UpdateClient.cs:43).",
+        "PawnIO installation downloads a random temporary executable, holds a read-sharing lock, checks Authenticode signer CN=namazso.eu, then launches installer (src/UnifiedRgb.Core/Native/PawnIoInstaller.cs:29; src/UnifiedRgb.Core/Native/PawnIoInstaller.cs:41; src/UnifiedRgb.Core/Native/PawnIoInstaller.cs:47; src/UnifiedRgb.Core/Native/PawnIoInstaller.cs:58)."
+      ]
+    }
+  },
+  "schemaVersion": "1.0"
+}

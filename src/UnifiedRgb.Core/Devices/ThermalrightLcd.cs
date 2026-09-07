@@ -1,3 +1,4 @@
+using System.IO;
 using UnifiedRgb.Core.Native;
 
 namespace UnifiedRgb.Core.Devices;
@@ -93,13 +94,20 @@ public sealed class ThermalrightLcd : IDisposable
         for (int off = 0; off < total; off += CHUNK)
         {
             int n = Math.Min(CHUNK, total - off);
-            WriteReport(payload, off, n);
+            // Stop at the first refusal. This used to push all 301 reports
+            // regardless and return as if the frame had landed: with the panel
+            // unplugged or held by another program every one of them waited out
+            // its write timeout (400 ms, and up to a second more to cancel), so
+            // a single dead frame could occupy the stream thread for minutes
+            // while the caller's retry/backoff never ran, because nothing threw.
+            if (!WriteReport(payload, off, n))
+                throw new IOException($"the panel refused report {off / CHUNK + 1} of {(total + CHUNK - 1) / CHUNK}");
         }
     }
 
     /// <summary>Write one 513-byte HID output report (report id 0 + data),
     /// copied out of the caller's buffer at an offset — no per-chunk arrays.</summary>
-    void WriteReport(byte[] data, int offset, int len)
+    bool WriteReport(byte[] data, int offset, int len)
     {
         lock (_report)                       // handshake vs stream thread
         {
@@ -108,11 +116,11 @@ public sealed class ThermalrightLcd : IDisposable
             Array.Copy(data, offset, _report, 1, len);
             if (len < REPORT - 1)
                 Array.Clear(_report, 1 + len, REPORT - 1 - len);   // stale tail from a longer chunk
-            _hid.Write(_report);
+            return _hid.Write(_report);
         }
     }
 
-    void WriteReport(byte[] data, int len) => WriteReport(data, 0, len);
+    bool WriteReport(byte[] data, int len) => WriteReport(data, 0, len);
 
     public void Dispose() => _hid.Dispose();
 }

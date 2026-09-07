@@ -1,0 +1,375 @@
+{
+  "completeness": "partial",
+  "deferred": [
+    {
+      "candidate": {
+        "CWE": "CWE-400",
+        "attacker": "A local process able to connect to the Chroma REST listener.",
+        "confidence": "medium",
+        "counterevidence": [
+          "The per-request body buffer and parsed frame size are bounded.",
+          "HTTP.sys may impose entity-body timers; indefinite blocking of a single request is not established.",
+          "Static analysis establishes missing application-level limits, not a measured exhaustion threshold."
+        ],
+        "dataflow": "Every accepted context is queued to the shared CLR thread pool without a concurrency gate. Each handler performs synchronous body reads before route dispatch and holds a thread-static 64 KiB buffer while waiting. Repeated incomplete request bodies accumulate outstanding work and occupy shared workers.",
+        "evidence": [
+          {
+            "excerpt": "ctx = l.GetContext(); ... ThreadPool.QueueUserWorkItem(static c => ... Handle(context), ctx);",
+            "lines": "76-95",
+            "path": "C:/Users/ryanb/source/repos/UnifiedRgb/src/UnifiedRgb.Core/Net/ChromaRestServer.cs"
+          },
+          {
+            "excerpt": "body = _bodyBuf ??= new byte[64 * 1024]; ... req.InputStream.Read(body, bodyLen, body.Length - bodyLen)",
+            "lines": "107-114",
+            "path": "C:/Users/ryanb/source/repos/UnifiedRgb/src/UnifiedRgb.Core/Net/ChromaRestServer.cs"
+          }
+        ],
+        "impact": "Resource pressure and starvation of unrelated thread-pool work in the elevated, long-running application.",
+        "invariant": "Untrusted HTTP requests must have bounded simultaneous processing and body-read duration.",
+        "remediation": "Enforce a bounded number of in-flight requests, reject excess requests, use asynchronous reads with a short explicit total-body deadline, and close/abort contexts in a finally block. Verify valid Chroma frames remain responsive while a bounded test set of clients sends incomplete bodies.",
+        "severity": "medium",
+        "title": "Chroma REST requests queue unbounded blocking body readers"
+      },
+      "candidateId": "chroma-http-queue",
+      "id": "chroma-http-queue",
+      "paths": [
+        "src/UnifiedRgb.Core/Net/ChromaRestServer.cs"
+      ],
+      "reason": "Application concurrency gap confirmed, but whole-app starvation/HTTP.sys effective limits require bounded runtime measurement."
+    },
+    {
+      "candidate": {
+        "CWE": "CWE-400",
+        "attacker": "A local process connecting to the GSI HTTP listener; no GSI token needed.",
+        "confidence": "high",
+        "counterevidence": [
+          "Bodies are size-bounded and GsiParser verifies the token.",
+          "HTTP.sys body timeouts may eventually release an individual blocked request.",
+          "Impact is confined to game-state integration; arbitrary code execution is not indicated."
+        ],
+        "dataflow": "The sole accept loop calls Handle synchronously. Handle reads the complete body before parsing or authenticating it. An incomplete body blocks further GetContext calls, so legitimate game updates queue behind it.",
+        "evidence": [
+          {
+            "excerpt": "ctx = listener.GetContext(); ... try { Handle(ctx); }",
+            "lines": "117-119",
+            "path": "C:/Users/ryanb/source/repos/UnifiedRgb/src/UnifiedRgb.Core/Games/GsiServer.cs"
+          },
+          {
+            "excerpt": "body = ReadBounded(reader); ... var parsed = GsiParser.Parse(body, Token); ... while ((n = reader.Read(buffer, 0, buffer.Length)) > 0)",
+            "lines": "140-158,179-189",
+            "path": "C:/Users/ryanb/source/repos/UnifiedRgb/src/UnifiedRgb.Core/Games/GsiServer.cs"
+          }
+        ],
+        "impact": "Game-state effects become stale/disconnected for the body-read timeout interval; repeated requests can sustain disruption.",
+        "invariant": "An unauthenticated slow sender must not monopolize the only game-state processing thread.",
+        "remediation": "Use bounded concurrent asynchronous handling with a short total-body deadline, guarantee response disposal on exceptions, and retain body-size/authentication checks. Verify legitimate token-bearing updates remain serviceable while another connection sends an incomplete body.",
+        "severity": "low",
+        "title": "An incomplete unauthenticated GSI body blocks all game-state handling"
+      },
+      "candidateId": "gsi-serial-body",
+      "id": "gsi-serial-body",
+      "paths": [
+        "src/UnifiedRgb.Core/Games/GsiServer.cs"
+      ],
+      "reason": "Serial pre-authentication body read confirmed; effective HTTP.sys timeout and game-silence impact need isolated Windows validation."
+    },
+    {
+      "id": "deferred-104da4d472b12adb",
+      "paths": [
+        ".github/workflows/build.yml",
+        "release.ps1",
+        "src/UnifiedRgb.App/App.xaml",
+        "src/UnifiedRgb.App/App.xaml.cs",
+        "src/UnifiedRgb.App/AppInfo.cs",
+        "src/UnifiedRgb.App/AppRulesWindow.xaml",
+        "src/UnifiedRgb.App/AppRulesWindow.xaml.cs",
+        "src/UnifiedRgb.App/AssemblyInfo.cs",
+        "src/UnifiedRgb.App/CanvasWindow.xaml",
+        "src/UnifiedRgb.App/CanvasWindow.xaml.cs",
+        "src/UnifiedRgb.App/CoalescingApplier.cs",
+        "src/UnifiedRgb.App/ColorWheel.cs",
+        "src/UnifiedRgb.App/Controls/FanCurveEditor.xaml",
+        "src/UnifiedRgb.App/Controls/FanCurveEditor.xaml.cs",
+        "src/UnifiedRgb.App/Controls/LianLiFanView.cs",
+        "src/UnifiedRgb.App/Controls/PaletteStrip.xaml",
+        "src/UnifiedRgb.App/Controls/PaletteStrip.xaml.cs",
+        "src/UnifiedRgb.App/Controls/SwatchGrid.xaml",
+        "src/UnifiedRgb.App/Controls/SwatchGrid.xaml.cs",
+        "src/UnifiedRgb.App/Controls/TempGauge.xaml",
+        "src/UnifiedRgb.App/Controls/TempGauge.xaml.cs",
+        "src/UnifiedRgb.App/Converters.cs",
+        "src/UnifiedRgb.App/Dialogs.cs",
+        "src/UnifiedRgb.App/ExitBehaviorWindow.xaml",
+        "src/UnifiedRgb.App/ExitBehaviorWindow.xaml.cs",
+        "src/UnifiedRgb.App/HeaderConfigDialog.cs",
+        "src/UnifiedRgb.App/LcdController.cs",
+        "src/UnifiedRgb.App/LcdDesign.cs",
+        "src/UnifiedRgb.App/LcdWidgets.cs",
+        "src/UnifiedRgb.App/LedPreview.cs",
+        "src/UnifiedRgb.App/LianLayoutWindow.xaml",
+        "src/UnifiedRgb.App/LianLayoutWindow.xaml.cs",
+        "src/UnifiedRgb.App/MainViewModel.Cooling.cs",
+        "src/UnifiedRgb.App/MainViewModel.Lcd.cs",
+        "src/UnifiedRgb.App/MainViewModel.Lian.cs",
+        "src/UnifiedRgb.App/MainViewModel.Profiles.cs",
+        "src/UnifiedRgb.App/MainViewModel.Settings.cs",
+        "src/UnifiedRgb.App/MainViewModel.Support.cs",
+        "src/UnifiedRgb.App/MainViewModel.cs",
+        "src/UnifiedRgb.App/MainWindow.xaml",
+        "src/UnifiedRgb.App/MainWindow.xaml.cs",
+        "src/UnifiedRgb.App/MediaService.cs",
+        "src/UnifiedRgb.App/Models.cs",
+        "src/UnifiedRgb.App/PaletteLibrary.cs",
+        "src/UnifiedRgb.App/PaletteLibraryWindow.xaml",
+        "src/UnifiedRgb.App/PaletteLibraryWindow.xaml.cs",
+        "src/UnifiedRgb.App/PawnIoCpuTempProvider.cs",
+        "src/UnifiedRgb.App/ProfileStore.cs",
+        "src/UnifiedRgb.App/RazerLayoutDialog.cs",
+        "src/UnifiedRgb.App/RelayCommand.cs",
+        "src/UnifiedRgb.App/Scenes.cs",
+        "src/UnifiedRgb.App/SchedulesWindow.xaml",
+        "src/UnifiedRgb.App/SchedulesWindow.xaml.cs",
+        "src/UnifiedRgb.App/SensorRulesWindow.xaml",
+        "src/UnifiedRgb.App/SensorRulesWindow.xaml.cs",
+        "src/UnifiedRgb.App/Services/AutomationService.cs",
+        "src/UnifiedRgb.App/Services/BatteryMonitor.cs",
+        "src/UnifiedRgb.App/Services/LianBakeService.cs",
+        "src/UnifiedRgb.App/Services/LightingController.cs",
+        "src/UnifiedRgb.App/Services/OpenRgbHost.cs",
+        "src/UnifiedRgb.App/Services/SupportService.cs",
+        "src/UnifiedRgb.App/Themes/Styles.xaml",
+        "src/UnifiedRgb.App/Themes/Styles.xaml.cs",
+        "src/UnifiedRgb.App/UnifiedRgb.App.csproj",
+        "src/UnifiedRgb.App/ViewModels/CoolingViewModel.cs",
+        "src/UnifiedRgb.App/ViewModels/LcdDesignerViewModel.cs",
+        "src/UnifiedRgb.App/ViewModels/LianFanSelection.cs",
+        "src/UnifiedRgb.App/ViewModels/MainWindowState.cs",
+        "src/UnifiedRgb.App/Views/CoolingPane.xaml",
+        "src/UnifiedRgb.App/Views/CoolingPane.xaml.cs",
+        "src/UnifiedRgb.App/Views/KeyPolicy.cs",
+        "src/UnifiedRgb.App/Views/LcdDesignerPane.xaml",
+        "src/UnifiedRgb.App/Views/LcdDesignerPane.xaml.cs",
+        "src/UnifiedRgb.App/Views/LeftNavPanel.xaml",
+        "src/UnifiedRgb.App/Views/LeftNavPanel.xaml.cs",
+        "src/UnifiedRgb.App/Views/LightingPane.xaml",
+        "src/UnifiedRgb.App/Views/LightingPane.xaml.cs",
+        "src/UnifiedRgb.App/Views/SettingsPane.xaml",
+        "src/UnifiedRgb.App/Views/SettingsPane.xaml.cs",
+        "src/UnifiedRgb.App/WizardWindow.xaml",
+        "src/UnifiedRgb.App/WizardWindow.xaml.cs",
+        "src/UnifiedRgb.Cli/Program.cs",
+        "src/UnifiedRgb.Cli/UnifiedRgb.Cli.csproj",
+        "src/UnifiedRgb.Core/Audio/AudioAnalyzer.cs",
+        "src/UnifiedRgb.Core/Automation/AutomationDecision.cs",
+        "src/UnifiedRgb.Core/Automation/AutomationRule.cs",
+        "src/UnifiedRgb.Core/Automation/ScheduleRule.cs",
+        "src/UnifiedRgb.Core/Automation/SensorRule.cs",
+        "src/UnifiedRgb.Core/ColorUtil.cs",
+        "src/UnifiedRgb.Core/DeviceManager.cs",
+        "src/UnifiedRgb.Core/Devices/CorsairStrafeMk2.cs",
+        "src/UnifiedRgb.Core/Devices/EneDram.cs",
+        "src/UnifiedRgb.Core/Devices/GigabyteIt5711.cs",
+        "src/UnifiedRgb.Core/Devices/ILianFanDevice.cs",
+        "src/UnifiedRgb.Core/Devices/LianLiTinyuz.cs",
+        "src/UnifiedRgb.Core/Devices/LianLiUniHub.cs",
+        "src/UnifiedRgb.Core/Devices/LianLiWireless.cs",
+        "src/UnifiedRgb.Core/Devices/LogitechG403.cs",
+        "src/UnifiedRgb.Core/Devices/MsiGpu.cs",
+        "src/UnifiedRgb.Core/Devices/OpenRgbDevice.cs",
+        "src/UnifiedRgb.Core/Devices/RazerHid.cs",
+        "src/UnifiedRgb.Core/Devices/SayoDevice.cs",
+        "src/UnifiedRgb.Core/Devices/SteelSeriesApex.cs",
+        "src/UnifiedRgb.Core/Devices/ThermalrightLcd.cs",
+        "src/UnifiedRgb.Core/DiagnosticReport.cs",
+        "src/UnifiedRgb.Core/Effects/AudioEffects.cs",
+        "src/UnifiedRgb.Core/Effects/CanvasLayout.cs",
+        "src/UnifiedRgb.Core/Effects/CanvasMapper.cs",
+        "src/UnifiedRgb.Core/Effects/ColorGrid.cs",
+        "src/UnifiedRgb.Core/Effects/Cs2Effect.cs",
+        "src/UnifiedRgb.Core/Effects/EffectEngine.cs",
+        "src/UnifiedRgb.Core/Effects/ExtraEffects.cs",
+        "src/UnifiedRgb.Core/Effects/Geo.cs",
+        "src/UnifiedRgb.Core/Effects/IEffect.cs",
+        "src/UnifiedRgb.Core/Effects/LianStackEffects.cs",
+        "src/UnifiedRgb.Core/Effects/MoreEffects.cs",
+        "src/UnifiedRgb.Core/Effects/PatternEffect.cs",
+        "src/UnifiedRgb.Core/Effects/ReactiveEffects.cs",
+        "src/UnifiedRgb.Core/Effects/ScreenSync.cs",
+        "src/UnifiedRgb.Core/Effects/TempEffects.cs",
+        "src/UnifiedRgb.Core/Effects/WallpaperCapture.cs",
+        "src/UnifiedRgb.Core/Games/GsiConfig.cs",
+        "src/UnifiedRgb.Core/HardwareConfig.cs",
+        "src/UnifiedRgb.Core/HardwareExit.cs",
+        "src/UnifiedRgb.Core/IRgbDevice.cs",
+        "src/UnifiedRgb.Core/Input/HidUsageVk.cs",
+        "src/UnifiedRgb.Core/Input/KeyboardTap.cs",
+        "src/UnifiedRgb.Core/Master.cs",
+        "src/UnifiedRgb.Core/MemoryTrimmer.cs",
+        "src/UnifiedRgb.Core/Native/HidNative.cs",
+        "src/UnifiedRgb.Core/Native/NvApi.cs",
+        "src/UnifiedRgb.Core/Native/SetupDiEnum.cs",
+        "src/UnifiedRgb.Core/Native/SmbusPiix4.cs",
+        "src/UnifiedRgb.Core/Native/Wasapi.cs",
+        "src/UnifiedRgb.Core/Native/WinUsbNative.cs",
+        "src/UnifiedRgb.Core/Net/ExternalOwnership.cs",
+        "src/UnifiedRgb.Core/Net/OpenRgbCrashBisect.cs",
+        "src/UnifiedRgb.Core/Net/OpenRgbDetectorConfig.cs",
+        "src/UnifiedRgb.Core/Net/OpenRgbLink.cs",
+        "src/UnifiedRgb.Core/Net/OpenRgbProtocol.cs",
+        "src/UnifiedRgb.Core/NowPlayingText.cs",
+        "src/UnifiedRgb.Core/Redaction.cs",
+        "src/UnifiedRgb.Core/Rgb.cs",
+        "src/UnifiedRgb.Core/SafeFile.cs",
+        "src/UnifiedRgb.Core/Sensors/FanCurve.cs",
+        "src/UnifiedRgb.Core/Sensors/GigabyteEcio.cs",
+        "src/UnifiedRgb.Core/Sensors/GigabyteIsaBridge.cs",
+        "src/UnifiedRgb.Core/Sensors/IteSuperIo.cs",
+        "src/UnifiedRgb.Core/Sensors/LhmFans.cs",
+        "src/UnifiedRgb.Core/Sensors/RyzenCpuTemperature.cs",
+        "src/UnifiedRgb.Core/Sensors/SensorHub.cs",
+        "src/UnifiedRgb.Core/SnapGuides.cs",
+        "src/UnifiedRgb.Core/UndoStack.cs",
+        "src/UnifiedRgb.Core/UnifiedRgb.Core.csproj",
+        "src/UnifiedRgb.Diag/Program.cs",
+        "src/UnifiedRgb.Diag/UnifiedRgb.Diag.csproj",
+        "src/UnifiedRgb.Tests/Program.cs",
+        "src/UnifiedRgb.Tests/UnifiedRgb.Tests.csproj"
+      ],
+      "reason": "Not fully security-audited in this focused review. Ordinary source review and architecture mapping do not count as exhaustive security coverage."
+    }
+  ],
+  "documentType": "codex-security.coverage",
+  "excludePaths": [],
+  "explicitExclusions": [
+    {
+      "pattern": "src/UnifiedRgb.Core/Modules/*.bin",
+      "reason": "Third-party embedded kernel module binaries not reverse engineered."
+    },
+    {
+      "pattern": "third-party dependency implementations",
+      "reason": "No source audit or online CVE/version check of external libraries/bundles."
+    }
+  ],
+  "includePaths": [
+    "."
+  ],
+  "inventoryStrategy": "repository",
+  "mode": "repository",
+  "openQuestions": [
+    {
+      "question": "Measure HTTP.sys request timeouts/queue effects before promoting I1/I2."
+    },
+    {
+      "question": "Actual installation ACLs and supplied external OpenRGB server behavior were not inspected."
+    },
+    {
+      "question": "The full repository has not been audited; deferred paths record remaining source scope."
+    }
+  ],
+  "scanId": "15d9607f-a2d2-4644-803b-ea59b36dab06",
+  "schemaVersion": "1.0",
+  "surfaces": [
+    {
+      "disposition": "reported",
+      "id": "surface_update-and-helper-executable-trust",
+      "label": "Update and helper executable trust",
+      "notes": "S1/S2 retain same-user and user-action/optional-bridge prerequisites. PawnIO installer separately verifies Authenticode and sharing protection. AppPaths.cs:54; OpenRgbManager.cs:178; PawnIoInstaller.cs:41.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "reported",
+      "id": "surface_openrgb-input-and-logging",
+      "label": "OpenRGB input and logging",
+      "notes": "S3: embedded controls in names reach logs. Packet/client/time bounds already exist; intended LED control is not a finding. OpenRgbServer.cs:62,215,234,280.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "reported",
+      "id": "surface_chroma-pipe-admission",
+      "label": "Chroma pipe admission",
+      "notes": "S4: finite slots have no idle deadline. Dimensions/client count bound memory; shim uses identification-level pipe access, and no cross-boundary native memory corruption was validated. ChromaSync.cs:100,161,198,229.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "needs_follow_up",
+      "id": "surface_http-body-availability",
+      "label": "HTTP body availability",
+      "notes": "I1/I2 retained as candidates pending Windows HTTP.sys behavior measurement. ChromaRestServer.cs:83,112; GsiServer.cs:119,142.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "no_issue_found",
+      "fullyReviewedFiles": [
+        "native/chroma-shim/RzChromaSDK.cpp",
+        "src/UnifiedRgb.App/Services/UpdateService.cs",
+        "src/UnifiedRgb.App/app.manifest",
+        "src/UnifiedRgb.Core/AppPaths.cs",
+        "src/UnifiedRgb.Core/Effects/ChromaSync.cs",
+        "src/UnifiedRgb.Core/Games/GameState.cs",
+        "src/UnifiedRgb.Core/Games/GsiServer.cs",
+        "src/UnifiedRgb.Core/Log.cs",
+        "src/UnifiedRgb.Core/Native/Authenticode.cs",
+        "src/UnifiedRgb.Core/Native/PawnIO.cs",
+        "src/UnifiedRgb.Core/Native/PawnIoInstaller.cs",
+        "src/UnifiedRgb.Core/Net/ChromaRestServer.cs",
+        "src/UnifiedRgb.Core/Net/ChromaShimInstaller.cs",
+        "src/UnifiedRgb.Core/Net/OpenRgbClient.cs",
+        "src/UnifiedRgb.Core/Net/OpenRgbManager.cs",
+        "src/UnifiedRgb.Core/Net/OpenRgbServer.cs",
+        "src/UnifiedRgb.Core/SupportUpload.cs",
+        "src/UnifiedRgb.Core/UpdateClient.cs"
+      ],
+      "id": "surface_baseline-controls-and-source-coverage",
+      "label": "Baseline controls and source coverage",
+      "notes": "Root/src/native security-policy resolver outputs were empty.\nThe app explicitly requires administrator privileges.\nPawnIO installer verification pins an exact certificate RDN, obtains the signer from WinVerifyTrust state, and holds a no-write/no-delete sharing handle across verification and launches; the obvious temporary-file replacement attack is addressed.\nChroma named-pipe dimensions are bounded before allocation; ushort dimensions cannot wrap their product to a small positive int, so no integer-overflow allocation bypass was found.\nChroma pipe clients use SECURITY_IDENTIFICATION; a malicious pipe server cannot obtain an impersonation-capable token from the current shim.\nOpenRGB packet allocations and controller counts have explicit caps; malformed managed parsing does not establish native memory corruption.\nNative shim parameters are supplied by code already inside the hosting process; malformed pointers alone do not constitute a cross-boundary exploit.\nNative shim full read found potential ordinary lifecycle/exception-handling concerns, but no validated additional security exploit.\nNo application execution, network access, exploit tests, or source modifications were performed.\nCoverage focused on exposed listeners, updater, privileged executable loading and native shim; this is not a claim that every repository file was fully audited.\nOpenRGB has a 16-client cap, 120-second per-read timeout, 3-second write timeout, and 1 MiB payload limit. No unbounded connection/thread allocation finding is warranted from this path.\nOpenRGB ReadExactly uses per-read timeouts rather than a total packet deadline; slow progress can extend a packet lifetime. With intentional unauthenticated lighting control and bounded clients this is primarily optional hardening unless stronger availability requirements apply.\nGSI stores at most approximately 512K decoded characters, despite the MaxBodyBytes name; it does not accept an unbounded body into memory. ContentLength64 is separately checked against 512 KiB.\nNo TimeoutManager, EntityBody, DrainEntityBody, or RequestQueue customization was found in src.\nChroma REST is started from MainViewModel alongside ChromaFeed and stopped during app shutdown.\nNative shim opens the same named pipe and uses overlapped writes with a 50 ms wait plus cancellation. Only relevant pipe I/O sections were inspected, not the full native file.\nThe pipe DACL intentionally retains GENERIC_WRITE compatibility for installed shims; do not present the documented compatibility decision alone as an undiscovered exploit.\nHTTP.sys effective timeout defaults were not verified because this task prohibited network and application execution.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "needs_follow_up",
+      "id": "surface_architecture-consumer-reconciliation",
+      "label": "Architecture consumer reconciliation",
+      "notes": "Chroma pipe and REST ingestion are unconditional normal GUI startup surfaces, not only active-effect initialization (src/UnifiedRgb.App/MainViewModel.cs:1239).\nGUI OpenRGB SDK server is distinct from the managed OpenRGB bridge process. Do not transfer GUI loopback-binding guarantees to the external child without inspecting the external server's effective configuration.\nSDK ingress already caps connection count, packet size, and socket timeouts; claims of unrestricted payload allocation must account for those controls (src/UnifiedRgb.Core/Net/OpenRgbServer.cs:62; src/UnifiedRgb.Core/Net/OpenRgbServer.cs:215; src/UnifiedRgb.Core/Net/OpenRgbServer.cs:234).\nPublic update checks do occur via GitHub despite stale Backend comments saying they skip (src/UnifiedRgb.Core/AppPaths.cs:32; src/UnifiedRgb.Core/UpdateClient.cs:43).\nAppPaths separates roaming/local state but does not itself apply privileged ACLs (src/UnifiedRgb.Core/AppPaths.cs:27).\nUpdate payload/script staging is beside the actual process executable, not TEMP; any staging concern must use that complete location (src/UnifiedRgb.App/Services/UpdateService.cs:109).\nActual installation ACLs and external OpenRGB server binding/dependency internals remain deployment questions.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "needs_follow_up",
+      "fullyReviewedFiles": [
+        "src/UnifiedRgb.Core/AppPaths.cs",
+        "src/UnifiedRgb.Core/UpdateClient.cs",
+        "src/UnifiedRgb.App/Services/UpdateService.cs",
+        "src/UnifiedRgb.App/app.manifest",
+        "src/UnifiedRgb.Core/Net/OpenRgbManager.cs",
+        "src/UnifiedRgb.Core/Net/OpenRgbServer.cs",
+        "src/UnifiedRgb.Core/Net/OpenRgbClient.cs",
+        "src/UnifiedRgb.Core/Net/ChromaRestServer.cs",
+        "src/UnifiedRgb.Core/Net/ChromaShimInstaller.cs",
+        "src/UnifiedRgb.Core/Effects/ChromaSync.cs",
+        "src/UnifiedRgb.Core/Games/GsiServer.cs",
+        "src/UnifiedRgb.Core/Games/GameState.cs",
+        "src/UnifiedRgb.Core/Native/PawnIoInstaller.cs",
+        "src/UnifiedRgb.Core/Native/Authenticode.cs",
+        "src/UnifiedRgb.Core/Native/PawnIO.cs",
+        "src/UnifiedRgb.Core/SupportUpload.cs",
+        "src/UnifiedRgb.Core/Log.cs",
+        "native/chroma-shim/RzChromaSDK.cpp"
+      ],
+      "id": "surface_baseline-executable-trust-and-inbound/native-controls",
+      "label": "Baseline executable trust and inbound/native controls",
+      "notes": "Root/src/native security-policy resolver outputs were empty.\nThe app explicitly requires administrator privileges.\nPawnIO installer verification pins an exact certificate RDN, obtains the signer from WinVerifyTrust state, and holds a no-write/no-delete sharing handle across verification and launches; the obvious temporary-file replacement attack is addressed.\nChroma named-pipe dimensions are bounded before allocation; ushort dimensions cannot wrap their product to a small positive int, so no integer-overflow allocation bypass was found.\nChroma pipe clients use SECURITY_IDENTIFICATION; a malicious pipe server cannot obtain an impersonation-capable token from the current shim.\nOpenRGB packet allocations and controller counts have explicit caps; malformed managed parsing does not establish native memory corruption.\nNative shim parameters are supplied by code already inside the hosting process; malformed pointers alone do not constitute a cross-boundary exploit.\nNative shim full read found potential ordinary lifecycle/exception-handling concerns, but no validated additional security exploit.\nNo application execution, network access, exploit tests, or source modifications were performed.\nCoverage focused on exposed listeners, updater, privileged executable loading and native shim; this is not a claim that every repository file was fully audited.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "needs_follow_up",
+      "fullyReviewedFiles": [
+        "src/UnifiedRgb.Core/Net/OpenRgbServer.cs",
+        "src/UnifiedRgb.Core/Games/GsiServer.cs",
+        "src/UnifiedRgb.Core/Net/ChromaRestServer.cs",
+        "src/UnifiedRgb.Core/Effects/ChromaSync.cs"
+      ],
+      "id": "surface_focused-inbound-availability",
+      "label": "Focused inbound availability",
+      "notes": "OpenRGB has a 16-client cap, 120-second per-read timeout, 3-second write timeout, and 1 MiB payload limit. No unbounded connection/thread allocation finding is warranted from this path.\nOpenRGB ReadExactly uses per-read timeouts rather than a total packet deadline; slow progress can extend a packet lifetime. With intentional unauthenticated lighting control and bounded clients this is primarily optional hardening unless stronger availability requirements apply.\nGSI stores at most approximately 512K decoded characters, despite the MaxBodyBytes name; it does not accept an unbounded body into memory. ContentLength64 is separately checked against 512 KiB.\nNo TimeoutManager, EntityBody, DrainEntityBody, or RequestQueue customization was found in src.\nChroma REST is started from MainViewModel alongside ChromaFeed and stopped during app shutdown.\nNative shim opens the same named pipe and uses overlapped writes with a 50 ms wait plus cancellation. Only relevant pipe I/O sections were inspected, not the full native file.\nThe pipe DACL intentionally retains GENERIC_WRITE compatibility for installed shims; do not present the documented compatibility decision alone as an undiscovered exploit.\nHTTP.sys effective timeout defaults were not verified because this task prohibited network and application execution.",
+      "receiptRefs": []
+    }
+  ]
+}

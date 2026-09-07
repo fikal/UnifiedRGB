@@ -94,6 +94,9 @@ public sealed class OpenRgbHost : IOpenRgbHost
     public void ResetExternal()
     {
         if (_shuttingDown) return;
+        // Whatever the clients had painted dies with the claims: the device
+        // instances themselves are being replaced.
+        _lighting.ForgetExternalAll();
         _ui.InvokeAsync(() =>
         {
             MainViewModel.LightState? restore;
@@ -111,6 +114,9 @@ public sealed class OpenRgbHost : IOpenRgbHost
     {
         if (_shuttingDown) return;
         Log.Info("lighting", $"{device.Name}: SDK client done, your lighting coming back");
+        // The next client to claim this device starts from the user's lighting,
+        // not from where the departing one left the pixels.
+        _lighting.ForgetExternal(device);
         _ui.InvokeAsync(() =>
         {
             MainViewModel.LightState? restore = null;

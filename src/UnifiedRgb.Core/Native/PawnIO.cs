@@ -66,18 +66,42 @@ public sealed class PawnIO : IDisposable
     /// written, or -1 on failure.</summary>
     public int Execute(string name, ulong[] input, ulong[] output)
     {
+        // The sensor hub reads its sources through captured locals and closes
+        // them from another thread after a bounded drain, so a tick that
+        // overran the drain can arrive here while Dispose is running. Handing
+        // a freed context to pawnio_execute is a native dereference inside
+        // PawnIOLib - an access violation that no catch here can contain,
+        // because it is not a managed exception. The read lock makes close
+        // wait for an in-flight call instead, and the disposed flag makes
+        // every later call a cheap no-op.
+        _lock.EnterReadLock();
         try
         {
+            if (_disposed || _handle == IntPtr.Zero) return -1;
             int hr = pawnio_execute(_handle, name, input, (UIntPtr)input.Length,
                 output, (UIntPtr)output.Length, out UIntPtr ret);
             return hr == 0 ? (int)ret : -1;
         }
         catch { return -1; }
+        finally { _lock.ExitReadLock(); }
     }
+
+    readonly System.Threading.ReaderWriterLockSlim _lock = new();
+    volatile bool _disposed;
 
     public void Dispose()
     {
-        if (_handle != IntPtr.Zero) { try { pawnio_close(_handle); } catch { } _handle = IntPtr.Zero; }
+        // The write lock waits out any Execute already inside the driver. It
+        // is bounded in practice: a PawnIO ioctl is a register read, not an
+        // operation that can park for seconds.
+        _lock.EnterWriteLock();
+        try
+        {
+            if (_disposed) return;
+            _disposed = true;
+            if (_handle != IntPtr.Zero) { try { pawnio_close(_handle); } catch { } _handle = IntPtr.Zero; }
+        }
+        finally { _lock.ExitWriteLock(); }
     }
 
     [DllImport("PawnIOLib")] static extern int pawnio_version(out uint version);

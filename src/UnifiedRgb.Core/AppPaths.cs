@@ -8,13 +8,31 @@ namespace UnifiedRgb.Core;
 public static class AppPaths
 {
     /// <summary>%APPDATA%\UnifiedRgb — roaming state (settings, profiles, log).</summary>
-    public static readonly string ConfigDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "UnifiedRgb");
+    public static readonly string ConfigDir =
+        Redirect("UNIFIEDRGB_CONFIG_DIR", Environment.SpecialFolder.ApplicationData);
 
     /// <summary>%LOCALAPPDATA%\UnifiedRgb — machine-local state (OpenRGB bundle,
     /// fan-config.json).</summary>
-    public static readonly string LocalDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "UnifiedRgb");
+    public static readonly string LocalDir =
+        Redirect("UNIFIEDRGB_LOCAL_DIR", Environment.SpecialFolder.LocalApplicationData);
+
+    /// <summary>The real per-user location, unless an environment variable moves
+    /// it. That override exists for ONE reason: the test harness must not read
+    /// or write the running user's settings, profiles and layouts. It ran
+    /// against the live files, so a test that was killed between its write and
+    /// its restore left fixture JSON in place for the app to load.
+    ///
+    /// Nothing in the product sets these, so a normal launch resolves exactly
+    /// as before. It is deliberately an environment variable rather than a
+    /// settable property: the paths are static readonly and read during type
+    /// initialization, which can happen before any code gets a chance to
+    /// assign a property.</summary>
+    static string Redirect(string variable, Environment.SpecialFolder folder)
+    {
+        string? over = Environment.GetEnvironmentVariable(variable);
+        if (!string.IsNullOrWhiteSpace(over)) return over;
+        return Path.Combine(Environment.GetFolderPath(folder), "UnifiedRgb");
+    }
 
     public static string Config(string file) => Path.Combine(ConfigDir, file);
     public static string Local(string file) => Path.Combine(LocalDir, file);
@@ -50,27 +68,50 @@ public static class Backend
 
     static Backend()
     {
-        string? url = null, key = null;
+        // The build's own endpoint, if it was given one at publish time.
+        string? url = Meta("RgbBackendUrl"), key = Meta("RgbBackendKey");
+        bool privateBuild = !string.IsNullOrWhiteSpace(url);
+
+        // %APPDATA%\UnifiedRgb\backend.json can point a PRIVATE-FEED build
+        // somewhere else - a developer aiming at a staging server.
+        //
+        // It is deliberately ignored in a public build. That file is writable
+        // by any process running as the user, while this app runs ELEVATED, and
+        // what the endpoint gets to decide is the update payload AND the hash
+        // that payload is checked against - so an unprivileged process could
+        // plant one file and have the administrator process download and run
+        // its executable, which the /RL HIGHEST logon task would then re-run at
+        // every boot. Since the shipped build takes its updates from GitHub and
+        // carries no endpoint, honoring the file there buys nothing and costs
+        // that. A fork wanting its own feed builds with -p:RgbBackendUrl=...,
+        // which is a decision made in the build rather than in a writable file.
         string f = AppPaths.Config("backend.json");
-        try
+        bool present = false;
+        try { present = File.Exists(f); } catch { }
+
+        if (present && !privateBuild)
         {
-            if (File.Exists(f))
+            Log.Warn("backend", $"ignoring {f}: this build has no private feed of its own, "
+                              + "so updates come from GitHub and a file cannot redirect them");
+        }
+        else if (present)
+        {
+            try
             {
                 using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(f));
-                if (doc.RootElement.TryGetProperty("url", out var u)) url = u.GetString();
-                if (doc.RootElement.TryGetProperty("key", out var k)) key = k.GetString();
+                string? fu = null, fk = null;
+                if (doc.RootElement.TryGetProperty("url", out var u)) fu = u.GetString();
+                if (doc.RootElement.TryGetProperty("key", out var k)) fk = k.GetString();
+                if (!string.IsNullOrWhiteSpace(fu)) url = fu;
+                if (!string.IsNullOrWhiteSpace(fk)) key = fk;
+                // Still elevated, still user-writable: a redirected feed is the
+                // first thing to rule out when an "update" looks wrong, so it
+                // has to be visible in any support bundle.
+                if (!string.IsNullOrWhiteSpace(fu))
+                    Log.Warn("backend", $"feed/support endpoint overridden by {f}: {fu}");
             }
+            catch (Exception ex) { Log.Warn("backend", $"backend.json unreadable: {ex.Message}"); }
         }
-        catch (Exception ex) { Log.Warn("backend", $"backend.json unreadable: {ex.Message}"); }
-
-        // The override file lives in user-writable %APPDATA% while the app runs
-        // elevated, so it must be visible in any support bundle: a redirected
-        // feed is the first thing to rule out when an "update" looks wrong.
-        if (!string.IsNullOrWhiteSpace(url))
-            Log.Warn("backend", $"feed/support endpoint overridden by {f}: {url}");
-
-        url ??= Meta("RgbBackendUrl");
-        key ??= Meta("RgbBackendKey");
 
         // Only https (or plain http to this machine, for a local dev backend)
         // is honored: the updater trusts the feed for the payload's hash, and

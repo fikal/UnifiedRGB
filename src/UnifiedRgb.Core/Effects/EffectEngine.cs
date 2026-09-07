@@ -98,6 +98,10 @@ public sealed class EffectEngine
             victims = _channels.Where(c => ReferenceEquals(c.Device, dev) &&
                                            offset < c.Offset + c.Count && c.Offset < offset + count).ToList();
             foreach (var c in victims) { c.Running = false; _channels.Remove(c); }
+            // The write lock is keyed by device instance, so a rescan would
+            // otherwise leave one behind (and pin the replaced device with it)
+            // for every device that ever ran an effect.
+            if (!_channels.Any(c => ReferenceEquals(c.Device, dev))) _writeLocks.Remove(dev);
         }
         foreach (var c in victims) JoinWorker(c);
     }
@@ -105,7 +109,7 @@ public sealed class EffectEngine
     public void StopAll()
     {
         List<Channel> all;
-        lock (_lock) { all = new(_channels); _channels.Clear(); }
+        lock (_lock) { all = new(_channels); _channels.Clear(); _writeLocks.Clear(); }
         foreach (var c in all) c.Running = false;
         foreach (var c in all) JoinWorker(c);
     }
@@ -151,6 +155,62 @@ public sealed class EffectEngine
         lock (_lock)
             foreach (var c in _channels)
                 if (ReferenceEquals(c.Device, dev)) c.BaseVersion++;
+    }
+
+    /// <summary>Lay every channel animating this device into dest, which must
+    /// already hold the device's static base. The caller's own freshly rendered
+    /// slice is passed in, because its LastFrame copy may be a frame behind.
+    ///
+    /// This exists because a device that cannot address zones is written WHOLE.
+    /// Each channel used to build that whole frame from the statics plus its own
+    /// slice, so two effects on two zones of one such device (a two-zone
+    /// Logitech mouse is the real case) each erased the other on every write,
+    /// and which one you saw was down to which worker wrote last. Composing all
+    /// of them means whatever lands is correct.
+    ///
+    /// Returns the ranges written, so the caller can scale exactly those.</summary>
+    void ComposeDevice(IRgbDevice dev, Channel self, Rgb[] selfSlice, Rgb[] dest, List<(int Off, int Count)> ranges)
+    {
+        ranges.Clear();
+        // _lock then FrameLock, the same order the preview takes them.
+        lock (_lock)
+        {
+            foreach (var c in _channels)
+            {
+                if (!ReferenceEquals(c.Device, dev)) continue;
+                int n = Math.Min(c.Count, dest.Length - c.Offset);
+                if (n <= 0) continue;
+                if (ReferenceEquals(c, self))
+                {
+                    Array.Copy(selfSlice, 0, dest, c.Offset, Math.Min(n, selfSlice.Length));
+                    ranges.Add((c.Offset, Math.Min(n, selfSlice.Length)));
+                    continue;
+                }
+                // A sibling that has not rendered yet leaves its range as the
+                // static underneath, which is what it is still showing.
+                if (!c.HasFrame) continue;
+                lock (c.FrameLock)
+                {
+                    if (!c.HasFrame) continue;
+                    Array.Copy(c.LastFrame, 0, dest, c.Offset, n);
+                }
+                ranges.Add((c.Offset, n));
+            }
+        }
+    }
+
+    /// <summary>Serializes the whole-device writes of the channels sharing one
+    /// non-zone device. Two workers calling SetColors on one device at the same
+    /// moment could already interleave on the wire; composing makes both frames
+    /// correct, and this makes sure a whole one lands at a time.</summary>
+    readonly Dictionary<IRgbDevice, object> _writeLocks = new();
+    object WriteLockFor(IRgbDevice dev)
+    {
+        lock (_lock)
+        {
+            if (!_writeLocks.TryGetValue(dev, out var o)) _writeLocks[dev] = o = new object();
+            return o;
+        }
     }
 
     /// <summary>Render a channel's current frame (buf.Length == channel.Count).</summary>
@@ -213,6 +273,9 @@ public sealed class EffectEngine
         var zoneBuf = new Rgb[ch.Count];
         var zoneDev = ch.Device as IZoneWritable;
         var full = zoneDev == null ? new Rgb[ch.Device.LedCount] : null;
+        // Reused across frames: the compose path must not allocate at 60 fps.
+        var litRanges = zoneDev == null ? new List<(int Off, int Count)>() : null;
+        var writeLock = zoneDev == null ? WriteLockFor(ch.Device) : null;
 
         // Dedup at the write boundary: slow effects (Time Warmth changes per
         // MINUTE, Palette Cycle holds each color) used to stream 60 identical
@@ -284,10 +347,12 @@ public sealed class EffectEngine
                         scaledForBrightness = b;
                         seenBase = ver;
                     }
+                    // Statics first, then EVERY channel's slice over the top -
+                    // this channel's fresh render included - and each of those
+                    // ranges scaled where it lies. The base is already scaled.
                     Array.Copy(scaledBase!, full!, full!.Length);
-                    Master.Scale(zoneBuf);
-                    for (int i = 0; i < ch.Count && ch.Offset + i < full!.Length; i++)
-                        full![ch.Offset + i] = zoneBuf[i];
+                    ComposeDevice(ch.Device, ch, zoneBuf, full!, litRanges!);
+                    foreach (var (off, n) in litRanges!) Master.Scale(full!, off, n);
                 }
 
                 long now = Environment.TickCount64;
@@ -302,7 +367,7 @@ public sealed class EffectEngine
                     // until the next differing frame (up to the keepalive).
                     if (!ch.Running) break;
                     if (zoneDev != null) zoneDev.SetZone(ch.Offset, zoneBuf);
-                    else ch.Device.SetColors(full!);
+                    else lock (writeLock!) ch.Device.SetColors(full!);
                     Array.Copy(sendBuf, lastSent, sendBuf.Length);
                     haveLast = true;
                     lastWrite = now;

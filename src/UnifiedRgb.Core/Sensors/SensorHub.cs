@@ -299,8 +299,33 @@ public static class SensorHub
             {
                 if (busy?.Contains(kv.Key) == true) continue;   // mid-Identify burst: leave it at 100%
                 var t = TempFor(kv.Value.Source);
+                long tickNow = Environment.TickCount64;
                 if (t is double temp)
+                {
+                    bool wasLost;
+                    lock (_gate) { _lastGoodTemp[kv.Key] = tickNow; wasLost = _sourceLost.Remove(kv.Key); }
+                    if (wasLost)
+                        Log.Info("fans", $"fan {kv.Key}: {kv.Value.Source} temperature is back, the curve is driving it again");
                     ApplyDuty(kv.Key, Math.Max(FloorFor(kv.Key), kv.Value.DutyAt(temp)));
+                    continue;
+                }
+
+                // No reading. Ride out a short gap; past the grace period the
+                // fan goes back to firmware control. The curve is KEPT, so the
+                // moment a reading returns the branch above re-arms it.
+                long since;
+                bool seen, alreadyLost;
+                lock (_gate)
+                {
+                    seen = _lastGoodTemp.TryGetValue(kv.Key, out since);
+                    if (!seen) _lastGoodTemp[kv.Key] = tickNow;   // never read yet: start the clock
+                    alreadyLost = _sourceLost.Contains(kv.Key);
+                }
+                if (!seen || alreadyLost || tickNow - since < LostSourceGraceMs) continue;
+                lock (_gate) _sourceLost.Add(kv.Key);
+                Log.Warn("fans", $"fan {kv.Key}: no {kv.Value.Source} temperature for {LostSourceGraceMs / 1000}s "
+                               + "- handing it back to firmware control (the curve is kept and re-arms if it returns)");
+                RestoreOne(kv.Key);
             }
             foreach (var kv in manual)
                 if (busy?.Contains(kv.Key) != true) ApplyDuty(kv.Key, kv.Value);
@@ -633,6 +658,24 @@ public static class SensorHub
 
     static readonly Dictionary<int, int> _manualFans = new();       // fanIndex -> percent
     static readonly Dictionary<int, FanCurve> _fanCurves = new();   // fanIndex -> curve
+
+    /// <summary>When each curve-controlled fan last had a usable temperature,
+    /// and which ones we have handed back because it stopped arriving.
+    ///
+    /// A curve cannot decide anything without a reading, and the duty it last
+    /// wrote LATCHES in the board (LHM software control persists until someone
+    /// restores it). So a sensor that dies after the curve settled on 25% left
+    /// that fan at 25% forever, with nothing watching: the loop just skipped
+    /// ApplyDuty, and the over-temperature failsafe tests `is double`, so a
+    /// null reading can never trip it either. Firmware control is the honest
+    /// fallback - the BIOS curve is designed for exactly this.</summary>
+    static readonly Dictionary<int, long> _lastGoodTemp = new();
+    static readonly HashSet<int> _sourceLost = new();
+
+    /// <summary>How long a curve's temperature may go missing before its fan is
+    /// handed back. Long enough to ride out a resume or a driver reload (those
+    /// recover in a tick or two), short enough that nothing sits blind.</summary>
+    const long LostSourceGraceMs = 15_000;
     static readonly Dictionary<int, long> _lastSpun = new();        // board fan INDEX -> last tick RPM > 0
     static int _hotTicks;
     const long SpinKeepMs = 10_000;   // keep a fan visible this long after it last spun
@@ -699,7 +742,14 @@ public static class SensorHub
     {
         Touch();
         if (!Controllable(fanIndex)) return false;
-        lock (_gate) { _fanCurves[fanIndex] = curve.Clone(); _manualFans.Remove(fanIndex); FailsafeTripped = false; }
+        lock (_gate)
+        {
+            _fanCurves[fanIndex] = curve.Clone(); _manualFans.Remove(fanIndex); FailsafeTripped = false;
+            // A fresh curve starts with a clean slate: it has not gone blind
+            // yet, and its grace period starts now rather than inheriting the
+            // last one's timestamp.
+            _sourceLost.Remove(fanIndex); _lastGoodTemp[fanIndex] = Environment.TickCount64;
+        }
         // Apply immediately so the fan responds without waiting for the tick.
         var t = TempFor(curve.Source);
         if (t is double temp) ApplyDuty(fanIndex, Math.Max(FloorFor(fanIndex), curve.DutyAt(temp)));
@@ -711,7 +761,11 @@ public static class SensorHub
     /// board fans, the driver curve incl. fan-stop for the GPU).</summary>
     public static void RestoreFan(int fanIndex)
     {
-        lock (_gate) { _manualFans.Remove(fanIndex); _fanCurves.Remove(fanIndex); }
+        lock (_gate)
+        {
+            _manualFans.Remove(fanIndex); _fanCurves.Remove(fanIndex);
+            _lastGoodTemp.Remove(fanIndex); _sourceLost.Remove(fanIndex);
+        }
         RestoreOne(fanIndex);
         SaveFanConfig();
     }
@@ -724,7 +778,12 @@ public static class SensorHub
         LhmFans? lhm;
         IntPtr gpu;
         bool gpuCtl;
-        lock (_gate) { lhm = _lhm; gpu = _gpu; gpuCtl = _gpuFanCtl; _manualFans.Clear(); _fanCurves.Clear(); _lastApplied.Clear(); }
+        lock (_gate)
+        {
+            lhm = _lhm; gpu = _gpu; gpuCtl = _gpuFanCtl;
+            _manualFans.Clear(); _fanCurves.Clear(); _lastApplied.Clear();
+            _lastGoodTemp.Clear(); _sourceLost.Clear();
+        }
         // Each step reports rather than swallowing. This is the thermal path:
         // the line at the end used to claim every fan was back on auto even
         // when all three of these threw, which is the worst kind of log line,

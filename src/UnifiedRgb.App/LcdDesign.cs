@@ -159,7 +159,34 @@ public sealed class LcdDesign
 
     static string Path => UnifiedRgb.Core.AppPaths.Config("lcd.json");
 
-    public static LcdDesign Load() => ProfileStore.LoadJson<LcdDesign>(Path, "lcd.json") ?? Default();
+    public static LcdDesign Load()
+    {
+        var d = ProfileStore.LoadJson<LcdDesign>(Path, "lcd.json");
+        return d == null ? Default() : Normalize(d);
+    }
+
+    /// <summary>Same treatment the scene store gets: an explicit null in the
+    /// JSON defeats the property initializer, and every consumer here walks
+    /// Elements without checking. Non-finite coordinates are dropped too - they
+    /// survive a JSON round-trip and then poison WPF layout with NaN.</summary>
+    internal static LcdDesign Normalize(LcdDesign? d)
+    {
+        d ??= new LcdDesign();
+        d.Elements = d.Elements?.Where(e => e != null).ToList() ?? new();
+        foreach (var e in d.Elements)
+        {
+            e.Text ??= "";
+            e.ColorHex ??= "FFFFFF";
+            if (!double.IsFinite(e.X)) e.X = 0;
+            if (!double.IsFinite(e.Y)) e.Y = 0;
+            if (!double.IsFinite(e.FontSize) || e.FontSize <= 0) e.FontSize = 40;
+        }
+        if (!double.IsFinite(d.BgX)) d.BgX = 0;
+        if (!double.IsFinite(d.BgY)) d.BgY = 0;
+        if (!double.IsFinite(d.BgW) || d.BgW < 0) d.BgW = 0;   // 0 = "not set yet", re-derived on load
+        if (!double.IsFinite(d.BgH) || d.BgH < 0) d.BgH = 0;
+        return d;
+    }
 
     /// <summary>Through the shared store writer (same indented JSON), so a
     /// file that could not be READ at launch is never overwritten with the

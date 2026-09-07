@@ -349,9 +349,18 @@ public sealed class AutomationService : IDisposable
     // a full process-table snapshot (100-500 KB) and leaked the Process object.
     static readonly string SelfName = System.IO.Path.GetFileNameWithoutExtension(Environment.ProcessPath ?? "");
 
-    // Foreground pid -> name, so an unchanged foreground window costs no
-    // GetProcessById (another full process-table snapshot) per tick.
-    static uint _lastPid; static string? _lastName;
+    // Foreground WINDOW + pid -> name, so an unchanged foreground window costs
+    // no GetProcessById (another full process-table snapshot) per tick.
+    //
+    // The window has to be part of the key. Keyed on the pid alone, every
+    // Store/UWP app looked identical: they all share one ApplicationFrameHost
+    // process, so switching from one hosted app to another hit the cache and
+    // returned the FIRST one's name for as long as the user stayed inside
+    // hosted apps - the wrong profile, stickily. The timestamp covers the
+    // other half: pids get reused, and a cached name otherwise outlived the
+    // process it named.
+    static IntPtr _lastHwnd; static uint _lastPid; static string? _lastName; static long _lastAt;
+    const long ForegroundCacheMs = 5_000;
 
     static string? ForegroundProcessName()
     {
@@ -361,7 +370,9 @@ public sealed class AutomationService : IDisposable
             if (h == IntPtr.Zero) return null;
             GetWindowThreadProcessId(h, out uint pid);
             if (pid == 0) return null;
-            if (pid == _lastPid && _lastName != null) return _lastName;
+            long now = Environment.TickCount64;
+            if (h == _lastHwnd && pid == _lastPid && _lastName != null && now - _lastAt < ForegroundCacheMs)
+                return _lastName;
             string name;
             using (var p = Process.GetProcessById((int)pid)) name = p.ProcessName;
 
@@ -385,10 +396,10 @@ public sealed class AutomationService : IDisposable
                 }, IntPtr.Zero);
                 if (hosted != null) name = hosted;
             }
-            _lastPid = pid; _lastName = name;
+            _lastHwnd = h; _lastPid = pid; _lastName = name; _lastAt = now;
             return name;
         }
-        catch { _lastPid = 0; _lastName = null; return null; }
+        catch { _lastHwnd = IntPtr.Zero; _lastPid = 0; _lastName = null; return null; }
     }
 
     public void Dispose()

@@ -1,0 +1,845 @@
+{
+  "documentType": "codex-security.findings",
+  "findings": [
+    {
+      "attackPath": {
+        "dataflow": {
+          "evidenceRefs": [
+            "override",
+            "feed",
+            "hash",
+            "launch",
+            "elevation"
+          ],
+          "summary": "Attacker writes %APPDATA%/UnifiedRgb/backend.json with an attacker-controlled HTTPS endpoint or loopback HTTP endpoint and any nonempty key. Backend prioritizes that file over compiled configuration. The endpoint provides a newer version and arbitrary executable plus its matching SHA-256. UpdateService verifies only the attacker-provided hash and executable version, then the elevated batch process replaces and launches the payload."
+        },
+        "evidenceRefs": [
+          "override",
+          "feed",
+          "hash",
+          "launch",
+          "elevation"
+        ],
+        "impact": {
+          "level": "high",
+          "why": "Arbitrary code execution with UnifiedRGB's administrator privileges, including when the original installation directory is protected."
+        },
+        "likelihood": {
+          "level": "medium",
+          "why": "Administrator code execution requires a same-user lower-integrity foothold and a subsequent user update click."
+        },
+        "reachability": {
+          "attacker": "A medium-integrity process running as the same Windows user; requires the user subsequently to launch UnifiedRGB and click its update action.",
+          "outcome": "Arbitrary code execution with UnifiedRGB's administrator privileges, including when the original installation directory is protected.",
+          "summary": "A medium-integrity process running as the same Windows user; requires the user subsequently to launch UnifiedRGB and click its update action. "
+        },
+        "summary": "Attacker writes %APPDATA%/UnifiedRgb/backend.json with an attacker-controlled HTTPS endpoint or loopback HTTP endpoint and any nonempty key. Backend prioritizes that file over compiled configuration. The endpoint provides a newer version and arbitrary executable plus its matching SHA-256. UpdateService verifies only the attacker-provided hash and executable version, then the elevated batch process replaces and launches the payload."
+      },
+      "codeEvidence": [
+        {
+          "code": "        string f = AppPaths.Config(\"backend.json\");\n        try\n        {\n            if (File.Exists(f))\n            {\n                using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(f));\n                if (doc.RootElement.TryGetProperty(\"url\", out var u)) url = u.GetString();\n                if (doc.RootElement.TryGetProperty(\"key\", out var k)) key = k.GetString();",
+          "endLine": 61,
+          "explanation": "User AppData supplies both endpoint and key before compiled defaults.",
+          "id": "override",
+          "label": "Mutable backend override",
+          "language": "csharp",
+          "path": "src/UnifiedRgb.Core/AppPaths.cs",
+          "role": "user_input",
+          "startLine": 54
+        },
+        {
+          "code": "    public static Task<LatestBuild?> GetLatestAsync()\n        => Backend.Configured ? GetLatestFromFeedAsync() : GetLatestFromGitHubAsync();\n\n    static async Task<LatestBuild?> GetLatestFromFeedAsync()\n    {\n        try\n        {\n            using var req = new HttpRequestMessage(HttpMethod.Get, $\"{Backend.BaseUrl}/version\");\n            req.Headers.Add(\"X-Rgb-Key\", Backend.ClientKey!);   // gated by Configured above\n            using var response = await Backend.Http.SendAsync(req);\n            if (!response.IsSuccessStatusCode) return null;\n            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());\n            var root = doc.RootElement;\n            if (root.TryGetProperty(\"version\", out var v) && v.ValueKind == JsonValueKind.String)\n            {\n                return new LatestBuild(\n                    v.GetString()!,\n                    root.TryGetProperty(\"notes\", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() : null,\n                    SizeOf(root),\n                    root.TryGetProperty(\"sha256\", out var h) && h.ValueKind == JsonValueKind.String ? h.GetString() : null);\n            }",
+          "endLine": 62,
+          "explanation": "Backend.Configured routes version metadata to the override endpoint, which also supplies expected sha256.",
+          "id": "feed",
+          "label": "Feed and hash selection",
+          "language": "csharp",
+          "path": "src/UnifiedRgb.Core/UpdateClient.cs",
+          "role": "propagation",
+          "startLine": 42
+        },
+        {
+          "code": "            if (!string.IsNullOrEmpty(sha))\n            {\n                string got = await Task.Run(() => UpdateClient.HashFile(temp));\n                if (!string.Equals(got, sha, StringComparison.OrdinalIgnoreCase))\n                {\n                    Log.Error(\"update\", $\"download hash mismatch: expected {sha}, got {got}\");\n                    try { File.Delete(temp); } catch { }\n                    setText(\"update failed integrity check \u2014 try again\");\n                    _running = false;\n                    return;\n                }\n            }\n\n            // IDENTITY (not just integrity): the feed's version is metadata a",
+          "endLine": 154,
+          "explanation": "The updater accepts the chosen feed hash as authority; attacker-selected payload and matching hash pass this comparison.",
+          "id": "hash",
+          "label": "Hash without independent publisher authentication",
+          "language": "csharp",
+          "path": "src/UnifiedRgb.App/Services/UpdateService.cs",
+          "role": "root_control",
+          "startLine": 141
+        },
+        {
+          "code": "                move /y \"{temp}\" \"{target}\" >nul 2>&1\n                if errorlevel 1 goto loop\n                >\"{swapResult}\" echo ok %n%\n                start \"\" \"{target}\"",
+          "endLine": 230,
+          "explanation": "The elevated swap script replaces the application and starts the supplied executable.",
+          "id": "launch",
+          "label": "Swap and restart",
+          "language": "csharp",
+          "path": "src/UnifiedRgb.App/Services/UpdateService.cs",
+          "role": "sink",
+          "startLine": 227
+        },
+        {
+          "code": "        <requestedExecutionLevel level=\"requireAdministrator\" uiAccess=\"false\" />",
+          "endLine": 13,
+          "explanation": "The normal GUI requests administrator authority, which the update workflow inherits.",
+          "id": "elevation",
+          "label": "Administrator application",
+          "language": "csharp",
+          "path": "src/UnifiedRgb.App/app.manifest",
+          "role": "expected_control",
+          "startLine": 13
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Parent independently traced the original source and controls; no live exploit reproduction."
+      },
+      "findingId": "csf_5bf347d55ea40c226cefccc0",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:57b5617b69e8c80687382d6707550ac174105a267338853a51b375aa15924e0d"
+      },
+      "identity": {
+        "anchor": "user-writable-backend-override-controls-elevated-self-update-execution"
+      },
+      "locations": [
+        {
+          "endLine": 61,
+          "path": "src/UnifiedRgb.Core/AppPaths.cs",
+          "role": "user_input",
+          "startLine": 54
+        },
+        {
+          "endLine": 62,
+          "path": "src/UnifiedRgb.Core/UpdateClient.cs",
+          "role": "propagation",
+          "startLine": 42
+        },
+        {
+          "endLine": 154,
+          "path": "src/UnifiedRgb.App/Services/UpdateService.cs",
+          "role": "root_control",
+          "startLine": 141
+        },
+        {
+          "endLine": 230,
+          "path": "src/UnifiedRgb.App/Services/UpdateService.cs",
+          "role": "sink",
+          "startLine": 227
+        },
+        {
+          "endLine": 13,
+          "path": "src/UnifiedRgb.App/app.manifest",
+          "role": "expected_control",
+          "startLine": 13
+        }
+      ],
+      "occurrenceId": "occ_791fcc8164cdce0323b4896f",
+      "preventiveControls": [
+        "Centralize executable trust independently of mutable user configuration."
+      ],
+      "provenance": {
+        "candidateId": "baseline-update-config",
+        "originalCandidates": [
+          {
+            "CWE": "CWE-829",
+            "attacker": "A medium-integrity process running as the same Windows user; requires the user subsequently to launch UnifiedRGB and click its update action.",
+            "confidence": "high",
+            "counterevidence": [
+              "Endpoint schemes are restricted and overrides are logged; neither establishes publisher identity.",
+              "Updates require user action, so this is not silent remote compromise.",
+              "Protected staging paths and repeated hash checks defend payload replacement, but the attacker supplies both payload and expected hash.",
+              "The backend override is intentionally supported, so remediation should preserve legitimate configuration through a protected mechanism."
+            ],
+            "dataflow": "Attacker writes %APPDATA%/UnifiedRgb/backend.json with an attacker-controlled HTTPS endpoint or loopback HTTP endpoint and any nonempty key. Backend prioritizes that file over compiled configuration. The endpoint provides a newer version and arbitrary executable plus its matching SHA-256. UpdateService verifies only the attacker-provided hash and executable version, then the elevated batch process replaces and launches the payload.",
+            "evidence": [
+              {
+                "excerpt": "string f = AppPaths.Config(\"backend.json\"); ... JsonDocument.Parse(File.ReadAllText(f)); ... url = u.GetString(); ... key = k.GetString();",
+                "lines": "54-61",
+                "path": "C:/Users/ryanb/source/repos/UnifiedRgb/src/UnifiedRgb.Core/AppPaths.cs"
+              },
+              {
+                "excerpt": "uri.Scheme == Uri.UriSchemeHttps || (uri.Scheme == Uri.UriSchemeHttp && uri.IsLoopback)",
+                "lines": "76-86",
+                "path": "C:/Users/ryanb/source/repos/UnifiedRgb/src/UnifiedRgb.Core/AppPaths.cs"
+              },
+              {
+                "excerpt": "Backend.Configured ? GetLatestFromFeedAsync() : GetLatestFromGitHubAsync(); ... root.TryGetProperty(\"sha256\", out var h)",
+                "lines": "43-61",
+                "path": "C:/Users/ryanb/source/repos/UnifiedRgb/src/UnifiedRgb.Core/UpdateClient.cs"
+              },
+              {
+                "excerpt": "if (!string.IsNullOrEmpty(sha)) ... UpdateClient.HashFile(temp) ... FileVersionInfo.GetVersionInfo(temp); ... move /y \"{temp}\" \"{target}\" ... start \"\" \"{target}\"",
+                "lines": "141-163,227-230",
+                "path": "C:/Users/ryanb/source/repos/UnifiedRgb/src/UnifiedRgb.App/Services/UpdateService.cs"
+              },
+              {
+                "excerpt": "<requestedExecutionLevel level=\"requireAdministrator\" uiAccess=\"false\" />",
+                "lines": "13",
+                "path": "C:/Users/ryanb/source/repos/UnifiedRgb/src/UnifiedRgb.App/app.manifest"
+              }
+            ],
+            "impact": "Arbitrary code execution with UnifiedRGB's administrator privileges, including when the original installation directory is protected.",
+            "invariant": "An unelevated process must not choose code that the elevated updater installs and executes.",
+            "remediation": "Authenticate update binaries or signed update metadata using an identity/key anchored in protected application code. Store endpoint overrides in an administrator-protected location or prevent untrusted overrides from determining elevated executable updates. Reject missing verification metadata. Test that a medium-writable backend override cannot cause an unsigned newer-version test executable to reach the swap stage.",
+            "severity": "high",
+            "title": "User-writable backend override controls elevated self-update execution"
+          },
+          {
+            "summary": "AppPaths Backend reads APPDATA backend.json and elevated UpdateService trusts endpoint/hash when installing update."
+          }
+        ],
+        "source": "local_plugin"
+      },
+      "remediation": "Authenticate update binaries or signed update metadata using an identity/key anchored in protected application code. Store endpoint overrides in an administrator-protected location or prevent untrusted overrides from determining elevated executable updates. Reject missing verification metadata. Test that a medium-writable backend override cannot cause an unsigned newer-version test executable to reach the swap stage.",
+      "remediationTests": [
+        "Reject an override-controlled payload even when its attacker-supplied hash and newer version agree.",
+        "Accept only fixtures verified against the protected publisher/key policy; never execute test payloads."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "override",
+          "feed",
+          "hash",
+          "launch",
+          "elevation"
+        ],
+        "summary": "Attacker writes %APPDATA%/UnifiedRgb/backend.json with an attacker-controlled HTTPS endpoint or loopback HTTP endpoint and any nonempty key. Backend prioritizes that file over compiled configuration. The endpoint provides a newer version and arbitrary executable plus its matching SHA-256. UpdateService verifies only the attacker-provided hash and executable version, then the elevated batch process replaces and launches the payload."
+      },
+      "ruleId": "untrusted-update-feed.elevated-execution",
+      "severity": {
+        "level": "medium",
+        "rationale": "Administrator code execution requires a same-user lower-integrity foothold and a subsequent user update click."
+      },
+      "summary": "Attacker writes %APPDATA%/UnifiedRgb/backend.json with an attacker-controlled HTTPS endpoint or loopback HTTP endpoint and any nonempty key. Backend prioritizes that file over compiled configuration. The endpoint provides a newer version and arbitrary executable plus its matching SHA-256. UpdateService verifies only the attacker-provided hash and executable version, then the elevated batch process replaces and launches the payload.",
+      "taxonomy": {
+        "category": "code-integrity",
+        "cwe": [
+          "CWE-829"
+        ]
+      },
+      "title": "User-writable backend override controls elevated self-update execution",
+      "validation": {
+        "assertions": [
+          "An unelevated process must not choose code that the elevated updater installs and executes."
+        ],
+        "evidenceRefs": [
+          "override",
+          "feed",
+          "hash",
+          "launch",
+          "elevation"
+        ],
+        "limitations": [
+          "No live attacker traffic, privileged executable replacement, or hardware tests were run.",
+          "Endpoint schemes are restricted and overrides are logged; neither establishes publisher identity.",
+          "Updates require user action, so this is not silent remote compromise.",
+          "Protected staging paths and repeated hash checks defend payload replacement, but the attacker supplies both payload and expected hash.",
+          "The backend override is intentionally supported, so remediation should preserve legitimate configuration through a protected mechanism."
+        ],
+        "method": "independent parent static source trace",
+        "summary": "Attacker writes %APPDATA%/UnifiedRgb/backend.json with an attacker-controlled HTTPS endpoint or loopback HTTP endpoint and any nonempty key. Backend prioritizes that file over compiled configuration. The endpoint provides a newer version and arbitrary executable plus its matching SHA-256. UpdateService verifies only the attacker-provided hash and executable version, then the elevated batch process replaces and launches the payload."
+      }
+    },
+    {
+      "attackPath": {
+        "dataflow": {
+          "evidenceRefs": [
+            "storage",
+            "root",
+            "check",
+            "lookup",
+            "launch"
+          ],
+          "summary": "AppPaths.Local resolves to user-writable LocalAppData. OpenRgbManager accepts a bundle as installed when any recursively found OpenRGB.exe and a version-text marker exist. A later bridge start or restart launches that executable with the elevated parent's token. An attacker replaces the existing executable or dependencies while the bundle is stopped; the marker remains valid."
+        },
+        "evidenceRefs": [
+          "storage",
+          "root",
+          "check",
+          "lookup",
+          "launch"
+        ],
+        "impact": {
+          "level": "high",
+          "why": "Arbitrary administrator code execution on a subsequent bridge start/restart. No compromised download source is necessary."
+        },
+        "likelihood": {
+          "level": "medium",
+          "why": "Administrator code execution requires a same-user lower-integrity foothold and an optional bridge launch/restart with no reused server."
+        },
+        "reachability": {
+          "attacker": "A medium-integrity process under the same user, with write access to the user's LocalAppData OpenRGB bundle.",
+          "outcome": "Arbitrary administrator code execution on a subsequent bridge start/restart. No compromised download source is necessary.",
+          "summary": "A medium-integrity process under the same user, with write access to the user's LocalAppData OpenRGB bundle. "
+        },
+        "summary": "AppPaths.Local resolves to user-writable LocalAppData. OpenRgbManager accepts a bundle as installed when any recursively found OpenRGB.exe and a version-text marker exist. A later bridge start or restart launches that executable with the elevated parent's token. An attacker replaces the existing executable or dependencies while the bundle is stopped; the marker remains valid."
+      },
+      "codeEvidence": [
+        {
+          "code": "    /// fan-config.json).</summary>\n    public static readonly string LocalDir = Path.Combine(\n        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), \"UnifiedRgb\");\n\n    public static string Config(string file) => Path.Combine(ConfigDir, file);",
+          "endLine": 19,
+          "explanation": "The OpenRGB bundle root derives from LocalApplicationData, accessible to the same-user process.",
+          "id": "storage",
+          "label": "Per-user binary root",
+          "language": "csharp",
+          "path": "src/UnifiedRgb.Core/AppPaths.cs",
+          "role": "user_input",
+          "startLine": 15
+        },
+        {
+          "code": "    static readonly string Root = AppPaths.Local(\"openrgb\");\n    static readonly string ConfigDir = Path.Combine(Root, \"config\");\n    static readonly string StampPath = Path.Combine(Root, \"bundle-version.txt\");",
+          "endLine": 30,
+          "explanation": "Executable storage and config currently share the per-user bundle root.",
+          "id": "root",
+          "label": "Bundle paths",
+          "language": "csharp",
+          "path": "src/UnifiedRgb.Core/Net/OpenRgbManager.cs",
+          "role": "propagation",
+          "startLine": 28
+        },
+        {
+          "code": "                _installedCache = FindExe() != null &&\n                    File.Exists(StampPath) && File.ReadAllText(StampPath).Trim() == BundleVersion;\n                _installedStamp = now;",
+          "endLine": 48,
+          "explanation": "The installation check establishes existence/version text, not authentic executable contents or protected storage.",
+          "id": "check",
+          "label": "Presence and version stamp",
+          "language": "csharp",
+          "path": "src/UnifiedRgb.Core/Net/OpenRgbManager.cs",
+          "role": "root_control",
+          "startLine": 46
+        },
+        {
+          "code": "    static string? FindExe() =>\n        Directory.Exists(Root)\n            ? Directory.EnumerateFiles(Root, \"OpenRGB.exe\", SearchOption.AllDirectories).FirstOrDefault()\n            : null;",
+          "endLine": 60,
+          "explanation": "The selected executable is the first match under that writable tree.",
+          "id": "lookup",
+          "label": "Recursive executable selection",
+          "language": "csharp",
+          "path": "src/UnifiedRgb.Core/Net/OpenRgbManager.cs",
+          "role": "propagation",
+          "startLine": 57
+        },
+        {
+          "code": "        _proc = Process.Start(new ProcessStartInfo\n        {\n            FileName = exe,\n            Arguments = $\"--server --server-port {Port} --loglevel 6 --config \\\"{ConfigDir}\\\"\",\n            UseShellExecute = true,\n            WindowStyle = ProcessWindowStyle.Hidden,\n            WorkingDirectory = Path.GetDirectoryName(exe)!,",
+          "endLine": 184,
+          "explanation": "The process starts the selected file and its working directory with inherited caller authority.",
+          "id": "launch",
+          "label": "Elevated child launch",
+          "language": "csharp",
+          "path": "src/UnifiedRgb.Core/Net/OpenRgbManager.cs",
+          "role": "sink",
+          "startLine": 178
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Parent independently traced the original source and controls; no live exploit reproduction."
+      },
+      "findingId": "csf_740270a0a464a0ddb8ddb81e",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:8de393ced509abb930cb0ddb68478ca4c567b07525e9fad9773debb3b4670ce4"
+      },
+      "identity": {
+        "anchor": "elevated-openrgb-launches-trust-executable-content-in-localappdata"
+      },
+      "locations": [
+        {
+          "endLine": 19,
+          "path": "src/UnifiedRgb.Core/AppPaths.cs",
+          "role": "user_input",
+          "startLine": 15
+        },
+        {
+          "endLine": 30,
+          "path": "src/UnifiedRgb.Core/Net/OpenRgbManager.cs",
+          "role": "propagation",
+          "startLine": 28
+        },
+        {
+          "endLine": 48,
+          "path": "src/UnifiedRgb.Core/Net/OpenRgbManager.cs",
+          "role": "root_control",
+          "startLine": 46
+        },
+        {
+          "endLine": 60,
+          "path": "src/UnifiedRgb.Core/Net/OpenRgbManager.cs",
+          "role": "propagation",
+          "startLine": 57
+        },
+        {
+          "endLine": 184,
+          "path": "src/UnifiedRgb.Core/Net/OpenRgbManager.cs",
+          "role": "sink",
+          "startLine": 178
+        }
+      ],
+      "occurrenceId": "occ_8734ca4429c89dc22555bbe0",
+      "preventiveControls": [
+        "Centralize executable trust independently of mutable user configuration."
+      ],
+      "provenance": {
+        "candidateId": "baseline-openrgb-executable",
+        "originalCandidates": [
+          {
+            "CWE": "CWE-427",
+            "attacker": "A medium-integrity process under the same user, with write access to the user's LocalAppData OpenRGB bundle.",
+            "confidence": "high",
+            "counterevidence": [
+              "The initial archive is downloaded through HTTPS from the upstream project.",
+              "A valid existing server causes EnsureRunningAsync to return without launching; exploitation targets a later start when that server is absent.",
+              "No code establishing a protected bundle ACL or authenticating its contents before launch exists in OpenRgbManager/AppPaths."
+            ],
+            "dataflow": "AppPaths.Local resolves to user-writable LocalAppData. OpenRgbManager accepts a bundle as installed when any recursively found OpenRGB.exe and a version-text marker exist. A later bridge start or restart launches that executable with the elevated parent's token. An attacker replaces the existing executable or dependencies while the bundle is stopped; the marker remains valid.",
+            "evidence": [
+              {
+                "excerpt": "Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), \"UnifiedRgb\"",
+                "lines": "15-19",
+                "path": "C:/Users/ryanb/source/repos/UnifiedRgb/src/UnifiedRgb.Core/AppPaths.cs"
+              },
+              {
+                "excerpt": "Root = AppPaths.Local(\"openrgb\"); ... FindExe() != null && File.Exists(StampPath) && File.ReadAllText(StampPath).Trim() == BundleVersion; ... Directory.EnumerateFiles(Root, \"OpenRGB.exe\", SearchOption.AllDirectories).FirstOrDefault()",
+                "lines": "28-30,46-59",
+                "path": "C:/Users/ryanb/source/repos/UnifiedRgb/src/UnifiedRgb.Core/Net/OpenRgbManager.cs"
+              },
+              {
+                "excerpt": "var exe = FindExe(); ... Process.Start(new ProcessStartInfo { FileName = exe, ... UseShellExecute = true, ... WorkingDirectory = Path.GetDirectoryName(exe)! })",
+                "lines": "157-184",
+                "path": "C:/Users/ryanb/source/repos/UnifiedRgb/src/UnifiedRgb.Core/Net/OpenRgbManager.cs"
+              },
+              {
+                "excerpt": "async void StartOpenRgbBridge() ... OpenRgbManager.EnsureRunningAsync(...)",
+                "lines": "658-667",
+                "path": "C:/Users/ryanb/source/repos/UnifiedRgb/src/UnifiedRgb.App/MainViewModel.Settings.cs"
+              }
+            ],
+            "impact": "Arbitrary administrator code execution on a subsequent bridge start/restart. No compromised download source is necessary.",
+            "invariant": "Administrator child processes must not execute binaries or DLLs replaceable by an unelevated process.",
+            "remediation": "Install executable bundle files and their dependencies beneath an administrator-protected directory with verified ACLs. Keep mutable configuration separately. Use a deterministic executable path, verify trusted bundle metadata, and avoid relying on a user-writable version marker as an integrity check. Test executable and DLL replacement attempts from a medium-integrity process.",
+            "severity": "high",
+            "title": "Elevated OpenRGB launches trust executable content in LocalAppData"
+          },
+          {
+            "summary": "OpenRgbManager executes recursively found LOCALAPPDATA OpenRGB.exe with inherited elevation."
+          }
+        ],
+        "source": "local_plugin"
+      },
+      "remediation": "Install executable bundle files and their dependencies beneath an administrator-protected directory with verified ACLs. Keep mutable configuration separately. Use a deterministic executable path, verify trusted bundle metadata, and avoid relying on a user-writable version marker as an integrity check. Test executable and DLL replacement attempts from a medium-integrity process.",
+      "remediationTests": [
+        "Verify medium-integrity EXE and dependency replacement is denied in installed binary storage.",
+        "Do not execute a tampered legacy bundle during migration or bridge restart."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "storage",
+          "root",
+          "check",
+          "lookup",
+          "launch"
+        ],
+        "summary": "AppPaths.Local resolves to user-writable LocalAppData. OpenRgbManager accepts a bundle as installed when any recursively found OpenRGB.exe and a version-text marker exist. A later bridge start or restart launches that executable with the elevated parent's token. An attacker replaces the existing executable or dependencies while the bundle is stopped; the marker remains valid."
+      },
+      "ruleId": "untrusted-bundle.elevated-execution",
+      "severity": {
+        "level": "medium",
+        "rationale": "Administrator code execution requires a same-user lower-integrity foothold and an optional bridge launch/restart with no reused server."
+      },
+      "summary": "AppPaths.Local resolves to user-writable LocalAppData. OpenRgbManager accepts a bundle as installed when any recursively found OpenRGB.exe and a version-text marker exist. A later bridge start or restart launches that executable with the elevated parent's token. An attacker replaces the existing executable or dependencies while the bundle is stopped; the marker remains valid.",
+      "taxonomy": {
+        "category": "untrusted-search-path",
+        "cwe": [
+          "CWE-427"
+        ]
+      },
+      "title": "Elevated OpenRGB launches trust executable content in LocalAppData",
+      "validation": {
+        "assertions": [
+          "Administrator child processes must not execute binaries or DLLs replaceable by an unelevated process."
+        ],
+        "evidenceRefs": [
+          "storage",
+          "root",
+          "check",
+          "lookup",
+          "launch"
+        ],
+        "limitations": [
+          "No live attacker traffic, privileged executable replacement, or hardware tests were run.",
+          "The initial archive is downloaded through HTTPS from the upstream project.",
+          "A valid existing server causes EnsureRunningAsync to return without launching; exploitation targets a later start when that server is absent.",
+          "No code establishing a protected bundle ACL or authenticating its contents before launch exists in OpenRgbManager/AppPaths."
+        ],
+        "method": "independent parent static source trace",
+        "summary": "AppPaths.Local resolves to user-writable LocalAppData. OpenRgbManager accepts a bundle as installed when any recursively found OpenRGB.exe and a version-text marker exist. A later bridge start or restart launches that executable with the elevated parent's token. An attacker replaces the existing executable or dependencies while the bundle is stopped; the marker remains valid."
+      }
+    },
+    {
+      "attackPath": {
+        "dataflow": {
+          "evidenceRefs": [
+            "rename",
+            "append"
+          ],
+          "summary": "A PktSetClientName payload is decoded as ASCII, trimmed only at its boundaries, and interpolated directly into Log.Info. Embedded CR/LF creates arbitrary apparent log entries. Client names are reused in ownership/disconnection messages and exposed to the settings UI."
+        },
+        "evidenceRefs": [
+          "rename",
+          "append"
+        ],
+        "impact": {
+          "level": "low",
+          "why": "Forged diagnostics/support evidence; repeated large names also generate allocation, UI-update, and logging load."
+        },
+        "likelihood": {
+          "level": "medium",
+          "why": "Diagnostic integrity impact is limited by local/opt-in LAN reachability and bounded packet/log storage."
+        },
+        "reachability": {
+          "attacker": "Any local OpenRGB protocol client; any reachable network client when LAN listening is enabled.",
+          "outcome": "Forged diagnostics/support evidence; repeated large names also generate allocation, UI-update, and logging load.",
+          "summary": "Any local OpenRGB protocol client; any reachable network client when LAN listening is enabled. "
+        },
+        "summary": "A PktSetClientName payload is decoded as ASCII, trimmed only at its boundaries, and interpolated directly into Log.Info. Embedded CR/LF creates arbitrary apparent log entries. Client names are reused in ownership/disconnection messages and exposed to the settings UI."
+      },
+      "codeEvidence": [
+        {
+          "code": "            case OpenRgbProtocol.PktSetClientName:\n                client.Name = Encoding.ASCII.GetString(payload).TrimEnd('\\0').Trim();\n                if (client.Name.Length == 0) client.Name = \"unnamed\";\n                Log.Info(\"orgb-server\", $\"client '{client.Name}' connected (protocol {client.Version})\");\n                ClientsChanged?.Invoke();",
+          "endLine": 284,
+          "explanation": "Trim leaves embedded controls in the client-supplied ASCII name, which is sent to logging and UI refresh.",
+          "id": "rename",
+          "label": "Untrusted name becomes a log field",
+          "language": "csharp",
+          "path": "src/UnifiedRgb.Core/Net/OpenRgbServer.cs",
+          "role": "root_control",
+          "startLine": 280
+        },
+        {
+          "code": "                string line = $\"{DateTime.Now:MM-dd HH:mm:ss} {level} {message}{Environment.NewLine}\";\n                File.AppendAllText(PathName, line);",
+          "endLine": 93,
+          "explanation": "Embedded line breaks are written directly into the diagnostic log.",
+          "id": "append",
+          "label": "Persistent line append",
+          "language": "csharp",
+          "path": "src/UnifiedRgb.Core/Log.cs",
+          "role": "sink",
+          "startLine": 92
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Parent independently traced the original source and controls; no live exploit reproduction."
+      },
+      "findingId": "csf_84230709fcc7d7cb8db51319",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:9c392ddffff7ff82de04c871feb2f8353877c52232599b305519a23852b9c820"
+      },
+      "identity": {
+        "anchor": "openrgb-client-names-can-forge-persistent-diagnostic-log-entries"
+      },
+      "locations": [
+        {
+          "endLine": 284,
+          "path": "src/UnifiedRgb.Core/Net/OpenRgbServer.cs",
+          "role": "root_control",
+          "startLine": 280
+        },
+        {
+          "endLine": 93,
+          "path": "src/UnifiedRgb.Core/Log.cs",
+          "role": "sink",
+          "startLine": 92
+        }
+      ],
+      "occurrenceId": "occ_9e43b54a3f96e4d590bdd868",
+      "preventiveControls": [
+        "Apply bounded field/admission policies at protocol entry points."
+      ],
+      "provenance": {
+        "candidateId": "baseline-client-log",
+        "originalCandidates": [
+          {
+            "CWE": "CWE-117",
+            "attacker": "Any local OpenRGB protocol client; any reachable network client when LAN listening is enabled.",
+            "confidence": "high",
+            "counterevidence": [
+              "Server packets are capped at 1 MiB and concurrent clients at 16.",
+              "Log rotation caps retained log size; this is not an unlimited disk-growth finding.",
+              "Unauthenticated LED control is an explicitly documented protocol feature, not an additional finding."
+            ],
+            "dataflow": "A PktSetClientName payload is decoded as ASCII, trimmed only at its boundaries, and interpolated directly into Log.Info. Embedded CR/LF creates arbitrary apparent log entries. Client names are reused in ownership/disconnection messages and exposed to the settings UI.",
+            "evidence": [
+              {
+                "excerpt": "client.Name = Encoding.ASCII.GetString(payload).TrimEnd('\\0').Trim(); ... Log.Info(\"orgb-server\", $\"client '{client.Name}' connected (protocol {client.Version})\"); ClientsChanged?.Invoke();",
+                "lines": "280-284",
+                "path": "C:/Users/ryanb/source/repos/UnifiedRgb/src/UnifiedRgb.Core/Net/OpenRgbServer.cs"
+              },
+              {
+                "excerpt": "string line = $\"{DateTime.Now:MM-dd HH:mm:ss} {level} {message}{Environment.NewLine}\"; File.AppendAllText(PathName, line);",
+                "lines": "92-93",
+                "path": "C:/Users/ryanb/source/repos/UnifiedRgb/src/UnifiedRgb.Core/Log.cs"
+              }
+            ],
+            "impact": "Forged diagnostics/support evidence; repeated large names also generate allocation, UI-update, and logging load.",
+            "invariant": "Peer-controlled client names must remain one bounded display/log field.",
+            "remediation": "Cap names to a small number of characters, replace all control characters, and rate-limit rename logging/UI notifications. Reuse the intent of ChromaRestServer.AppTitle's existing sanitization. Test a name containing embedded newlines and a near-limit payload.",
+            "severity": "low",
+            "title": "OpenRGB client names can forge persistent diagnostic log entries"
+          },
+          {
+            "summary": "OpenRGB client-name packet logs arbitrary text; rate and storage controls under review."
+          }
+        ],
+        "source": "local_plugin"
+      },
+      "remediation": "Cap names to a small number of characters, replace all control characters, and rate-limit rename logging/UI notifications. Reuse the intent of ChromaRestServer.AppTitle's existing sanitization. Test a name containing embedded newlines and a near-limit payload.",
+      "remediationTests": [
+        "Embedded CR/LF/NUL remain one bounded diagnostic/display field.",
+        "Repeated names do not create per-packet UI refreshes or unbounded-length log records."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "rename",
+          "append"
+        ],
+        "summary": "A PktSetClientName payload is decoded as ASCII, trimmed only at its boundaries, and interpolated directly into Log.Info. Embedded CR/LF creates arbitrary apparent log entries. Client names are reused in ownership/disconnection messages and exposed to the settings UI."
+      },
+      "ruleId": "log-injection.openrgb-client-name",
+      "severity": {
+        "level": "low",
+        "rationale": "Diagnostic integrity impact is limited by local/opt-in LAN reachability and bounded packet/log storage."
+      },
+      "summary": "A PktSetClientName payload is decoded as ASCII, trimmed only at its boundaries, and interpolated directly into Log.Info. Embedded CR/LF creates arbitrary apparent log entries. Client names are reused in ownership/disconnection messages and exposed to the settings UI.",
+      "taxonomy": {
+        "category": "log-injection",
+        "cwe": [
+          "CWE-117"
+        ]
+      },
+      "title": "OpenRGB client names can forge persistent diagnostic log entries",
+      "validation": {
+        "assertions": [
+          "Peer-controlled client names must remain one bounded display/log field."
+        ],
+        "evidenceRefs": [
+          "rename",
+          "append"
+        ],
+        "limitations": [
+          "No live attacker traffic, privileged executable replacement, or hardware tests were run.",
+          "Server packets are capped at 1 MiB and concurrent clients at 16.",
+          "Log rotation caps retained log size; this is not an unlimited disk-growth finding.",
+          "Unauthenticated LED control is an explicitly documented protocol feature, not an additional finding."
+        ],
+        "method": "independent parent static source trace",
+        "summary": "A PktSetClientName payload is decoded as ASCII, trimmed only at its boundaries, and interpolated directly into Log.Info. Embedded CR/LF creates arbitrary apparent log entries. Client names are reused in ownership/disconnection messages and exposed to the settings UI."
+      }
+    },
+    {
+      "attackPath": {
+        "dataflow": {
+          "evidenceRefs": [
+            "acl",
+            "cap",
+            "serve",
+            "read"
+          ],
+          "summary": "CreateServer grants Everyone GRGW (line 100). Each accepted connection gets a reader thread. A client sending no frame blocks ReadExact indefinitely. Sixteen such connections occupy MaxClients; later legitimate connections are immediately closed. There is no idle deadline, cancellation, disconnect sweep, or Stop API to reclaim silent clients."
+        },
+        "evidenceRefs": [
+          "acl",
+          "cap",
+          "serve",
+          "read"
+        ],
+        "impact": {
+          "level": "low",
+          "why": "Persistent loss of new DLL-shim lighting feeds until the attacker disconnects or the application restarts. Existing legitimate connections survive if they already occupy slots. This does not demonstrate code execution or entire-app failure."
+        },
+        "likelihood": {
+          "level": "medium",
+          "why": "Local denial of new Chroma feeds; existing feeds and bounded app resources reduce impact."
+        },
+        "reachability": {
+          "attacker": "A local medium-integrity process able to open the Everyone-writable UnifiedRgbChroma pipe.",
+          "outcome": "Persistent loss of new DLL-shim lighting feeds until the attacker disconnects or the application restarts. Existing legitimate connections survive if they already occupy slots. This does not demonstrate code execution or entire-app failure.",
+          "summary": "A local medium-integrity process able to open the Everyone-writable UnifiedRgbChroma pipe. ChromaFeed is running; attacker occupies free slots before legitimate hosts connect."
+        },
+        "summary": "CreateServer grants Everyone GRGW (line 100). Each accepted connection gets a reader thread. A client sending no frame blocks ReadExact indefinitely. Sixteen such connections occupy MaxClients; later legitimate connections are immediately closed. There is no idle deadline, cancellation, disconnect sweep, or Stop API to reclaim silent clients."
+      },
+      "codeEvidence": [
+        {
+          "code": "    const string PipeSddl = \"D:(A;;FA;;;BA)(A;;FA;;;SY)(A;;GRGW;;;WD)S:(ML;;NW;;;ME)\";",
+          "endLine": 100,
+          "explanation": "The intended SDDL gives Everyone read/write access and uses a medium integrity label.",
+          "id": "acl",
+          "label": "Medium local callers may connect",
+          "language": "csharp",
+          "path": "src/UnifiedRgb.Core/Effects/ChromaSync.cs",
+          "role": "entrypoint",
+          "startLine": 100
+        },
+        {
+          "code": "            if (Interlocked.Increment(ref _clients) > MaxClients)\n            {\n                Interlocked.Decrement(ref _clients);\n                pipe.Dispose();\n                Log.Occasional(\"chroma-clients\", \"chroma\", $\"more than {MaxClients} pipe clients - refusing extra connections\");\n                continue;\n            }\n            if (_connLog.Allow()) Log.Info(\"chroma\", \"host connected to the pipe\");\n            new Thread(() => ServeClient(pipe)) { IsBackground = true, Name = \"chroma-feed-client\" }.Start();",
+          "endLine": 169,
+          "explanation": "Each accepted connection consumes a client slot; new clients are refused at the cap.",
+          "id": "cap",
+          "label": "Finite admission slots",
+          "language": "csharp",
+          "path": "src/UnifiedRgb.Core/Effects/ChromaSync.cs",
+          "role": "root_control",
+          "startLine": 161
+        },
+        {
+          "code": "                bool firstFrame = true;\n                while (ReadExact(pipe, head, 5))\n                {\n                    int rows = head[1] | (head[2] << 8);\n                    int cols = head[3] | (head[4] << 8);\n                    int n = rows * cols;\n                    if (n <= 0 || n > 4096) break;               // sanity\n                    if (body.Length < n * 4) body = new byte[n * 4];\n                    if (!ReadExact(pipe, body, n * 4)) break;",
+          "endLine": 205,
+          "explanation": "The client reader retains its slot while attempting to read a complete header/body.",
+          "id": "serve",
+          "label": "First frame read owns the slot",
+          "language": "csharp",
+          "path": "src/UnifiedRgb.Core/Effects/ChromaSync.cs",
+          "role": "propagation",
+          "startLine": 197
+        },
+        {
+          "code": "    static bool ReadExact(Stream s, byte[] buf, int len)\n    {\n        int got = 0;\n        while (got < len)\n        {\n            int n = s.Read(buf, got, len - got);\n            if (n <= 0) return false;\n            got += n;\n        }\n        return true;",
+          "endLine": 233,
+          "explanation": "A connected client can remain silent; no deadline or sweeper closes this stream to release admission capacity.",
+          "id": "read",
+          "label": "Blocking read with no deadline",
+          "language": "csharp",
+          "path": "src/UnifiedRgb.Core/Effects/ChromaSync.cs",
+          "role": "sink",
+          "startLine": 224
+        }
+      ],
+      "confidence": {
+        "level": "high",
+        "rationale": "Parent independently traced the original source and controls; no live exploit reproduction."
+      },
+      "findingId": "csf_fec9fccfe3374040c1205cb8",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:d6d2d3356f07be0eb97da524ad7b12b76f4f2df788fcec698ae42094e41de978"
+      },
+      "identity": {
+        "anchor": "idle-pipe-clients-can-permanently-exclude-legitimate-chroma-hosts"
+      },
+      "locations": [
+        {
+          "endLine": 100,
+          "path": "src/UnifiedRgb.Core/Effects/ChromaSync.cs",
+          "role": "entrypoint",
+          "startLine": 100
+        },
+        {
+          "endLine": 169,
+          "path": "src/UnifiedRgb.Core/Effects/ChromaSync.cs",
+          "role": "root_control",
+          "startLine": 161
+        },
+        {
+          "endLine": 205,
+          "path": "src/UnifiedRgb.Core/Effects/ChromaSync.cs",
+          "role": "propagation",
+          "startLine": 197
+        },
+        {
+          "endLine": 233,
+          "path": "src/UnifiedRgb.Core/Effects/ChromaSync.cs",
+          "role": "sink",
+          "startLine": 224
+        }
+      ],
+      "occurrenceId": "occ_7ea3774d05bf10a11b849e2a",
+      "preventiveControls": [
+        "Apply bounded field/admission policies at protocol entry points."
+      ],
+      "provenance": {
+        "candidateId": "pipe-idle-slots",
+        "originalCandidates": [
+          {
+            "attacker": "A local medium-integrity process able to open the Everyone-writable UnifiedRgbChroma pipe.",
+            "classification": "security",
+            "confidence": "high",
+            "counterevidence": "MaxClients=16 bounds reader threads and per-client buffers; frame sizes are capped at 4096 cells. These prevent unbounded allocation but do not restore availability of occupied admission slots.",
+            "cwe": "CWE-400",
+            "fix": "Add a first-frame deadline and subsequent idle/frame deadline. Use cancelable asynchronous named-pipe reads with handles configured for asynchronous operation, or a tracked-client sweeper that disposes expired streams. Always decrement the client count in the existing finally block. Test that sixteen silent clients are evicted and a real client can subsequently publish.",
+            "id": "PIPE-IDLE-SLOTS",
+            "impact": "Persistent loss of new DLL-shim lighting feeds until the attacker disconnects or the application restarts. Existing legitimate connections survive if they already occupy slots. This does not demonstrate code execution or entire-app failure.",
+            "lines": [
+              161,
+              169,
+              198,
+              229
+            ],
+            "path": "src/UnifiedRgb.Core/Effects/ChromaSync.cs",
+            "prerequisites": "ChromaFeed is running; attacker occupies free slots before legitimate hosts connect.",
+            "severity": "low",
+            "snippets": [
+              "if (Interlocked.Increment(ref _clients) > MaxClients)",
+              "pipe.Dispose();",
+              "while (ReadExact(pipe, head, 5))",
+              "int n = s.Read(buf, got, len - got);"
+            ],
+            "title": "Idle pipe clients can permanently exclude legitimate Chroma hosts",
+            "trace": "CreateServer grants Everyone GRGW (line 100). Each accepted connection gets a reader thread. A client sending no frame blocks ReadExact indefinitely. Sixteen such connections occupy MaxClients; later legitimate connections are immediately closed. There is no idle deadline, cancellation, disconnect sweep, or Stop API to reclaim silent clients.",
+            "validation": "Confirmed by complete static source trace; no runtime reproduction."
+          }
+        ],
+        "source": "local_plugin"
+      },
+      "remediation": "Add a first-frame deadline and subsequent idle/frame deadline. Use cancelable asynchronous named-pipe reads with handles configured for asynchronous operation, or a tracked-client sweeper that disposes expired streams. Always decrement the client count in the existing finally block. Test that sixteen silent clients are evicted and a real client can subsequently publish.",
+      "remediationTests": [
+        "Evict sixteen silent test clients, then accept and publish a legitimate frame.",
+        "A slow header/body cannot extend a total-frame deadline indefinitely."
+      ],
+      "rootCause": {
+        "evidenceRefs": [
+          "acl",
+          "cap",
+          "serve",
+          "read"
+        ],
+        "summary": "CreateServer grants Everyone GRGW (line 100). Each accepted connection gets a reader thread. A client sending no frame blocks ReadExact indefinitely. Sixteen such connections occupy MaxClients; later legitimate connections are immediately closed. There is no idle deadline, cancellation, disconnect sweep, or Stop API to reclaim silent clients."
+      },
+      "ruleId": "resource-exhaustion.chroma-pipe-idle",
+      "severity": {
+        "level": "low",
+        "rationale": "Local denial of new Chroma feeds; existing feeds and bounded app resources reduce impact."
+      },
+      "summary": "CreateServer grants Everyone GRGW (line 100). Each accepted connection gets a reader thread. A client sending no frame blocks ReadExact indefinitely. Sixteen such connections occupy MaxClients; later legitimate connections are immediately closed. There is no idle deadline, cancellation, disconnect sweep, or Stop API to reclaim silent clients.",
+      "taxonomy": {
+        "category": "resource-exhaustion",
+        "cwe": [
+          "CWE-400"
+        ]
+      },
+      "title": "Idle pipe clients can permanently exclude legitimate Chroma hosts",
+      "validation": {
+        "assertions": [
+          "Admission slots must be reclaimed from silent untrusted clients."
+        ],
+        "evidenceRefs": [
+          "acl",
+          "cap",
+          "serve",
+          "read"
+        ],
+        "limitations": [
+          "No live attacker traffic, privileged executable replacement, or hardware tests were run.",
+          "MaxClients=16 bounds reader threads and per-client buffers; frame sizes are capped at 4096 cells. These prevent unbounded allocation but do not restore availability of occupied admission slots."
+        ],
+        "method": "independent parent static source trace",
+        "summary": "CreateServer grants Everyone GRGW (line 100). Each accepted connection gets a reader thread. A client sending no frame blocks ReadExact indefinitely. Sixteen such connections occupy MaxClients; later legitimate connections are immediately closed. There is no idle deadline, cancellation, disconnect sweep, or Stop API to reclaim silent clients."
+      }
+    }
+  ],
+  "scanId": "15d9607f-a2d2-4644-803b-ea59b36dab06",
+  "schemaVersion": "1.0"
+}

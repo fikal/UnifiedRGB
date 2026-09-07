@@ -81,7 +81,36 @@ public sealed class SceneStore
 
     static string Path => AppPaths.Config("scenes.json");
 
-    public static SceneStore Load() => ProfileStore.LoadJson<SceneStore>(Path, "scenes.json") ?? new SceneStore();
+    public static SceneStore Load() => Normalize(ProfileStore.LoadJson<SceneStore>(Path, "scenes.json"));
+
+    /// <summary>Make a deserialized store safe to walk.
+    ///
+    /// A property initializer only runs when the JSON leaves the property out.
+    /// `{"Scenes": null}` is valid JSON, so it deserializes to a null list and
+    /// the startup walk over it throws before the window is even up - and this
+    /// runs on every launch, LCD attached or not. Same for a null entry inside
+    /// a list, or a sequence whose Actions came back null. Hand-edited and
+    /// half-written files really do look like this.</summary>
+    static SceneStore Normalize(SceneStore? s)
+    {
+        s ??= new SceneStore();
+        s.Scenes = s.Scenes?.Where(x => x != null).ToList() ?? new();
+        s.Sequences = s.Sequences?.Where(x => x != null).ToList() ?? new();
+        foreach (var sc in s.Scenes)
+        {
+            sc.Name ??= "";
+            sc.Design = LcdDesign.Normalize(sc.Design);
+        }
+        foreach (var sq in s.Sequences)
+        {
+            sq.Name ??= "";
+            sq.Actions = sq.Actions?.Where(a => a != null).ToList() ?? new();
+        }
+        // A scene with no usable name can never be selected or saved over, and
+        // a sequence step naming it would silently do nothing.
+        s.Scenes.RemoveAll(x => string.IsNullOrWhiteSpace(x.Name));
+        return s;
+    }
 
     // Through the shared store writer: a scenes.json that could not be read
     // at startup must not be overwritten by the defaults (see ProfileStore.LoadJson).

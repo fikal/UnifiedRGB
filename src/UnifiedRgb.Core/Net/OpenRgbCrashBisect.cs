@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace UnifiedRgb.Core.Net;
 
 /*-----------------------------------------------------------*\
-| Field problem: ONE buggy detector crashes the whole  |
+| Field problem: ONE buggy detector crashes the whole          |
 | bundled OpenRGB during its hardware scan — server dies, the  |
 | user sees zero devices, every launch repeats it. Nobody can  |
 | tell which detector did it from a ucrtbase access violation. |

@@ -38,14 +38,34 @@ public sealed class LightingController
     static void Trace(IRgbDevice dev, string what) =>
         Log.Occasional($"light:{dev.Name}", "lighting", $"{dev.Name}: {what}");
 
+    /// <summary>What an SDK client has painted on each device it claimed,
+    /// UNSCALED and kept separate from the user's statics.
+    ///
+    /// Partial writes have to accumulate somewhere. They used to be merged over
+    /// the user's STORED frame, which never contains the client's own earlier
+    /// writes, so "LED 0 red" followed by "LED 1 blue" ended up black+blue: the
+    /// second write rebuilt LED 0 from the static underneath it. This is the
+    /// frame the merge composes over instead. The user's statics stay untouched,
+    /// because they are the thing restored when the client goes away.</summary>
+    readonly System.Collections.Concurrent.ConcurrentDictionary<IRgbDevice, Rgb[]> _external = new();
+
     /// <summary>The device's stored static frame (created black on first use).</summary>
     public Rgb[] FrameFor(IRgbDevice d) => _frames.GetOrAdd(d, static k => new Rgb[k.LedCount]);
+
+    /// <summary>An SDK client gave a device back. The next client starts from
+    /// the user's lighting again instead of inheriting the last one's pixels.</summary>
+    public void ForgetExternal(IRgbDevice dev) => _external.TryRemove(dev, out _);
+
+    /// <summary>Every claim dropped at once (a rescan replaces the instances
+    /// these are keyed by, and shutdown wants nothing held).</summary>
+    public void ForgetExternalAll() => _external.Clear();
 
     /// <summary>Drop every stored frame and idle applier lane (device instances
     /// are being replaced; both are keyed by instance). Call after StopAndDrain.</summary>
     public void ForgetFrames()
     {
         _frames.Clear();
+        _external.Clear();
         Applier.PruneIdle();
     }
 
@@ -99,13 +119,20 @@ public sealed class LightingController
         int count = Math.Min(colors.Count, Math.Max(0, dev.LedCount - offset));
         if (count <= 0) return;
 
+        // Record it in this client's working picture of the device first, so
+        // every later partial write composes over it. Seeded from the user's
+        // statics: a client that only ever paints one zone leaves the rest of
+        // the device looking the way it found it.
+        var live = _external.GetOrAdd(dev, d => (Rgb[])FrameFor(d).Clone());
+        lock (live)
+            for (int i = 0; i < count && offset + i < live.Length; i++) live[offset + i] = colors[i];
+
         var slice = new Rgb[count];
         for (int i = 0; i < count; i++) slice[i] = colors[i];
         Master.Scale(slice);
 
-        // A partial write goes out as a zone where the device can do that;
-        // otherwise the slice is merged over what the device is showing, so a
-        // zone write does not black everything outside it.
+        // A whole-device write needs no merge, and a device that can address
+        // zones takes the slice directly - neither disturbs anything outside it.
         if (offset == 0 && count == dev.LedCount)
         {
             Applier.Post(LaneOf(dev), (dev, "ext"), () => dev.SetColors(slice));
@@ -116,9 +143,12 @@ public sealed class LightingController
             Applier.Post(LaneOf(dev), (dev, "ext", offset), () => zw.SetZone(offset, slice));
             return;
         }
-        var whole = (Rgb[])FrameFor(dev).Clone();
+
+        // Everything else can only be written whole, so what goes out is this
+        // client's accumulated picture, scaled once at the boundary.
+        Rgb[] whole;
+        lock (live) whole = (Rgb[])live.Clone();
         Master.Scale(whole);
-        for (int i = 0; i < count && offset + i < whole.Length; i++) whole[offset + i] = slice[i];
         Applier.Post(LaneOf(dev), (dev, "ext"), () => dev.SetColors(whole));
     }
 

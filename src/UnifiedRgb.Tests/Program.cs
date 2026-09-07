@@ -22,6 +22,24 @@ using UnifiedRgb.Core.Sensors;
 | Exit code = number of failures.                             |
 \*-----------------------------------------------------------*/
 
+/*-----------------------------------------------------------*\
+| Isolation FIRST, before any other statement: several tests   |
+| exercise real persistence, and AppPaths resolves its roots   |
+| in a static initializer the first time anything touches it.  |
+| Point those roots at a private directory so the harness can  |
+| never read or write the running user's real settings.        |
+\*-----------------------------------------------------------*/
+string testRoot = Path.Combine(Path.GetTempPath(), "UnifiedRgbTests",
+    $"{Environment.ProcessId}-{Guid.NewGuid():N}");
+Environment.SetEnvironmentVariable("UNIFIEDRGB_CONFIG_DIR", Path.Combine(testRoot, "config"));
+Environment.SetEnvironmentVariable("UNIFIEDRGB_LOCAL_DIR", Path.Combine(testRoot, "local"));
+// A run that is killed before its cleanup leaves one directory behind under
+// the OS temp tree, which is the right place for it to be swept up.
+AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+{
+    try { if (Directory.Exists(testRoot)) Directory.Delete(testRoot, recursive: true); } catch { }
+};
+
 int passed = 0, failed = 0;
 
 void Check(bool cond, string name)
@@ -361,6 +379,16 @@ static string TempDir()
         Check(!File.Exists(asDir + ".tmp"), "SafeFile failure deletes its .tmp");
     }
     finally { try { Directory.Delete(root, recursive: true); } catch { } }
+
+    // The whole harness depends on this: if the redirect ever stops working,
+    // every persistence test below is silently editing the user's real files.
+    Check(AppPaths.ConfigDir.StartsWith(testRoot, StringComparison.OrdinalIgnoreCase),
+        "tests are isolated: AppPaths.ConfigDir is redirected under the temp root");
+    Check(AppPaths.LocalDir.StartsWith(testRoot, StringComparison.OrdinalIgnoreCase),
+        "tests are isolated: AppPaths.LocalDir is redirected under the temp root");
+    Check(!AppPaths.ConfigDir.Contains(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                                       StringComparison.OrdinalIgnoreCase),
+        "tests are isolated: the real roaming profile is not in play");
 
     _ = AppPaths.ConfigDir;   // forces the cctor
     Check(Directory.Exists(AppPaths.ConfigDir), "AppPaths cctor creates ConfigDir");
@@ -716,6 +744,79 @@ static string TempDir()
     frame[1] = blue;                     // edit the LIVE static frame (a static pick on the sibling zone)
     engine.InvalidateBase(dev);
     Check(WaitUntil(() => dev.Last is { } l && l[1] == blue && l[0] == red, 2500), "InvalidateBase re-copies the base within the 1 s keepalive");
+    engine.StopAll();
+}
+
+/*---------------- OpenRgbServer.CleanClientName (S3) ----------------*/
+{
+    string forged = OpenRgbServer.CleanClientName("evil\r\n09-07 12:00:00 ERR name");
+    Check(!forged.Contains('\r') && !forged.Contains('\n'),
+        "a name cannot forge a second log line");
+    Equal("evil  09-07 12:00:00 ERR name", forged,
+        "the control characters become spaces, so the forged text stays visible on one line");
+    Equal("a b", OpenRgbServer.CleanClientName("a\tb"), "tabs become spaces");
+    Equal("unnamed", OpenRgbServer.CleanClientName(""), "empty falls back to unnamed");
+    Equal("unnamed", OpenRgbServer.CleanClientName("\0\0"), "NULs alone fall back to unnamed");
+    Equal("unnamed", OpenRgbServer.CleanClientName("\r\n"), "control-only falls back to unnamed");
+    Equal(64, OpenRgbServer.CleanClientName(new string('x', 500)).Length, "a huge name is capped");
+    Equal("Home Assistant", OpenRgbServer.CleanClientName("  Home Assistant\0"),
+        "an ordinary name is untouched");
+}
+
+/*---------------- Master.Scale over a range ----------------*/
+{
+    var buf = new[] { new Rgb(200, 200, 200), new Rgb(200, 200, 200), new Rgb(200, 200, 200) };
+    double keep = Master.Brightness;
+    Master.Brightness = 0.5;
+    Master.Scale(buf, 1, 1);
+    Check(buf[0].R == 200 && buf[2].R == 200, "range scale leaves everything outside the range alone");
+    Equal((byte)100, buf[1].R, "range scale dims inside the range");
+    Master.Scale(buf, 2, 99);          // count past the end
+    Equal((byte)100, buf[2].R, "range scale clamps to the buffer");
+    Master.Scale(buf, -5, 1);          // negative offset
+    Master.Brightness = keep;
+}
+
+/*---------------- EffectEngine: two animated channels on a NON-zone device ----------------*/
+{
+    // The device is written whole (FakeDevice is not IZoneWritable), so both
+    // channels build the same full frame. Each used to build it from the
+    // statics plus ONLY its own slice, so every write erased the other's
+    // animation and the visible result was whichever worker wrote last.
+    var engine = new EffectEngine();
+    var dev = new FakeDevice { Name = "TwoZone", LedCount = 2 };
+    var frame = new Rgb[2];
+    var red = new Rgb(255, 0, 0); var blue = new Rgb(0, 0, 255);
+    engine.Start(dev, 0, 1, frame, new CountingEffect(), 1, red);
+    engine.Start(dev, 1, 1, frame, new CountingEffect(), 1, blue);
+    Check(WaitUntil(() => dev.Last is { } l && l[0] == red && l[1] == blue, 3000),
+        "two animated channels on a non-zone device: both slices reach the hardware");
+
+    // Not just once: EVERY frame must carry both, or the two workers alternate
+    // between a correct frame and one that drops a slice.
+    int n = dev.WriteCount;
+    Check(WaitUntil(() => dev.WriteCount > n + 4, 3000), "the pair keeps writing");
+    bool allGood = true;
+    lock (dev.Writes)
+        foreach (var (_, f) in dev.Writes.Skip(n))
+            if (f[0] != red || f[1] != blue) allGood = false;
+    Check(allGood, "every subsequent whole-device write preserves both channels");
+
+    // A static picked on a third range must survive the compose too.
+    engine.StopAll();
+}
+
+/*---------------- EffectEngine: a static zone survives two animated siblings ----------------*/
+{
+    var engine = new EffectEngine();
+    var dev = new FakeDevice { Name = "ThreeZone", LedCount = 3 };
+    var frame = new Rgb[3];
+    var red = new Rgb(255, 0, 0); var blue = new Rgb(0, 0, 255); var green = new Rgb(0, 255, 0);
+    frame[2] = green;                    // a static colour on the third zone
+    engine.Start(dev, 0, 1, frame, new CountingEffect(), 1, red);
+    engine.Start(dev, 1, 1, frame, new CountingEffect(), 1, blue);
+    Check(WaitUntil(() => dev.Last is { } l && l[0] == red && l[1] == blue && l[2] == green, 3000),
+        "two animated channels plus a static third: all three ranges survive");
     engine.StopAll();
 }
 

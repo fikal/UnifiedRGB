@@ -216,10 +216,16 @@ public sealed class LogitechG403 : IRgbDevice
                 var c = colors[Math.Min(i, colors.Count - 1)];
                 if (_lastPer[i] == c) continue;
                 if (!claimed) { ClaimSoftwareControl(); claimed = true; }
+                // Record it only once the mouse has taken it. Marking first
+                // meant a dropped write poisoned the dedup: the colour was
+                // never sent, but every identical frame after it - including
+                // the engine's own keepalive re-send, which exists precisely
+                // to paper over a lost packet - matched the cache and was
+                // skipped, so the zone stayed on the old colour for good.
+                if (!SendEffect(i, c, persist: false)) continue;
                 _lastPer[i] = c;
                 _persisted[i] = false;
                 changed = true;
-                SendEffect(i, c, persist: false);
             }
             long now = Environment.TickCount64;
             if (changed) _lastChangeTick = now;
@@ -227,7 +233,10 @@ public sealed class LogitechG403 : IRgbDevice
         }
     }
 
-    void SendEffect(int cluster, Rgb c, bool persist)
+    /// <summary>False when the request did not reach the mouse (or its reply
+    /// never came back), so callers can avoid recording state the hardware
+    /// does not actually have.</summary>
+    bool SendEffect(int cluster, Rgb c, bool persist)
     {
         var parms = new byte[LONG_LEN - 4];
         parms[0] = (byte)cluster;
@@ -235,7 +244,7 @@ public sealed class LogitechG403 : IRgbDevice
         parms[2] = c.R; parms[3] = c.G; parms[4] = c.B;
         parms[5]  = (byte)(c.R != 0 || c.G != 0 || c.B != 0 ? 0x02 : 0x00);
         if (persist) parms[12] = 0x01;   // save to the mouse so it survives handle close
-        Query(_hid, _dev, _rgbIdx, _fnSetEffect, parms);
+        return Query(_hid, _dev, _rgbIdx, _fnSetEffect, parms) != null;
     }
 
     /// <summary>Re-send, with the persist byte, every cluster whose current
@@ -245,8 +254,9 @@ public sealed class LogitechG403 : IRgbDevice
         for (int i = 0; i < _clusterEffect.Length; i++)
         {
             if (_persisted[i] || _lastPer[i] is not Rgb c) continue;
-            _persisted[i] = true;
-            SendEffect(i, c, persist: true);
+            // Same inversion as above: a failed commit must be retried, not
+            // remembered as done.
+            if (SendEffect(i, c, persist: true)) _persisted[i] = true;
         }
     }
 

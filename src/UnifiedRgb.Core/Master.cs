@@ -16,11 +16,18 @@ public static class Master
 
     /// <summary>Scale a buffer in place (call only on frames/clones about to
     /// be written to hardware, never on stored state).</summary>
-    public static void Scale(Rgb[] buf)
+    public static void Scale(Rgb[] buf) => Scale(buf, 0, buf.Length);
+
+    /// <summary>Scale one range in place. The engine composes a whole non-zone
+    /// device from a pre-scaled static base plus each channel's unscaled slice,
+    /// so it needs to scale the slices it just laid down without re-scaling
+    /// (and re-rounding) the base underneath them.</summary>
+    public static void Scale(Rgb[] buf, int offset, int count)
     {
         double b = Brightness;
         if (b >= 0.999) return;
-        for (int i = 0; i < buf.Length; i++)
+        int end = Math.Min(buf.Length, offset + count);
+        for (int i = Math.Max(0, offset); i < end; i++)
         {
             var c = buf[i];
             buf[i] = new Rgb((byte)(c.R * b + 0.5), (byte)(c.G * b + 0.5), (byte)(c.B * b + 0.5));

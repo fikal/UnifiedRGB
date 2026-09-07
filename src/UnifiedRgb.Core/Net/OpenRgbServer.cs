@@ -278,13 +278,27 @@ public sealed class OpenRgbServer : IDisposable
             }
 
             case OpenRgbProtocol.PktSetClientName:
-                client.Name = Encoding.ASCII.GetString(payload).TrimEnd('\0').Trim();
-                if (client.Name.Length == 0) client.Name = "unnamed";
-                Log.Info("orgb-server", $"client '{client.Name}' connected (protocol {client.Version})");
+            {
+                // Sanitized before it goes anywhere. This string is written
+                // straight into the log that a support bundle ships, and a name
+                // carrying an embedded newline forges lines indistinguishable
+                // from ours. Bounded as well: the packet cap is a megabyte, and
+                // the name also lands in a settings-page binding.
+                string named = CleanClientName(Encoding.ASCII.GetString(payload));
+                if (named == client.Name) break;   // a rename to what it already was
+                client.Name = named;
+                // Occasional, not Info: this was the one ingress handler that
+                // logged unconditionally, so a client renaming itself in a loop
+                // could flush the whole diagnostic history out of the log and
+                // its one rotation within seconds.
+                Log.Occasional($"orgb-name:{client.Id}", "orgb-server",
+                    $"client '{client.Name}' connected (protocol {client.Version})");
                 ClientsChanged?.Invoke();
                 break;
+            }
 
             case OpenRgbProtocol.PktControllerCount:
+
                 Send(stream, 0, OpenRgbProtocol.PktControllerCount,
                      BitConverter.GetBytes(_host.Devices.Count));
                 break;
@@ -464,6 +478,24 @@ public sealed class OpenRgbServer : IDisposable
             got += n;
         }
         return true;
+    }
+
+    /// <summary>An SDK client's self-reported name, made safe to log and to
+    /// show. Control characters become spaces rather than vanishing, so a name
+    /// chosen to look like two log lines reads as the one line it really is,
+    /// and the length is capped well under anything a real client sends.</summary>
+    internal static string CleanClientName(string raw)
+    {
+        const int MaxName = 64;
+        var sb = new System.Text.StringBuilder(Math.Min(raw.Length, MaxName));
+        foreach (char ch in raw)
+        {
+            if (sb.Length >= MaxName) break;
+            if (ch == '\0') continue;
+            sb.Append(char.IsControl(ch) ? ' ' : ch);
+        }
+        string name = sb.ToString().Trim();
+        return name.Length == 0 ? "unnamed" : name;
     }
 
     sealed class Client
