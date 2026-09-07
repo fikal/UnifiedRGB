@@ -103,6 +103,12 @@ public sealed class SettingsData
     /// protocol. Off by default: opening a port is the user's call.</summary>
     public bool SdkServerEnabled { get; set; }
 
+    /// <summary>When an app, sensor or scheduled rule stops matching, go back
+    /// to the startup profile rather than to whatever was on screen when the
+    /// rule started. On by default: the snapshot is invisible, and it is easy
+    /// to end up with the rule's OWN profile as the thing it returns to.</summary>
+    public bool ReturnToStartupProfile { get; set; } = true;
+
     /// <summary>Listen for Counter-Strike 2 game state.</summary>
     public bool Cs2Enabled { get; set; }
 

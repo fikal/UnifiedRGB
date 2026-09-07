@@ -265,9 +265,15 @@ public sealed class AutomationService : IDisposable
 
     void Transition(AutomationMode next, string? profile)
     {
-        // Leaving Base: remember exactly what the user had.
+        // Leaving Base: remember exactly what the user had, and SAY what that
+        // was. "restored your lighting" on the way back could not be told apart
+        // from doing nothing, which cost a debugging session: the baseline had
+        // quietly become the rule's own profile.
         if (_mode == AutomationMode.Base && next != AutomationMode.Base)
+        {
             _returnPoint = _vm.CaptureState();
+            Log.Info("auto", $"baseline saved: {Describe(_returnPoint)}");
+        }
 
         _selfApplying = true;
         try
@@ -283,23 +289,43 @@ public sealed class AutomationService : IDisposable
             case AutomationMode.ScheduleProfile:
             case AutomationMode.App:
                 _vm.SetPumpLcdOn(true);   // unlocking straight into a rule must relight the LCD
-                if (profile != null && _vm.ApplyProfileByName(profile))
+                if (profile == null) break;
+                if (_vm.ApplyProfileByName(profile))
                     Log.Info("auto", next switch
                     {
-                        AutomationMode.Sensor => $"sensor rule fired, profile '{profile}'",
-                        AutomationMode.ScheduleProfile => $"scheduled window, profile '{profile}'",
-                        _ => $"foreground app rule, profile '{profile}'",
+                        AutomationMode.Sensor => $"sensor rule fired, applied profile '{profile}'",
+                        AutomationMode.ScheduleProfile => $"scheduled window, applied profile '{profile}'",
+                        _ => $"foreground app rule matched, applied profile '{profile}'",
                     });
+                // A rule naming a profile that no longer exists used to log
+                // nothing at all, so the lights not changing had no explanation.
+                else
+                    Log.Warn("auto", $"a rule wanted profile '{profile}', which no longer exists");
                 break;
             case AutomationMode.Base:
-                if (_returnPoint != null)
+                // Back to the startup profile, if there is one and the user has
+                // not asked otherwise. The saved baseline is whatever happened
+                // to be on screen when the rule fired, which after an evening of
+                // building a profile IS that profile: the rule then "returns" to
+                // the thing it was overriding with, and nothing appears to end.
+                string? startup = _vm.ReturnProfile;
+
+                if (!string.IsNullOrWhiteSpace(startup) && _vm.ApplyProfileByName(startup))
+                {
+                    Log.Info("auto", $"no rule matches, back to your startup profile '{startup}'");
+                }
+                else if (_returnPoint != null)
                 {
                     _vm.RestoreState(_returnPoint);
-                    Log.Info("auto", "restored your lighting");
+                    Log.Info("auto", $"no rule matches, restored {Describe(_returnPoint)}");
                 }
                 // No return point (the user relit things mid-override): the LCD
                 // still has to come back - RestoreState was the only path that did it.
-                else _vm.SetPumpLcdOn(true);
+                else
+                {
+                    _vm.SetPumpLcdOn(true);
+                    Log.Info("auto", "no rule matches, keeping the lighting you set during it");
+                }
                 break;
         }
         }
@@ -310,6 +336,14 @@ public sealed class AutomationService : IDisposable
         _vm.NightLightsOff = next == AutomationMode.ScheduleOff;   // drives the wake banner
         _vm.LightsSuppressed = next is AutomationMode.Locked or AutomationMode.ScheduleOff;   // scene sequences hold while off
     }
+
+    /// <summary>What a saved baseline actually is, for the log. A profile name
+    /// when one was selected, otherwise how much hand-set lighting it holds:
+    /// either way the line says enough to tell a real restore from a no-op.</summary>
+    static string Describe(MainViewModel.LightState s) =>
+        s.ProfileName is { Length: > 0 } name
+            ? $"profile '{name}'"
+            : $"hand-set lighting ({s.Effects.Count} effect(s) on {s.Frames.Count} device(s))";
 
     // Resolved once: Process.GetCurrentProcess().ProcessName per 2 s tick took
     // a full process-table snapshot (100-500 KB) and leaked the Process object.

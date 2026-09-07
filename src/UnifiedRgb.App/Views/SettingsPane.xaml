@@ -160,6 +160,18 @@
                         <TextBlock Text="{Binding AutomationStatus}" Style="{StaticResource Status}" Margin="0,12,0,0"/>
                     </StackPanel>
                 </Border>
+
+                <Border Style="{StaticResource SettingsCard}">
+                    <StackPanel>
+                        <TextBlock Text="When a rule stops matching" Style="{StaticResource SectionTitle}"/>
+                        <CheckBox IsChecked="{Binding ReturnToStartupProfile}">
+                            <TextBlock Text="Go back to the profile you start with"
+                                       TextWrapping="Wrap" MaxWidth="520"/>
+                        </CheckBox>
+                        <TextBlock Style="{StaticResource Hint}" Margin="24,4,0,0"
+                                   Text="Off, it goes back to whatever was on screen when the rule started. That sounds safer but is easy to get wrong: build a profile, save it, add a rule for it, and the lighting it returns to is that same profile."/>
+                    </StackPanel>
+                </Border>
             </StackPanel>
 
             <!-- ===================== Devices ===================== -->

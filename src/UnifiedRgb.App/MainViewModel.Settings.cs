@@ -446,6 +446,20 @@ public sealed partial class MainViewModel
         RestoreEffects(saved);
     }
 
+    /// <summary>Where the automation should land when no rule is matching, or
+    /// null to put back the lighting that was on screen when the rule started.
+    /// One place decides it, so the service does not have to know the setting.</summary>
+    public string? ReturnProfile =>
+        _store.Settings.ReturnToStartupProfile && !string.IsNullOrWhiteSpace(_store.Settings.StartupProfile)
+            ? _store.Settings.StartupProfile : null;
+
+    public bool ReturnToStartupProfile
+    {
+        get => _store.Settings.ReturnToStartupProfile;
+        set => SetSetting(_store.Settings.ReturnToStartupProfile, value,
+                          v => _store.Settings.ReturnToStartupProfile = v);
+    }
+
     /// <summary>Does a profile by this name still exist? The automation calls
     /// this per tick, so it must not allocate the way ProfileNames does.</summary>
     public bool HasProfile(string name)
