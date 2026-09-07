@@ -1635,6 +1635,36 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         });
     }
 
+    /// <summary>Blink a device white a few times so it can be picked out of a
+    /// row of identical ones. The whole blink runs as ONE job on the device's
+    /// applier lane, so an effect's frames queue behind it rather than painting
+    /// over the middle of it.</summary>
+    public void IdentifyDevice(IRgbDevice device)
+    {
+        var white = new Rgb[device.LedCount];
+        Array.Fill(white, new Rgb(255, 255, 255));
+        var dark = new Rgb[device.LedCount];
+        var restore = _lighting.ComposedFrame(device);
+
+        _applier.Post(LaneOf(device), (device, "identify"), () =>
+        {
+            try
+            {
+                for (int i = 0; i < 3; i++)
+                {
+                    device.SetColors(white);
+                    Thread.Sleep(140);
+                    device.SetColors(dark);
+                    Thread.Sleep(140);
+                }
+                // Put back what it was showing. A running effect repaints on its
+                // next frame anyway; this is for a device sitting on a static.
+                device.SetColors(restore);
+            }
+            catch (Exception ex) { UnifiedRgb.Core.Log.Warn("identify", $"{device.Name}: {ex.Message}"); }
+        });
+    }
+
     /// <summary>Hand each configured device to its own firmware on the way out.
     ///
     /// Runs after the applier has drained (so nothing races these writes) and

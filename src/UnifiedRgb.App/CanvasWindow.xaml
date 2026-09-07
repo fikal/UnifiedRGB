@@ -39,11 +39,36 @@
                         Click="Redo_Click" ToolTip="Redo (Ctrl+Y)"/>
             </WrapPanel>
 
-            <TextBlock x:Name="SelectionText" Opacity="0.75" FontSize="12" Margin="0,4,0,0"
-                       TextWrapping="Wrap"/>
+            <!-- The selected device: what it is, exactly where it sits, and a
+                 way to make it blink so you can tell it from its twin. -->
+            <Border Background="#FF1F222A" CornerRadius="8" Padding="10,8" Margin="0,10,0,0">
+                <StackPanel>
+                    <Grid Margin="0,0,0,8">
+                        <TextBlock x:Name="SelectionText" Opacity="0.8" FontSize="12"
+                                   VerticalAlignment="Center" TextWrapping="Wrap"/>
+                        <Button x:Name="IdentifyBtn" Content="Identify" Padding="12,5"
+                                HorizontalAlignment="Right" Click="Identify_Click"
+                                ToolTip="Blink this device white, so you can tell it from an identical one"/>
+                    </Grid>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="x" VerticalAlignment="Center" Margin="0,0,6,0" Opacity="0.75" FontSize="12"/>
+                        <TextBox x:Name="XBox" Width="60" MinHeight="28" VerticalAlignment="Center"
+                                 HorizontalContentAlignment="Center" LostFocus="Position_Changed"/>
+                        <TextBlock Text="y" VerticalAlignment="Center" Margin="10,0,6,0" Opacity="0.75" FontSize="12"/>
+                        <TextBox x:Name="YBox" Width="60" MinHeight="28" VerticalAlignment="Center"
+                                 HorizontalContentAlignment="Center" LostFocus="Position_Changed"/>
+                        <TextBlock Text="width" VerticalAlignment="Center" Margin="14,0,6,0" Opacity="0.75" FontSize="12"/>
+                        <TextBox x:Name="WBox" Width="60" MinHeight="28" VerticalAlignment="Center"
+                                 HorizontalContentAlignment="Center" LostFocus="Position_Changed"/>
+                        <TextBlock Text="height" VerticalAlignment="Center" Margin="10,0,6,0" Opacity="0.75" FontSize="12"/>
+                        <TextBox x:Name="HBox" Width="60" MinHeight="28" VerticalAlignment="Center"
+                                 HorizontalContentAlignment="Center" LostFocus="Position_Changed"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
 
             <!-- Per-device LED shape, for devices whose driver cannot know it. -->
-            <Border Background="#FF262932" CornerRadius="8" Padding="10,8" Margin="0,10,0,0">
+            <Border Background="#FF1F222A" CornerRadius="8" Padding="10,8" Margin="0,10,0,0">
                 <StackPanel>
                     <TextBlock Text="LED SHAPE" FontSize="11" FontWeight="SemiBold"
                                Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,0,0,6"/>
@@ -57,11 +82,11 @@
                             <ComboBoxItem Content="Ring"/>
                             <ComboBoxItem Content="Grid"/>
                         </ComboBox>
-                        <TextBlock Text="columns" VerticalAlignment="Center" Margin="12,0,6,0"
+                        <TextBlock x:Name="ColsLabel" Text="columns" VerticalAlignment="Center" Margin="12,0,6,0"
                                    Opacity="0.75" FontSize="12"/>
                         <TextBox x:Name="ColsBox" Width="52" MinHeight="28" VerticalAlignment="Center"
                                  HorizontalContentAlignment="Center" LostFocus="Shape_Changed"/>
-                        <TextBlock Text="rows" VerticalAlignment="Center" Margin="12,0,6,0"
+                        <TextBlock x:Name="RowsLabel" Text="rows" VerticalAlignment="Center" Margin="12,0,6,0"
                                    Opacity="0.75" FontSize="12"/>
                         <TextBox x:Name="RowsBox" Width="52" MinHeight="28" VerticalAlignment="Center"
                                  HorizontalContentAlignment="Center" LostFocus="Shape_Changed"/>

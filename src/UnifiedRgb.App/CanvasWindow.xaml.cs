@@ -26,6 +26,17 @@ public partial class CanvasWindow : Window
     CanvasItem? _drag;
     string? _gestureBefore;      // the layout as the drag began, recorded on the first move
     bool _gestureRecorded;
+
+    /// <summary>Every LED dot on screen with the device and index it belongs to,
+    /// so the live refresh can repaint their colours without rebuilding the
+    /// canvas underneath a drag.</summary>
+    readonly List<(SolidColorBrush Brush, IRgbDevice Device, int Led)> _dots = new();
+
+    /// <summary>The point of the editor is watching light move across the
+    /// arrangement, so the dots follow the running effects. 10 Hz: fast enough
+    /// to read as motion, slow enough to be free.</summary>
+    readonly System.Windows.Threading.DispatcherTimer _live =
+        new() { Interval = TimeSpan.FromMilliseconds(100) };
     bool _resizing;
     Point _grabOffset;
     bool _suppressShapeEvents;
@@ -49,17 +60,41 @@ public partial class CanvasWindow : Window
         _layout.AutoArrange(vm.Devices);
         if (_layout.Items.Count != before) _layout.Save();
 
-        Loaded += (_, _) => { Redraw(); UpdateSelectionUi(); };
+        Loaded += (_, _) => { Redraw(); UpdateSelectionUi(); _live.Start(); };
         SizeChanged += (_, _) => Redraw();
+        Closed += (_, _) => _live.Stop();
+        _live.Tick += (_, _) => RefreshDots();
         PreviewKeyDown += Keys;
     }
 
     /*--- drawing ---*/
 
+    /// <summary>Repaint just the LED colours. Cheap, and safe mid-drag: it
+    /// touches no layout, so it cannot move what is under the mouse.</summary>
+    void RefreshDots()
+    {
+        if (_dots.Count == 0) return;
+        IRgbDevice? device = null;
+        Rgb[] colors = Array.Empty<Rgb>();
+        foreach (var (brush, dev, led) in _dots)
+        {
+            // The list is grouped by device, so the frame is fetched once each.
+            if (!ReferenceEquals(dev, device)) { device = dev; colors = _vm.ComposedFrameFor(dev); }
+            if (led >= colors.Length) continue;
+            var c = colors[led];
+            // The brush is mutated, not replaced: ten times a second across a
+            // few hundred dots, a new brush each time would be garbage this app
+            // does not make anywhere else.
+            brush.Color = Color.FromRgb(
+                Math.Max(c.R, (byte)24), Math.Max(c.G, (byte)24), Math.Max(c.B, (byte)28));
+        }
+    }
+
     void Redraw()
     {
         if (Desk.ActualWidth <= 0) return;
         Desk.Children.Clear();
+        _dots.Clear();
 
         // Fit the desk into the panel, keeping its proportions: a device's
         // position only means something relative to the whole surface.
@@ -151,16 +186,18 @@ public partial class CanvasWindow : Window
             double py = mapped.Y * _layout.Height * _scale;
 
             var c = i < colors.Length ? colors[i] : new Rgb(60, 60, 70);
+            var brush = new SolidColorBrush(Color.FromRgb(
+                Math.Max(c.R, (byte)24), Math.Max(c.G, (byte)24), Math.Max(c.B, (byte)28)));
             var ellipse = new Ellipse
             {
                 Width = dot, Height = dot,
-                Fill = new SolidColorBrush(Color.FromRgb(
-                    Math.Max(c.R, (byte)24), Math.Max(c.G, (byte)24), Math.Max(c.B, (byte)28))),
+                Fill = brush,
                 IsHitTestVisible = false,
             };
             Canvas.SetLeft(ellipse, px - dot / 2);
             Canvas.SetTop(ellipse, py - dot / 2);
             Desk.Children.Add(ellipse);
+            _dots.Add((brush, device, i));
         }
     }
 
@@ -297,6 +334,38 @@ public partial class CanvasWindow : Window
         UpdateSelectionUi();
     }
 
+    void Identify_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selected == null) return;
+        var device = _vm.Devices.FirstOrDefault(d => d.Name == _selected.Device);
+        if (device != null) _vm.IdentifyDevice(device);
+    }
+
+    /// <summary>Exact placement, for when two devices have to line up and the
+    /// mouse is not precise enough. Blank or unreadable leaves the value.</summary>
+    void Position_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressShapeEvents || _selected == null || !IsLoaded) return;
+
+        double x = Number(XBox.Text, _selected.X);
+        double y = Number(YBox.Text, _selected.Y);
+        double w = Number(WBox.Text, _selected.W);
+        double h = Number(HBox.Text, _selected.H);
+        if (x == _selected.X && y == _selected.Y && w == _selected.W && h == _selected.H) return;
+
+        PushUndo();
+        _selected.W = Math.Clamp(w, 20, _layout.Width);
+        _selected.H = Math.Clamp(h, 20, _layout.Height);
+        _selected.X = Math.Clamp(x, 0, Math.Max(0, _layout.Width - _selected.W));
+        _selected.Y = Math.Clamp(y, 0, Math.Max(0, _layout.Height - _selected.H));
+        Commit();
+        Redraw();
+        UpdateSelectionUi();
+    }
+
+    static double Number(string text, double fallback)
+        => double.TryParse(text, out double v) && !double.IsNaN(v) ? Math.Round(v) : fallback;
+
     void Rotate_Click(object sender, RoutedEventArgs e) => Edit(i => i.Rotation = (i.Rotation + 90) % 360);
     void FlipX_Click(object sender, RoutedEventArgs e) => Edit(i => i.FlipX = !i.FlipX);
     void FlipY_Click(object sender, RoutedEventArgs e) => Edit(i => i.FlipY = !i.FlipY);
@@ -320,13 +389,18 @@ public partial class CanvasWindow : Window
         if (pick <= 0) _selected.LedLayout = null;
         else
         {
-            int.TryParse(ColsBox.Text, out int cols);
-            int.TryParse(RowsBox.Text, out int rows);
+            // Switching to a grid with the boxes empty would describe a 1x1
+            // grid, which cannot hold the LEDs and is refused. Start from
+            // something that fits: one row of everything.
+            int leds = _vm.Devices.FirstOrDefault(d => d.Name == _selected.Device)?.LedCount ?? 1;
+            if (!int.TryParse(ColsBox.Text, out int cols) || cols < 1) cols = Math.Max(1, leds);
+            if (!int.TryParse(RowsBox.Text, out int rows) || rows < 1) rows = 1;
+
             _selected.LedLayout = new LedLayoutOverride
             {
                 Shape = pick == 1 ? "strip" : pick == 2 ? "ring" : "grid",
-                Cols = Math.Max(1, cols),
-                Rows = Math.Max(1, rows),
+                Cols = cols,
+                Rows = rows,
                 Serpentine = SerpentineBox.IsChecked == true,
             };
         }
@@ -345,6 +419,8 @@ public partial class CanvasWindow : Window
                 SelectionText.Text = "Pick a device to move, rotate or reshape it.";
                 ShapePick.SelectedIndex = 0;
                 ColsBox.Text = ""; RowsBox.Text = ""; SerpentineBox.IsChecked = false;
+                XBox.Text = YBox.Text = WBox.Text = HBox.Text = "";
+                SetEnabled(false, false);
                 return;
             }
 
@@ -363,8 +439,28 @@ public partial class CanvasWindow : Window
             ColsBox.Text = layout?.Cols.ToString() ?? "";
             RowsBox.Text = layout?.Rows.ToString() ?? "";
             SerpentineBox.IsChecked = layout?.Serpentine == true;
+
+            XBox.Text = _selected.X.ToString("0");
+            YBox.Text = _selected.Y.ToString("0");
+            WBox.Text = _selected.W.ToString("0");
+            HBox.Text = _selected.H.ToString("0");
+
+            // Columns, rows and the snake only describe a grid. Left live for
+            // the other shapes they read as controls that do nothing: ticking
+            // "snakes back" under "As detected" wrote a layout of null and then
+            // read the tick straight back off it as false.
+            SetEnabled(true, ShapePick.SelectedIndex == 3);
         }
         finally { _suppressShapeEvents = false; }
+    }
+
+    void SetEnabled(bool anySelected, bool grid)
+    {
+        IdentifyBtn.IsEnabled = anySelected;
+        ShapePick.IsEnabled = anySelected;
+        XBox.IsEnabled = YBox.IsEnabled = WBox.IsEnabled = HBox.IsEnabled = anySelected;
+        ColsBox.IsEnabled = RowsBox.IsEnabled = SerpentineBox.IsEnabled = grid;
+        ColsLabel.Opacity = RowsLabel.Opacity = grid ? 0.75 : 0.3;
     }
 
     /*--- undo ---*/

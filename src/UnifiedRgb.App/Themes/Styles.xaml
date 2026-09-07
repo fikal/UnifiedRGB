@@ -538,7 +538,7 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="TextBox">
                         <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="7"
-                                BorderThickness="1.5" BorderBrush="Transparent">
+                                BorderThickness="1.5" BorderBrush="#FF3A3D48">
                             <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/>
                         </Border>
                         <ControlTemplate.Triggers>
