@@ -825,6 +825,58 @@ static string TempDir()
     try { File.Delete(lcd); } catch { }
 }
 
+/*---------------- AudioAnalyzer: hops are analyzed once each (B11) ----------------*/
+{
+    // 4 hops' worth of samples. Delivered as one big batch or as small chunks,
+    // the analyzer must do the same amount of work: the window it transforms
+    // has to ADVANCE per hop. It used to re-transform whichever window was
+    // latest when the batch landed, so a big capture callback threw away the
+    // intermediate audio and did duplicate FFTs of one window.
+    const int Hop = 1024;
+    var buf = new float[Hop * 4];
+    for (int i = 0; i < buf.Length; i++) buf[i] = (float)Math.Sin(i * 0.01);
+
+    UnifiedRgb.Core.Audio.AudioAnalyzer._analyses = 0;
+    UnifiedRgb.Core.Audio.AudioAnalyzer._sinceAnalysis = 0;
+    UnifiedRgb.Core.Audio.AudioAnalyzer.OnSamples(buf, buf.Length, 48000);
+    int oneBatch = UnifiedRgb.Core.Audio.AudioAnalyzer._analyses;
+    Equal(4, oneBatch, "one big batch analyzes each hop it contains exactly once");
+
+    UnifiedRgb.Core.Audio.AudioAnalyzer._analyses = 0;
+    UnifiedRgb.Core.Audio.AudioAnalyzer._sinceAnalysis = 0;
+    for (int off = 0; off < buf.Length; off += 256)
+    {
+        var chunk = new float[256];
+        Array.Copy(buf, off, chunk, 0, 256);
+        UnifiedRgb.Core.Audio.AudioAnalyzer.OnSamples(chunk, 256, 48000);
+    }
+    Equal(oneBatch, UnifiedRgb.Core.Audio.AudioAnalyzer._analyses, "the same audio in small chunks analyzes the same number of hops");
+
+    UnifiedRgb.Core.Audio.AudioAnalyzer._analyses = 0;
+    UnifiedRgb.Core.Audio.AudioAnalyzer._sinceAnalysis = 0;   // start on a hop boundary
+    UnifiedRgb.Core.Audio.AudioAnalyzer.OnSamples(buf, Hop - 1, 48000);
+    Equal(0, UnifiedRgb.Core.Audio.AudioAnalyzer._analyses, "a partial hop waits for the rest instead of analyzing early");
+
+    // The count alone cannot tell the two implementations apart - the old one
+    // ran the same NUMBER of transforms, just all on the batch's final window.
+    // So: flush the ring to silence, then hand over one batch whose first hop
+    // is silent and whose second is full scale. Analyzed in order, the first
+    // window is silent. Analyzed twice at the end, it is loud.
+    var quiet = new float[Hop * 4];
+    UnifiedRgb.Core.Audio.AudioAnalyzer._sinceAnalysis = 0;
+    UnifiedRgb.Core.Audio.AudioAnalyzer.OnSamples(quiet, quiet.Length, 48000);
+
+    var step = new float[Hop * 2];
+    for (int i = Hop; i < step.Length; i++) step[i] = 1f;
+    UnifiedRgb.Core.Audio.AudioAnalyzer._analyses = 0;
+    UnifiedRgb.Core.Audio.AudioAnalyzer._sinceAnalysis = 0;
+    UnifiedRgb.Core.Audio.AudioAnalyzer._firstRms = -1;
+    UnifiedRgb.Core.Audio.AudioAnalyzer.OnSamples(step, step.Length, 48000);
+    Equal(2, UnifiedRgb.Core.Audio.AudioAnalyzer._analyses, "the two-hop batch is analyzed as two hops");
+    Check(UnifiedRgb.Core.Audio.AudioAnalyzer._firstRms >= 0 && UnifiedRgb.Core.Audio.AudioAnalyzer._firstRms < 0.1,
+        "the first hop is analyzed as it stood, not as the end of the batch");
+}
+
 /*---------------- OpenRgbServer.CleanClientName (S3) ----------------*/
 {
     string forged = OpenRgbServer.CleanClientName("evil\r\n09-07 12:00:00 ERR name");

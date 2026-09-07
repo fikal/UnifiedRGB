@@ -28,7 +28,7 @@ public static class AudioAnalyzer
     // Ring of mono samples from the capture thread.
     static readonly float[] _ring = new float[FftSize * 4];
     static int _ringWrite;
-    static int _sinceAnalysis;
+    internal static int _sinceAnalysis;   // internal so a test can start from a known hop boundary
     static int _sampleRate = 48000;
 
     // FFT workspace (capture thread only).
@@ -46,6 +46,12 @@ public static class AudioAnalyzer
     static float _agcRms = 0.02f;      // loudness scale (separate: different units)
 
     /// <summary>Smoothed 0..1 level of band i (0 = lowest frequency).</summary>
+    /// <summary>How many analysis windows have been transformed. The harness
+    /// reads it to tell "each hop analyzed once" from "one window transformed
+    /// several times", which is the whole difference this measures.</summary>
+    internal static int _analyses;
+    internal static double _firstRms;
+
     public static float Band(int i) => _bands[Math.Clamp(i, 0, BandCount - 1)];
 
     /// <summary>Overall loudness 0..1 (RMS through the AGC).</summary>
@@ -108,18 +114,36 @@ public static class AudioAnalyzer
     /*-----------------------------------------------------*\
     | Capture thread: accumulate, analyze every Hop samples |
     \*-----------------------------------------------------*/
-    static void OnSamples(float[] samples, int count, int sampleRate)
+    internal static void OnSamples(float[] samples, int count, int sampleRate)
     {
         _sampleRate = sampleRate;
-        for (int i = 0; i < count; i++)
+
+        // Fill only as far as the next hop boundary, analyze there, then carry
+        // on. The whole batch used to go into the ring first and Analyze then
+        // ran once per whole hop it contained - but Analyze always reads the
+        // window ending at the CURRENT write position, which by then was the
+        // end of the batch. So every one of those passes transformed the exact
+        // same 2048 samples: the intermediate windows were never looked at, and
+        // the duplicate transforms only moved the smoothing along. It shows up
+        // when a capture callback delivers a big batch (a device with a long
+        // period, or after a scheduling stall), which is also when losing the
+        // detail matters most. Stepping the writes keeps the ring from running
+        // more than one hop ahead of the analysis too, so a batch larger than
+        // the ring can no longer overwrite samples before they are read.
+        int i = 0;
+        while (i < count)
         {
-            _ring[_ringWrite] = samples[i];
-            _ringWrite = (_ringWrite + 1) % _ring.Length;
-        }
-        _sinceAnalysis += count;
-        while (_sinceAnalysis >= Hop)
-        {
-            _sinceAnalysis -= Hop;
+            int take = Math.Min(count - i, Hop - _sinceAnalysis);
+            for (int k = 0; k < take; k++)
+            {
+                _ring[_ringWrite] = samples[i + k];
+                _ringWrite = (_ringWrite + 1) % _ring.Length;
+            }
+            i += take;
+            _sinceAnalysis += take;
+            if (_sinceAnalysis < Hop) break;      // partial hop: wait for more
+            _sinceAnalysis = 0;
+            _analyses++;
             Analyze();
         }
     }
@@ -137,6 +161,10 @@ public static class AudioAnalyzer
             _im[i] = 0;
         }
         rms = Math.Sqrt(rms / FftSize);
+        // The loudness of the FIRST window of a batch. Only a test reads it,
+        // and it is the one value that distinguishes analyzing each hop in turn
+        // from transforming the batch's final window several times.
+        if (_analyses == 1) _firstRms = rms;
         Fft(_re, _im);
 
         // Log-spaced bands over the magnitude spectrum. Band-edge bin indices

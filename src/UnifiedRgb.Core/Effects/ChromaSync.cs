@@ -37,6 +37,38 @@ public static class ChromaFeed
     static int _clients;
     static readonly LogBudget _connLog = new(10);
 
+    /// <summary>Connections that have not sent a complete frame yet, and when
+    /// they arrived.
+    ///
+    /// The client cap bounds threads, but a connection that simply never sends
+    /// anything sits in a blocking read forever and keeps its slot: sixteen
+    /// silent local processes could lock every real shim host out, and named
+    /// pipes have no read timeout to fall back on. Only the FIRST frame is
+    /// deadlined - a real host sends one as soon as it connects, whereas an
+    /// established host may legitimately go quiet for hours between games and
+    /// must not be dropped.</summary>
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<NamedPipeServerStream, long> _unproven = new();
+    const int FirstFrameDeadlineMs = 30_000;
+
+    static void EvictSilentClients()
+    {
+        while (true)
+        {
+            Thread.Sleep(5000);
+            long now = Environment.TickCount64;
+            foreach (var (pipe, at) in _unproven)
+            {
+                if (now - at < FirstFrameDeadlineMs) continue;
+                if (!_unproven.TryRemove(pipe, out _)) continue;
+                // Disposing under the reader unblocks it; ServeClient's finally
+                // releases the slot.
+                Log.Occasional("chroma-silent", "chroma",
+                    $"dropping a pipe client that connected but sent no frame within {FirstFrameDeadlineMs / 1000}s");
+                try { pipe.Dispose(); } catch { }
+            }
+        }
+    }
+
     /// <summary>A frame arrived within the last few seconds.</summary>
     public static bool Active => Environment.TickCount64 - Interlocked.Read(ref _lastFrame) < 4000;
 
@@ -47,6 +79,7 @@ public static class ChromaFeed
         lock (_lock)
         {
             if (_server != null) return;
+            new Thread(EvictSilentClients) { IsBackground = true, Name = "chroma-feed-reaper" }.Start();
             _server = new Thread(ServerLoop) { IsBackground = true, Name = "chroma-feed" };
             _server.Start();
         }
@@ -195,6 +228,7 @@ public static class ChromaFeed
             using (pipe)
             {
                 bool firstFrame = true;
+                _unproven[pipe] = Environment.TickCount64;
                 while (ReadExact(pipe, head, 5))
                 {
                     int rows = head[1] | (head[2] << 8);
@@ -212,12 +246,19 @@ public static class ChromaFeed
                         grid[i] = new Rgb(r, gg, b);
                     }
                     Publish(head[0], grid, rows, cols);
-                    if (firstFrame) { if (_connLog.Allow()) Log.Info("chroma", $"first frame: type={head[0]} {rows}x{cols}"); firstFrame = false; }
+                    if (firstFrame)
+                    {
+                        // Proven: a real host. It keeps its slot from here on
+                        // however quiet it goes.
+                        _unproven.TryRemove(pipe, out _);
+                        if (_connLog.Allow()) Log.Info("chroma", $"first frame: type={head[0]} {rows}x{cols}");
+                        firstFrame = false;
+                    }
                 }
             }
         }
         catch (Exception ex) { Log.Occasional("chroma", "feed", $"pipe error: {ex.Message}"); }
-        finally { Interlocked.Decrement(ref _clients); }
+        finally { _unproven.TryRemove(pipe, out _); Interlocked.Decrement(ref _clients); }
         if (_connLog.Allow()) Log.Info("chroma", "host disconnected from the pipe");
     }
 
