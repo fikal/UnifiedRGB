@@ -747,6 +747,84 @@ static string TempDir()
     engine.StopAll();
 }
 
+/*---------------- LightingController: external partial writes accumulate (B3) ----------------*/
+{
+    var lighting = new UnifiedRgb.App.Services.LightingController();
+    var dev = new FakeDevice { Name = "Ext", LedCount = 2 };
+    var red = new Rgb(255, 0, 0); var blue = new Rgb(0, 0, 255);
+
+    // An SDK client painting one LED at a time. Each write used to be merged
+    // over the user's STORED statics, which never contain the client's own
+    // earlier writes, so the second one rebuilt LED 0 from black.
+    lighting.PushExternalFrame(dev, 0, new[] { red });
+    lighting.Applier.Drain(2000);
+    lighting.PushExternalFrame(dev, 1, new[] { blue });
+    lighting.Applier.Drain(2000);
+
+    var shown = dev.Last;
+    Check(shown != null && shown[0] == red && shown[1] == blue,
+        "two partial external writes accumulate instead of erasing each other");
+
+    // The user's saved lighting is what gets restored when the client leaves,
+    // so the client must never have touched it.
+    var stored = lighting.FrameFor(dev);
+    Check(stored[0] == default && stored[1] == default,
+        "an external client does not write into the user's stored statics");
+
+    // Release, and the next client starts from the user's lighting again.
+    lighting.ForgetExternal(dev);
+    lighting.PushExternalFrame(dev, 1, new[] { blue });
+    lighting.Applier.Drain(2000);
+    shown = dev.Last;
+    Check(shown != null && shown[0] == default && shown[1] == blue,
+        "after release the next client does not inherit the last one's pixels");
+}
+
+/*---------------- SceneStore / LcdDesign survive explicit nulls (B9) ----------------*/
+{
+    // A property initializer only runs when the key is ABSENT; an explicit
+    // null defeats it, and startup then walks a null list.
+    string dir = UnifiedRgb.Core.AppPaths.ConfigDir;
+    string scenes = System.IO.Path.Combine(dir, "scenes.json");
+    string lcd = System.IO.Path.Combine(dir, "lcd.json");
+
+    File.WriteAllText(scenes, "{\"Scenes\":null,\"Sequences\":null}");
+    var s1 = UnifiedRgb.App.SceneStore.Load();
+    Check(s1.Scenes != null && s1.Sequences != null && s1.Scenes.Count == 0,
+        "scenes.json with explicit null collections loads empty rather than throwing");
+
+    File.WriteAllText(scenes, "{\"Scenes\":[null],\"Sequences\":[{\"Name\":\"S\",\"Actions\":null}]}");
+    var s2 = UnifiedRgb.App.SceneStore.Load();
+    Equal(0, s2.Scenes.Count, "a null scene entry is dropped");
+    Equal(0, s2.Sequences[0].Actions.Count, "a sequence with null Actions loads empty");
+
+    File.WriteAllText(scenes, "{\"Scenes\":[{\"Name\":\"  \",\"Design\":null}]}");
+    Equal(0, UnifiedRgb.App.SceneStore.Load().Scenes.Count, "a scene with no usable name is dropped");
+
+    File.WriteAllText(lcd, "{\"Elements\":null}");
+    var d1 = UnifiedRgb.App.LcdDesign.Load();
+    Check(d1.Elements != null && d1.Elements.Count == 0, "lcd.json with a null Elements list loads empty");
+
+    File.WriteAllText(lcd, "{\"Elements\":[null]}");
+    Equal(0, UnifiedRgb.App.LcdDesign.Load().Elements.Count, "a null element is dropped");
+
+    // A null on a non-nullable number is a different kind of broken: the file
+    // will not deserialize at all, so it is corrupt and the store's existing
+    // handling takes over (defaults, original kept aside). What matters here
+    // is that it is graceful rather than an exception out of startup.
+    File.WriteAllText(lcd, "{\"Elements\":[],\"BgW\":null}");
+    var d2 = UnifiedRgb.App.LcdDesign.Load();
+    Check(d2 != null && d2.Elements != null, "a number that cannot deserialize falls back to a usable design");
+
+    File.WriteAllText(lcd, "{\"Elements\":[{\"Kind\":\"Text\",\"FontSize\":0}]}");
+    var d3 = UnifiedRgb.App.LcdDesign.Load();
+    Check(d3.Elements.Count == 1 && d3.Elements[0].FontSize > 0,
+        "a zero font size is repaired rather than handed to the renderer");
+
+    try { File.Delete(scenes); } catch { }
+    try { File.Delete(lcd); } catch { }
+}
+
 /*---------------- OpenRgbServer.CleanClientName (S3) ----------------*/
 {
     string forged = OpenRgbServer.CleanClientName("evil\r\n09-07 12:00:00 ERR name");

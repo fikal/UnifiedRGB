@@ -2,6 +2,11 @@
 
   <ItemGroup>
     <ProjectReference Include="..\UnifiedRgb.Core\UnifiedRgb.Core.csproj" />
+    <!-- The App as well, so LightingController and the scene/design
+         normalizers get real regressions instead of being untestable.
+         It is a WPF exe, hence UseWPF below; nothing in the harness
+         constructs a window or the view model. -->
+    <ProjectReference Include="..\UnifiedRgb.App\UnifiedRgb.App.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
@@ -9,6 +14,7 @@
     <TargetFramework>net10.0-windows10.0.22621.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
   </PropertyGroup>
 
   <!-- `dotnet test` on a plain console project reports success having run
