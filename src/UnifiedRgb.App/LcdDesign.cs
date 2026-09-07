@@ -129,6 +129,12 @@ public sealed class LcdElement : INotifyPropertyChanged
 /// <summary>The saved pump layout: an optional background image plus text elements.</summary>
 public sealed class LcdDesign
 {
+    /// <summary>The saved screen this design came from, or null when it has
+    /// never been one. Persisted with the design so a restart still knows which
+    /// screen is up: the Screens tab preselects it, and "Save screen" with an
+    /// empty name then updates that screen instead of doing nothing.</summary>
+    public string? SceneName { get; set; }
+
     public string? BackgroundImagePath { get; set; }
     /// <summary>Background placement in landscape space. W==0 means "not
     /// set yet" — the app materializes a centered cover rect on load, and

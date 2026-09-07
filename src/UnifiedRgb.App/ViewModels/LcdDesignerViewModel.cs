@@ -185,6 +185,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         _lcd.Start();
         OnChanged(nameof(Available));
         OnChanged(nameof(CpuTempUnavailable));
+        SelectLoadedScene();
 
         UnifiedRgb.Core.Log.Info("lcd",
             $"pump LCD opened, {_lcd.Design.Elements.Count} element(s)"
@@ -674,7 +675,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
             OnChanged();
             // Selecting a scene loads it into the editor (and onto the pump).
             var sc = _scenes.Scenes.FirstOrDefault(x => x.Name == value);
-            if (sc != null) LoadDesignIntoEditor(SceneStore.Clone(sc.Design));
+            if (sc != null) LoadDesignIntoEditor(FromScene(sc));
         }
     }
 
@@ -707,6 +708,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     public void InitScenes()
     {
         foreach (var sc in _scenes.Scenes) SceneNames.Add(sc.Name);
+        SelectLoadedScene();
         foreach (var sq in _scenes.Sequences) Sequences.Add(sq);
         _sequencer = new SceneSequencer(ApplySceneAction);
         _sequencer.StateChanged += () =>
@@ -746,7 +748,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         {
             _selectedSceneName = sc.Name;   // reflect without re-loading twice
             OnChanged(nameof(SelectedSceneName));
-            LoadDesignIntoEditor(SceneStore.Clone(sc.Design), fromShow: true);
+            LoadDesignIntoEditor(FromScene(sc), fromShow: true);
         }
         if (!string.IsNullOrEmpty(a.Profile) &&
             !string.Equals(_currentProfile(), a.Profile, StringComparison.OrdinalIgnoreCase))
@@ -759,6 +761,56 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     /// file replaces a day) and replace the user's own design with whichever
     /// scene played last.</summary>
     bool _liveIsShowScene;
+
+    /// <summary>A scene's design, detached from the store and carrying the name
+    /// it came from, ready to become the live one.</summary>
+    static LcdDesign FromScene(LcdScene sc)
+    {
+        var d = SceneStore.Clone(sc.Design);
+        d.SceneName = sc.Name;   // scenes saved before SceneName existed have none
+        return d;
+    }
+
+    /// <summary>Preselect the screen the live design came from, so the Screens
+    /// tab opens on it and an edit followed by "Save screen" updates that
+    /// screen. Deliberately writes the FIELD: the setter would reload the design
+    /// that is already showing. A no-op until both the panel and the scene list
+    /// exist, so it is safe to call from either startup order.</summary>
+    void SelectLoadedScene()
+    {
+        if (_lcd == null) return;
+        string? name = _lcd.Design.SceneName;
+
+        // A design saved before the name was recorded, which on an existing
+        // install is every design there is. If it is identical to a saved
+        // screen it IS that screen, so adopt the name once and carry it from
+        // here on rather than leaving the dropdown blank forever.
+        if (name == null)
+        {
+            string live = Fingerprint(_lcd.Design);
+            name = _scenes.Scenes.FirstOrDefault(x => Fingerprint(x.Design) == live)?.Name;
+            if (name != null) _lcd.Design.SceneName = name;
+        }
+
+        if (name == null || !SceneNames.Contains(name)) return;
+        _selectedSceneName = name;
+        OnChanged(nameof(SelectedSceneName));
+        // Which screen the pump is showing is state a bundle needs: "the LCD
+        // looks wrong" is a different question depending on whether it is a
+        // saved screen or a canvas that was never saved.
+        Log.Info("scenes", $"canvas is screen '{name}'");
+    }
+
+    /// <summary>A design's content, with the screen name left out so it does not
+    /// take part in the comparison. Compared as JSON because that is exactly
+    /// what gets persisted: two designs that serialize the same are the same
+    /// screen. Cloned first, so nothing here touches the live design.</summary>
+    static string Fingerprint(LcdDesign d)
+    {
+        var c = SceneStore.Clone(d);
+        c.SceneName = null;
+        return JsonSerializer.Serialize(c);
+    }
 
     /// <summary>Swap the live design (editor + pump) for another one.</summary>
     void LoadDesignIntoEditor(LcdDesign d, bool fromShow = false)
@@ -801,8 +853,12 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
             _scenes.Scenes.Add(sc);
             SceneNames.Add(name);
         }
+        // The canvas IS this screen from here on: the next "Save screen" with
+        // an empty name updates it, and a restart comes back selected on it.
+        _lcd.Design.SceneName = sc.Name;
         sc.Design = SceneStore.Clone(_lcd.Design);
         _scenes.Save();
+        _lcd.Design.Save();
         SceneNameInput = "";
         _selectedSceneName = sc.Name;
         OnChanged(nameof(SelectedSceneName)); OnChanged(nameof(SceneChoices));
@@ -813,6 +869,8 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         if (_selectedSceneName == null) return;
         _scenes.Scenes.RemoveAll(x => x.Name == _selectedSceneName);
         SceneNames.Remove(_selectedSceneName);
+        // The design stays on the pump, it just is not a saved screen anymore.
+        if (_lcd != null && _lcd.Design.SceneName == _selectedSceneName) _lcd.Design.SceneName = null;
         _selectedSceneName = null;
         OnChanged(nameof(SelectedSceneName)); OnChanged(nameof(SceneChoices));
         _scenes.Save();
