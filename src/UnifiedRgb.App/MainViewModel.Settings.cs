@@ -377,7 +377,9 @@ public sealed partial class MainViewModel
         OnChanged(nameof(Cs2Status));
 
         if (written.Count > 0)
-            return $"Installed to {string.Join(", ", written)}. Restart CS2 if it is running.";
+            return "Installed to:" + Environment.NewLine
+                 + string.Join(Environment.NewLine, written) + Environment.NewLine
+                 + Environment.NewLine + "Restart CS2 if it is running.";
         return error ?? "Counter-Strike 2 was not found.";
     }
 

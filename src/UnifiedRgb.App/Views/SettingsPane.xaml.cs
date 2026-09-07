@@ -63,7 +63,7 @@ public partial class SettingsPane : UserControl
                     + Environment.NewLine + where
                     + Environment.NewLine + Environment.NewLine
                     + VM.Cs2ConfigText();
-        Dialogs.Info(Owner, "gamestate_integration_unifiedrgb.cfg", body);
+        Dialogs.Info(Owner, "gamestate_integration_unifiedrgb.cfg", body, preformatted: true);
     }
 
     void ManageExitBehavior_Click(object sender, RoutedEventArgs e)

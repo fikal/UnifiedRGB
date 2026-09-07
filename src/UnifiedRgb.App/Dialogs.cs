@@ -120,7 +120,11 @@ public static class Dialogs
     /// a config file can be copied out. The setup flows lean on this: when
     /// writing a game's config fails, the only useful answer is the exact text
     /// and where to put it.</summary>
-    public static void Info(Window? owner, string title, string message)
+    /// <param name="preformatted">True for a file's contents, where the
+    /// indentation carries meaning: the text is then monospaced and scrolls
+    /// sideways rather than wrapping. False for prose, which wraps, because a
+    /// horizontal scrollbar under a sentence is just a bar nobody can explain.</param>
+    public static void Info(Window? owner, string title, string message, bool preformatted = false)
     {
         if (owner == null) return;
         Window win = null!;
@@ -135,8 +139,9 @@ public static class Dialogs
             Text = message,
             IsReadOnly = true,
             AcceptsReturn = true,
-            TextWrapping = TextWrapping.NoWrap,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            TextWrapping = preformatted ? TextWrapping.NoWrap : TextWrapping.Wrap,
+            HorizontalScrollBarVisibility = preformatted ? ScrollBarVisibility.Auto
+                                                         : ScrollBarVisibility.Disabled,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             MaxHeight = 320,
             MaxWidth = 620,
@@ -146,8 +151,10 @@ public static class Dialogs
             BorderBrush = new SolidColorBrush(Color.FromRgb(0x2E, 0x31, 0x40)),
             BorderThickness = new Thickness(1),
             Padding = new Thickness(8, 6, 8, 6),
-            FontFamily = new FontFamily("Consolas"),
-            FontSize = 12,
+            // Monospace only where columns matter; prose reads better in the
+            // face the rest of the app uses.
+            FontFamily = preformatted ? new FontFamily("Consolas") : new FontFamily("Segoe UI"),
+            FontSize = preformatted ? 12 : 13,
         };
         body.Children.Add(text);
 
