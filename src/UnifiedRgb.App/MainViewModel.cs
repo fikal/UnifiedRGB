@@ -331,6 +331,25 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     /*-----------------------------------------------------*\
     | Settings view (gear icon)                             |
     \*-----------------------------------------------------*/
+    /// <summary>The settings categories, in the order the strip shows them.
+    /// Strings on purpose: the XAML picks a panel by comparing against these.</summary>
+    public IReadOnlyList<string> SettingsTabs { get; } =
+        new[] { "General", "Automation", "Devices", "Integrations", "Support" };
+
+    string _settingsTab = "General";
+    /// <summary>Which category is on screen. Remembered for the session, so
+    /// going back to the devices and returning lands where you were.</summary>
+    public string SettingsTab
+    {
+        get => _settingsTab;
+        set
+        {
+            if (string.IsNullOrEmpty(value) || value == _settingsTab) return;
+            _settingsTab = value;
+            OnChanged();
+        }
+    }
+
     bool _isSettingsOpen;
     public bool IsSettingsOpen
     {

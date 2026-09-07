@@ -12,6 +12,7 @@
         <local:AboveIndexConverter x:Key="AboveIndex"/>
         <local:ActionIndexConverter x:Key="ActionIndex"/>
         <local:SensorSourceLabelConverter x:Key="SensorLabel"/>
+        <local:EqualsToVisConverter x:Key="EqVis"/>
 
         <!-- No FontFamily here: app-level implicit styles reach INSIDE control
              templates (window-level ones don't), and a forced Segoe UI turns

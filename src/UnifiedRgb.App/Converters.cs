@@ -108,6 +108,19 @@ public static class Sl
     public static void SetUnit(DependencyObject o, string? v) => o.SetValue(UnitProperty, v);
 }
 
+/// <summary>Visible when the bound value equals the converter parameter.
+/// One string on the view model then picks which of several panels shows,
+/// with no code in the view.</summary>
+public sealed class EqualsToVisConverter : System.Windows.Data.IValueConverter
+{
+    public object Convert(object? v, Type t, object? p, System.Globalization.CultureInfo c)
+        => string.Equals(v?.ToString(), p?.ToString(), StringComparison.Ordinal)
+            ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
+
+    public object ConvertBack(object v, Type t, object? p, System.Globalization.CultureInfo c)
+        => throw new NotSupportedException();
+}
+
 /// <summary>Formats a slider's value for display: (value, maximum, unit).</summary>
 public sealed class SliderReadout : System.Windows.Data.IMultiValueConverter
 {

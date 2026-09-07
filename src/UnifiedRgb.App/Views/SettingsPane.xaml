@@ -3,208 +3,295 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:UnifiedRgb.App"
              xmlns:controls="clr-namespace:UnifiedRgb.App.Controls">
-    <!-- ===================== Settings (gear) ===================== -->
-            <ScrollViewer Visibility="{Binding IsSettingsOpen, Converter={StaticResource BoolToVis}}"
-                          VerticalScrollBarVisibility="Auto">
-                <StackPanel MaxWidth="560" HorizontalAlignment="Left">
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,18">
-                        <Button Content="&#x2190;  Back" Padding="10,6"
-                                Click="SettingsBack_Click" ToolTip="Back to devices"/>
-                        <TextBlock Text="Settings" FontSize="20" FontWeight="SemiBold"
-                                   VerticalAlignment="Center" Margin="14,0,0,0"/>
+    <!-- ===================== Settings (gear) =====================
+         Five categories, one on screen at a time, each a short stack of
+         cards. It used to be twelve sections in one column separated by
+         hairlines, which by the time automation, the desk, games and the
+         SDK server arrived was a long scroll with no shape to it. -->
+    <UserControl.Resources>
+        <Style x:Key="SectionTitle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="0,0,0,8"/>
+        </Style>
+        <Style x:Key="Hint" TargetType="TextBlock">
+            <Setter Property="Opacity" Value="0.6"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+        </Style>
+        <Style x:Key="Status" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#FF7FB4FF"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="Margin" Value="0,8,0,0"/>
+        </Style>
+        <Style x:Key="SettingsCard" TargetType="Border" BasedOn="{StaticResource Card}">
+            <Setter Property="Margin" Value="0,0,0,12"/>
+        </Style>
+    </UserControl.Resources>
+
+    <ScrollViewer Visibility="{Binding IsSettingsOpen, Converter={StaticResource BoolToVis}}"
+                  VerticalScrollBarVisibility="Auto">
+        <StackPanel MaxWidth="600" HorizontalAlignment="Left">
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                <Button Content="&#x2190;  Back" Padding="10,6"
+                        Click="SettingsBack_Click" ToolTip="Back to devices"/>
+                <TextBlock Text="Settings" FontSize="20" FontWeight="SemiBold"
+                           VerticalAlignment="Center" Margin="14,0,0,0"/>
+            </StackPanel>
+
+            <!-- Category strip -->
+            <ListBox ItemsSource="{Binding SettingsTabs}" SelectedItem="{Binding SettingsTab}"
+                     Background="Transparent" BorderThickness="0" Margin="0,0,0,10"
+                     ItemContainerStyle="{StaticResource Pill}" IsTextSearchEnabled="False">
+                <ListBox.ItemsPanel>
+                    <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                </ListBox.ItemsPanel>
+            </ListBox>
+
+            <!-- ===================== General ===================== -->
+            <StackPanel Visibility="{Binding SettingsTab, Converter={StaticResource EqVis}, ConverterParameter=General}">
+
+                <Border Style="{StaticResource SettingsCard}">
+                    <StackPanel>
+                        <TextBlock Text="Profiles" Style="{StaticResource SectionTitle}"/>
+                        <StackPanel Orientation="Horizontal">
+                            <ComboBox Width="200" ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfile}"
+                                      DisplayMemberPath="Name"/>
+                            <TextBox Width="160" Text="{Binding ProfileName, UpdateSourceTrigger=PropertyChanged}"
+                                     Margin="10,0,0,0" VerticalAlignment="Center" ToolTip="Profile name"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                            <Button Content="Save" Style="{StaticResource Accent}" Command="{Binding SaveProfileCommand}"
+                                    ToolTip="Update the selected profile with the current lighting (a changed name renames it)"/>
+                            <Button Content="Save as new" Margin="8,0,0,0" Click="SaveProfileAsNew_Click"
+                                    ToolTip="Create a new profile with this name"/>
+                            <Button Content="Load" Margin="8,0,0,0" Command="{Binding LoadProfileCommand}"/>
+                            <Button Content="Delete" Style="{StaticResource Danger}" Margin="8,0,0,0"
+                                    Command="{Binding DeleteProfileCommand}"/>
+                        </StackPanel>
+                        <CheckBox Content="Apply the selected profile at startup" IsChecked="{Binding IsStartupProfile}"
+                                  Margin="0,12,0,0"/>
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
+                                   Text="Ctrl+Alt+1…9 applies profile 1…9, even in games."/>
                     </StackPanel>
+                </Border>
 
-                    <TextBlock Text="Profiles" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                    <StackPanel Orientation="Horizontal">
-                        <ComboBox Width="200" ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfile}"
-                                  DisplayMemberPath="Name"/>
-                        <TextBox Width="160" Text="{Binding ProfileName, UpdateSourceTrigger=PropertyChanged}"
-                                 Margin="10,0,0,0" VerticalAlignment="Center" ToolTip="Profile name"/>
+                <Border Style="{StaticResource SettingsCard}">
+                    <StackPanel>
+                        <TextBlock Text="Startup" Style="{StaticResource SectionTitle}"/>
+                        <CheckBox Content="Start with Windows, in the tray" IsChecked="{Binding StartWithWindows}"/>
+                        <CheckBox Content="Start minimized to the tray" IsChecked="{Binding StartMinimized}" Margin="0,8,0,0"/>
+                        <StackPanel Visibility="{Binding ShowGithubUpdateToggle, Converter={StaticResource BoolToVis}}">
+                            <CheckBox Content="Check GitHub for new releases at startup" IsChecked="{Binding GithubUpdateCheck}" Margin="0,8,0,0"/>
+                            <TextBlock Style="{StaticResource Hint}" Margin="24,4,0,0"
+                                       Text="The only network request this build makes. Off, updates are manual from github.com/fikal/UnifiedRGB/releases."/>
+                        </StackPanel>
                     </StackPanel>
-                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                        <Button Content="Save" Style="{StaticResource Accent}" Command="{Binding SaveProfileCommand}"
-                                ToolTip="Update the selected profile with the current lighting (a changed name renames it)"/>
-                        <Button Content="Save as new" Margin="8,0,0,0" Click="SaveProfileAsNew_Click"
-                                ToolTip="Create a new profile with this name"/>
-                        <Button Content="Load" Margin="8,0,0,0" Command="{Binding LoadProfileCommand}"/>
-                        <Button Content="Delete" Style="{StaticResource Danger}" Margin="8,0,0,0"
-                                Command="{Binding DeleteProfileCommand}"/>
+                </Border>
+
+                <Border Style="{StaticResource SettingsCard}">
+                    <StackPanel>
+                        <TextBlock Text="Brightness" Style="{StaticResource SectionTitle}"/>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="Master brightness" Opacity="0.7" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                            <Slider Width="220" Minimum="0.1" Maximum="1" VerticalAlignment="Center"
+                                    IsSnapToTickEnabled="True" TickFrequency="0.05" local:Sl.Unit="%"
+                                    Value="{Binding MasterBrightness, UpdateSourceTrigger=PropertyChanged}"/>
+                        </StackPanel>
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
+                                   Text="Ctrl+Alt+↑/↓ nudges it, even in games."/>
                     </StackPanel>
-                    <CheckBox Content="Apply selected profile at startup" IsChecked="{Binding IsStartupProfile}"
-                              Margin="0,14,0,0"/>
-                    <TextBlock Opacity="0.55" FontSize="12" Margin="0,10,0,0"
-                               Text="Global hotkeys (work in games): Ctrl+Alt+1…9 apply profile 1…9"/>
+                </Border>
+            </StackPanel>
 
-                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
+            <!-- ===================== Automation ===================== -->
+            <StackPanel Visibility="{Binding SettingsTab, Converter={StaticResource EqVis}, ConverterParameter=Automation}">
 
-                    <TextBlock Text="Startup" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                    <CheckBox Content="Start with Windows (elevated, in the tray)" IsChecked="{Binding StartWithWindows}"/>
-                    <CheckBox Content="Start minimized to the tray" IsChecked="{Binding StartMinimized}" Margin="0,10,0,0"/>
-                    <StackPanel Visibility="{Binding ShowGithubUpdateToggle, Converter={StaticResource BoolToVis}}">
-                        <CheckBox Content="Check GitHub for new releases at startup" IsChecked="{Binding GithubUpdateCheck}" Margin="0,10,0,0"/>
-                        <TextBlock Text="The only network request this build makes. Turn it off and updates are manual (github.com/fikal/UnifiedRGB/releases)."
-                                   Opacity="0.55" FontSize="12" TextWrapping="Wrap" Margin="24,4,0,0"/>
+                <Border Style="{StaticResource SettingsCard}">
+                    <StackPanel>
+                        <TextBlock Text="Away from the PC" Style="{StaticResource SectionTitle}"/>
+                        <CheckBox Content="Lights off while the PC is locked, back on when you return"
+                                  IsChecked="{Binding LockLightsOff}"/>
+                        <TextBlock Text="{Binding ScheduleSummary}" Opacity="0.75" FontSize="12" Margin="0,10,0,0"/>
+                        <Button Content="Schedules…" Padding="12,5" Margin="0,6,0,0" HorizontalAlignment="Left"
+                                Click="ManageSchedules_Click"
+                                ToolTip="Lights off, or a profile, between two times on the days you pick"/>
                     </StackPanel>
+                </Border>
 
-                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
-
-                    <TextBlock Text="Extra devices" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                    <TextBlock Text="For hardware UnifiedRGB doesn't drive natively yet: a managed OpenRGB runs invisibly in the background and its devices show up in your list. Natively-driven hardware is never handed to it."
-                               Opacity="0.6" TextWrapping="Wrap" Margin="0,0,0,8"/>
-                    <CheckBox Content="Use OpenRGB for extra devices" IsChecked="{Binding UseOpenRgb}"/>
-                    <TextBlock Text="{Binding OpenRgbStatus}" Opacity="0.7" Margin="0,8,0,0"/>
-
-                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
-
-                    <TextBlock Text="Sensor driver" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                    <TextBlock Text="PawnIO is a small signed driver that unlocks CPU temperature, RAM lighting and motherboard fan monitoring/control. Without it those show as dashes."
-                               Opacity="0.6" TextWrapping="Wrap" Margin="0,0,0,8"/>
-                    <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="{Binding PawnIoStatusText}" VerticalAlignment="Center" Opacity="0.8"/>
-                        <Button Content="Install PawnIO" Style="{StaticResource Accent}" Padding="14,6" Margin="14,0,0,0"
-                                Click="InstallPawnIo_Click"
-                                IsEnabled="{Binding PawnIoInstallEnabled}"
-                                Visibility="{Binding PawnIoMissing, Converter={StaticResource BoolToVis}}"/>
-                        <ProgressBar IsIndeterminate="True" Width="90" Height="4" Margin="12,0,0,0"
-                                     VerticalAlignment="Center"
-                                     Visibility="{Binding PawnIoInstalling, Converter={StaticResource BoolToVis}}"/>
+                <Border Style="{StaticResource SettingsCard}">
+                    <StackPanel>
+                        <TextBlock Text="Switch profiles by app" Style="{StaticResource SectionTitle}"/>
+                        <CheckBox Content="When one of these apps is in front, apply its profile"
+                                  IsChecked="{Binding AppSwitchEnabled}"/>
+                        <ItemsControl ItemsSource="{Binding AutoRules}" Margin="24,8,0,0">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock FontSize="12" Opacity="0.75" Margin="0,0,0,3">
+                                        <Run Text="{Binding Process}" FontWeight="SemiBold"/><Run Text=" → "/><Run Text="{Binding Profile}"/>
+                                    </TextBlock>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <Button Content="Manage app rules…" Padding="12,5" Margin="24,6,0,0" HorizontalAlignment="Left"
+                                Click="ManageRules_Click"/>
                     </StackPanel>
-                    <TextBlock Text="{Binding PawnIoInstallStatus}" Opacity="0.7" Margin="0,8,0,0"/>
+                </Border>
 
-                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
-
-                    <TextBlock Text="Wallpaper &amp; game sync (Chroma)" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                    <TextBlock Text="Let Wallpaper Engine and Chroma-enabled games light your devices. This installs a small interoperability file. If you have Razer Synapse, your Razer gear keeps working (we back up and pass through to it)."
-                               Opacity="0.6" TextWrapping="Wrap" Margin="0,0,0,8"/>
-                    <StackPanel Orientation="Horizontal"
-                                Visibility="{Binding ChromaShimAvailable, Converter={StaticResource BoolToVis}}">
-                        <CheckBox Content="Enable Chroma sync" IsChecked="{Binding ChromaSyncEnabled}"
-                                  VerticalAlignment="Center"/>
-                        <TextBlock Text="{Binding ChromaSyncStatus}" Opacity="0.7" VerticalAlignment="Center" Margin="14,0,0,0"/>
+                <Border Style="{StaticResource SettingsCard}">
+                    <StackPanel>
+                        <TextBlock Text="Switch profiles by sensor" Style="{StaticResource SectionTitle}"/>
+                        <CheckBox IsChecked="{Binding SensorRulesEnabled}">
+                            <TextBlock Text="When a temperature, load, fan speed or battery crosses your number, apply a profile"
+                                       TextWrapping="Wrap" MaxWidth="520"/>
+                        </CheckBox>
+                        <ItemsControl ItemsSource="{Binding SensorRules}" Margin="24,8,0,0">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock FontSize="12" Opacity="0.75" Margin="0,0,0,3">
+                                        <Run Text="{Binding Source, Converter={StaticResource SensorLabel}, Mode=OneWay}" FontWeight="SemiBold"/><Run Text=" → "/><Run Text="{Binding Profile, Mode=OneWay}"/>
+                                    </TextBlock>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <Button Content="Manage sensor rules…" Padding="12,5" Margin="24,6,0,0" HorizontalAlignment="Left"
+                                Click="ManageSensorRules_Click"/>
+                        <TextBlock Text="{Binding AutomationStatus}" Style="{StaticResource Status}" Margin="0,12,0,0"/>
                     </StackPanel>
-                    <TextBlock Text="After enabling, restart Wallpaper Engine, then pick the Chroma Sync effect on a device."
-                               Opacity="0.45" FontSize="11" Margin="0,6,0,0" TextWrapping="Wrap"
-                               Visibility="{Binding ChromaShimAvailable, Converter={StaticResource BoolToVis}}"/>
+                </Border>
+            </StackPanel>
 
-                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
+            <!-- ===================== Devices ===================== -->
+            <StackPanel Visibility="{Binding SettingsTab, Converter={StaticResource EqVis}, ConverterParameter=Devices}">
 
-                    <TextBlock Text="Brightness" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                    <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="Master brightness" Opacity="0.7" VerticalAlignment="Center" Margin="0,0,12,0"/>
-                        <Slider Width="220" Minimum="0.1" Maximum="1" VerticalAlignment="Center"
-                                IsSnapToTickEnabled="True" TickFrequency="0.05" local:Sl.Unit="%"
-                                Value="{Binding MasterBrightness, UpdateSourceTrigger=PropertyChanged}"/>
+                <Border Style="{StaticResource SettingsCard}">
+                    <StackPanel>
+                        <TextBlock Text="Sensor driver" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,8"
+                                   Text="PawnIO is a small signed driver that unlocks CPU temperature, RAM lighting and motherboard fan monitoring and control. Without it those show as dashes."/>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="{Binding PawnIoStatusText}" VerticalAlignment="Center" Opacity="0.8"/>
+                            <Button Content="Install PawnIO" Style="{StaticResource Accent}" Padding="14,6" Margin="14,0,0,0"
+                                    Click="InstallPawnIo_Click"
+                                    IsEnabled="{Binding PawnIoInstallEnabled}"
+                                    Visibility="{Binding PawnIoMissing, Converter={StaticResource BoolToVis}}"/>
+                            <ProgressBar IsIndeterminate="True" Width="90" Height="4" Margin="12,0,0,0"
+                                         VerticalAlignment="Center"
+                                         Visibility="{Binding PawnIoInstalling, Converter={StaticResource BoolToVis}}"/>
+                        </StackPanel>
+                        <TextBlock Text="{Binding PawnIoInstallStatus}" Opacity="0.7" Margin="0,8,0,0"/>
                     </StackPanel>
-                    <TextBlock Opacity="0.55" FontSize="12" Margin="0,10,0,0"
-                               Text="Global hotkey (works in games): Ctrl+Alt+↑/↓ master brightness"/>
+                </Border>
 
-                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
-
-                    <TextBlock Text="Automation" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                    <CheckBox Content="Lights off while the PC is locked (back on when you return)"
-                              IsChecked="{Binding LockLightsOff}"/>
-                    <TextBlock Text="{Binding ScheduleSummary}" Opacity="0.75" FontSize="12" Margin="0,10,0,0"/>
-                    <Button Content="Schedules…" Padding="12,5" Margin="0,6,0,0" HorizontalAlignment="Left"
-                            Click="ManageSchedules_Click"
-                            ToolTip="Lights off, or a profile, between two times on the days you pick"/>
-                    <CheckBox IsChecked="{Binding AppSwitchEnabled}" Margin="0,12,0,0">
-                        <TextBlock Text="Switch profiles by app."
-                                   TextWrapping="Wrap" MaxWidth="510"/>
-                    </CheckBox>
-                    <ItemsControl ItemsSource="{Binding AutoRules}" Margin="24,8,0,0">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <TextBlock FontSize="12" Opacity="0.75" Margin="0,0,0,3">
-                                    <Run Text="{Binding Process}" FontWeight="SemiBold"/><Run Text=" → "/><Run Text="{Binding Profile}"/>
-                                </TextBlock>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                    <Button Content="Manage app rules…" Padding="12,5" Margin="24,6,0,0" HorizontalAlignment="Left"
-                            Click="ManageRules_Click"/>
-                    <CheckBox IsChecked="{Binding SensorRulesEnabled}" Margin="0,12,0,0">
-                        <TextBlock Text="Switch profiles by sensor, when a temperature, load or fan speed crosses your number."
-                                   TextWrapping="Wrap" MaxWidth="510"/>
-                    </CheckBox>
-                    <ItemsControl ItemsSource="{Binding SensorRules}" Margin="24,8,0,0">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <TextBlock FontSize="12" Opacity="0.75" Margin="0,0,0,3">
-                                    <Run Text="{Binding Source, Converter={StaticResource SensorLabel}, Mode=OneWay}" FontWeight="SemiBold"/><Run Text=" → "/><Run Text="{Binding Profile, Mode=OneWay}"/>
-                                </TextBlock>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                    <Button Content="Manage sensor rules…" Padding="12,5" Margin="24,6,0,0" HorizontalAlignment="Left"
-                            Click="ManageSensorRules_Click"/>
-                    <TextBlock Text="{Binding AutomationStatus}" Foreground="#FF7FB4FF" FontSize="12"
-                               Margin="24,8,0,0" TextWrapping="Wrap"/>
-
-                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
-
-                    <TextBlock Text="Your desk" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                    <TextBlock Opacity="0.75" FontSize="12" TextWrapping="Wrap" MaxWidth="510"
-                               Text="Place your devices the way they sit in front of you, then run an effect on the whole desk: a wave rolls off the keyboard and up the fans instead of restarting on each one."/>
-                    <Button Content="Arrange your desk…" Padding="12,5" Margin="0,6,0,0" HorizontalAlignment="Left"
-                            Click="ArrangeDesk_Click"/>
-                    <TextBlock Text="{Binding CanvasStatus}" Foreground="#FF7FB4FF" FontSize="12"
-                               Margin="0,8,0,0" TextWrapping="Wrap" MaxWidth="510"/>
-
-                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
-
-                    <TextBlock Text="Games" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                    <CheckBox IsChecked="{Binding Cs2Enabled}">
-                        <TextBlock Text="Counter-Strike 2. Your health, the bomb and flashbangs drive the lights. Uses Valve's Game State Integration, so nothing is injected or read from memory."
-                                   TextWrapping="Wrap" MaxWidth="510"/>
-                    </CheckBox>
-                    <StackPanel Orientation="Horizontal" Margin="24,6,0,0">
-                        <Button Content="Install CS2 config…" Padding="12,5" Click="InstallCs2_Click"
-                                IsEnabled="{Binding Cs2Enabled}"/>
-                        <Button Content="Show config" Padding="12,5" Margin="8,0,0,0" Click="ShowCs2Config_Click"
-                                IsEnabled="{Binding Cs2Enabled}"
-                                ToolTip="The file contents, to place by hand"/>
+                <Border Style="{StaticResource SettingsCard}">
+                    <StackPanel>
+                        <TextBlock Text="Extra devices" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,8"
+                                   Text="For hardware UnifiedRGB does not drive natively yet, a managed OpenRGB runs invisibly in the background and its devices join your list. Natively driven hardware is never handed to it."/>
+                        <CheckBox Content="Use OpenRGB for extra devices" IsChecked="{Binding UseOpenRgb}"/>
+                        <TextBlock Text="{Binding OpenRgbStatus}" Opacity="0.7" Margin="0,8,0,0"/>
                     </StackPanel>
-                    <TextBlock Text="{Binding Cs2Status}" Foreground="#FF7FB4FF" FontSize="12"
-                               Margin="24,8,0,0" TextWrapping="Wrap" MaxWidth="486"/>
-                    <TextBlock Text="Then pick the CS2 effect on a device, under Game."
-                               Opacity="0.6" FontSize="12" Margin="24,4,0,0" TextWrapping="Wrap" MaxWidth="486"/>
+                </Border>
 
-                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
-
-                    <TextBlock Text="Other apps" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                    <CheckBox IsChecked="{Binding SdkServerEnabled}">
-                        <TextBlock Text="Let other apps control your lighting (OpenRGB SDK). Anything written for OpenRGB works: Home Assistant, game mods, phone remotes, Stream Deck."
-                                   TextWrapping="Wrap" MaxWidth="510"/>
-                    </CheckBox>
-                    <CheckBox IsChecked="{Binding SdkServerLan}" Margin="24,8,0,0"
-                              IsEnabled="{Binding SdkServerEnabled}">
-                        <TextBlock Text="Accept connections from the network. This protocol has no password: anyone who can reach this PC can set your lights."
-                                   TextWrapping="Wrap" MaxWidth="486"/>
-                    </CheckBox>
-                    <TextBlock Text="{Binding SdkServerStatus}" Foreground="#FF7FB4FF" FontSize="12"
-                               Margin="24,8,0,0" TextWrapping="Wrap" MaxWidth="486"/>
-
-                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
-
-                    <TextBlock Text="Devices" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                    <TextBlock Opacity="0.75" FontSize="12" TextWrapping="Wrap" MaxWidth="510"
-                               Text="Closing UnifiedRGB leaves whatever was on screen last. Pick a color or hand a device back to its own firmware instead."/>
-                    <Button Content="When the app is closed…" Padding="12,5" Margin="0,6,0,0" HorizontalAlignment="Left"
-                            Click="ManageExitBehavior_Click"/>
-
-                    <Border Background="#22FFFFFF" Height="1" Margin="0,20,0,20"/>
-
-                    <TextBlock Text="Support" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                    <TextBlock Text="Something not working? Describe it and hit Report. A diagnostic bundle is saved to your Desktop and a GitHub issue opens prefilled — drag the file in and post it."
-                               Opacity="0.6" TextWrapping="Wrap" Margin="0,0,0,8"/>
-                    <TextBox Text="{Binding SupportNote, UpdateSourceTrigger=PropertyChanged}" MinHeight="60"
-                             TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"
-                             ToolTip="What did you do, and what happened?"/>
-                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                        <Button Content="Report a problem" Style="{StaticResource Accent}" Padding="28,8" Click="SendSupport_Click"/>
+                <Border Style="{StaticResource SettingsCard}">
+                    <StackPanel>
+                        <TextBlock Text="Your desk" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,8"
+                                   Text="Place your devices the way they sit in front of you. With the desk on, one effect flows across all of them in that order instead of restarting on each."/>
+                        <Button Content="Arrange your desk…" Padding="12,5" HorizontalAlignment="Left"
+                                Click="ArrangeDesk_Click"/>
+                        <TextBlock Text="{Binding CanvasStatus}" Style="{StaticResource Status}"/>
                     </StackPanel>
-                    <TextBlock Text="{Binding UploadStatus}" Opacity="0.7" Margin="0,8,0,0"/>
-                    <TextBlock Text="{Binding LogFilePath}" Opacity="0.4" FontSize="11" Margin="0,10,0,0"/>
-                </StackPanel>
-            </ScrollViewer>
+                </Border>
+
+                <Border Style="{StaticResource SettingsCard}">
+                    <StackPanel>
+                        <TextBlock Text="When the app is closed" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,8"
+                                   Text="Closing UnifiedRGB leaves whatever was on screen last. Pick a color, or hand a device back to its own firmware, instead."/>
+                        <Button Content="Choose per device…" Padding="12,5" HorizontalAlignment="Left"
+                                Click="ManageExitBehavior_Click"/>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+            <!-- ===================== Integrations ===================== -->
+            <StackPanel Visibility="{Binding SettingsTab, Converter={StaticResource EqVis}, ConverterParameter=Integrations}">
+
+                <Border Style="{StaticResource SettingsCard}">
+                    <StackPanel>
+                        <TextBlock Text="Wallpaper and game sync (Chroma)" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,8"
+                                   Text="Let Wallpaper Engine and Chroma games light your devices. Installs a small interoperability file. If you have Razer Synapse, your Razer gear keeps working: we back it up and pass through to it."/>
+                        <StackPanel Orientation="Horizontal"
+                                    Visibility="{Binding ChromaShimAvailable, Converter={StaticResource BoolToVis}}">
+                            <CheckBox Content="Enable Chroma sync" IsChecked="{Binding ChromaSyncEnabled}"
+                                      VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding ChromaSyncStatus}" Opacity="0.7" VerticalAlignment="Center" Margin="14,0,0,0"/>
+                        </StackPanel>
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,6,0,0"
+                                   Text="Then restart Wallpaper Engine and pick the Chroma Sync effect on a device."
+                                   Visibility="{Binding ChromaShimAvailable, Converter={StaticResource BoolToVis}}"/>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource SettingsCard}">
+                    <StackPanel>
+                        <TextBlock Text="Counter-Strike 2" Style="{StaticResource SectionTitle}"/>
+                        <CheckBox IsChecked="{Binding Cs2Enabled}">
+                            <TextBlock Text="Your health, the bomb and flashbangs drive the lights. Uses Valve's Game State Integration: nothing is injected or read from memory."
+                                       TextWrapping="Wrap" MaxWidth="520"/>
+                        </CheckBox>
+                        <StackPanel Orientation="Horizontal" Margin="24,8,0,0">
+                            <Button Content="Install CS2 config…" Padding="12,5" Click="InstallCs2_Click"
+                                    IsEnabled="{Binding Cs2Enabled}"/>
+                            <Button Content="Show config" Padding="12,5" Margin="8,0,0,0" Click="ShowCs2Config_Click"
+                                    IsEnabled="{Binding Cs2Enabled}"
+                                    ToolTip="The file contents, to place by hand"/>
+                        </StackPanel>
+                        <TextBlock Text="{Binding Cs2Status}" Style="{StaticResource Status}" Margin="24,8,0,0"/>
+                        <TextBlock Style="{StaticResource Hint}" Margin="24,4,0,0"
+                                   Text="Then pick the CS2 effect on a device, under Game."/>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource SettingsCard}">
+                    <StackPanel>
+                        <TextBlock Text="Other apps" Style="{StaticResource SectionTitle}"/>
+                        <CheckBox IsChecked="{Binding SdkServerEnabled}">
+                            <TextBlock Text="Let other apps control your lighting over the OpenRGB protocol: Home Assistant, game mods, phone remotes, Stream Deck."
+                                       TextWrapping="Wrap" MaxWidth="520"/>
+                        </CheckBox>
+                        <CheckBox IsChecked="{Binding SdkServerLan}" Margin="24,8,0,0"
+                                  IsEnabled="{Binding SdkServerEnabled}">
+                            <TextBlock Text="Accept connections from the network. There is no password: anyone who can reach this PC can set your lights."
+                                       TextWrapping="Wrap" MaxWidth="496"/>
+                        </CheckBox>
+                        <TextBlock Text="{Binding SdkServerStatus}" Style="{StaticResource Status}" Margin="24,8,0,0"/>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+            <!-- ===================== Support ===================== -->
+            <StackPanel Visibility="{Binding SettingsTab, Converter={StaticResource EqVis}, ConverterParameter=Support}">
+
+                <Border Style="{StaticResource SettingsCard}">
+                    <StackPanel>
+                        <TextBlock Text="Report a problem" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,8"
+                                   Text="Describe what you did and what happened. A diagnostic bundle is saved to your Desktop and a GitHub issue opens prefilled. Drag the file in and post it."/>
+                        <TextBox Text="{Binding SupportNote, UpdateSourceTrigger=PropertyChanged}" MinHeight="70"
+                                 TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"
+                                 ToolTip="What did you do, and what happened?"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                            <Button Content="Report a problem" Style="{StaticResource Accent}" Padding="28,8" Click="SendSupport_Click"/>
+                        </StackPanel>
+                        <TextBlock Text="{Binding UploadStatus}" Opacity="0.7" Margin="0,8,0,0"/>
+                        <TextBlock Text="{Binding LogFilePath}" Opacity="0.4" FontSize="11" Margin="0,10,0,0"/>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </StackPanel>
+    </ScrollViewer>
 </UserControl>
