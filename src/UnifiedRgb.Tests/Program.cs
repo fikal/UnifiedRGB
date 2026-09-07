@@ -1443,6 +1443,63 @@ static string TempDir()
     Equal(42.0, layout.ItemFor("Board")!.X, "canvas: a clone is independent");
 }
 
+/*---------------- Diagnostic bundle redaction ----------------*/
+{
+    // These bundles get dragged into public GitHub issues, so what comes out
+    // matters as much as what goes in. The name rule is called directly with a
+    // chosen name, because Scrub reads the real account name of whoever runs
+    // the tests and that cannot be pinned.
+    string Boundary(string text, string name)
+    {
+        string copy = text;
+        Redaction.ReplaceName(ref copy, name, "<user>");
+        return copy;
+    }
+
+    // The trap the old blind substring replace fell into: a real account name
+    // that happens to be a substring of this app's own vocabulary.
+    Equal("Lian Li SL-Infinity", Boundary("Lian Li SL-Infinity", "Ian"),
+          "redact: a user called Ian does not rewrite Lian Li");
+    Equal("NZXT CAM is running", Boundary("NZXT CAM is running", "Cam"),
+          "redact: nor Cam rewrite NZXT CAM");
+    Equal("--- SMBUS (RAM RGB) ---", Boundary("--- SMBUS (RAM RGB) ---", "Ram"),
+          "redact: nor Ram eat the RAM section");
+    Equal("session start", Boundary("session start", "Art"),
+          "redact: nor Art eat 'start'");
+    Equal("Samsung SSD", Boundary("Samsung SSD", "Sam"), "redact: nor Sam eat Samsung");
+
+    // It still has to actually redact the name when it stands alone.
+    Equal("hello <user> there", Boundary("hello Chris there", "Chris"), "redact: a real match still goes");
+    Equal(@"C:\Users\<user>\Desktop", Boundary(@"C:\Users\Chris\Desktop", "chris"),
+          "redact: case-insensitively, and inside a path");
+
+    // Device serial tails. The VID and PID are what anyone diagnosing needs;
+    // the tail is the device's own serial, and on some adapters a MAC.
+    string Tail(string text) => System.Text.RegularExpressions.Regex.Replace(
+        text, @"(\b(?:USB|HID|BTHENUM|BTHLE)\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}(?:&\w+)*\\)\S+", "$1<instance>",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    Equal(@"USB\VID_0B05&PID_190E\<instance>", Tail(@"USB\VID_0B05&PID_190E\00E04C239987"),
+          "redact: a usb serial tail goes");
+    Equal(@"USB\VID_1532&PID_00CF&MI_01\<instance>  Razer HyperFlux V2 Wireless Charging System",
+          Tail(@"USB\VID_1532&PID_00CF&MI_01\9&2036339A&0&0001  Razer HyperFlux V2 Wireless Charging System"),
+          "redact: the interface number stays, the instance goes, the name stays");
+    Equal(@"HID\VID_046D&PID_C08F\<instance>", Tail(@"HID\VID_046D&PID_C08F\7&334B221F&0&0000"),
+          "redact: HID ids too");
+    Equal("no ids here", Tail("no ids here"), "redact: ordinary text is untouched");
+
+    // Scrub itself: a bundle with nothing identifying in it comes back
+    // unchanged, with no banner claiming otherwise.
+    Equal("nothing to see", Redaction.Scrub("nothing to see"), "redact: a clean bundle is left alone");
+    Equal("", Redaction.Scrub(""), "redact: empty is empty");
+
+    // And when it does redact, it says so, so a maintainer reading the bundle
+    // knows a gap is deliberate rather than a device that failed to report.
+    string scrubbed = Redaction.Scrub(@"path USB\VID_1532&PID_00CF\ABCDEF0123");
+    Check(scrubbed.StartsWith("[redacted before saving:"), "redact: it says what it took out");
+    Check(scrubbed.Contains("<instance>"), "redact: and it took it out");
+}
+
 /*---------------- CS2 game state (#f8) ----------------*/
 {
     // A payload shaped like the real thing: keys taken from a maintained CS2

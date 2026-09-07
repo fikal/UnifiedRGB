@@ -16,17 +16,25 @@ public static class Log
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(PathName)!);
             // Rotate instead of wiping: the old log is exactly what's needed
             // when debugging whatever made it grow.
-            if (File.Exists(PathName) && new FileInfo(PathName).Length > 1_000_000)
-            {
-                try { File.Move(PathName, PathName + ".old", overwrite: true); }
-                catch { File.WriteAllText(PathName, ""); }
-            }
-            Write("====", $"session start  user={Environment.UserName}  os={Environment.OSVersion.Version}");
+            RotateIfBig();
+            // No account name: people paste raw log lines into forum threads
+            // far more often than they attach a scrubbed bundle, and the name
+            // has never helped diagnose anything.
+            Write("====", $"session start  v{EntryVersion()}  os={Environment.OSVersion.Version}");
         }
         catch { }
     }
 
     public static string FilePath => PathName;
+
+    /// <summary>The running exe's version, three parts, matching the release
+    /// tags. Read from the entry assembly so this works for both the app and
+    /// the standalone diagnostic tool without Core depending on either.</summary>
+    public static string EntryVersion()
+    {
+        var v = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version;
+        return v == null ? "0.0.0" : $"{v.Major}.{v.Minor}.{Math.Max(0, v.Build)}";
+    }
 
     public static void Info(string source, string message) => Write("info", $"[{source}] {message}");
     public static void Warn(string source, string message) => Write("WARN", $"[{source}] {message}");
@@ -66,19 +74,48 @@ public static class Log
                     _occasional[key] = (seen.Last, seen.Suppressed + 1);
                     return;
                 }
-                message += $" (+{seen.Suppressed} suppressed)";
+                if (seen.Suppressed > 0) message += $" (+{seen.Suppressed} suppressed)";
             }
             _occasional[key] = (now, 0);
         }
         Write("WARN", $"[{source}] {message}");
     }
 
+    static long _written;
+
     static void Write(string level, string message)
     {
         try
         {
             lock (_lock)
-                File.AppendAllText(PathName, $"{DateTime.Now:MM-dd HH:mm:ss} {level} {message}{Environment.NewLine}");
+            {
+                string line = $"{DateTime.Now:MM-dd HH:mm:ss} {level} {message}{Environment.NewLine}";
+                File.AppendAllText(PathName, line);
+
+                // Rotation used to be checked once, in the static constructor.
+                // This is a tray app that runs from Windows startup for weeks,
+                // so within one session the file grew without limit and the
+                // check only came round on the NEXT launch.
+                _written += line.Length;
+                if (_written > 200_000) { _written = 0; RotateIfBig(); }
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>Move the log aside once it passes the cap. The previous file is
+    /// kept as .old, and the new one opens by saying so: a bundle that starts
+    /// mid-story should say that there is an earlier part.</summary>
+    static void RotateIfBig()
+    {
+        try
+        {
+            var f = new FileInfo(PathName);
+            if (!f.Exists || f.Length <= 1_000_000) return;
+            File.Move(PathName, PathName + ".old", overwrite: true);
+            File.AppendAllText(PathName,
+                $"{DateTime.Now:MM-dd HH:mm:ss} ==== log rotated, the previous one is unifiedrgb.log.old"
+                + Environment.NewLine);
         }
         catch { }
     }

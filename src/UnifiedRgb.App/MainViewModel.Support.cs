@@ -59,12 +59,69 @@ public sealed partial class MainViewModel
 
     /// <summary>One-shot support send: full hardware survey + session log +
     /// note, bundled into one report (see SupportService).</summary>
+    /// <summary>What the app is doing, for the diagnostic bundle. The report
+    /// beside it is a hardware survey: it says a keyboard exists, never what
+    /// colour the keyboard was told to be. Every "my lighting is wrong" thread
+    /// needs this half, and it did not exist.
+    ///
+    /// Runs on the UI thread, so it reads collections directly.</summary>
+    public string DescribeState()
+    {
+        var sb = new System.Text.StringBuilder();
+        void Say(string line = "") => sb.AppendLine(line);
+
+        Say($"profile: {SelectedProfile?.Name ?? "(none selected)"}"
+            + (_dirty ? "  (unsaved changes)" : ""));
+        Say($"startup profile: {_store.Settings.StartupProfile ?? "(none)"}");
+        Say($"master brightness: {MasterBrightness:P0}");
+        Say($"lights suppressed: {LightsSuppressed}");
+        Say($"desk canvas: {(Canvas.Enabled ? $"on, {Canvas.Items.Count} device(s) placed" : "off")}");
+        Say();
+
+        Say("devices and what they are showing:");
+        foreach (var d in Devices)
+        {
+            var channels = _engine.ChannelsFor(d);
+            string what = channels.Count == 0
+                ? "static"
+                : string.Join(", ", channels.Select(c =>
+                    $"{c.Effect.Name} on [{c.Offset}..{c.Offset + c.Count})"
+                    + $" speed {c.Speed:0.##}{(c.Canvas ? " desk-mapped" : "")}"));
+            var frame = _lighting.ComposedFrame(d);
+            string first = frame.Length > 0 ? frame[0].ToHex() : "------";
+            Say($"  {d.Name} ({d.Vendor}, {d.Type}, {d.LedCount} LEDs): {what}; led0 #{first}");
+        }
+        Say();
+
+        Say("automation:");
+        Say($"  by app: {(_store.Settings.AppSwitchEnabled ? "on" : "off")}, "
+            + $"{_store.Settings.AutomationRules?.Count ?? 0} rule(s)");
+        Say($"  by sensor: {(_store.Settings.SensorRulesEnabled ? "on" : "off")}, "
+            + $"{_store.Settings.SensorRules?.Count ?? 0} rule(s)");
+        Say($"  schedules: {_store.Settings.Schedules?.Count ?? 0}");
+        Say($"  return to startup profile: {_store.Settings.ReturnToStartupProfile}");
+        Say($"  lights off when locked: {_store.Settings.LockLightsOff}");
+        Say();
+
+        Say("integrations:");
+        Say($"  OpenRGB bridge: {(_store.Settings.UseOpenRgb ? "on" : "off")} - {OpenRgbStatus}");
+        Say($"  SDK server: {SdkServerStatus}");
+        Say($"  CS2 game state: {Cs2Status}");
+        Say($"  Chroma sync: {(ChromaSyncEnabled ? "on" : "off")} - {ChromaSyncStatus}");
+        Say($"  disabled device families: "
+            + ((_store.Settings.DisabledDevices?.Count ?? 0) == 0
+               ? "none"
+               : string.Join(", ", _store.Settings.DisabledDevices!.Select(e => e.Name))));
+
+        return sb.ToString();
+    }
+
     public async void SendToSupport()
     {
         UploadStatus = "collecting hardware report (~15s)...";
         try
         {
-            var (ok, msg) = await Support.SendBundleAsync(SupportNote, s => UploadStatus = s);
+            var (ok, msg) = await Support.SendBundleAsync(SupportNote, s => UploadStatus = s, DescribeState);
             UploadStatus = msg;
             if (ok) SupportNote = "";
         }

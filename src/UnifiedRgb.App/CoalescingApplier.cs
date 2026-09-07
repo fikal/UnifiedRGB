@@ -86,18 +86,26 @@ public sealed class CoalescingApplier
             while (true)
             {
                 Action job;
+                object jobKey;
                 lock (lane.Lock)
                 {
                     if (lane.Pending.Count == 0) { lane.Running = false; return; }
                     var first = lane.Pending.GetAt(0);   // oldest key first
                     lane.Pending.Remove(first.Key);
                     job = first.Value;
+                    jobKey = first.Key;
                 }
                 try { job(); }
                 catch (Exception ex)
                 {
-                    // Keep the UI alive, but a failing write must be visible.
-                    UnifiedRgb.Core.Log.Occasional("applier", "applier", $"device write failed: {ex.Message}");
+                    // Keep the UI alive, but a failing write must be visible AND
+                    // attributable. This is the only line in the whole log about
+                    // lighting failing, and it used to name neither the device
+                    // nor the zone. The rate-limit key is per lane for the same
+                    // reason: it was one shared bucket, so a device failing every
+                    // frame silenced every other device for a minute at a time.
+                    UnifiedRgb.Core.Log.Occasional($"applier:{laneKey}", "lighting",
+                        $"write failed on {laneKey} ({jobKey}): {ex.Message}");
                 }
             }
         });

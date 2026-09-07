@@ -725,8 +725,15 @@ public static class SensorHub
         IntPtr gpu;
         bool gpuCtl;
         lock (_gate) { lhm = _lhm; gpu = _gpu; gpuCtl = _gpuFanCtl; _manualFans.Clear(); _fanCurves.Clear(); _lastApplied.Clear(); }
-        try { lhm?.RestoreAll(); } catch { }
-        try { if (gpuCtl && gpu != IntPtr.Zero) { NvApi.RestoreGpuFanAuto(gpu); lock (_gate) _gpuManualEngaged = false; } } catch { }
+        // Each step reports rather than swallowing. This is the thermal path:
+        // the line at the end used to claim every fan was back on auto even
+        // when all three of these threw, which is the worst kind of log line,
+        // one that is affirmatively wrong about hardware.
+        var failed = new List<string>();
+        try { lhm?.RestoreAll(); }
+        catch (Exception ex) { failed.Add($"board fans ({ex.Message})"); }
+        try { if (gpuCtl && gpu != IntPtr.Zero) { NvApi.RestoreGpuFanAuto(gpu); lock (_gate) _gpuManualEngaged = false; } }
+        catch (Exception ex) { failed.Add($"GPU fans ({ex.Message})"); }
         // Wireless fans: failsafe means FULL BLAST (there is no BIOS curve to
         // fall back to); a plain restore-all returns them to the 40% baseline.
         // App exit (keepConfig) leaves their latched duty untouched.
@@ -739,9 +746,16 @@ public static class SensorHub
                 for (int s = 0; s < lw.FanCount; s++) lw.SetFanDuty(s, duty);
             }
         }
-        catch { }
-        if (!keepConfig) { try { File.Delete(FanConfigFile); } catch { } }
-        Log.Info("fans", $"all fans restored to auto ({reason})");
+        catch (Exception ex) { failed.Add($"wireless fans ({ex.Message})"); }
+
+        if (!keepConfig)
+        {
+            try { File.Delete(FanConfigFile); }
+            catch (Exception ex) { Log.Warn("fans", $"could not clear the saved fan config: {ex.Message}"); }
+        }
+
+        if (failed.Count == 0) Log.Info("fans", $"all fans restored to auto ({reason})");
+        else Log.Error("fans", $"NOT fully restored ({reason}): {string.Join(", ", failed)} still under our control");
     }
 
     static readonly HashSet<int> _identifying = new();

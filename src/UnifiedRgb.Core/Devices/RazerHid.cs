@@ -194,7 +194,9 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
         catch (Exception ex) { Log.Warn("Razer", $"{iface.ProductId:X4}: open failed: {ex.Message}"); return null; }
         var id = Identify(hid, model.Tid);
         if (id == null) Log.Info("Razer", $"{model.Name} ({iface.ProductId:X4}) did not answer (asleep?) - claimed anyway, frames retry as it wakes");
-        else Log.Info("Razer", $"{model.Name} ({iface.ProductId:X4}) fw {id.Value.Fw} serial {id.Value.Serial} on transaction 0x{model.Tid:X2}");
+        // Firmware yes, serial no: a Razer serial is the warranty and
+        // registration identifier, and this line ends up in public bundles.
+        else Log.Info("Razer", $"{model.Name} ({iface.ProductId:X4}) fw {id.Value.Fw} on transaction 0x{model.Tid:X2}");
         var dev = new RazerHid(hid, model, model.Tid) { Firmware = id?.Fw ?? "?", Serial = id?.Serial ?? "?" };
         dev.SetBrightness(0xFF);
         return dev;
@@ -227,7 +229,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
             Log.Info("Razer", "HyperFlux V2 pad (00CF): no transaction id answered - mouse asleep or not paired; leaving it");
             return list;
         }
-        Log.Info("Razer", "HyperFlux V2 pad answers: " + string.Join("; ", answers.Select(a => $"0x{a.Tid:X2} fw {a.Fw} serial {a.Serial}{(a.HasDpi ? " (mouse)" : " (pad)")}")));
+        Log.Info("Razer", "HyperFlux V2 pad answers: " + string.Join("; ", answers.Select(a => $"0x{a.Tid:X2} fw {a.Fw}{(a.HasDpi ? " (mouse)" : " (pad)")}")));
 
         // One identity may answer on several ids (a dongle relaying everything):
         // keep the first id per serial.

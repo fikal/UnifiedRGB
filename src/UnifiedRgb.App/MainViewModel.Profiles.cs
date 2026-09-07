@@ -209,6 +209,10 @@ public sealed partial class MainViewModel
         OnChanged(nameof(IsStartupProfile));
     }
 
+    /// <summary>Every profile apply funnels through here: the button, a
+    /// hotkey, an automation rule, a scene step. It used to log nothing at all,
+    /// so a bundle could not answer "which profile was on" for any moment in a
+    /// three week log.</summary>
     void LoadProfile(Profile? p)
     {
         if (p == null) return;
@@ -230,6 +234,9 @@ public sealed partial class MainViewModel
         RestoreEffects(p.Effects);
         SyncWheelToSelection();     // wheel reflects what the profile applied
         _dirty = false;
+        UnifiedRgb.Core.Log.Info("lighting",
+            $"applied profile '{p.Name}': {p.Effects?.Count ?? 0} effect(s) on "
+            + $"{p.DeviceFrames?.Count ?? 0} device(s)");
     }
 
     void DeleteProfile()

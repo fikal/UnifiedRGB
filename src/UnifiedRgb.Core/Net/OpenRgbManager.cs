@@ -120,6 +120,7 @@ public static class OpenRgbManager
         {
             Log.Error("openrgb", ex);
             status?.Invoke($"OpenRGB setup failed: {ex.Message}");
+            Log.Warn("openrgb", $"setup failed: {ex.Message}");
             return false;
         }
     }
@@ -141,6 +142,11 @@ public static class OpenRgbManager
             }
         }
         status?.Invoke("OpenRGB kept restarting — giving up for this session");
+        // Also to the log. The bridge going dark for a session takes half
+        // someone's devices with it, and the only trace used to be that
+        // [openrgb] lines simply stopped appearing. Absence of a line is the
+        // one thing nobody can diagnose from.
+        Log.Warn("openrgb", "kept restarting, giving up for this session");
         return false;
     }
 
@@ -149,7 +155,12 @@ public static class OpenRgbManager
     static LaunchResult LaunchOnce(Action<string>? status, ref bool policyRestartDone)
     {
         var exe = FindExe();
-        if (exe == null) { status?.Invoke("OpenRGB.exe not found after install"); return LaunchResult.Failed; }
+        if (exe == null)
+        {
+            status?.Invoke("OpenRGB.exe not found after install");
+            Log.Warn("openrgb", "OpenRGB.exe not found after install");
+            return LaunchResult.Failed;
+        }
         Stop();                    // never stack a second bundled instance on the port
         Directory.CreateDirectory(ConfigDir);
         bool hadConfig = File.Exists(Path.Combine(ConfigDir, "OpenRGB.json"));
@@ -236,6 +247,7 @@ public static class OpenRgbManager
             }
         }
         status?.Invoke("OpenRGB did not open its server port");
+        Log.Warn("openrgb", "started but never opened its server port");
         return LaunchResult.Failed;
     }
 

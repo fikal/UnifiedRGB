@@ -14,8 +14,20 @@ public sealed class SupportService
     /// <summary>Full hardware survey + session log + note, as one upload.
     /// Collection shells out to WMI, so call from off the UI thread context;
     /// progress lands in the status callback.</summary>
-    public async Task<(bool Ok, string Message)> SendBundleAsync(string? note, Action<string> status)
+    /// <param name="appState">What the app itself is doing right now. The
+    /// report is a hardware survey; without this a bundle could say which
+    /// devices exist and nothing about what was sent to them, which is the
+    /// half every lighting question needs.</param>
+    public async Task<(bool Ok, string Message)> SendBundleAsync(string? note, Action<string> status,
+                                                                Func<string>? appState = null)
     {
+        // Collected HERE, on the calling thread, not inside the Task.Run
+        // below: it reads the device collection and the composed frames, which
+        // belong to the UI thread.
+        string state;
+        try { state = appState?.Invoke() ?? "(not collected)"; }
+        catch (Exception ex) { state = $"(app state failed: {ex.Message})"; }
+
         string bundle = await Task.Run(() =>
         {
             string diag;
@@ -32,11 +44,31 @@ public sealed class SupportService
             try { log = File.ReadAllText(Log.FilePath); }
             catch (Exception ex) { log = $"(log unavailable: {ex.Message})"; }
 
+            // The rotated half too. Once a log passed the cap, every future
+            // bundle silently dropped the entire history before it, which is
+            // usually where the problem started.
+            string older = "";
+            try
+            {
+                string old = Log.FilePath + ".old";
+                if (File.Exists(old))
+                    older = "\r\n\r\n==============================================\r\n"
+                          + " EARLIER LOG (unifiedrgb.log.old)\r\n"
+                          + "==============================================\r\n"
+                          + File.ReadAllText(old);
+            }
+            catch { /* the current log is the part that matters */ }
+
             return diag
+                + "\r\n\r\n==============================================\r\n"
+                + " UNIFIEDRGB STATE\r\n"
+                + "==============================================\r\n"
+                + state
                 + "\r\n\r\n==============================================\r\n"
                 + " APP LOG (unifiedrgb.log)\r\n"
                 + "==============================================\r\n"
-                + log;
+                + log
+                + older;
         });
 
         bundle = Redact(bundle);
@@ -56,7 +88,10 @@ public sealed class SupportService
             string fileName = $"UnifiedRGB-diagnostic-{DateTime.Now:yyyyMMdd-HHmmss}.txt";
             string outPath = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.Desktop), fileName);
-            string header = string.IsNullOrWhiteSpace(note) ? "" : $"note: {note}\r\n\r\n";
+            // The note is scrubbed too. It was concatenated AFTER the redaction,
+            // which made the one field people type their own name or email into
+            // the one field that was never cleaned.
+            string header = string.IsNullOrWhiteSpace(note) ? "" : $"note: {Redact(note)}\r\n\r\n";
             await File.WriteAllTextAsync(outPath, header + bundle);
             OpenGitHubIssue(note, fileName);
             return (true, $"bundle saved to your Desktop — drag {fileName} into the GitHub issue that just opened");
@@ -67,22 +102,9 @@ public sealed class SupportService
         }
     }
 
-    /// <summary>Strip what identifies the person from a bundle. This file now
-    /// gets dragged into a PUBLIC GitHub issue, and a Windows account name is
-    /// often someone's real name. Applied to the whole bundle, not just the
-    /// header, because the appended log is full of profile paths. The profile
-    /// path goes first: it contains the account name.</summary>
-    static string Redact(string text)
-    {
-        string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (!string.IsNullOrEmpty(profile))
-            text = text.Replace(profile, "%USERPROFILE%", StringComparison.OrdinalIgnoreCase);
-        // Short names would match far too much unrelated text to be worth it.
-        string user = Environment.UserName;
-        if (user.Length >= 3)
-            text = text.Replace(user, "<user>", StringComparison.OrdinalIgnoreCase);
-        return text;
-    }
+    /// <summary>Shared with the standalone diagnostic exe, which used to write
+    /// its report with no scrubbing at all. See Core/Redaction.</summary>
+    static string Redact(string text) => UnifiedRgb.Core.Redaction.Scrub(text);
 
     /// <summary>Browser to a new-issue page with version/OS prefilled and a
     /// reminder to attach the just-saved bundle. Best-effort — the saved file

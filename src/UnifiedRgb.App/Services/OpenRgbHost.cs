@@ -67,6 +67,7 @@ public sealed class OpenRgbHost : IOpenRgbHost
 
     public void BeginExternal(IRgbDevice device)
     {
+        Log.Info("lighting", $"{device.Name}: handed to an SDK client, your lighting saved");
         _ui.Invoke(() =>
         {
             lock (_gate)
@@ -109,6 +110,7 @@ public sealed class OpenRgbHost : IOpenRgbHost
     public void EndExternal(IRgbDevice device)
     {
         if (_shuttingDown) return;
+        Log.Info("lighting", $"{device.Name}: SDK client done, your lighting coming back");
         _ui.InvokeAsync(() =>
         {
             MainViewModel.LightState? restore = null;

@@ -31,6 +31,13 @@ public sealed class LightingController
         _ => d,                           // native devices: a lane each
     };
 
+    /// <summary>What a device is being told to show, rate limited per device.
+    /// The whole lighting path used to log nothing whatsoever, so a bundle
+    /// could say which hardware existed and nothing about what was sent to
+    /// it.</summary>
+    static void Trace(IRgbDevice dev, string what) =>
+        Log.Occasional($"light:{dev.Name}", "lighting", $"{dev.Name}: {what}");
+
     /// <summary>The device's stored static frame (created black on first use).</summary>
     public Rgb[] FrameFor(IRgbDevice d) => _frames.GetOrAdd(d, static k => new Rgb[k.LedCount]);
 

@@ -59,6 +59,11 @@ catch (Exception ex)
     report = "!!! DIAGNOSTIC CRASHED !!!\r\n" + ex;
 }
 
+// Same scrubbing as the app's Report a problem: this file gets posted too,
+// and this path used to write the account name and every device serial out
+// verbatim.
+report = UnifiedRgb.Core.Redaction.Scrub(report);
+
 Console.WriteLine();
 Console.WriteLine(report);
 

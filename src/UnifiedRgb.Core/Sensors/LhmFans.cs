@@ -176,7 +176,8 @@ public sealed class LhmFans : IDisposable
     public void Restore(int index)
     {
         if ((uint)index >= (uint)_fans.Count) return;
-        try { _fans[index].Control?.SetDefault(); } catch { }
+        try { _fans[index].Control?.SetDefault(); }
+    catch (Exception ex) { Log.Warn("fans", $"'{_fans[index].Name}' would not go back to auto: {ex.Message}"); }
     }
 
     public void RestoreAll()

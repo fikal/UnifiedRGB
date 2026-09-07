@@ -46,6 +46,11 @@ public sealed class DeviceManager : IDisposable
     /// the device to other software.</summary>
     public void DetectAll(Func<string, bool>? skipFamily = null)
     {
+        // Absent detectors are collected and reported as ONE line. A line each
+        // was 47% of a real user's three week log, which buries everything a
+        // bundle is read for.
+        var absent = new List<string>();
+
         foreach (var factory in Factories)
         {
             string name = factory.Method.DeclaringType?.Name ?? "?";
@@ -59,7 +64,7 @@ public sealed class DeviceManager : IDisposable
                     _family[dev] = name;
                     Log.Info("detect", $"{name}: FOUND '{dev.Name}' ({dev.LedCount} LEDs)");
                 }
-                else Log.Info("detect", $"{name}: not present");
+                else absent.Add(name);
             }
             catch (Exception ex)
             {
@@ -88,6 +93,10 @@ public sealed class DeviceManager : IDisposable
                 Console.Error.WriteLine($"[DeviceManager] {name} failed: {ex.Message}");
             }
         }
+
+        if (absent.Count > 0) Log.Info("detect", "not present: " + string.Join(", ", absent));
+        Log.Info("detect", $"{_devices.Count} device(s): "
+            + (_devices.Count == 0 ? "none" : string.Join(", ", _devices.Select(d => $"{d.Name} ({d.LedCount})"))));
     }
 
     public void Dispose()
