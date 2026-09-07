@@ -1358,9 +1358,10 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     /// <summary>Start (or stop, for Static) one effect channel on a single device
     /// range, replacing any overlapping channel. Shared by the single-target and
     /// all-fans fan-out paths.</summary>
-    /// <summary>canvas renders the range against where the device sits on the
-    /// desk instead of against its own shape, which is what makes one wave
-    /// carry from the keyboard to the fans.</summary>
+    /// <summary>With the desk switched on, the range renders against where the
+    /// device sits on it rather than against the device's own shape, which is
+    /// what makes one wave carry from the keyboard to the fans. The canvas
+    /// argument only says whether THIS apply should switch the desk on.</summary>
     void ApplyFxRange(IRgbDevice dev, int off, int count, TargetFx fx, EffectChoice choice,
                       bool canvas = false)
     {
@@ -1397,8 +1398,11 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             bc = new Rgb(255, 255, 255);
             UpdateColorViews(bc);
         }
+        // The desk is a mode: with it on, every effect renders across it. The
+        // canvas argument is what turns it ON for a "Whole desk" apply; once on,
+        // it applies to everything.
         fx.Channel = _engine.Start(dev, off, count, FrameFor(dev), effect, SignedSpeed(fx), bc,
-                                   canvas ? CanvasPositions(dev, off, count) : null);
+                                   CanvasPositions(dev, off, count));
         RequestLianRebake();
         MarkDirty();
     }

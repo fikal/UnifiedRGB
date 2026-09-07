@@ -409,14 +409,16 @@ public sealed partial class MainViewModel
             layout.Save();
             OnChanged(nameof(CanvasEnabled));
             OnChanged(nameof(CanvasStatus));
-            // Running channels were started against the old coordinates, so
-            // they have to be rebuilt to pick up the change.
+            // Everything already running was started against the old
+            // coordinates, so it is restarted here. Without this the switch
+            // would only affect effects applied AFTER it, which is not what
+            // "render effects across the desk" says.
             ReapplyEffects();
         }
     }
 
     public string CanvasStatus => Canvas.Enabled
-        ? $"On. {Canvas.Items.Count} device(s) placed on a {Canvas.Width} by {Canvas.Height} desk."
+        ? $"On. Effects render across all {Canvas.Items.Count} device(s) as one image."
         : "Off. Effects render per device, exactly as they always have.";
 
     /// <summary>Give any newly detected device a place on the desk. Without

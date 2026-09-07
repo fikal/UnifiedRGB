@@ -118,12 +118,13 @@ public sealed partial class MainViewModel
             }
             var effect = ResolveEffect(fx, choice);
 
-            // A desk assignment only maps if the desk is still on and the
-            // device still has a place on it; otherwise it comes back as an
-            // ordinary per-device effect rather than not at all.
+            // With the desk switched on, everything renders across it: that is
+            // what the switch says and what people expect from it. CanvasPositions
+            // returns null when the desk is off or this device has no place on
+            // it, so the effect then runs per-device exactly as before.
             fx.Channel = _engine.Start(dev, a.Offset, a.Count, FrameFor(dev), effect,
                                        SignedSpeed(fx), baseColor,
-                                       a.Canvas ? CanvasPositions(dev, a.Offset, a.Count) : null);
+                                       CanvasPositions(dev, a.Offset, a.Count));
         }
         NotifyModeChanged();
         RequestLianRebake();
