@@ -668,5 +668,20 @@ round-trip with missing/unknown devices.
       covered by tests. NOT seen: nobody has watched a wave roll off the
       keyboard onto the fans on real hardware.
 - [x] Website/README updated
-- [ ] 1.1.0 released  (deliberately NOT done: the hardware-facing parts of
-      features 4, 6, 8 and 9 have not been watched on real hardware yet)
+- [x] 1.1.0 released
+      Features 8 and 9 were verified on hardware after the note above was
+      written: the CS2 health bar and event flashes were measured by driving
+      the running app with game states and reading the LEDs back through our
+      own SDK server, and the desk canvas was measured the same way (each
+      device shows a slice of the rainbow sized by how much of the desk it
+      covers, instead of a whole rainbow each).
+
+      STILL unverified at release, both for the same reason, no way to watch
+      them from here:
+        - 4 battery: no Razer device has been attached to this machine, so the
+          percentage has never been compared with Synapse.
+        - 6 hardware persistence: the app runs elevated, so an agent stopping
+          it TERMINATES it and MainViewModel.Dispose never runs. The commands
+          are checked against primary sources and the dispatch is tested, but
+          nobody has watched a rig hold a colour after the app closed. Settings
+          > When the app is closed > Apply now shows it without closing.
