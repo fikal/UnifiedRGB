@@ -299,11 +299,10 @@ public static class SensorHub
             {
                 if (busy?.Contains(kv.Key) == true) continue;   // mid-Identify burst: leave it at 100%
                 var t = TempFor(kv.Value.Source);
-                long tickNow = Environment.TickCount64;
                 if (t is double temp)
                 {
                     bool wasLost;
-                    lock (_gate) { _lastGoodTemp[kv.Key] = tickNow; wasLost = _sourceLost.Remove(kv.Key); }
+                    lock (_gate) { _blindTicks[kv.Key] = 0; wasLost = _sourceLost.Remove(kv.Key); }
                     if (wasLost)
                         Log.Info("fans", $"fan {kv.Key}: {kv.Value.Source} temperature is back, the curve is driving it again");
                     ApplyDuty(kv.Key, Math.Max(FloorFor(kv.Key), kv.Value.DutyAt(temp)));
@@ -313,19 +312,23 @@ public static class SensorHub
                 // No reading. Ride out a short gap; past the grace period the
                 // fan goes back to firmware control. The curve is KEPT, so the
                 // moment a reading returns the branch above re-arms it.
-                long since;
-                bool seen, alreadyLost;
-                lock (_gate)
-                {
-                    seen = _lastGoodTemp.TryGetValue(kv.Key, out since);
-                    if (!seen) _lastGoodTemp[kv.Key] = tickNow;   // never read yet: start the clock
-                    alreadyLost = _sourceLost.Contains(kv.Key);
-                }
-                if (!seen || alreadyLost || tickNow - since < LostSourceGraceMs) continue;
-                lock (_gate) _sourceLost.Add(kv.Key);
-                Log.Warn("fans", $"fan {kv.Key}: no {kv.Value.Source} temperature for {LostSourceGraceMs / 1000}s "
-                               + "- handing it back to firmware control (the curve is kept and re-arms if it returns)");
-                RestoreOne(kv.Key);
+                int blind;
+                lock (_gate) blind = _blindTicks[kv.Key] = _blindTicks.GetValueOrDefault(kv.Key) + 1;
+                if (blind < LostSourceGraceTicks) continue;
+
+                // Retried every tick while it is still lost, rather than
+                // latched on the first attempt: RestoreOne can fail, and a fan
+                // recorded as handed back when it is still sitting at our duty
+                // is under nobody's control while the log says otherwise.
+                bool handed = RestoreOne(kv.Key, keepCooling: true);
+                bool firstTime;
+                lock (_gate) firstTime = handed ? _sourceLost.Add(kv.Key) : false;
+                if (firstTime)
+                    Log.Warn("fans", $"fan {kv.Key}: no {kv.Value.Source} temperature for {LostSourceGraceTicks} ticks "
+                                   + "- handed back to firmware control (the curve is kept and re-arms if it returns)");
+                else if (!handed)
+                    Log.Occasional($"fan-restore:{kv.Key}", "fans",
+                        $"fan {kv.Key}: no {kv.Value.Source} temperature and handing it back FAILED - it is still on our last duty");
             }
             foreach (var kv in manual)
                 if (busy?.Contains(kv.Key) != true) ApplyDuty(kv.Key, kv.Value);
@@ -638,13 +641,29 @@ public static class SensorHub
 
     /// <summary>Route an auto-restore to the right backend (no mode bookkeeping;
     /// the dedup entry is dropped so the next duty write goes through).</summary>
-    static void RestoreOne(int fanIndex)
+    /// <summary>Hand one fan back to automatic control. False when that did not
+    /// work, so a caller relying on it can say so instead of assuming.</summary>
+    /// <param name="keepCooling">Never REDUCE a wireless fan's duty. Those have
+    /// no BIOS curve to fall back on, so handing one back means writing a fixed
+    /// 40% - fine when the user asked for it, but when we are handing a fan
+    /// back because its sensor died, dropping a fan the curve had at 90% to 40%
+    /// halves the cooling at the one moment nothing is watching the
+    /// temperature.</param>
+    static bool RestoreOne(int fanIndex, bool keepCooling = false)
     {
-        lock (_gate) _lastApplied.Remove(fanIndex);
+        int lastDuty;
+        lock (_gate)
+        {
+            lastDuty = _lastApplied.TryGetValue(fanIndex, out var la) ? la.Duty : 0;
+            _lastApplied.Remove(fanIndex);
+        }
         try
         {
             if (IsLian(fanIndex))
-                Lian?.SetFanDuty(fanIndex - LianFanBase, 40);   // no BIOS to hand back to - 40% baseline
+            {
+                int duty = keepCooling ? Math.Max(40, lastDuty) : 40;
+                Lian?.SetFanDuty(fanIndex - LianFanBase, duty);   // no BIOS to hand back to
+            }
             else if (fanIndex == GpuFanIndex)
             {
                 IntPtr gpu; lock (_gate) gpu = _gpu;
@@ -652,8 +671,14 @@ public static class SensorHub
                 lock (_gate) _gpuManualEngaged = false;
             }
             else Lhm?.Restore(fanIndex);
+            return true;
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Log.Occasional($"restore-one:{fanIndex}", "fans",
+                $"could not hand fan {fanIndex} back to automatic control: {ex.Message}");
+            return false;
+        }
     }
 
     static readonly Dictionary<int, int> _manualFans = new();       // fanIndex -> percent
@@ -669,13 +694,21 @@ public static class SensorHub
     /// ApplyDuty, and the over-temperature failsafe tests `is double`, so a
     /// null reading can never trip it either. Firmware control is the honest
     /// fallback - the BIOS curve is designed for exactly this.</summary>
-    static readonly Dictionary<int, long> _lastGoodTemp = new();
+    static readonly Dictionary<int, int> _blindTicks = new();
     static readonly HashSet<int> _sourceLost = new();
 
-    /// <summary>How long a curve's temperature may go missing before its fan is
-    /// handed back. Long enough to ride out a resume or a driver reload (those
-    /// recover in a tick or two), short enough that nothing sits blind.</summary>
-    const long LostSourceGraceMs = 15_000;
+    /// <summary>How many CONSECUTIVE ticks a curve may go without a temperature
+    /// before its fan is handed back - about 15 s at the 1.5 s tick.
+    ///
+    /// Ticks rather than a wall clock, and that is the whole point.
+    /// TickCount64 counts time the machine spent SUSPENDED, so a grace period
+    /// measured against it is already spent the moment the machine wakes - and
+    /// the first tick or two after a resume is exactly when LHM, NvAPI and
+    /// PawnIO reads fail, which is the case the grace period exists for. Every
+    /// fan on a curve would have been handed back on every single wake.
+    /// Counting ticks is immune to that by construction, with no need to hook
+    /// power events.</summary>
+    const int LostSourceGraceTicks = 10;
     static readonly Dictionary<int, long> _lastSpun = new();        // board fan INDEX -> last tick RPM > 0
     static int _hotTicks;
     const long SpinKeepMs = 10_000;   // keep a fan visible this long after it last spun
@@ -748,7 +781,7 @@ public static class SensorHub
             // A fresh curve starts with a clean slate: it has not gone blind
             // yet, and its grace period starts now rather than inheriting the
             // last one's timestamp.
-            _sourceLost.Remove(fanIndex); _lastGoodTemp[fanIndex] = Environment.TickCount64;
+            _sourceLost.Remove(fanIndex); _blindTicks[fanIndex] = 0;
         }
         // Apply immediately so the fan responds without waiting for the tick.
         var t = TempFor(curve.Source);
@@ -764,7 +797,7 @@ public static class SensorHub
         lock (_gate)
         {
             _manualFans.Remove(fanIndex); _fanCurves.Remove(fanIndex);
-            _lastGoodTemp.Remove(fanIndex); _sourceLost.Remove(fanIndex);
+            _blindTicks.Remove(fanIndex); _sourceLost.Remove(fanIndex);
         }
         RestoreOne(fanIndex);
         SaveFanConfig();
@@ -782,7 +815,7 @@ public static class SensorHub
         {
             lhm = _lhm; gpu = _gpu; gpuCtl = _gpuFanCtl;
             _manualFans.Clear(); _fanCurves.Clear(); _lastApplied.Clear();
-            _lastGoodTemp.Clear(); _sourceLost.Clear();
+            _blindTicks.Clear(); _sourceLost.Clear();
         }
         // Each step reports rather than swallowing. This is the thermal path:
         // the line at the end used to claim every fan was back on auto even

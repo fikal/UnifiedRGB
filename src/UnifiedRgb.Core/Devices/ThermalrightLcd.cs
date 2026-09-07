@@ -122,5 +122,18 @@ public sealed class ThermalrightLcd : IDisposable
 
     bool WriteReport(byte[] data, int len) => WriteReport(data, 0, len);
 
+    /// <summary>Re-send the opening handshake. A frame declares its length in
+    /// its header, so a frame abandoned part way leaves the panel's parser
+    /// still counting down pixel bytes - and it would read the NEXT frame's
+    /// header as pixels. The old code pushed every report regardless, which
+    /// kept the parser in step at the cost of waiting out a timeout per report;
+    /// now that a frame can stop early, the stream has to put it back in
+    /// step itself rather than relying on the panel's own idle reset, which is
+    /// slower than the retry.</summary>
+    public void Resync()
+    {
+        try { Handshake(); } catch { /* the next frame will try again */ }
+    }
+
     public void Dispose() => _hid.Dispose();
 }

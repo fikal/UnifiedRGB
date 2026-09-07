@@ -637,9 +637,17 @@ if (args.Length == 2 && args[0] == "--lcd")
     Console.WriteLine($"Sending {raw.Length}-byte RGB565 frame x5 to re-sync + display...");
     for (int i = 0; i < 5; i++)
     {
-        byte pm = lcd.Handshake();
-        lcd.ShowFrame(raw);
-        Console.WriteLine($"  pass {i + 1}: handshake pm={pm}");
+        // A refused report now aborts the frame rather than pushing all 301
+        // and reporting success. That is the point, but this is a diagnostic
+        // tool: report the failure and try the remaining passes instead of
+        // exiting with a stack trace and skipping Dispose.
+        try
+        {
+            byte pm = lcd.Handshake();
+            lcd.ShowFrame(raw);
+            Console.WriteLine($"  pass {i + 1}: handshake pm={pm}");
+        }
+        catch (Exception ex) { Console.WriteLine($"  pass {i + 1}: FAILED - {ex.Message}"); }
         Sleep(300);
     }
     lcd.Dispose();

@@ -71,10 +71,14 @@ public sealed class PawnIO : IDisposable
         // overran the drain can arrive here while Dispose is running. Handing
         // a freed context to pawnio_execute is a native dereference inside
         // PawnIOLib - an access violation that no catch here can contain,
-        // because it is not a managed exception. The read lock makes close
-        // wait for an in-flight call instead, and the disposed flag makes
-        // every later call a cheap no-op.
-        _lock.EnterReadLock();
+        // because it is not a managed exception.
+        //
+        // Counted rather than locked, so Dispose can give up waiting. A lock
+        // would make Dispose block for as long as the driver takes, and the
+        // caller is sometimes the UI thread (ResetSources after installing
+        // PawnIO, which is exactly when an ioctl to a driver being replaced
+        // might park).
+        Interlocked.Increment(ref _inFlight);
         try
         {
             if (_disposed || _handle == IntPtr.Zero) return -1;
@@ -83,25 +87,39 @@ public sealed class PawnIO : IDisposable
             return hr == 0 ? (int)ret : -1;
         }
         catch { return -1; }
-        finally { _lock.ExitReadLock(); }
+        finally { Interlocked.Decrement(ref _inFlight); }
     }
 
-    readonly System.Threading.ReaderWriterLockSlim _lock = new();
     volatile bool _disposed;
+    int _inFlight;
+
+    /// <summary>How long to wait for a call already inside the driver. Matches
+    /// the sensor hub's own drain bound, so the whole teardown stays bounded
+    /// end to end.</summary>
+    const int CloseWaitMs = 2000;
 
     public void Dispose()
     {
-        // The write lock waits out any Execute already inside the driver. It
-        // is bounded in practice: a PawnIO ioctl is a register read, not an
-        // operation that can park for seconds.
-        _lock.EnterWriteLock();
-        try
+        if (_disposed) return;
+        // Set FIRST: a call that has not entered yet now bails without touching
+        // the handle, so the count can only fall from here.
+        _disposed = true;
+
+        long deadline = Environment.TickCount64 + CloseWaitMs;
+        while (Volatile.Read(ref _inFlight) > 0 && Environment.TickCount64 < deadline)
+            Thread.Sleep(5);
+
+        if (Volatile.Read(ref _inFlight) > 0)
         {
-            if (_disposed) return;
-            _disposed = true;
-            if (_handle != IntPtr.Zero) { try { pawnio_close(_handle); } catch { } _handle = IntPtr.Zero; }
+            // Still inside the driver. Closing now would free the context under
+            // it, so the handle is deliberately LEAKED instead - one leaked
+            // driver handle in a process that is usually shutting down anyway,
+            // versus an access violation or an unbounded hang on the UI thread.
+            Log.Warn("pawnio", "a driver call is still running after "
+                             + $"{CloseWaitMs} ms - leaving its handle open rather than freeing it underneath");
+            return;
         }
-        finally { _lock.ExitWriteLock(); }
+        if (_handle != IntPtr.Zero) { try { pawnio_close(_handle); } catch { } _handle = IntPtr.Zero; }
     }
 
     [DllImport("PawnIOLib")] static extern int pawnio_version(out uint version);

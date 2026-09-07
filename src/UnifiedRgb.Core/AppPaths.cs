@@ -16,22 +16,40 @@ public static class AppPaths
     public static readonly string LocalDir =
         Redirect("UNIFIEDRGB_LOCAL_DIR", Environment.SpecialFolder.LocalApplicationData);
 
-    /// <summary>The real per-user location, unless an environment variable moves
-    /// it. That override exists for ONE reason: the test harness must not read
-    /// or write the running user's settings, profiles and layouts. It ran
-    /// against the live files, so a test that was killed between its write and
-    /// its restore left fixture JSON in place for the app to load.
+    /// <summary>The real per-user location, unless the TEST HARNESS is what is
+    /// running. The harness must not read or write the running user's settings,
+    /// profiles and layouts: it used to work against the live files, so a run
+    /// killed between a write and its restore left fixture JSON for the app to
+    /// load.
     ///
-    /// Nothing in the product sets these, so a normal launch resolves exactly
-    /// as before. It is deliberately an environment variable rather than a
-    /// settable property: the paths are static readonly and read during type
-    /// initialization, which can happen before any code gets a chance to
-    /// assign a property.</summary>
+    /// The override is gated on the entry assembly being the test harness, and
+    /// that gate is the whole point rather than a detail. An environment
+    /// variable is writable by any process running as the user - a plain setx
+    /// into HKCU, no elevation - and this app runs ELEVATED. LocalDir is where
+    /// the bundled OpenRGB lives, and that executable gets LAUNCHED, so an
+    /// ungated variable would let an unprivileged process choose a binary for
+    /// the administrator process to run at every logon. That is a worse version
+    /// of the backend.json hole closed below, and it is not worth a shortcut in
+    /// test plumbing. An attacker cannot rename their way into being
+    /// UnifiedRgb.Tests, because the check is on OUR entry assembly, not on
+    /// anything they supply.</summary>
+    /// A METHOD, not a static readonly field: field initializers run in
+    /// declaration order, and ConfigDir is declared above this - so as a field
+    /// it was still false while ConfigDir was being initialized, and the
+    /// redirect silently did nothing. The isolation assertions in the harness
+    /// caught that, which is the reason they exist.
+    static bool IsTestHost()
+        => System.Reflection.Assembly.GetEntryAssembly()?.GetName().Name == "UnifiedRgb.Tests";
+
     static string Redirect(string variable, Environment.SpecialFolder folder)
     {
+        string fallback = Path.Combine(Environment.GetFolderPath(folder), "UnifiedRgb");
+        if (!IsTestHost()) return fallback;
         string? over = Environment.GetEnvironmentVariable(variable);
-        if (!string.IsNullOrWhiteSpace(over)) return over;
-        return Path.Combine(Environment.GetFolderPath(folder), "UnifiedRgb");
+        if (string.IsNullOrWhiteSpace(over)) return fallback;
+        // Absolute, so a relative value cannot resolve against whatever the
+        // working directory happens to be.
+        try { return Path.GetFullPath(over); } catch { return fallback; }
     }
 
     public static string Config(string file) => Path.Combine(ConfigDir, file);
@@ -70,7 +88,9 @@ public static class Backend
     {
         // The build's own endpoint, if it was given one at publish time.
         string? url = Meta("RgbBackendUrl"), key = Meta("RgbBackendKey");
-        bool privateBuild = !string.IsNullOrWhiteSpace(url);
+        // BOTH halves, or it is not a configured private feed - a build with
+        // only one injected would otherwise honour the file for the other.
+        bool privateBuild = !string.IsNullOrWhiteSpace(url) && !string.IsNullOrWhiteSpace(key);
 
         // %APPDATA%\UnifiedRgb\backend.json can point a PRIVATE-FEED build
         // somewhere else - a developer aiming at a staging server.

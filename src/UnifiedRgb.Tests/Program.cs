@@ -40,6 +40,32 @@ AppDomain.CurrentDomain.ProcessExit += (_, _) =>
     try { if (Directory.Exists(testRoot)) Directory.Delete(testRoot, recursive: true); } catch { }
 };
 
+/*-----------------------------------------------------------*\
+| HARD GATE. Not an assertion - the process stops here.        |
+|                                                              |
+| This exists because the soft version was not enough. The     |
+| redirect was once silently inert (AppPaths resolved its      |
+| roots from a static field that had not been initialized      |
+| yet), the three isolation assertions below duly FAILED, and  |
+| the harness carried on anyway - straight into the tests that |
+| write scenes.json and lcd.json, against the real profile.    |
+| They wrote their fixtures and deleted the files on the way   |
+| out, and the user's saved LCD design and screens went with   |
+| them. A test suite that has lost its isolation must not run  |
+| a single test; it must refuse to start.                      |
+\*-----------------------------------------------------------*/
+if (!AppPaths.ConfigDir.StartsWith(testRoot, StringComparison.OrdinalIgnoreCase) ||
+    !AppPaths.LocalDir.StartsWith(testRoot, StringComparison.OrdinalIgnoreCase))
+{
+    Console.Error.WriteLine("REFUSING TO RUN: the test config redirect is not in effect.");
+    Console.Error.WriteLine($"  expected under : {testRoot}");
+    Console.Error.WriteLine($"  ConfigDir      : {AppPaths.ConfigDir}");
+    Console.Error.WriteLine($"  LocalDir       : {AppPaths.LocalDir}");
+    Console.Error.WriteLine("Tests write real files. Running now would edit the user's own settings,");
+    Console.Error.WriteLine("profiles, screens and layouts. Fix AppPaths.Redirect before running.");
+    return 1;
+}
+
 int passed = 0, failed = 0;
 
 void Check(bool cond, string name)
@@ -924,8 +950,11 @@ static string TempDir()
 
     // Not just once: EVERY frame must carry both, or the two workers alternate
     // between a correct frame and one that drops a slice.
+    // Deduped per DEVICE now, so a constant-colour effect settles and only the
+    // 1 s keepalive writes - the point being that whatever does land carries
+    // both slices.
     int n = dev.WriteCount;
-    Check(WaitUntil(() => dev.WriteCount > n + 4, 3000), "the pair keeps writing");
+    Check(WaitUntil(() => dev.WriteCount > n + 1, 5000), "the pair keeps writing (keepalive)");
     bool allGood = true;
     lock (dev.Writes)
         foreach (var (_, f) in dev.Writes.Skip(n))
@@ -933,6 +962,28 @@ static string TempDir()
     Check(allGood, "every subsequent whole-device write preserves both channels");
 
     // A static picked on a third range must survive the compose too.
+    engine.StopAll();
+}
+
+/*---------------- EffectEngine: composing must not defeat the write dedup ----------------*/
+{
+    // Two settled channels on one non-zone device. Composing means each
+    // channel's output changes whenever ANY of them changes, so a per-channel
+    // dedup would be false every frame and both would stream at 60 fps for as
+    // long as the app runs. Deduped per device, a settled pair falls back to
+    // the 1 s keepalive.
+    var engine = new EffectEngine();
+    var dev = new FakeDevice { Name = "Settled", LedCount = 2 };
+    var frame = new Rgb[2];
+    engine.Start(dev, 0, 1, frame, new CountingEffect(), 1, new Rgb(255, 0, 0));
+    engine.Start(dev, 1, 1, frame, new CountingEffect(), 1, new Rgb(0, 0, 255));
+    Check(WaitUntil(() => dev.WriteCount > 0, 2000), "the pair starts writing");
+    Thread.Sleep(300);                      // let both settle
+    int settled = dev.WriteCount;
+    Thread.Sleep(2000);
+    int during = dev.WriteCount - settled;
+    // 60 fps x 2 channels would be ~240 in two seconds; the keepalive is ~2-4.
+    Check(during <= 12, $"a settled pair writes at the keepalive, not per frame (saw {during} in 2 s)");
     engine.StopAll();
 }
 

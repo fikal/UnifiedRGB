@@ -4,6 +4,68 @@ This document is an implementation handoff for a smaller coding model. It record
 
 **Snapshot:** `7716aab111436d883829edbcdf75f4e58edbcc2a`, plus the working tree observed on 2026-09-07. An existing user edit in `src/UnifiedRgb.Core/Net/OpenRgbCrashBisect.cs` was preserved. No product source was changed. Source references below use repository-relative paths and one-based line numbers at that snapshot; search the named symbol if lines move.
 
+## Status — worked 2026-09-07
+
+Every claim was re-verified against current source before anything was changed;
+two did not survive that intact, and are marked below. Commits `77180f0`,
+`04ccc98`, `87f90f7`. Tests went 799 -> 833. Where a fix had a regression test,
+that test was also run against the OLD code to confirm it fails there - a
+regression test that passes both ways proves nothing.
+
+**Done:** R1, B1, B2, B3, B4, B5, B9, B10, B11, S1, S3, S4, and a narrowed B6.
+
+**Corrections to this document, found while implementing:**
+
+- **B6 was followed only in part, deliberately.** Honoring the discarded
+  `Wait` result and skipping disposal on timeout leaks a kernel driver handle
+  that has no finalizer - which is the regression the current code was written
+  to avoid. The escalation ("ResetSources can install replacement sources
+  before the old callback exits") is also wrong: `_ticking`, the `_running`
+  latch and the ordering of `_sourcesOpened` each independently prevent it. The
+  real hazard is narrower - `pawnio_execute` on a freed context, an access
+  violation that no `catch` can contain - so `PawnIO.Dispose` now waits out an
+  in-flight ioctl instead. Note this makes disposal wait on native code; it is
+  bounded in practice because a PawnIO call is a register read.
+- **B1 has two more sites than it lists.** `SetFanCurve` and `ReconcileFans`
+  carry the same `if (t is double temp)` guard, so a curve set or restored
+  while its source is already null applies nothing at all. Both are now covered
+  by the periodic loop rather than separately: they leave the curve in
+  `_fanCurves`, so the tick sees it, starts its grace clock and hands the fan
+  back if no reading arrives. The guards themselves are left alone - applying
+  a curve with no temperature to apply it at is not something to invent a
+  value for.
+- **S1 is dormant rather than armed.** The private feed path is inert in a
+  public build: no build props are passed, and `backend.json` does not exist in
+  a default install. It is "a path an attacker can arm with one file write",
+  not a live vulnerability in a shipped build. Fixed anyway, because it is one
+  of the few places where same-user code execution can borrow the elevated
+  token - and with the `/RL HIGHEST` logon task, keep it.
+- **S3's better story is not log forgery.** `PktSetClientName` was the one
+  ingress handler that logged unconditionally, so a rename loop could flush the
+  whole diagnostic history out of the log and its single rotation in seconds.
+  Fixed along with the sanitizing.
+- **B11 is real but rarely triggered.** A shared-mode WASAPI packet is
+  typically ~480 frames, so the hop loop usually runs 0 or 1 times; it bites on
+  long-period endpoints and after a stall.
+- **B9's "malformed drawing numbers" case does not exist as written.** A null
+  on a non-nullable number makes the whole file fail to deserialize, which the
+  store's corrupt-file handling already covers, and JSON cannot express NaN.
+
+**Not done, and why:**
+
+- **S2 (OpenRGB bundle)** - agreed and the highest-value item left, but the
+  honest fix is relocating binaries to a protected directory with a migration
+  that re-downloads rather than moves. That is an installer change, not a
+  patch, and marking the existing directory read-only is not a fix.
+- **B7 (LCD buffer lease)**, **B8 (GIF disposal)** - real, both narrower than
+  they look. Neither has produced a reported symptom.
+- **PERF1/2/3, I1, I2** - these are measurement tasks by their own text. None
+  should be "fixed" before the baseline they ask for exists.
+
+**Note on R1:** the harness now references the App project, so it can no longer
+build while the app is running. The documented loop already stops the app
+first, but it is a real constraint.
+
 ## How to use this document
 
 1. Fix one ID per change. Read its source anchors and callers before editing. Reconfirm the defect against the current checkout; do not blindly apply advice after code has moved.

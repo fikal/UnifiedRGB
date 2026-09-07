@@ -124,32 +124,40 @@ public sealed class LightingController
         // statics: a client that only ever paints one zone leaves the rest of
         // the device looking the way it found it.
         var live = _external.GetOrAdd(dev, d => (Rgb[])FrameFor(d).Clone());
-        lock (live)
-            for (int i = 0; i < count && offset + i < live.Length; i++) live[offset + i] = colors[i];
-
-        var slice = new Rgb[count];
-        for (int i = 0; i < count; i++) slice[i] = colors[i];
-        Master.Scale(slice);
 
         // A whole-device write needs no merge, and a device that can address
         // zones takes the slice directly - neither disturbs anything outside it.
-        if (offset == 0 && count == dev.LedCount)
+        bool wholeDevice = offset == 0 && count == dev.LedCount;
+        if (wholeDevice || dev is IZoneWritable)
         {
-            Applier.Post(LaneOf(dev), (dev, "ext"), () => dev.SetColors(slice));
-            return;
-        }
-        if (dev is IZoneWritable zw)
-        {
-            Applier.Post(LaneOf(dev), (dev, "ext", offset), () => zw.SetZone(offset, slice));
+            var slice = new Rgb[count];
+            for (int i = 0; i < count; i++) slice[i] = colors[i];
+            lock (live)
+                for (int i = 0; i < count && offset + i < live.Length; i++) live[offset + i] = colors[i];
+            Master.Scale(slice);
+            if (wholeDevice) Applier.Post(LaneOf(dev), (dev, "ext"), () => dev.SetColors(slice));
+            else Applier.Post(LaneOf(dev), (dev, "ext", offset),
+                              () => ((IZoneWritable)dev).SetZone(offset, slice));
             return;
         }
 
-        // Everything else can only be written whole, so what goes out is this
-        // client's accumulated picture, scaled once at the boundary.
-        Rgb[] whole;
-        lock (live) whole = (Rgb[])live.Clone();
-        Master.Scale(whole);
-        Applier.Post(LaneOf(dev), (dev, "ext"), () => dev.SetColors(whole));
+        // Written whole, so what goes out is this client's accumulated picture,
+        // scaled once at the boundary.
+        //
+        // Mutate, snapshot AND queue under the one lock. The applier coalesces
+        // latest-wins per key and both clients here use the same key, so with
+        // the queue outside the lock two clients could interleave as
+        // A-mutates, A-snapshots, B-mutates, B-snapshots, B-queues, A-queues -
+        // and A's older snapshot, which does not contain B's pixels, replaces
+        // B's in the queue. B's write is then simply never sent. Ownership
+        // explicitly allows two clients on one device, so this is reachable.
+        lock (live)
+        {
+            for (int i = 0; i < count && offset + i < live.Length; i++) live[offset + i] = colors[i];
+            var whole = (Rgb[])live.Clone();
+            Master.Scale(whole);
+            Applier.Post(LaneOf(dev), (dev, "ext"), () => dev.SetColors(whole));
+        }
     }
 
     /// <summary>Black the device WITHOUT touching its stored frame (lights-off).</summary>

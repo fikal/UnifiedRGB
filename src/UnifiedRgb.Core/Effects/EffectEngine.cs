@@ -98,20 +98,26 @@ public sealed class EffectEngine
             victims = _channels.Where(c => ReferenceEquals(c.Device, dev) &&
                                            offset < c.Offset + c.Count && c.Offset < offset + count).ToList();
             foreach (var c in victims) { c.Running = false; _channels.Remove(c); }
-            // The write lock is keyed by device instance, so a rescan would
-            // otherwise leave one behind (and pin the replaced device with it)
-            // for every device that ever ran an effect.
-            if (!_channels.Any(c => ReferenceEquals(c.Device, dev))) _writeLocks.Remove(dev);
         }
         foreach (var c in victims) JoinWorker(c);
+        // Pruned only AFTER the joins. Dropping it while a worker was still
+        // inside a slow write let the replacement worker allocate a DIFFERENT
+        // state object for the same device - two live writers, no mutual
+        // exclusion and two independent dedups. Keyed by device instance, so
+        // it still has to go once nothing is using it or a rescan would leave
+        // one behind (pinning the replaced device with it) for every device
+        // that ever ran an effect.
+        lock (_lock)
+            if (!_channels.Any(c => ReferenceEquals(c.Device, dev))) _deviceWrites.Remove(dev);
     }
 
     public void StopAll()
     {
         List<Channel> all;
-        lock (_lock) { all = new(_channels); _channels.Clear(); _writeLocks.Clear(); }
+        lock (_lock) { all = new(_channels); _channels.Clear(); }
         foreach (var c in all) c.Running = false;
         foreach (var c in all) JoinWorker(c);
+        lock (_lock) _deviceWrites.Clear();   // after the joins, as above
     }
 
     /// <summary>Wait for a stopped channel's worker. One device write can
@@ -199,17 +205,30 @@ public sealed class EffectEngine
         }
     }
 
-    /// <summary>Serializes the whole-device writes of the channels sharing one
-    /// non-zone device. Two workers calling SetColors on one device at the same
-    /// moment could already interleave on the wire; composing makes both frames
-    /// correct, and this makes sure a whole one lands at a time.</summary>
-    readonly Dictionary<IRgbDevice, object> _writeLocks = new();
-    object WriteLockFor(IRgbDevice dev)
+    /// <summary>The shared write state of the channels driving one non-zone
+    /// device: the lock that keeps their whole-device writes from interleaving
+    /// on the wire, and the last frame actually sent.
+    ///
+    /// The dedup has to live HERE rather than per channel. Once every channel
+    /// composes the whole device, each one's output changes whenever ANY of
+    /// them changes - so a per-channel "same as last time?" is false every
+    /// frame, the idle throttle never engages, and a channel holding a single
+    /// colour streams it at 60 fps because a sibling is animating. Deduped per
+    /// device, the first channel to render a given frame writes it and the
+    /// others recognise their own identical composite and go quiet.</summary>
+    sealed class DeviceWrite
+    {
+        public Rgb[] LastSent = Array.Empty<Rgb>();
+        public bool HaveLast;
+        public long LastWrite;
+    }
+    readonly Dictionary<IRgbDevice, DeviceWrite> _deviceWrites = new();
+    DeviceWrite WriteStateFor(IRgbDevice dev)
     {
         lock (_lock)
         {
-            if (!_writeLocks.TryGetValue(dev, out var o)) _writeLocks[dev] = o = new object();
-            return o;
+            if (!_deviceWrites.TryGetValue(dev, out var w)) _deviceWrites[dev] = w = new DeviceWrite();
+            return w;
         }
     }
 
@@ -275,7 +294,7 @@ public sealed class EffectEngine
         var full = zoneDev == null ? new Rgb[ch.Device.LedCount] : null;
         // Reused across frames: the compose path must not allocate at 60 fps.
         var litRanges = zoneDev == null ? new List<(int Off, int Count)>() : null;
-        var writeLock = zoneDev == null ? WriteLockFor(ch.Device) : null;
+        var shared = zoneDev == null ? WriteStateFor(ch.Device) : null;
 
         // Dedup at the write boundary: slow effects (Time Warmth changes per
         // MINUTE, Palette Cycle holds each color) used to stream 60 identical
@@ -356,21 +375,48 @@ public sealed class EffectEngine
                 }
 
                 long now = Environment.TickCount64;
-                bool same = haveLast && SameFrame(sendBuf, lastSent, sendBuf.Length);
-                bool unchanged = same && now - lastWrite < KeepaliveMs;
-                if (!unchanged)
+                bool same;
+                if (zoneDev != null)
                 {
-                    // Re-check at the write boundary: StopRange/StopAll may
-                    // have cleared Running while this frame rendered, and the
-                    // replacement channel or the static restore can already be
-                    // writing this range - a stale frame landing now would win
-                    // until the next differing frame (up to the keepalive).
-                    if (!ch.Running) break;
-                    if (zoneDev != null) zoneDev.SetZone(ch.Offset, zoneBuf);
-                    else lock (writeLock!) ch.Device.SetColors(full!);
-                    Array.Copy(sendBuf, lastSent, sendBuf.Length);
-                    haveLast = true;
-                    lastWrite = now;
+                    same = haveLast && SameFrame(sendBuf, lastSent, sendBuf.Length);
+                    if (!(same && now - lastWrite < KeepaliveMs))
+                    {
+                        // Re-check at the write boundary: StopRange/StopAll may
+                        // have cleared Running while this frame rendered, and
+                        // the replacement channel or the static restore can
+                        // already be writing this range - a stale frame landing
+                        // now would win until the next differing frame (up to
+                        // the keepalive).
+                        if (!ch.Running) break;
+                        zoneDev.SetZone(ch.Offset, zoneBuf);
+                        Array.Copy(sendBuf, lastSent, sendBuf.Length);
+                        haveLast = true;
+                        lastWrite = now;
+                    }
+                }
+                else
+                {
+                    // One writer at a time per device, and one dedup shared by
+                    // every channel on it.
+                    bool stop = false;
+                    lock (shared!)
+                    {
+                        same = shared.HaveLast && shared.LastSent.Length == full!.Length
+                               && SameFrame(full!, shared.LastSent, full!.Length);
+                        if (!(same && now - shared.LastWrite < KeepaliveMs))
+                        {
+                            if (!ch.Running) stop = true;
+                            else
+                            {
+                                ch.Device.SetColors(full!);
+                                if (shared.LastSent.Length != full!.Length) shared.LastSent = new Rgb[full!.Length];
+                                Array.Copy(full!, shared.LastSent, full!.Length);
+                                shared.HaveLast = true;
+                                shared.LastWrite = now;
+                            }
+                        }
+                    }
+                    if (stop) break;
                 }
                 idleStreak = same ? idleStreak + 1 : 0;
                 failures = 0;

@@ -44,6 +44,9 @@ public sealed class LogitechG403 : IRgbDevice
     readonly bool   _swSimple;
     readonly byte[] _clusterEffect;      // static-effect index per cluster (= per zone)
     readonly Rgb?[] _lastPer;
+    /// <summary>Per cluster: do not send again until this tick. Set when a send
+    /// fails, cleared when one succeeds.</summary>
+    readonly long[] _retryAfter;
     readonly bool[] _persisted;          // _lastPer[i] has been committed to onboard memory
     long _lastChangeTick;
 
@@ -59,6 +62,7 @@ public sealed class LogitechG403 : IRgbDevice
         _hid = hid; _dev = dev; _rgbIdx = rgbIdx; _feature = feature;
         _clusterEffect = clusterEffect;
         _lastPer = new Rgb?[clusterEffect.Length];
+        _retryAfter = new long[clusterEffect.Length];
         _persisted = new bool[clusterEffect.Length];
         Name = name;
         if (feature == FEAT_8071) { _fnSetEffect = 0x10; _fnSwControl = 0x50; _swSimple = false; }
@@ -198,6 +202,7 @@ public sealed class LogitechG403 : IRgbDevice
     /// effect's hold satisfies it - a Palette Cycle hold is 5 s, Time Warmth
     /// steps once a minute - so only a genuinely parked effect ever writes
     /// flash, and then once.</summary>
+    const int RetryAfterFailMs = 5000;
     const int PersistAfterMs = 300_000;
 
     public void SetColors(IReadOnlyList<Rgb> colors) => SetColors(colors, persist: false);
@@ -215,6 +220,15 @@ public sealed class LogitechG403 : IRgbDevice
             {
                 var c = colors[Math.Min(i, colors.Count - 1)];
                 if (_lastPer[i] == c) continue;
+                // A cluster whose last send failed is left alone briefly. Not
+                // recording a failed colour is correct, but it also means the
+                // retry is never deduped: a mouse that stops answering (asleep,
+                // or its input reports taken by G HUB) would otherwise be sent
+                // a claim plus an effect on EVERY frame, each blocking ~200 ms
+                // on a read timeout while holding _writeLock. The engine's own
+                // breaker cannot help - it counts thrown exceptions, and a
+                // failed write here returns rather than throwing.
+                if (Environment.TickCount64 < _retryAfter[i]) continue;
                 if (!claimed) { ClaimSoftwareControl(); claimed = true; }
                 // Record it only once the mouse has taken it. Marking first
                 // meant a dropped write poisoned the dedup: the colour was
@@ -222,14 +236,31 @@ public sealed class LogitechG403 : IRgbDevice
                 // the engine's own keepalive re-send, which exists precisely
                 // to paper over a lost packet - matched the cache and was
                 // skipped, so the zone stayed on the old colour for good.
-                if (!SendEffect(i, c, persist: false)) continue;
+                if (!SendEffect(i, c, persist: false))
+                {
+                    _retryAfter[i] = Environment.TickCount64 + RetryAfterFailMs;
+                    continue;
+                }
+                _retryAfter[i] = 0;
                 _lastPer[i] = c;
                 _persisted[i] = false;
                 changed = true;
             }
             long now = Environment.TickCount64;
             if (changed) _lastChangeTick = now;
-            if (persist || (!changed && now - _lastChangeTick >= PersistAfterMs)) CommitPersist();
+            if (persist || (!changed && now - _lastChangeTick >= PersistAfterMs))
+            {
+                CommitPersist();
+                // Stamp the ATTEMPT, not just a colour change. Only a
+                // successful commit sets _persisted, which is right - but the
+                // window that decides whether to try is driven by
+                // _lastChangeTick, and that only moved when a colour changed.
+                // So once a commit failed, every keepalive (1/s, forever)
+                // retried it, and in the case where the write landed and only
+                // the reply was lost that is a real write to the mouse's flash
+                // once a second. PersistAfterMs exists precisely to stop that.
+                _lastChangeTick = now;
+            }
         }
     }
 

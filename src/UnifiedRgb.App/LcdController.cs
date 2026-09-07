@@ -83,6 +83,10 @@ public sealed class LcdController : IDisposable
             {
                 UnifiedRgb.Core.Log.Occasional("lcd", "lcd", $"frame send failed: {ex.Message}");
                 Thread.Sleep(500);
+                // A frame that stopped part way left the panel's parser waiting
+                // for the rest of it, so the next frame's header would be eaten
+                // as pixel data. Put it back in step before retrying.
+                try { _lcd.Resync(); } catch { }
                 continue;   // lastSent untouched: a failed frame is retried promptly
             }
             lastSent = frame;
