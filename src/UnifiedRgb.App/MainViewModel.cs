@@ -1234,6 +1234,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // skips them meanwhile.
         foreach (var r in _store.Settings.SensorRules ?? new()) SensorRules.Add(r);
         foreach (var r in _store.Settings.Schedules ?? new()) Schedules.Add(r);
+        Lcd.Attached += () => { BuildLeftItems(); OnChanged(nameof(ShowLcdPanel)); };
         Lcd.Start();
         UnifiedRgb.Core.Effects.ChromaFeed.Start();      // DLL-shim pipe (Wallpaper Engine)
         UnifiedRgb.Core.Net.ChromaRestServer.Start();    // Chroma REST API :54235 (CS2 and modern games)

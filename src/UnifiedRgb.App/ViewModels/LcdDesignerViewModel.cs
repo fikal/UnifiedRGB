@@ -126,16 +126,56 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
 
     /// <summary>Open the panel (if present), load the saved design and start
     /// rendering. Called once from the main view model's constructor.</summary>
+    /// <summary>Looks for the panel until it finds it. Fast at first, then
+    /// slowly forever.
+    ///
+    /// This used to be one attempt in the constructor. Started from the logon
+    /// task, the app can be running before the panel's USB interface has been
+    /// enumerated, so a cold boot found nothing and the screen then stayed dark
+    /// for the whole session while launching by hand worked every time. Slowing
+    /// down rather than giving up also picks up a panel plugged in later.</summary>
+    readonly System.Windows.Threading.DispatcherTimer _find =
+        new() { Interval = TimeSpan.FromSeconds(3) };
+    int _findAttempts;
+
     public void Start()
     {
-        _lcd = LcdController.TryStart();
         _lcdSave.Tick += (_, _) => { _lcdSave.Stop(); _lcd?.Design.Save(); };
         // Editing has paused: the design as it stands is what the next undo
         // should return to.
         _undoSettle.Tick += (_, _) => SettleUndo();
         _history.Changed += NotifyHistory;
-        if (_lcd == null) return;
 
+        if (TryAttach(late: false)) return;
+
+        UnifiedRgb.Core.Log.Info("lcd", "no pump LCD yet, still looking");
+        _find.Tick += (_, _) =>
+        {
+            if (TryAttach(late: true)) { _find.Stop(); return; }
+            // A boot race resolves in seconds; past that this is only here to
+            // catch a panel plugged in later, so it stops being a busy loop.
+            if (++_findAttempts == 20)
+            {
+                _find.Interval = TimeSpan.FromSeconds(30);
+                UnifiedRgb.Core.Log.Info("lcd", "still no pump LCD after a minute, checking occasionally from here");
+            }
+        };
+        _find.Start();
+    }
+
+    /// <summary>Open the panel and bring everything that depends on it to life,
+    /// or false when it is not there. Safe to call repeatedly.</summary>
+    /// <param name="late">True when the panel turned up after startup, which
+    /// is the only case that has to ask for the device list to be rebuilt. On
+    /// the normal path the list has not been built yet and rebuilding it here
+    /// would run against an empty device collection for nothing.</param>
+    bool TryAttach(bool late)
+    {
+        if (_lcd != null) return true;
+        var lcd = LcdController.TryStart();
+        if (lcd == null) return false;
+
+        _lcd = lcd;
         _lcd.Design = LcdDesign.Load();
         _cpuTemp = new PawnIoCpuTempProvider();
         _lcd.Temp = _cpuTemp;
@@ -145,13 +185,33 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         _lcd.Start();
         OnChanged(nameof(Available));
         OnChanged(nameof(CpuTempUnavailable));
+
+        UnifiedRgb.Core.Log.Info("lcd",
+            $"pump LCD opened, {_lcd.Design.Elements.Count} element(s)"
+            + (_findAttempts > 0 ? $" (after {_findAttempts} retr{(_findAttempts == 1 ? "y" : "ies")})" : ""));
+
+        // The left list only grows a Pump LCD row when this is available, so a
+        // panel that turns up late has to ask for the list to be rebuilt.
+        if (late) Attached?.Invoke();
+        return true;
     }
+
+    /// <summary>Raised once the panel is open, however long that took.</summary>
+    public event Action? Attached;
 
     /// <summary>Turn the panel on (normal render) or off (blank frame). The
     /// panel isn't an RGB device, so sleep/lock drives it through here.</summary>
+    /// <summary>Blank the panel or bring it back. Logged on change, because a
+    /// panel deliberately blanked (a scheduled dark window, a locked session)
+    /// and a panel that never opened look identical from the outside, and the
+    /// log could not tell them apart either.</summary>
     public void SetOn(bool on)
     {
-        if (_lcd != null) { _lcd.On = on; _lcd.Refresh(); }
+        if (_lcd == null) return;
+        bool was = _lcd.On;
+        _lcd.On = on;
+        _lcd.Refresh();
+        if (was != on) UnifiedRgb.Core.Log.Info("lcd", on ? "panel on" : "panel blanked");
     }
 
     // Named handler so elements can be UNHOOKED (delete / design swap): the
