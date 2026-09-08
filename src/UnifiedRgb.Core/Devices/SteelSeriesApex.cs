@@ -56,7 +56,7 @@ public sealed class SteelSeriesApex : IRgbDevice, IKeyMappedDevice
         0x88,0x89,0x8A,0x8B,
     };
 
-    readonly HidNative.HidHandle _hid;
+    readonly IHidTransport _hid;
     readonly int _featureLen;
     readonly int _outputLen;
     readonly LedPos[] _positions;
@@ -73,7 +73,7 @@ public sealed class SteelSeriesApex : IRgbDevice, IKeyMappedDevice
     public IReadOnlyList<LedPos>? LedPositions => _positions;
     public float? PreviewAspect => 3.1f;   // TKL
 
-    SteelSeriesApex(HidNative.HidHandle hid, int featureLen, int outputLen, string name)
+    internal SteelSeriesApex(IHidTransport hid, int featureLen, int outputLen, string name)
     {
         _hid = hid;
         _featureLen = featureLen;
@@ -178,7 +178,15 @@ public sealed class SteelSeriesApex : IRgbDevice, IKeyMappedDevice
                 buf[o + 2] = colors[i].G;
                 buf[o + 3] = colors[i].B;
             }
-            _hid.SetFeature(buf);
+            if (!_hid.SetFeature(buf))
+            {
+                // Not cached: the next identical frame (the engine keepalive
+                // included) must try again rather than match a frame the
+                // keyboard never took.
+                _last = null;
+                Log.Occasional($"apex:{Name}", "Apex", "feature report refused; the frame will be sent again");
+                return;
+            }
             if (_last == null || _last.Length != colors.Count) _last = new Rgb[colors.Count];
             for (int i = 0; i < colors.Count; i++) _last[i] = colors[i];
         }

@@ -22,7 +22,7 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IH
     const int Channels = 8, MaxPerChannel = 96, Pkt = 353;
     const byte ModeStatic = 0x01, Speed000 = 0x02, DirLtr = 0x00, Bright100 = 0x00;
 
-    readonly HidNative.HidHandle _hid;
+    readonly IHidTransport _hid;
     readonly int _featLen;
     readonly object _lock = new();
     bool _disposed;   // set under _lock so no HID op touches a freed handle post-Rescan
@@ -89,7 +89,7 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IH
     public float? PreviewAspect => 1f / Math.Max(1, _fans);
     LedPos[] _positions = Array.Empty<LedPos>();
 
-    LianLiUniHub(HidNative.HidHandle hid, int featLen)
+    internal LianLiUniHub(IHidTransport hid, int featLen)
     {
         _hid = hid;
         _featLen = featLen > 0 ? featLen : 7;

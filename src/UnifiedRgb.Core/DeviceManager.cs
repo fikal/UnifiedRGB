@@ -19,7 +19,7 @@ public sealed class DeviceManager : IDisposable
     /// <summary>Factories for each device family. Each returns a device if its
     /// hardware is present, or null. Add new devices (mobo, LNP, mouse, fans,
     /// RAM, GPU) here as they are implemented.</summary>
-    static readonly Func<IRgbDevice?>[] Factories =
+    internal static readonly Func<IRgbDevice?>[] Factories =
     {
         CorsairStrafeMk2.TryOpen,
         SteelSeriesApex.TryOpen,
@@ -33,7 +33,7 @@ public sealed class DeviceManager : IDisposable
 
     /// <summary>Families that can yield several devices at once (DRAM sticks,
     /// the OpenRGB bridge).</summary>
-    static readonly Func<List<IRgbDevice>>[] MultiFactories =
+    internal static readonly Func<List<IRgbDevice>>[] MultiFactories =
     {
         EneDram.DetectAll,
         RazerHid.DetectAll,

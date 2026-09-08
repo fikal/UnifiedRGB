@@ -187,7 +187,7 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
         0x6E,0,   0,   0,   0,   0,                        // 110-115 Num. ISO ISO Logo Logo Profile
     };
 
-    readonly HidNative.HidHandle _hid;
+    readonly IHidTransport _hid;
     readonly LedPos[] _positions;
     readonly LedRect[] _rects;
     readonly float _aspect;
@@ -203,7 +203,7 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
     public IReadOnlyList<LedRect>? LedGeometry => _rects;
     public float? PreviewAspect => _aspect;
 
-    CorsairStrafeMk2(HidNative.HidHandle hid)
+    internal CorsairStrafeMk2(IHidTransport hid)
     {
         _hid = hid;
         (_positions, _rects, _aspect) = BuildGeometry();
@@ -334,9 +334,6 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
                 for (int i = 0; i < n; i++) if (_last[i] != colors[i]) { same = false; break; }
                 if (same) return;
             }
-            if (_last == null || _last.Length != n) _last = new Rgb[n];
-            for (int i = 0; i < n; i++) _last[i] = colors[i];
-
             Array.Clear(_rCh); Array.Clear(_gCh); Array.Clear(_bCh);
             for (int i = 0; i < Keys.Length && i < n; i++)
             {
@@ -344,32 +341,52 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
                 _gCh[Keys[i]] = colors[i].G;
                 _bCh[Keys[i]] = colors[i].B;
             }
-            SendChannel(1, _rCh, 1);   // red
-            SendChannel(2, _gCh, 1);   // green
-            SendChannel(3, _bCh, 2);   // blue (finish)
+            // All three channels are always attempted: the frame is latched by
+            // the blue commit, and stopping at the first refusal would leave
+            // the keyboard showing two thirds of this frame over a third of the
+            // last one. But the dedup commits only if the WHOLE frame landed.
+            // It used to be recorded before a single packet went out, so a
+            // refused packet was cached as sent and every identical frame
+            // after it - the engine's keepalive included, which exists to cover
+            // exactly a lost packet - was skipped.
+            bool ok = SendChannel(1, _rCh, 1);   // red
+            ok &= SendChannel(2, _gCh, 1);       // green
+            ok &= SendChannel(3, _bCh, 2);       // blue (finish)
+            if (!ok)
+            {
+                _last = null;
+                Log.Occasional("strafe-write", "StrafeMk2", "a frame packet was refused; the frame will be sent again");
+                return;
+            }
+            if (_last == null || _last.Length != n) _last = new Rgb[n];
+            for (int i = 0; i < n; i++) _last[i] = colors[i];
         }
     }
 
-    void SendChannel(byte channel, byte[] vals, byte finish)
+    /// <summary>One colour channel: three stream packets and a commit. True
+    /// only if the keyboard took all four.</summary>
+    bool SendChannel(byte channel, byte[] vals, byte finish)
     {
-        Stream(1, 60, vals, 0);
-        Stream(2, 60, vals, 60);
-        Stream(3, 24, vals, 120);
+        bool ok = Stream(1, 60, vals, 0);
+        ok &= Stream(2, 60, vals, 60);
+        ok &= Stream(3, 24, vals, 120);
         var p = _pktBuf;
         Array.Clear(p);
         p[1] = 0x07; p[2] = 0x28; p[3] = channel; p[4] = 3; p[5] = finish;
-        _hid.Write(p);
+        ok &= _hid.Write(p);
         Thread.Sleep(5);   // protocol settle — the keyboard drops packets without it
+        return ok;
     }
 
-    void Stream(byte packetId, byte dataSz, byte[] data, int offset)
+    bool Stream(byte packetId, byte dataSz, byte[] data, int offset)
     {
         var p = _pktBuf;
         Array.Clear(p);
         p[1] = 0x7F; p[2] = packetId; p[3] = dataSz;
         Array.Copy(data, offset, p, 5, dataSz);
-        _hid.Write(p);
+        bool ok = _hid.Write(p);
         Thread.Sleep(2);   // protocol settle
+        return ok;
     }
 
     public void Dispose() => _hid.Dispose();

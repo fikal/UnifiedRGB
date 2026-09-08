@@ -17,7 +17,7 @@ public sealed class SayoDevice : IRgbDevice
     // own software - don't claim or write it. Re-add 0x0009 here to bring it back.
     static readonly ushort[] Pids = { 0x0007 /* E1 */ };
 
-    readonly HidNative.HidHandle _hid;
+    readonly IHidTransport _hid;
     readonly int _outLen;
     readonly object _writeLock = new();
     Rgb? _last;
@@ -29,7 +29,7 @@ public sealed class SayoDevice : IRgbDevice
     public IReadOnlyList<RgbZone> Zones { get; } =
         new[] { new RgbZone { Name = "Pad", Offset = 0, Count = 1 } };
 
-    SayoDevice(HidNative.HidHandle hid, int outLen, string name)
+    internal SayoDevice(IHidTransport hid, int outLen, string name)
     {
         _hid = hid; _outLen = outLen; Name = name;
     }

@@ -86,7 +86,7 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
         return "GRB";
     }
 
-    readonly HidNative.HidHandle _hid;
+    readonly IHidTransport _hid;
     readonly int[] _zoneOffset;
     readonly int _ledCount;
     readonly Rgb?[] _lastStatic = new Rgb?[16];
@@ -148,7 +148,7 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
         return list.ToArray();
     }
 
-    GigabyteIt5711(HidNative.HidHandle hid, ushort pid)
+    internal GigabyteIt5711(IHidTransport hid, ushort pid)
     {
         _hid = hid;
         _pid = pid;

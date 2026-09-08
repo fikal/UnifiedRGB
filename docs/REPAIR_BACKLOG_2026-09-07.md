@@ -13,6 +13,12 @@ that test was also run against the OLD code to confirm it fails there - a
 regression test that passes both ways proves nothing.
 
 **Done:** R1, B1, B2, B3, B4, B5, B9, B10, B11, S1, S3, S4, and a narrowed B6.
+Follow-up commits added the detection side channel (`DetectionNotes`), the
+`IHidTransport` seam with `FakeHid` in the harness, and the driver contract
+(`docs/ADDING_A_DEVICE.md`). B4 and B5 now have the acceptance tests this
+document specified and which could not be written at the time - "fake a failed
+first colour write" and "a fake writer failing report 2" - each confirmed to
+fail against the pre-fix code.
 
 **Corrections to this document, found while implementing:**
 

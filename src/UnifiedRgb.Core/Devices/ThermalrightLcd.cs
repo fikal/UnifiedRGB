@@ -22,9 +22,9 @@ public sealed class ThermalrightLcd : IDisposable
     public const int Width = 240, Height = 320;
     public const int FrameBytes = Width * Height * 2;   // 153600
 
-    readonly HidNative.HidHandle _hid;
+    readonly IHidTransport _hid;
 
-    ThermalrightLcd(HidNative.HidHandle hid) { _hid = hid; }
+    internal ThermalrightLcd(IHidTransport hid) { _hid = hid; }
 
     public static ThermalrightLcd? TryOpen()
     {
@@ -74,6 +74,14 @@ public sealed class ThermalrightLcd : IDisposable
 
     public void ShowFrame(byte[] rgb565)
     {
+        // The header declares the pixel byte count and the panel counts them
+        // down, so a wrong-sized frame does not merely look wrong - it leaves
+        // the parser expecting more (or fewer) bytes than the next frame's
+        // header, which is then eaten as pixels. Refused before a byte goes out.
+        if (rgb565.Length != FrameBytes)
+            throw new ArgumentException(
+                $"a frame is exactly {FrameBytes} bytes of RGB565 ({Width}x{Height}); this one is {rgb565.Length}",
+                nameof(rgb565));
         int total = 20 + rgb565.Length;
         if (_payload == null || _payload.Length < total)
             _payload = GC.AllocateArray<byte>(total, pinned: true);

@@ -6,6 +6,39 @@ namespace UnifiedRgb.Core.Native;
 /// <summary>Dependency-free HID access (SetupAPI + hid.dll + kernel32),
 /// ported from the proven StrafeInit probe. Enumerates HID interfaces by
 /// VID/PID and opens a specific collection for read/write.</summary>
+/// <summary>Everything a HID driver needs from its device, and nothing about
+/// how it gets there.
+///
+/// This is the seam that lets a driver run against a FAKE. Every driver holds
+/// one of these instead of the concrete handle, so a test can hand it a
+/// recorder that captures the exact reports it writes, answers its reads with
+/// canned replies, and fails a chosen write on cue - which is the only way to
+/// test the failure paths (dedup after a dropped packet, a refused report mid
+/// frame) without the hardware, and the only way to pin a driver's wire
+/// format so a refactor cannot silently change it.
+///
+/// The contract for implementations: every method is safe to call after
+/// Dispose and simply reports failure; Write and Read may each block up to
+/// their timeout; SetFeature/GetFeature carry the report id in byte 0.</summary>
+public interface IHidTransport : IDisposable
+{
+    /// <summary>Opened with no access rights because another program holds
+    /// the device. Feature reports still work; output reports do not.</summary>
+    bool FeatureOnly { get; }
+    bool IsDisposed { get; }
+    /// <summary>How long one output report may take before it is given up on.</summary>
+    int WriteTimeoutMs { get; set; }
+    /// <summary>Send one output report (byte 0 = report id). False when the
+    /// device did not take it, including when the handle is feature-only.</summary>
+    bool Write(byte[] report);
+    /// <summary>Read one input report into buffer. Bytes read, or 0 on
+    /// timeout/failure.</summary>
+    int Read(byte[] buffer, int timeoutMs);
+    bool SetFeature(byte[] report);
+    bool GetFeature(byte[] report);
+    bool GetInputReport(byte[] report);
+}
+
 public static class HidNative
 {
     public sealed record HidInfo(
@@ -155,7 +188,7 @@ public static class HidNative
     /// implementation spawned a NEW THREAD per read to get a timeout — at
     /// request/reply protocols under 60fps effects that was hundreds of
     /// thread creations a minute.</summary>
-    public sealed class HidHandle : IDisposable
+    public sealed class HidHandle : IHidTransport
     {
         readonly SafeFileHandle _handle;
 

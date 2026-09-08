@@ -35,7 +35,7 @@ public sealed class LogitechG403 : IRgbDevice
     const ushort FEAT_8071 = 0x8071;
     const ushort FEAT_8070 = 0x8070;
 
-    readonly HidNative.HidHandle _hid;
+    readonly IHidTransport _hid;
     readonly byte   _dev;
     readonly byte   _rgbIdx;
     readonly ushort _feature;
@@ -57,7 +57,7 @@ public sealed class LogitechG403 : IRgbDevice
     public IReadOnlyList<RgbZone> Zones { get; }
     public IReadOnlyList<LedPos>? LedPositions { get; }
 
-    LogitechG403(HidNative.HidHandle hid, byte dev, byte rgbIdx, ushort feature, byte[] clusterEffect, string name)
+    internal LogitechG403(IHidTransport hid, byte dev, byte rgbIdx, ushort feature, byte[] clusterEffect, string name)
     {
         _hid = hid; _dev = dev; _rgbIdx = rgbIdx; _feature = feature;
         _clusterEffect = clusterEffect;
@@ -101,7 +101,7 @@ public sealed class LogitechG403 : IRgbDevice
                      .OrderBy(h => h.Usage == HIDPP_LONG_USAGE && h.OutputLength == LONG_LEN ? 0 : h.OutputLength == LONG_LEN ? 1 : 2))
         {
             if (!tried.Add(iface.ProductId)) continue;   // one probe per device
-            HidNative.HidHandle? hid = null;
+            IHidTransport? hid = null;
             try { hid = HidNative.Open(iface.Path); } catch { continue; }
 
             foreach (byte dev in new byte[] { 0xFF, 0x01 })
@@ -123,7 +123,7 @@ public sealed class LogitechG403 : IRgbDevice
         return null;
     }
 
-    static byte QueryFeatureIndex(HidNative.HidHandle hid, byte dev, ushort feature)
+    static byte QueryFeatureIndex(IHidTransport hid, byte dev, ushort feature)
     {
         var r = Query(hid, dev, ROOT_IDX, FN_GET_FEATURE,
             new byte[] { (byte)(feature >> 8), (byte)feature });
@@ -132,7 +132,7 @@ public sealed class LogitechG403 : IRgbDevice
 
     /// <summary>Enumerate every LED cluster (= zone: wheel, logo, ...) and find
     /// each one's Static effect index (id 0x0001). One entry per cluster.</summary>
-    static byte[] FindClusters(HidNative.HidHandle hid, byte dev, byte idx, ushort feature)
+    static byte[] FindClusters(IHidTransport hid, byte dev, byte idx, ushort feature)
     {
         byte fallback = feature == FEAT_8071 ? (byte)0 : (byte)1;   // 0x8070: 0=off, 1=fixed
 
@@ -163,7 +163,7 @@ public sealed class LogitechG403 : IRgbDevice
         return result;
     }
 
-    static byte[]? Query(HidNative.HidHandle hid, byte dev, byte featIdx, byte func, byte[] parms)
+    static byte[]? Query(IHidTransport hid, byte dev, byte featIdx, byte func, byte[] parms)
     {
         var buf = new byte[LONG_LEN];
         buf[0] = LONG_MSG; buf[1] = dev; buf[2] = featIdx; buf[3] = (byte)(func | SW_ID);
@@ -202,7 +202,9 @@ public sealed class LogitechG403 : IRgbDevice
     /// effect's hold satisfies it - a Palette Cycle hold is 5 s, Time Warmth
     /// steps once a minute - so only a genuinely parked effect ever writes
     /// flash, and then once.</summary>
-    const int RetryAfterFailMs = 5000;
+    /// <summary>Internal and settable ONLY so a test can retry without
+    /// sleeping five seconds; nothing else should touch it.</summary>
+    internal static int RetryAfterFailMs = 5000;
     const int PersistAfterMs = 300_000;
 
     public void SetColors(IReadOnlyList<Rgb> colors) => SetColors(colors, persist: false);
@@ -320,7 +322,7 @@ public sealed class LogitechG403 : IRgbDevice
 
     /// <summary>Like Query but returns the first reply of any kind (including
     /// HID++ error replies on feature 0xFF).</summary>
-    static byte[]? QueryAny(HidNative.HidHandle hid, byte dev, byte featIdx, byte func, byte[] parms)
+    static byte[]? QueryAny(IHidTransport hid, byte dev, byte featIdx, byte func, byte[] parms)
     {
         var buf = new byte[LONG_LEN];
         buf[0] = LONG_MSG; buf[1] = dev; buf[2] = featIdx; buf[3] = (byte)(func | SW_ID);

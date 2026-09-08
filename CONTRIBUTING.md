@@ -13,13 +13,21 @@ clicked in the PR.
 
 ## What makes a good PR here
 
-- **Device drivers** are the most valuable contribution. A new driver should:
-  - live in `src/UnifiedRgb.Core/Devices/`, opened via `HidNative.OpenFirst`
-    (or its own transport) with failures degrading to "not present";
-  - **dedupe identical frames** (see `IRgbDevice` — the write path runs at
-    up to 60 fps forever) and reuse its wire buffers;
-  - come with protocol notes in comments: where each magic number came from
-    (USB capture, vendor tool behavior). No decompiled code, ever —
+- **Device drivers** are the most valuable contribution. Read
+  [`docs/ADDING_A_DEVICE.md`](docs/ADDING_A_DEVICE.md) first: it is the
+  contract a driver has to meet (threading, dedup, failure handling,
+  detection, registration), the checklist a PR is reviewed against, and how
+  to test a driver against the harness's fake HID transport without owning
+  the hardware. In short, a new driver:
+  - lives in `src/UnifiedRgb.Core/Devices/`, takes an `IHidTransport` and
+    opens it via `HidNative.OpenFirst`, degrading to "not present" (or a
+    `DetectionNotes` report when the hardware is there but unusable);
+  - **dedupes identical frames**, committing the cache only after a write
+    landed, and reuses its wire buffers;
+  - comes with a `FakeHid` fixture pinning its wire format and its
+    refused-write behaviour;
+  - comes with protocol notes in comments: where each magic number came from
+    (USB capture, vendor tool behavior). No decompiled code, ever -
     behavioral reimplementation only.
 - **Effects** are stateless and shared across channels: derive everything
   from the clock, the per-LED positions, and `Fx`/`Geo` helpers. Position-

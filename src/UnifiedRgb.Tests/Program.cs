@@ -939,6 +939,227 @@ static string TempDir()
         "a missing driver reads plainly");
 }
 
+/*===================================================================*\
+| Drivers against a FAKE transport.                                   |
+|                                                                     |
+| Each block builds a real driver over FakeHid and pins two things:   |
+| the exact bytes it puts on the wire for a known input (so a         |
+| refactor cannot silently change a protocol that was decoded from a  |
+| USB capture), and what it does when the device refuses a packet -   |
+| the path that has produced the most field bugs and could not be     |
+| tested at all before the seam existed.                              |
+\*===================================================================*/
+
+/*---------------- LogitechG403: a refused write is not cached (B4) ----------------*/
+{
+    LogitechG403.RetryAfterFailMs = 0;   // retry at once, or this test sleeps five seconds
+    var hid = new FakeHid();
+    for (int i = 0; i < 40; i++) hid.Replies.Enqueue(FakeHid.HidppReply(14));
+    var mouse = new LogitechG403(hid, dev: 0xFF, rgbIdx: 14, feature: 0x8070,
+                                 clusterEffect: new byte[] { 1, 1 }, name: "G403");
+    var red = new Rgb(255, 0, 0);
+
+    // Write 1 is the software-control claim; write 2 is cluster 0's colour.
+    hid.Accept = (n, _) => n != 2;
+    mouse.SetColors(new[] { red, red });
+    Equal(3, hid.Writes.Count, "frame 1: the claim and both cluster writes went out");
+    var claim = hid.Writes[0];
+    Check(claim[0] == 0x11 && claim[1] == 0xFF && claim[2] == 14 && claim[3] == (0x80 | 0x07),
+        "HID++ long report to the RGB feature: software-control fn 0x80 with sw id 7");
+    var fx = hid.Writes[1];
+    Check(fx[3] == (0x30 | 0x07) && fx[4] == 0 && fx[5] == 1 && fx[6] == 255 && fx[7] == 0 && fx[8] == 0,
+        "SET_EFFECT: cluster, static effect index, then R G B");
+    Equal(0, (int)fx[16], "streamed frames do not carry the persist byte");
+
+    hid.Accept = null;
+    int before = hid.Writes.Count;
+    mouse.SetColors(new[] { red, red });
+    // The old code had recorded cluster 0 as sent, so this frame was a no-op
+    // and the wheel stayed on its previous colour for good.
+    Equal(before + 2, hid.Writes.Count,
+        "an identical frame re-sends the refused cluster (behind a fresh claim) and dedups the one that landed");
+    Check(hid.Writes[^1][3] == (0x30 | 0x07) && hid.Writes[^1][4] == 0, "...and that re-send is cluster 0");
+
+    before = hid.Writes.Count;
+    mouse.SetColors(new[] { red, red });
+    Equal(before, hid.Writes.Count, "once both landed, the identical frame is fully deduped");
+    LogitechG403.RetryAfterFailMs = 5000;
+}
+
+/*---------------- LogitechG403: a refused persist is retried, a landed one is not ----------------*/
+{
+    var hid = new FakeHid();
+    for (int i = 0; i < 40; i++) hid.Replies.Enqueue(FakeHid.HidppReply(14));
+    var mouse = new LogitechG403(hid, 0xFF, 14, 0x8070, new byte[] { 1, 1 }, "G403");
+    var red = new Rgb(255, 0, 0);
+
+    // claim(1), cluster 0(2), cluster 1(3), then the commits: cluster 0(4), cluster 1(5)
+    hid.Accept = (n, _) => n != 4;
+    mouse.SetColors(new[] { red, red }, persist: true);
+    Equal(5, hid.Writes.Count, "a static apply streams both clusters then commits both");
+    Check(hid.Writes[3][4] == 0 && hid.Writes[3][16] == 0x01, "write 4 is cluster 0's commit (persist byte set)");
+
+    hid.Accept = null;
+    int before = hid.Writes.Count;
+    mouse.SetColors(new[] { red, red }, persist: true);
+    Equal(before + 1, hid.Writes.Count, "colours unchanged: only the refused commit is retried");
+    Check(hid.Writes[^1][4] == 0 && hid.Writes[^1][16] == 0x01, "...for cluster 0");
+
+    before = hid.Writes.Count;
+    mouse.SetColors(new[] { red, red }, persist: true);
+    Equal(before, hid.Writes.Count, "a cluster already committed is not written to flash again");
+}
+
+/*---------------- ThermalrightLcd: the frame format, and a refused report (B5) ----------------*/
+{
+    var hid = new FakeHid();
+    var lcd = new ThermalrightLcd(hid);
+    var frame = new byte[ThermalrightLcd.FrameBytes];
+    Array.Fill(frame, (byte)0xEE);
+    frame[0] = 0xAB; frame[1] = 0xCD;
+    lcd.ShowFrame(frame);
+
+    Equal(301, hid.Writes.Count, "a frame is 301 reports: a 20-byte header plus 153600 pixel bytes in 512-byte chunks");
+    Check(hid.Writes.All(w => w.Length == 513), "every report is 513 bytes: report id 0 plus 512 of data");
+    var r0 = hid.Writes[0];
+    Check(r0[0] == 0 && r0[1] == 0xDA && r0[2] == 0xDB && r0[3] == 0xDC && r0[4] == 0xDD,
+        "the header opens with DA DB DC DD");
+    Check(r0[9] == 240 && r0[10] == 0 && r0[11] == 0x40 && r0[12] == 0x01, "width 240 and height 320, little endian");
+    Check(r0[17] == 0x00 && r0[18] == 0x58 && r0[19] == 0x02 && r0[20] == 0x00, "pixel byte count 153600, little endian");
+    Check(r0[21] == 0xAB && r0[22] == 0xCD, "pixels begin right after the 20-byte header");
+    var tail = hid.Writes[300];
+    Check(tail[1] == 0xEE && tail[20] == 0xEE, "the last report carries the final 20 pixel bytes");
+    Check(tail[21] == 0 && tail[512] == 0, "...and is zero padded, not left holding the previous chunk");
+
+    hid.Writes.Clear();
+    hid.Accept = (n, _) => n != 2;
+    bool threw = false;
+    try { lcd.ShowFrame(frame); } catch (IOException) { threw = true; }
+    Check(threw, "a refused report aborts the frame with an IOException the stream loop can act on");
+    Equal(2, hid.Writes.Count, "and nothing after the refused report is sent");
+
+    hid.Writes.Clear(); hid.Accept = null; threw = false;
+    try { lcd.ShowFrame(new byte[100]); } catch (ArgumentException) { threw = true; }
+    Check(threw && hid.Writes.Count == 0, "a frame that is not exactly 240x320 RGB565 is refused before a byte goes out");
+}
+
+/*---------------- SayoDevice: the packet, byte for byte ----------------*/
+{
+    var hid = new FakeHid();
+    var pad = new SayoDevice(hid, outLen: 64, name: "Sayo");
+    pad.SetColors(new[] { new Rgb(10, 20, 30) });
+    Equal(1, hid.Writes.Count, "one packet per colour change");
+    var pk = hid.Writes[0];
+    Equal(64, pk.Length, "sized to the interface's output report");
+    Check(pk[0] == 0x21 && pk[1] == 0x12, "report id 0x21, magic 0x12");
+    Check(pk[2] == 0x8C && pk[3] == 0xA8,
+        "checksum: 16-bit little-endian word sum from 0x1221 over the payload (0xA88C for 10,20,30)");
+    Check(pk[4] == 0x1C && pk[5] == 0x00 && pk[6] == 0x11 && pk[7] == 0x00, "payload header 1C 00 11 00");
+    Equal((byte)0xC0, pk[24], "mode byte: speed 3, static colour, static mode");
+    Check(pk[28] == 10 && pk[29] == 20 && pk[30] == 30, "the colour rides at payload offset 24 in R G B order");
+
+    pad.SetColors(new[] { new Rgb(10, 20, 30) });
+    Equal(1, hid.Writes.Count, "an identical colour is deduped");
+    hid.Accept = (_, _) => false;
+    pad.SetColors(new[] { new Rgb(1, 2, 3) });
+    Equal(2, hid.Writes.Count, "a new colour is sent");
+    hid.Accept = null;
+    pad.SetColors(new[] { new Rgb(1, 2, 3) });
+    Equal(3, hid.Writes.Count, "a colour whose write was refused is sent again, not cached");
+}
+
+/*---------------- CorsairStrafeMk2: init sequence and frame framing ----------------*/
+{
+    var hid = new FakeHid();
+    var kb = new CorsairStrafeMk2(hid);   // the constructor runs the init sequence
+    Equal(8, hid.Writes.Count, "init: firmware query, special-function, lighting-control, key-map header, 4 identifier packets");
+    Check(hid.Writes.All(w => w.Length == 65), "65-byte reports");
+    Check(hid.Writes[1][1] == 0x07 && hid.Writes[1][2] == 0x04 && hid.Writes[1][3] == 0x02, "special function control 07 04 02");
+    Check(hid.Writes[2][1] == 0x07 && hid.Writes[2][2] == 0x05 && hid.Writes[2][3] == 0x02 && hid.Writes[2][5] == 0x03,
+        "lighting control 07 05 02 .. 03 = software mode");
+    Check(hid.Writes[3][1] == 0x07 && hid.Writes[3][2] == 0x05 && hid.Writes[3][3] == 0x08 && hid.Writes[3][5] == 0x01,
+        "key-map header 07 05 08 .. 01");
+    Check(hid.Writes[4][1] == 0x07 && hid.Writes[4][2] == 0x40 && hid.Writes[4][3] == 0x1E && hid.Writes[4][6] == 0xC0,
+        "identifier packets 07 40 1E carrying 0xC0 per key");
+
+    hid.Writes.Clear();
+    var allRed = Enumerable.Repeat(new Rgb(255, 0, 0), kb.LedCount).ToArray();
+    kb.SetColors(allRed);
+    Equal(12, hid.Writes.Count, "a frame is 3 channels x (3 stream packets + 1 commit)");
+    for (int ch = 0; ch < 3; ch++)
+    {
+        var s0 = hid.Writes[ch * 4]; var s1 = hid.Writes[ch * 4 + 1]; var s2 = hid.Writes[ch * 4 + 2]; var c = hid.Writes[ch * 4 + 3];
+        Check(s0[1] == 0x7F && s0[2] == 1 && s0[3] == 60 && s1[2] == 2 && s1[3] == 60 && s2[2] == 3 && s2[3] == 24,
+            $"channel {ch + 1}: streams of 60, 60 and 24 bytes");
+        Check(c[1] == 0x07 && c[2] == 0x28 && c[3] == ch + 1 && c[4] == 3, $"channel {ch + 1}: commit 07 28 {ch + 1} 03");
+    }
+    Check(hid.Writes[3][5] == 1 && hid.Writes[7][5] == 1 && hid.Writes[11][5] == 2,
+        "red and green commits carry finish=1; blue carries finish=2, which latches the frame");
+    bool redLit = hid.Writes.Take(3).Any(w => w.Skip(5).Any(b => b == 0xFF));
+    bool othersDark = hid.Writes.Skip(4).Take(3).Concat(hid.Writes.Skip(8).Take(3)).All(w => w.Skip(5).All(b => b == 0));
+    Check(redLit && othersDark, "an all-red frame lights the red channel only");
+
+    kb.SetColors(allRed);
+    Equal(12, hid.Writes.Count, "an identical frame is deduped");
+
+    var allBlue = Enumerable.Repeat(new Rgb(0, 0, 255), kb.LedCount).ToArray();
+    hid.Accept = (_, _) => false;
+    kb.SetColors(allBlue);
+    int after = hid.Writes.Count;
+    Equal(24, after, "every packet of a frame is still attempted when one is refused - a half-latched frame is worse");
+    hid.Accept = null;
+    kb.SetColors(allBlue);
+    Check(hid.Writes.Count > after, "a frame whose packets were refused is sent again, not cached");
+}
+
+/*---------------- SteelSeriesApex: init, direct-lighting packet, hand-back ----------------*/
+{
+    var hid = new FakeHid();
+    var kb = new SteelSeriesApex(hid, featureLen: 643, outputLen: 65, name: "SteelSeries Apex");
+    Equal(1, hid.Features.Count, "init: one feature report");
+    Check(hid.Features[0].Length == 643 && hid.Features[0][1] == 0x4B, "direct-lighting mode 0x4B");
+
+    var frame = new Rgb[kb.LedCount];
+    frame[0] = new Rgb(1, 2, 3); frame[1] = new Rgb(4, 5, 6);
+    kb.SetColors(frame);
+    Equal(2, hid.Features.Count, "one feature report per changed frame");
+    var f = hid.Features[1];
+    Check(f[1] == 0x40 && f[2] == kb.LedCount, "direct packet 0x40 with the key count");
+    Check(f[3] == 0x04 && f[4] == 1 && f[5] == 2 && f[6] == 3, "key 0 is HID usage 0x04 (A) followed by its colour, R G B");
+    Check(f[7] == 0x05 && f[8] == 4 && f[9] == 5 && f[10] == 6, "key 1 follows four bytes later");
+
+    kb.SetColors(frame);
+    Equal(2, hid.Features.Count, "an identical frame is deduped");
+    hid.AcceptFeature = (_, _) => false;
+    frame[0] = new Rgb(9, 9, 9);
+    kb.SetColors(frame);
+    Equal(3, hid.Features.Count, "a changed frame is sent");
+    hid.AcceptFeature = null;
+    kb.SetColors(frame);
+    Equal(4, hid.Features.Count, "a frame whose report was refused is sent again, not cached");
+
+    kb.Dispose();
+    Check(hid.Writes.Count == 1 && hid.Writes[0][1] == 0x41, "Dispose hands the keyboard back to its onboard profile (0x41)");
+    Check(hid.IsDisposed, "...and closes the handle");
+}
+
+/*---------------- DeviceManager: the registration rule ----------------*/
+{
+    // The family name - what the per-device disable list, the detect log and
+    // the blocked-device notes all key on - is derived REFLECTIVELY from the
+    // factory delegate's declaring type. Register a driver through a lambda
+    // or a helper class and it works, but can never be disabled, and is
+    // logged under a compiler-generated name. This is the rule in code form.
+    var all = ((IEnumerable<Delegate>)DeviceManager.Factories).Concat(DeviceManager.MultiFactories).ToList();
+    var names = all.Select(d => d.Method.DeclaringType!.Name).ToList();
+    Check(all.Count >= 11, $"the factory tables are populated ({all.Count})");
+    Check(names.Count == names.Distinct().Count(), "every detector family has a distinct name");
+    Check(all.All(d => d.Method.IsStatic), "every factory is a static method");
+    Check(all.All(d => !d.Method.DeclaringType!.Name.Contains('<')), "no factory is a lambda (compiler-generated declaring type)");
+    Check(all.All(d => d.Method.DeclaringType!.Namespace!.StartsWith("UnifiedRgb.Core")),
+        "every factory lives on a class in the Core assembly");
+}
+
 /*---------------- OpenRgbServer.CleanClientName (S3) ----------------*/
 {
     string forged = OpenRgbServer.CleanClientName("evil\r\n09-07 12:00:00 ERR name");
@@ -2778,6 +2999,75 @@ sealed class FakeDevice : IRgbDevice
         lock (Writes) Writes.Add((start, colors.ToArray()));
     }
     public void Dispose() { }
+}
+
+/// <summary>A HID device made of lists. Records every report a driver sends,
+/// answers its reads from a queue, and fails whichever writes a test says to.
+///
+/// This is what lets a real driver be tested without the hardware - the exact
+/// bytes it puts on the wire for a given colour, and what it does when the
+/// device refuses a packet, which is the path that has produced the most
+/// field bugs and the one that was untestable until now.</summary>
+sealed class FakeHid : UnifiedRgb.Core.Native.IHidTransport
+{
+    public readonly List<byte[]> Writes = new();
+    public readonly List<byte[]> Features = new();
+    public readonly Queue<byte[]> Replies = new();
+    /// <summary>Called for every Write with its 1-based ordinal; return false
+    /// to refuse that report. Null accepts everything.</summary>
+    public Func<int, byte[], bool>? Accept;
+    /// <summary>Same for feature reports.</summary>
+    public Func<int, byte[], bool>? AcceptFeature;
+    public bool FeatureOnly { get; set; }
+    public bool IsDisposed { get; private set; }
+    public int WriteTimeoutMs { get; set; } = 400;
+    public int Reads;
+
+    public bool Write(byte[] report)
+    {
+        if (IsDisposed || FeatureOnly) return false;
+        var copy = (byte[])report.Clone();
+        Writes.Add(copy);
+        return Accept?.Invoke(Writes.Count, copy) ?? true;
+    }
+
+    public int Read(byte[] buffer, int timeoutMs)
+    {
+        Reads++;
+        if (IsDisposed || Replies.Count == 0) return 0;
+        var r = Replies.Dequeue();
+        int n = Math.Min(r.Length, buffer.Length);
+        Array.Copy(r, buffer, n);
+        return n;
+    }
+
+    public bool SetFeature(byte[] report)
+    {
+        if (IsDisposed) return false;
+        var copy = (byte[])report.Clone();
+        Features.Add(copy);
+        return AcceptFeature?.Invoke(Features.Count, copy) ?? true;
+    }
+
+    public bool GetFeature(byte[] report)
+    {
+        if (IsDisposed || Replies.Count == 0) return false;
+        var r = Replies.Dequeue();
+        Array.Copy(r, report, Math.Min(r.Length, report.Length));
+        return true;
+    }
+
+    public bool GetInputReport(byte[] report) => GetFeature(report);
+    public void Dispose() => IsDisposed = true;
+
+    /// <summary>A HID++ long reply that Query will accept: echoes the feature
+    /// index and software id so the driver's matcher takes it.</summary>
+    public static byte[] HidppReply(byte featIdx, byte swId = 0x07)
+    {
+        var r = new byte[20];
+        r[0] = 0x11; r[1] = 0xFF; r[2] = featIdx; r[3] = swId;
+        return r;
+    }
 }
 
 /// <summary>Constant-colour effect with a render counter and a settable

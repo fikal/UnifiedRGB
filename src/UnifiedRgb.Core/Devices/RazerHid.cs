@@ -53,9 +53,9 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
     /// answers "get firmware version" on is the one it wants for everything.</summary>
     static readonly byte[] TransactionCandidates = { 0x1F, 0x3F, 0x9F, 0xFF };
 
-    enum Kind { Mouse, Pad }
+    internal enum Kind { Mouse, Pad }
 
-    sealed record Model(ushort Pid, string Name, byte Tid, int Rows, int Cols, Kind Kind,
+    internal sealed record Model(ushort Pid, string Name, byte Tid, int Rows, int Cols, Kind Kind,
                         Func<int, RgbZone[]> Zones, Func<int, LedPos[]> Positions, float Aspect);
 
     /// <summary>1×13 extended matrix: col 0 scroll wheel, col 1 logo, cols 2-12
@@ -123,7 +123,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
     /// open at once, and a reply must be read by its sender.</summary>
     static readonly object Gate = new();
 
-    readonly HidNative.HidHandle _hid;
+    readonly IHidTransport _hid;
     readonly Model _model;
     readonly byte _tid;
     readonly object _writeLock = new();
@@ -152,7 +152,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
     /// <summary>Where a pad's LED count came from: configured / probed / guessed.</summary>
     public string CountSource { get; private set; } = "known";
 
-    RazerHid(HidNative.HidHandle hid, Model model, byte tid)
+    internal RazerHid(IHidTransport hid, Model model, byte tid)
     {
         _hid = hid; _model = model; _tid = tid; Name = model.Name;
         _frame = new Rgb[LedCount];
@@ -189,7 +189,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
 
     static RazerHid? OpenKnown(HidNative.HidInfo iface, Model model)
     {
-        HidNative.HidHandle hid;
+        IHidTransport hid;
         try { hid = HidNative.Open(iface.Path); }
         catch (Exception ex) { Log.Warn("Razer", $"{iface.ProductId:X4}: open failed: {ex.Message}"); return null; }
         var id = Identify(hid, model.Tid);
@@ -208,7 +208,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
     static List<IRgbDevice> OpenPad(HidNative.HidInfo iface)
     {
         var list = new List<IRgbDevice>();
-        HidNative.HidHandle probe;
+        IHidTransport probe;
         try { probe = HidNative.Open(iface.Path); }
         catch (Exception ex) { Log.Warn("Razer", $"HyperFlux V2 pad: open failed: {ex.Message}"); return list; }
 
@@ -235,7 +235,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
         // keep the first id per serial.
         foreach (var a in answers.GroupBy(a => a.Serial).Select(g => g.First()))
         {
-            HidNative.HidHandle hid;
+            IHidTransport hid;
             try { hid = HidNative.Open(iface.Path); }
             catch (Exception ex) { Log.Warn("Razer", $"HyperFlux V2: reopen failed: {ex.Message}"); continue; }
 
@@ -261,7 +261,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
         return list;
     }
 
-    static (string Fw, string Serial)? Identify(HidNative.HidHandle hid, byte tid)
+    static (string Fw, string Serial)? Identify(IHidTransport hid, byte tid)
     {
         var r = Exchange(hid, NewReport(tid, 0x00, 0x81, 0x02));
         if (r == null || r[1] != ST_OK) return null;
@@ -274,7 +274,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
     /// <summary>Largest column the firmware accepts in a custom frame + 1, found
     /// by binary search on black frames (7 exchanges). Null when the firmware
     /// refuses nothing up to 64 or fails to answer — no information.</summary>
-    static int? ProbeWidth(HidNative.HidHandle hid, byte tid)
+    static int? ProbeWidth(IHidTransport hid, byte tid)
     {
         bool? Accepts(int stop)
         {
@@ -572,7 +572,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
             if (!seen.Add(iface.ProductId)) continue;
             string product = string.IsNullOrWhiteSpace(iface.Product) ? "" : $"  {iface.Product}";
             sb.AppendLine($"{VID:X4}:{iface.ProductId:X4}{product}  (usage 0x{iface.UsagePage:X4}/0x{iface.Usage:X4})");
-            HidNative.HidHandle hid;
+            IHidTransport hid;
             try { hid = HidNative.Open(iface.Path); }
             catch (Exception ex) { sb.AppendLine($"    open failed: {ex.Message}"); continue; }
             using (hid)
@@ -700,7 +700,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
 
     /// <summary>Send and read the matching reply (same class + command),
     /// retrying while the device reports busy. Null = no reply at all.</summary>
-    static byte[]? Exchange(HidNative.HidHandle hid, byte[] req)
+    static byte[]? Exchange(IHidTransport hid, byte[] req)
     {
         lock (Gate)
         {
