@@ -152,7 +152,7 @@ public sealed partial class MainViewModel
     {
         var active = SelectedProfile;
         if (active == null) return;
-        var p = _store.Capture(active.Name, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects());
+        var p = _store.Capture(active.Name, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), Lcd.CurrentScreen);
         int idx = Profiles.IndexOf(active);
         if (idx >= 0) Profiles[idx] = p; else Profiles.Add(p);
         _selectedProfile = p; OnChanged(nameof(SelectedProfile));
@@ -181,7 +181,7 @@ public sealed partial class MainViewModel
             if (wasStartup) { _store.Settings.StartupProfile = newName; _store.SaveSettings(); }
         }
 
-        var p = _store.Capture(newName, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects());
+        var p = _store.Capture(newName, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), Lcd.CurrentScreen);
         var existing = Profiles.FirstOrDefault(x => x.Name.Equals(p.Name, StringComparison.OrdinalIgnoreCase));
         if (existing != null) Profiles.Remove(existing);
         Profiles.Add(p);
@@ -201,7 +201,7 @@ public sealed partial class MainViewModel
         for (int n = 2; Profiles.Any(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase)); n++)
             name = $"{baseName} {n}";
 
-        var p = _store.Capture(name, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects());
+        var p = _store.Capture(name, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), Lcd.CurrentScreen);
         Profiles.Add(p);
         SelectedProfile = p;
         ProfileName = "";
@@ -233,10 +233,15 @@ public sealed partial class MainViewModel
         ApplyCustomColors(p.CustomColors);
         RestoreEffects(p.Effects);
         SyncWheelToSelection();     // wheel reflects what the profile applied
+        // The pump screen too. Every profile apply comes through here - the
+        // button, a hotkey, an app rule, a schedule, a show step - so this is
+        // the one place that makes a profile mean the whole desk.
+        bool screenShown = !string.IsNullOrWhiteSpace(p.Screen) && Lcd.ShowScreen(p.Screen!);
         _dirty = false;
         UnifiedRgb.Core.Log.Info("lighting",
             $"applied profile '{p.Name}': {p.Effects?.Count ?? 0} effect(s) on "
-            + $"{p.DeviceFrames?.Count ?? 0} device(s)");
+            + $"{p.DeviceFrames?.Count ?? 0} device(s)"
+            + (p.Screen == null ? "" : screenShown ? $", pump screen '{p.Screen}'" : $", pump screen '{p.Screen}' not shown"));
     }
 
     void DeleteProfile()

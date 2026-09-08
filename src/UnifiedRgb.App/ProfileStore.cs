@@ -44,6 +44,10 @@ public sealed class Profile
     Dictionary<string, string[]> _frames = new();
     public string[]? CustomColors { get; set; }                              // user swatches (hex)
     public List<EffectAssignment>? Effects { get; set; }                     // running effects per target
+    /// <summary>The saved pump-LCD screen this profile was saved with, so one
+    /// profile switch sets the lights and the pump together. Null = leave the
+    /// pump as it is. Additive: an older build ignores it.</summary>
+    public string? Screen { get; set; }
     public override string ToString() => Name;
 }
 
@@ -281,10 +285,14 @@ public sealed class ProfileStore
     /// unplugged) keep their previously saved colors and effect assignments —
     /// disabling a device must never bleed its data out of profiles.</summary>
     public Profile Capture(string name, IEnumerable<(IRgbDevice Device, Rgb[] Frame)> frames,
-                           string[]? customColors = null, List<EffectAssignment>? effects = null)
+                           string[]? customColors = null, List<EffectAssignment>? effects = null,
+                           string? screen = null)
     {
         var old = Profiles.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
-        var p = new Profile { Name = name, CustomColors = customColors, Effects = effects };
+        // The screen follows the same rule as an absent device: nothing known
+        // right now (no panel, or a canvas that is not a saved screen) keeps
+        // what the profile already had rather than silently dropping it.
+        var p = new Profile { Name = name, CustomColors = customColors, Effects = effects, Screen = screen ?? old?.Screen };
         var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var (dev, frame) in frames)
         {

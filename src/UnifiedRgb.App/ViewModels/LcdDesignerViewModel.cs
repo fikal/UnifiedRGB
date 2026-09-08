@@ -679,6 +679,29 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    /// <summary>The saved screen the pump is showing, or null when the canvas
+    /// is not one. What a profile records at save time.</summary>
+    public string? CurrentScreen => _lcd?.Design.SceneName;
+
+    /// <summary>Put a saved screen up because a profile asked for it. False
+    /// when there is no panel or no such screen - the profile's lighting has
+    /// already applied by then, so this is reported, not thrown. A screen that
+    /// is already up is left alone, edits and all: switching profiles must not
+    /// stomp on a design someone is in the middle of.</summary>
+    public bool ShowScreen(string name)
+    {
+        if (_lcd == null) return false;
+        var sc = _scenes.Scenes.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (sc == null)
+        {
+            Log.Warn("scenes", $"a profile asked for pump screen '{name}', which does not exist");
+            return false;
+        }
+        if (_lcd.Design.SceneName == sc.Name && !_liveIsShowScene) return true;
+        SelectedSceneName = sc.Name;
+        return true;
+    }
+
     SceneSequence? _selectedSequence;
     public SceneSequence? SelectedSequence
     {

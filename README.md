@@ -61,6 +61,8 @@ one-paste import from [coolors.co](https://coolors.co) URLs or raw hex lists.
 Drag-and-drop designer for Thermalright 240×320 pump displays: CPU/GPU
 temps, clock faces, date, fan RPM, network throughput, weather, free text —
 over image or GIF backgrounds, with multiple screens and a scene sequencer.
+A profile remembers the screen it was saved with, so one profile switch (a
+hotkey, an app rule, a schedule) sets the lights and the pump together.
 
 <img src="docs/img/lcd-designer.png" width="850" alt="LCD designer with drag-and-drop widgets over a custom background">
 

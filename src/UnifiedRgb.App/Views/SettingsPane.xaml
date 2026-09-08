@@ -73,6 +73,10 @@
                         <CheckBox Content="Apply the selected profile at startup" IsChecked="{Binding IsStartupProfile}"
                                   Margin="0,12,0,0"/>
                         <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
+                                   Text="{Binding SelectedProfile.Screen, StringFormat='Also shows pump screen: {0}',
+                                                  TargetNullValue='Pump screen: none. Save the profile while a saved screen is loaded to bind one.',
+                                                  FallbackValue=''}"/>
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
                                    Text="Ctrl+Alt+1…9 applies profile 1…9, even in games."/>
                     </StackPanel>
                 </Border>

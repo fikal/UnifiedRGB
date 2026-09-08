@@ -451,9 +451,20 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         get => RippleOf(CurrentFx()).Color;
         set
         {
-            RippleOf(CurrentFx()).Color = value;
+            var fx = CurrentFx();
+            RippleOf(fx).Color = value;
+            // Solid means "the wheel colour", so make that true at once. Under
+            // Gradient the wheel was not the ripple's colour at all - it was
+            // mirroring the static frame, usually all black - and switching
+            // used to leave it there while the keys rippled in the stored
+            // tint: two colours on screen, neither explained. A wheel the user
+            // has actually set wins; a black one takes the ripple's tint
+            // rather than blanking the effect.
+            if (value == PatternColor.Solid && fx.Channel is { } ch && Current != Rgb.Black)
+                ch.BaseColor = Current;
             MarkDirty(); OnChanged();
             OnChanged(nameof(IsRipplePalette)); OnChanged(nameof(ShowColorControls));
+            SyncWheelToSelection();   // the wheel now shows exactly what the keys use
         }
     }
 
@@ -472,7 +483,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
                 PatternOf(fx).Color = value;
                 // Switching to Solid: the wheel color becomes the pattern color
                 // right away (not whatever stale base the channel started with).
-                if (value == PatternColor.Solid && fx.Channel is { } ch) ch.BaseColor = Current;
+                if (value == PatternColor.Solid && fx.Channel is { } ch && Current != Rgb.Black) ch.BaseColor = Current;   // a black wheel must not blank the pattern
             }
             // The new color source may not offer the current motion.
             if (!PatternMotions.Contains(PatternOf(CurrentFx()).Motion))

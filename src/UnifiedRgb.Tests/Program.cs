@@ -806,6 +806,16 @@ static string TempDir()
         "after release the next client does not inherit the last one's pixels");
 }
 
+/*---------------- Profile.Screen: a profile carries its pump screen ----------------*/
+{
+    var p = new UnifiedRgb.App.Profile { Name = "Night", Screen = "Clock" };
+    string json = System.Text.Json.JsonSerializer.Serialize(p);
+    var back = System.Text.Json.JsonSerializer.Deserialize<UnifiedRgb.App.Profile>(json)!;
+    Equal("Clock", back.Screen, "the bound screen round-trips through profiles.json");
+    var old = System.Text.Json.JsonSerializer.Deserialize<UnifiedRgb.App.Profile>("{\"Name\":\"Old\",\"DeviceFrames\":{}}")!;
+    Check(old.Screen == null, "a profile saved before screens were bound reads as unbound, not as an error");
+}
+
 /*---------------- SceneStore / LcdDesign survive explicit nulls (B9) ----------------*/
 {
     // A property initializer only runs when the key is ABSENT; an explicit
