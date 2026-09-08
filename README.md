@@ -34,7 +34,7 @@ the published SHA-256; opt out in Settings).
 
 ### Every effect, every device, or per-zone down to the LED
 
-~55 effects: rainbows, meteors, plasma, aurora, candle flicker, rain,
+59 effects: rainbows, meteors, plasma, aurora, candle flicker, rain,
 audio-reactive bars and pulses (event-driven WASAPI loopback — reacts the
 instant sound does), key-reactive ripple, whole-screen ambient, Wallpaper
 Engine capture, Razer Chroma game sync (no Razer software required), a
@@ -114,16 +114,16 @@ off, or told to resume its own saved profile.
 Profiles with global hotkeys (`Ctrl+Alt+1…9`, they work in games) ·
 per-app auto-switching · schedules and sensor rules · master brightness ·
 per-device disable · undo and redo in the LCD designer · first-run wizard ·
-starts with Windows, lives in the tray.
+starts with Windows, lives in the tray · and when it can see a device but
+cannot drive it, Settings → Devices says why and what to do.
 
 ### Fast is a feature
 
 The whole app idles under 5% of one core with the window open, allocates
 almost nothing in steady state, and drops to a whisper when minimized. Every
 driver dedups frames at the write boundary so your USB bus isn't spammed
-with identical packets. The optimization journey — with before/after
-measurements — is documented in
-[PERFORMANCE_REVIEW.md](PERFORMANCE_REVIEW.md).
+with identical packets, and the engine dedups again per device so a settled
+effect costs nothing until it changes.
 
 ## Supported hardware (native drivers)
 
@@ -181,7 +181,7 @@ Windows 11 SDK (via Visual Studio 2022+ workloads).
 
 ```
 dotnet build src/UnifiedRgb.App -c Release
-dotnet run --project src/UnifiedRgb.Tests        # protocol round-trip tests
+dotnet run --project src/UnifiedRgb.Tests        # the harness: engine, protocols, drivers over a fake HID transport
 ```
 
 The CLI harness (`dotnet run --project src/UnifiedRgb.Cli`) lists detected
@@ -197,8 +197,10 @@ Settings either way.
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Device support PRs are especially
-welcome — bring protocol notes with your driver. Found a bug? The in-app
-**Report a problem** button collects everything we need.
+welcome — [ADDING_A_DEVICE.md](ADDING_A_DEVICE.md) is the contract a driver
+has to meet and shows how to test one against the harness's fake HID
+transport without owning the hardware. Found a bug? The in-app **Report a
+problem** button collects everything we need.
 
 ## License
 

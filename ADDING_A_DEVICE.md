@@ -164,8 +164,9 @@ do after.
 ### Performance
 
 Nothing on the per-frame path may allocate in steady state. Keep one wire
-buffer per report shape and reuse it. `PERFORMANCE_REVIEW.md` has the
-measurements this is held to.
+buffer per report shape and reuse it. The app runs 24/7 in the tray and is
+held to idling at a whisper; a driver that allocates per frame or re-sends
+unchanged frames is the usual reason it does not.
 
 ## Testing without the hardware
 

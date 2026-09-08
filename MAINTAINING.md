@@ -29,6 +29,30 @@ auto-generated notes on GitHub afterwards if you want prose.
 Rules the script enforces: run from `main`, clean tree, tests green,
 built FileVersion == the version being released.
 
+## Docs and the website
+
+- **`docs/` is the GitHub Pages root.** Everything in it is live at
+  unifiedrgb.com the moment it is pushed - a working note, a review, a
+  security scan. Internal documents go at the repo root or nowhere.
+- `release.ps1` stamps `docs/index.html` and must read it **as UTF-8**
+  (`Get-Content -Encoding utf8`). Windows PowerShell reads a BOM-less file
+  as the ANSI code page; the first stamp run double-encoded every non-ASCII
+  character on the site and it stayed that way for a release. Parse-check
+  the script after any edit:
+  `[System.Management.Automation.Language.Parser]::ParseFile($p,[ref]$t,[ref]$e)`.
+- DNS lives at Namecheap (BasicDNS, not custom nameservers): four `A`
+  records for `@` on GitHub's Pages addresses and a `www` CNAME to
+  `fikal.github.io`. Enforce HTTPS is a repo setting under Pages.
+
+## Building and testing
+
+- The test harness references the App project, so **stop the running app
+  first** (`schtasks /End /TN UnifiedRgb`) or the build cannot replace its
+  DLLs. It also refuses to run at all if its config redirect is not in
+  effect, so it can never touch the real profile - do not weaken that.
+- HID drivers hold an `IHidTransport`; `FakeHid` in the harness drives a
+  real driver without hardware. See `ADDING_A_DEVICE.md`.
+
 ## Things that look vestigial but are intentional
 
 - `UpdateClient` still contains a private-feed path selected by build-time

@@ -45,12 +45,12 @@
       <a class="btn ghost" href="https://github.com/fikal/UnifiedRGB">View source</a>
     </div>
     <p class="fineprint">
-      <span id="ver">v1.1.1</span> Â· one self-contained <code>.exe</code> Â· no installer,
-      no .NET Â· free and <a href="https://github.com/fikal/UnifiedRGB/blob/main/LICENSE">GPLv2</a>
+      <span id="ver">v1.1.1</span> · one self-contained <code>.exe</code> · no installer,
+      no .NET · free and <a href="https://github.com/fikal/UnifiedRGB/blob/main/LICENSE">GPLv2</a>
     </p>
 
     <ul class="stats">
-      <li><b>58</b>effects</li>
+      <li><b>59</b>effects</li>
       <li><b>&lt;5%</b>of one core</li>
       <li><b>0</b>accounts</li>
       <li><b>1</b>file to run</li>
@@ -65,7 +65,7 @@
 
   <div class="feat">
     <div class="feat-text">
-      <h3>58 effects, any device, any zone</h3>
+      <h3>59 effects, any device, any zone</h3>
       <p>
         Rainbows, meteors, plasma, aurora, candle, rain, Matrix. Audio-reactive
         bars and pulses that move the instant sound does. Screen ambient,
@@ -164,9 +164,9 @@
     <div class="card">
       <h4>Profiles and hotkeys</h4>
       <p>
-        Save setups, switch them with <code>Ctrl+Alt+1â€¦9</code>, even inside
-        games. Per-app auto-switching, night mode, master brightness, per-device
-        disable.
+        Save setups, switch them with <code>Ctrl+Alt+1…9</code>, even inside
+        games. Per-app auto-switching, schedules, sensor rules, master
+        brightness, per-device disable.
       </p>
     </div>
     <div class="card">
@@ -174,7 +174,7 @@
       <p>
         One click from GitHub Releases, checked against the published SHA-256
         before it swaps itself. Turn the check off and the app makes no network
-        requests at all.
+        requests on its own.
       </p>
     </div>
   </div>
@@ -241,7 +241,7 @@
           </tr>
           <tr>
             <th>How it reaches hardware</th>
-            <td class="me yes">Directly (HID, SMBus, IÂ²C)</td>
+            <td class="me yes">Directly (HID, SMBus, I²C)</td>
             <td class="yes">Directly</td>
             <td class="yes">Its own drivers</td>
             <td class="warn">RGB.NET plugins</td>
@@ -407,13 +407,13 @@
         <tr><td>SteelSeries Apex keyboards</td><td>HID</td></tr>
         <tr><td>Gigabyte RGB Fusion boards (IT5711) and ARGB headers</td><td>HID</td></tr>
         <tr><td>Logitech G403 HERO</td><td>HID++ 2.0</td></tr>
-        <tr><td>Razer Basilisk V3 Pro, including DPI stages and polling rate</td><td>HID, no Synapse</td></tr>
-        <tr><td>MSI GeForce GPUs</td><td>IÂ²C via NvAPI</td></tr>
+        <tr><td>Razer Basilisk V3 Pro (DPI stages, polling rate) and the HyperFlux V2 pad</td><td>HID, no Synapse</td></tr>
+        <tr><td>MSI GeForce GPUs</td><td>I²C via NvAPI</td></tr>
         <tr><td>ENE DRAM (G.Skill and friends)</td><td>SMBus via PawnIO</td></tr>
         <tr><td>Lian Li SL-INF wireless fans</td><td>WinUSB and RF</td></tr>
         <tr><td>Lian Li SL-Infinity wired hub</td><td>HID</td></tr>
         <tr><td>Sayo devices</td><td>HID</td></tr>
-        <tr><td>Thermalright pump LCD (240Ã—320)</td><td>HID</td></tr>
+        <tr><td>Thermalright pump LCD (240×320)</td><td>HID</td></tr>
         <tr><td>Motherboard fans and temperatures</td><td>Super I/O via PawnIO</td></tr>
       </tbody>
     </table>
@@ -476,8 +476,9 @@
     <summary>Does it phone home?</summary>
     <p>
       Once at startup, to check GitHub Releases for a new version. Switch that
-      off and it makes no network requests at all. No telemetry, no analytics, no
-      account. The "Report a problem" button writes a file to your Desktop and
+      off and it makes none on its own; the only other requests are ones you ask
+      for, like installing the OpenRGB bundle or weather for an LCD widget you
+      add. No telemetry, no analytics, no account. The "Report a problem" button writes a file to your Desktop and
       opens a pre-filled GitHub issue, and nothing is uploaded unless you post
       it. This website has no trackers and loads nothing from third parties
       either.
@@ -505,8 +506,10 @@
   <details>
     <summary>My device isn't supported. Now what?</summary>
     <p>
-      Try the OpenRGB bridge first. It covers over a thousand devices and turns
-      on with one checkbox. If that misses too,
+      First check Settings, Devices: if the hardware is plugged in but another
+      program holds it, or it needs the sensor driver, UnifiedRGB now says so
+      there, with the fix. Otherwise try the OpenRGB bridge. It covers over a
+      thousand devices and turns on with one checkbox. If that misses too,
       <a href="https://github.com/fikal/UnifiedRGB/issues/new/choose">open a device request</a>.
       Captures and protocol notes make a driver far more likely.
     </p>
@@ -545,8 +548,8 @@
       September 2026.
     </p>
     <p>
-      <a href="https://github.com/fikal/UnifiedRGB">GitHub</a> Â·
-      <a href="https://github.com/fikal/UnifiedRGB/releases">Releases</a> Â·
+      <a href="https://github.com/fikal/UnifiedRGB">GitHub</a> ·
+      <a href="https://github.com/fikal/UnifiedRGB/releases">Releases</a> ·
       <a href="https://github.com/fikal/UnifiedRGB/issues">Report a bug</a>
     </p>
   </div>

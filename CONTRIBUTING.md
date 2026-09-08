@@ -14,7 +14,7 @@ clicked in the PR.
 ## What makes a good PR here
 
 - **Device drivers** are the most valuable contribution. Read
-  [`docs/ADDING_A_DEVICE.md`](docs/ADDING_A_DEVICE.md) first: it is the
+  [`ADDING_A_DEVICE.md`](ADDING_A_DEVICE.md) first: it is the
   contract a driver has to meet (threading, dedup, failure handling,
   detection, registration), the checklist a PR is reviewed against, and how
   to test a driver against the harness's fake HID transport without owning
@@ -33,8 +33,9 @@ clicked in the PR.
   from the clock, the per-LED positions, and `Fx`/`Geo` helpers. Position-
   only math belongs in the `Geo` cache, not in the per-frame loop.
 - Performance is a feature. Nothing on a per-frame path may allocate in
-  steady state; `PERFORMANCE_REVIEW.md` documents the standards (and the
-  measurements that enforce them).
+  steady state, every driver dedups at the write boundary, and the app has
+  to idle at a whisper - it runs 24/7 in the tray. If a change touches a
+  per-frame path, say what you measured.
 - Match the style around you — comment density, naming, the banner comments.
 
 ## Reporting bugs

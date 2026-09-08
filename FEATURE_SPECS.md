@@ -24,7 +24,8 @@ piece of logic can be tested without a window, it belongs in Core.
 **Tests.** `src/UnifiedRgb.Tests` is a zero-dependency console harness:
 `dotnet run --project src/UnifiedRgb.Tests` (a plain `dotnet test` runs the
 same thing). `Check(bool, name)` and `Equal(expected, actual, name)`; exit code
-is the failure count; currently 323 pass. Every feature adds tests for its pure
+is the failure count (929 pass as of 1.1.1). The harness references the App
+project, so stop the running app before building it. Every feature adds tests for its pure
 parts. Fixtures (JSON payloads, wire bytes) go inline as strings or byte
 arrays; no test files on disk.
 
@@ -32,7 +33,7 @@ arrays; no test files on disk.
 `TcpListener`, `HttpListener`, `System.Text.Json` and the WinRT projections
 (the App targets `net10.0-windows10.0.22621.0`) are all in the box.
 
-**Performance is a feature** (see `PERFORMANCE_REVIEW.md` for the history):
+**Performance is a feature**:
 - No allocations on a render or poll path. Hoist per-frame constants, use
   `stackalloc` for small scratch, cache geometry in `Geo`.
 - Every device write goes through `LightingController.Applier` on the device's

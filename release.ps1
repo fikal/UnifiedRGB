@@ -22,16 +22,21 @@ if (-not (Test-Path "native/chroma-shim/RzChromaSDK64.dll")) { throw "native/chr
 if (-not (Test-Path "native/chroma-shim/RzChromaSDK.dll"))   { throw "native/chroma-shim/RzChromaSDK.dll (32-bit) missing - run native/chroma-shim/build.bat first" }
 
 # Stamp the version
+# Both stamps read AND write as UTF-8. Windows PowerShell 5.1 reads a BOM-less
+# file as the ANSI code page by default, so the first stamp run decoded the
+# site's UTF-8 as cp1252 and wrote that back out as UTF-8 - every non-ASCII
+# character on unifiedrgb.com (middle dots, the superscript 2, the ellipsis,
+# the multiplication sign) went live double-encoded as "Â·", "IÂ²C", "â€¦".
 $csproj = "src/UnifiedRgb.App/UnifiedRgb.App.csproj"
 if ((Get-Content $csproj -Raw) -notmatch '<Version>') { throw "$csproj has no <Version> element to stamp" }
-(Get-Content $csproj) -replace '<Version>.*</Version>', "<Version>$Version</Version>" |
+(Get-Content $csproj -Encoding utf8) -replace '<Version>.*</Version>', "<Version>$Version</Version>" |
     Set-Content -Encoding utf8 $csproj
 
 # The website prints the current version in its download blurb; stamp it here so
 # unifiedrgb.com can never advertise a version the releases page has moved past.
 $site = "docs/index.html"
 if ((Get-Content $site -Raw) -notmatch '<span id="ver">') { throw "$site is missing the version span to stamp" }
-(Get-Content $site) -replace '<span id="ver">[^<]*</span>', "<span id=`"ver`">v$Version</span>" |
+(Get-Content $site -Encoding utf8) -replace '<span id="ver">[^<]*</span>', "<span id=`"ver`">v$Version</span>" |
     Set-Content -Encoding utf8 $site
 
 $asset = "UnifiedRGB-v$Version.exe"
