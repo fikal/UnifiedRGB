@@ -49,6 +49,8 @@ public sealed class DeviceManager : IDisposable
         // Absent detectors are collected and reported as ONE line. A line each
         // was 47% of a real user's three week log, which buries everything a
         // bundle is read for.
+        // Notes describe the pass we are about to run, not the last one.
+        DetectionNotes.Clear();
         var absent = new List<string>();
 
         foreach (var factory in Factories)
@@ -95,6 +97,12 @@ public sealed class DeviceManager : IDisposable
         }
 
         if (absent.Count > 0) Log.Info("detect", "not present: " + string.Join(", ", absent));
+        // Said individually and at WARN: each of these is a device the user
+        // owns and expects to see, and the reason is the whole answer to the
+        // question they are about to ask.
+        foreach (var b in DetectionNotes.Current)
+            Log.Warn("detect", $"{b.What}: {b.ReasonText} - {b.Detail}"
+                             + (b.Remedy != null ? $" -> {b.Remedy}" : ""));
         Log.Info("detect", $"{_devices.Count} device(s): "
             + (_devices.Count == 0 ? "none" : string.Join(", ", _devices.Select(d => $"{d.Name} ({d.LedCount})"))));
     }

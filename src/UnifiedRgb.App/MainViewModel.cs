@@ -1565,6 +1565,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         foreach (var d in Devices)
             if (savedFrames.TryGetValue(d.Name, out var old)) RestoreFrame(d, old);
 
+        RefreshBlockedDevices();                               // what this scan saw but could not use
         ApplyLianSpeed();                                      // carry the saved fan-speed calibration
         _battery.Rescan();                                     // charge, before the rows are built
         SyncSdkServer();                                       // SDK clients hold stale instances

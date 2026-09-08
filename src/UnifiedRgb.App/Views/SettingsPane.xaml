@@ -177,6 +177,39 @@
             <!-- ===================== Devices ===================== -->
             <StackPanel Visibility="{Binding SettingsTab, Converter={StaticResource EqVis}, ConverterParameter=Devices}">
 
+                <!-- First, because "why is my device missing" is the question
+                     this whole page exists to answer. Hidden when there is
+                     nothing to say. -->
+                <Border Style="{StaticResource SettingsCard}"
+                        Visibility="{Binding HasBlockedDevices, Converter={StaticResource BoolToVis}}">
+                    <StackPanel>
+                        <TextBlock Text="Seen but not usable" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,10"
+                                   Text="This hardware is plugged in and UnifiedRGB can see it, but something is stopping it from being driven."/>
+                        <ItemsControl ItemsSource="{Binding BlockedDevices}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="#20FFFFFF" CornerRadius="4" Padding="10,8" Margin="0,0,0,8">
+                                        <StackPanel>
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="{Binding What}" FontWeight="SemiBold"/>
+                                                <TextBlock Text="{Binding ReasonText}" Margin="8,0,0,0"
+                                                           Foreground="#FFE0A55F"/>
+                                            </StackPanel>
+                                            <TextBlock Text="{Binding Detail}" Opacity="0.75" FontSize="12"
+                                                       TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                            <TextBlock Text="{Binding Remedy}" Foreground="#FF7FB4FF" FontSize="12"
+                                                       TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <Button Content="Scan again" Padding="14,6" HorizontalAlignment="Left"
+                                Margin="0,2,0,0" Command="{Binding RescanCommand}"/>
+                    </StackPanel>
+                </Border>
+
                 <Border Style="{StaticResource SettingsCard}">
                     <StackPanel>
                         <TextBlock Text="Sensor driver" Style="{StaticResource SectionTitle}"/>

@@ -21,6 +21,23 @@ namespace UnifiedRgb.App;
 // partial-class move, no behavior change).
 public sealed partial class MainViewModel
 {
+    /// <summary>Hardware the last scan could SEE but could not fully drive.
+    ///
+    /// The whole point is that this is visible in the app rather than only in
+    /// a log. A device that is present but held by vendor software, or that
+    /// needs a driver, used to simply not appear - which reads as "UnifiedRGB
+    /// does not support my mouse" when the truth is one sentence long and has
+    /// a fix attached.</summary>
+    public ObservableCollection<BlockedDevice> BlockedDevices { get; } = new();
+    public bool HasBlockedDevices => BlockedDevices.Count > 0;
+
+    void RefreshBlockedDevices()
+    {
+        BlockedDevices.Clear();
+        foreach (var b in UnifiedRgb.Core.DetectionNotes.Current) BlockedDevices.Add(b);
+        OnChanged(nameof(HasBlockedDevices));
+    }
+
     /*-----------------------------------------------------*\
     | Automation primitives: capture the current lighting,   |
     | restore (frames + running effects) and lights-off.     |

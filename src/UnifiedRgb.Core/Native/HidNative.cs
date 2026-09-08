@@ -26,14 +26,43 @@ public static class HidNative
             var ifaces = Find(vid, pid);
             var iface = ifaces.FirstOrDefault(pick)
                      ?? (fallbackPick != null ? ifaces.FirstOrDefault(fallbackPick) : null);
-            if (iface == null) return null;
-            return (Open(iface.Path), iface);
+            if (iface == null)
+            {
+                // The hardware IS plugged in - we enumerated it - but the
+                // collection this driver speaks to is not among its interfaces.
+                // Silently returning null here reads to the user as "device not
+                // detected", which is the one thing it definitely is not.
+                if (ifaces.Count > 0)
+                    DetectionNotes.Report(tag, DescribeHid(ifaces[0], vid, pid), BlockReason.Failed,
+                        $"the device is present but none of its {ifaces.Count} HID interface(s) is the one this driver uses",
+                        "it may be a revision we do not support yet - a support bundle would show its interfaces");
+                return null;
+            }
+            var handle = Open(iface.Path);
+            if (handle.FeatureOnly)
+                DetectionNotes.Report(tag, DescribeHid(iface, vid, pid), BlockReason.HeldByOtherSoftware,
+                    "opened for feature reports only, so lighting works but anything needing "
+                    + "output reports does not",
+                    "close the vendor software (Synapse, iCUE, G HUB) and rescan for full control");
+            return (handle, iface);
         }
         catch (Exception ex)
         {
             Log.Error(tag, ex);
+            DetectionNotes.Report(tag, $"{tag} ({vid:x4}:{pid:x4})", BlockReason.Failed,
+                ex.Message, "a support bundle carries the details");
             return null;
         }
+    }
+
+    /// <summary>What to call a device in a message to the user: its own
+    /// product string when it has one, else the ids we looked it up by.</summary>
+    static string DescribeHid(HidInfo info, ushort vid, ushort pid)
+    {
+        string name = string.IsNullOrWhiteSpace(info.Product) ? "" : info.Product.Trim();
+        if (!string.IsNullOrWhiteSpace(info.Manufacturer) && !name.StartsWith(info.Manufacturer.Trim(), StringComparison.OrdinalIgnoreCase))
+            name = (info.Manufacturer.Trim() + " " + name).Trim();
+        return name.Length > 0 ? name : $"USB device {vid:x4}:{pid:x4}";
     }
 
     /// <summary>Enumerate every HID collection on the system (diagnostics).</summary>
@@ -116,7 +145,7 @@ public static class HidNative
         if (shared.IsInvalid)
             throw new IOException($"Failed to open HID device (err {err}, and shared too: {Marshal.GetLastWin32Error()})");
 
-        Log.Occasional("hid-shared", "hid",
+        Log.Occasional($"hid-shared:{path}", "hid",
                        "another program holds a device; opened it for feature reports only "
                        + "(close vendor software if it does not respond)");
         return new HidHandle(shared, featureOnly: true);

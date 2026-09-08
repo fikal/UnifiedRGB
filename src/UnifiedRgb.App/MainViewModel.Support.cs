@@ -93,6 +93,20 @@ public sealed partial class MainViewModel
         }
         Say();
 
+        // The devices we could see and could NOT use. This is the half of the
+        // picture a bundle never carried: "not detected" was indistinguishable
+        // from "held by Synapse" and from "needs administrator", and answering
+        // that question has taken days of back and forth more than once.
+        var blocked = UnifiedRgb.Core.DetectionNotes.Current;
+        Say($"seen but not usable: {(blocked.Count == 0 ? "nothing" : blocked.Count + " item(s)")}");
+        foreach (var b in blocked)
+        {
+            Say($"  {b.What} [{b.Family}]: {b.ReasonText}");
+            Say($"      {b.Detail}");
+            if (b.Remedy != null) Say($"      fix: {b.Remedy}");
+        }
+        Say();
+
         Say("automation:");
         Say($"  by app: {(_store.Settings.AppSwitchEnabled ? "on" : "off")}, "
             + $"{_store.Settings.AutomationRules?.Count ?? 0} rule(s)");

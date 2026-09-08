@@ -903,6 +903,42 @@ static string TempDir()
         "the first hop is analyzed as it stood, not as the end of the batch");
 }
 
+/*---------------- DetectionNotes: why a device is missing ----------------*/
+{
+    DetectionNotes.Clear();
+    Equal(0, DetectionNotes.Current.Count, "notes start empty");
+
+    DetectionNotes.Report("RazerHid", "Razer Basilisk", BlockReason.HeldByOtherSoftware,
+        "opened for feature reports only", "close Synapse");
+    Equal(1, DetectionNotes.Current.Count, "a blocked device is recorded");
+
+    // A detector that retries must not stack the same complaint.
+    DetectionNotes.Report("RazerHid", "Razer Basilisk", BlockReason.HeldByOtherSoftware,
+        "opened for feature reports only", "close Synapse");
+    Equal(1, DetectionNotes.Current.Count, "the same complaint twice is one entry");
+
+    // A DIFFERENT reason about the same device is genuinely new information.
+    DetectionNotes.Report("RazerHid", "Razer Basilisk", BlockReason.NeedsAdministrator, "x", null);
+    Equal(2, DetectionNotes.Current.Count, "a different reason for one device is kept");
+
+    var b = DetectionNotes.Current[0];
+    Equal("another program has it", b.ReasonText, "the reason reads as a sentence, not an enum");
+    Check(b.ToString().Contains("Razer Basilisk") && b.ToString().Contains("close Synapse"),
+        "the one-line form carries the device and the fix");
+
+    // A rescan describes the CURRENT state, so a fixed problem must disappear
+    // rather than linger on screen.
+    DetectionNotes.Clear();
+    Equal(0, DetectionNotes.Current.Count, "a fresh scan clears the previous reasons");
+
+    Equal("needs administrator",
+        new BlockedDevice("f", "w", BlockReason.NeedsAdministrator, "d", null).ReasonText,
+        "elevation reads plainly");
+    Equal("a driver is missing",
+        new BlockedDevice("f", "w", BlockReason.DriverMissing, "d", null).ReasonText,
+        "a missing driver reads plainly");
+}
+
 /*---------------- OpenRgbServer.CleanClientName (S3) ----------------*/
 {
     string forged = OpenRgbServer.CleanClientName("evil\r\n09-07 12:00:00 ERR name");

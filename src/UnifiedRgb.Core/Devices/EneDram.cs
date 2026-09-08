@@ -149,7 +149,27 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
     {
         var found = new List<IRgbDevice>();
         var bus = PawnSmbus.TryOpenAny();
-        if (bus == null) return found;
+        if (bus == null)
+        {
+            // Three different situations that all used to look like "you have
+            // no RGB memory". Lit RAM is the thing people notice missing first,
+            // and every one of these has a different answer.
+            if (!Native.PawnIO.IsAvailable)
+                DetectionNotes.Report(nameof(EneDram), "RGB memory", BlockReason.DriverMissing,
+                    "the PawnIO driver is not installed, and the memory's lighting sits on the "
+                    + "SMBus which cannot be reached without it",
+                    "install PawnIO from Settings > Devices");
+            else if (!DiagnosticReport.IsAdmin())
+                DetectionNotes.Report(nameof(EneDram), "RGB memory", BlockReason.NeedsAdministrator,
+                    "PawnIO is installed but would not open, which is what happens when the app "
+                    + "is not running as administrator",
+                    "run UnifiedRGB as administrator");
+            else
+                DetectionNotes.Report(nameof(EneDram), "RGB memory", BlockReason.Failed,
+                    "PawnIO is installed and we are elevated, but no SMBus controller answered",
+                    "your chipset may not be one of the two we support (AMD PIIX4, Intel I801)");
+            return found;
+        }
 
         // Remap: while a controller answers at the shared 0x77 address, assign
         // it (per slot) the next free address from the candidate list.
