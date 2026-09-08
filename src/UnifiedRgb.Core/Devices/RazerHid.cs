@@ -106,7 +106,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
         return p;
     }
 
-    static readonly Model BasiliskV3Pro = new(0x00AA, "Razer Basilisk V3 Pro", 0x1F, 1, 13, Kind.Mouse, BasiliskV3ProZones, BasiliskV3ProPositions, 0.62f);
+    internal static readonly Model BasiliskV3Pro = new(0x00AA, "Razer Basilisk V3 Pro", 0x1F, 1, 13, Kind.Mouse, BasiliskV3ProZones, BasiliskV3ProPositions, 0.62f);
 
     static readonly Model[] Models =
     {
@@ -188,15 +188,21 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
     }
 
     static RazerHid? OpenKnown(HidNative.HidInfo iface, Model model)
+        => OpenKnown(() => HidNative.Open(iface.Path), iface.ProductId, model);
+
+    /// <summary>The open is injected so the whole bring-up - identify, claim,
+    /// brightness - can be replayed against a fake built from a user's support
+    /// bundle, without owning their hardware.</summary>
+    internal static RazerHid? OpenKnown(Func<IHidTransport> open, ushort pid, Model model)
     {
         IHidTransport hid;
-        try { hid = HidNative.Open(iface.Path); }
-        catch (Exception ex) { Log.Warn("Razer", $"{iface.ProductId:X4}: open failed: {ex.Message}"); return null; }
+        try { hid = open(); }
+        catch (Exception ex) { Log.Warn("Razer", $"{pid:X4}: open failed: {ex.Message}"); return null; }
         var id = Identify(hid, model.Tid);
-        if (id == null) Log.Info("Razer", $"{model.Name} ({iface.ProductId:X4}) did not answer (asleep?) - claimed anyway, frames retry as it wakes");
+        if (id == null) Log.Info("Razer", $"{model.Name} ({pid:X4}) did not answer (asleep?) - claimed anyway, frames retry as it wakes");
         // Firmware yes, serial no: a Razer serial is the warranty and
         // registration identifier, and this line ends up in public bundles.
-        else Log.Info("Razer", $"{model.Name} ({iface.ProductId:X4}) fw {id.Value.Fw} on transaction 0x{model.Tid:X2}");
+        else Log.Info("Razer", $"{model.Name} ({pid:X4}) fw {id.Value.Fw} on transaction 0x{model.Tid:X2}");
         var dev = new RazerHid(hid, model, model.Tid) { Firmware = id?.Fw ?? "?", Serial = id?.Serial ?? "?" };
         dev.SetBrightness(0xFF);
         return dev;
@@ -205,11 +211,15 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
     /// <summary>The pad: ask every transaction id who is there. A reply that
     /// also answers a DPI query is the paired mouse; one that doesn't is the
     /// pad's own controller. Each gets its own handle so Dispose stays simple.</summary>
-    static List<IRgbDevice> OpenPad(HidNative.HidInfo iface)
+    static List<IRgbDevice> OpenPad(HidNative.HidInfo iface) => OpenPad(() => HidNative.Open(iface.Path));
+
+    /// <summary>Same injection as OpenKnown: a test can stand in for the pad and
+    /// whatever mouse is paired to it, transaction id by transaction id.</summary>
+    internal static List<IRgbDevice> OpenPad(Func<IHidTransport> open)
     {
         var list = new List<IRgbDevice>();
         IHidTransport probe;
-        try { probe = HidNative.Open(iface.Path); }
+        try { probe = open(); }
         catch (Exception ex) { Log.Warn("Razer", $"HyperFlux V2 pad: open failed: {ex.Message}"); return list; }
 
         var answers = new List<(byte Tid, string Fw, string Serial, bool HasDpi)>();
@@ -236,7 +246,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
         foreach (var a in answers.GroupBy(a => a.Serial).Select(g => g.First()))
         {
             IHidTransport hid;
-            try { hid = HidNative.Open(iface.Path); }
+            try { hid = open(); }
             catch (Exception ex) { Log.Warn("Razer", $"HyperFlux V2: reopen failed: {ex.Message}"); continue; }
 
             Model model;

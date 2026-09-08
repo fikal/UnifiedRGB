@@ -1143,6 +1143,103 @@ static string TempDir()
     Check(hid.IsDisposed, "...and closes the handle");
 }
 
+/*---------------- RazerHid: Chris's HyperFlux V2, replayed from his bundle ----------------*/
+{
+    // Built from a real support bundle (2026-09-06): HyperFlux V2 pad 1532:00CF,
+    // the control collection usage 0x0001/0x0002 with a 91-byte feature
+    // report, Synapse's elevation service holding every Razer device so the
+    // open came back ACCESS_DENIED. The fake below answers the way a pad with
+    // no mouse awake on it does. Nothing here needs the hardware, which is
+    // the point: the driver's whole bring-up runs against a bundle.
+    const byte ST_OK = 0x02, ST_FAIL = 0x03, ST_UNSUPPORTED = 0x05;
+    const int ARGS = 9;
+    const int PadLeds = 20;
+
+    // The pad's firmware, in one function: echo the command, say OK, and
+    // fill in what each command asks for.
+    byte[]? Pad(byte[] req)
+    {
+        byte tid = req[2], cls = req[7], cmd = req[8];
+        if (tid != 0x1F) return null;                        // only one transaction id is alive
+        var r = new byte[91];
+        r[1] = ST_OK; r[7] = cls; r[8] = cmd;
+        if (cls == 0x00 && cmd == 0x81) { r[ARGS] = 1; r[ARGS + 1] = 5; }           // firmware v1.5
+        else if (cls == 0x00 && cmd == 0x82)                                         // serial
+            for (int i = 0; i < 22; i++) r[ARGS + i] = (byte)('A' + i % 26);
+        else if (cls == 0x04 && cmd == 0x85) r[1] = ST_UNSUPPORTED;                 // no DPI: a pad, not a mouse
+        else if (cls == 0x0F && cmd == 0x03 && req[ARGS + 4] >= PadLeds) r[1] = ST_FAIL;   // a column past the strip
+        return r;
+    }
+
+    var opened = new List<FakeHid>();
+    FakeHid Open() { var h = new FakeHid { Respond = Pad, FeatureOnly = true }; opened.Add(h); return h; }
+
+    var found = RazerHid.OpenPad(Open);
+    Equal(1, found.Count, "the pad is found with no mouse paired: one device");
+    var pad = found[0];
+    Equal("Razer HyperFlux V2 pad", pad.Name, "identified as the pad, not as a mouse");
+    Equal(PadLeds, pad.LedCount, "the strip length comes from the frame probe (columns refused from 20 on)");
+    Check(opened.Count >= 2, "the probe handle and the device's own handle are separate opens");
+    Check(opened[0].IsDisposed, "the probe handle is closed once enumeration is done");
+
+    // FeatureOnly = the handle Synapse leaves us. The whole protocol is
+    // feature reports, so it must not matter.
+    var colors = Enumerable.Range(0, PadLeds).Select(i => new Rgb((byte)i, 0, (byte)(255 - i))).ToArray();
+    var hid = opened[^1];
+    int before = hid.Features.Count;
+    pad.SetColors(colors);
+    var frames = hid.Features.Skip(before).Where(f => f[7] == 0x0F && f[8] == 0x03).ToList();
+    Equal(1, frames.Count, "20 LEDs fit one custom-frame report (25 per packet)");
+    var f = frames[0];
+    Check(f[0] == 0 && f[2] == 0x1F && f[6] == 5 + 3 * PadLeds, "report id 0, transaction 0x1F, data size 5 + 3n");
+    Check(f[ARGS + 2] == 0 && f[ARGS + 3] == 0 && f[ARGS + 4] == PadLeds - 1, "row 0, columns 0..19");
+    Check(f[ARGS + 5] == 0 && f[ARGS + 7] == 255 && f[ARGS + 5 + 3 * 19] == 19 && f[ARGS + 7 + 3 * 19] == 236,
+        "colours in R G B order, first and last LED where they should be");
+    byte crc = 0; for (int i = 2; i < 88; i++) crc ^= f[1 + i];
+    Equal(crc, f[89], "the report is sealed with the XOR of wire bytes 2..87");
+    Check(hid.Writes.Count == 0, "nothing goes through output reports, so a feature-only handle is enough");
+
+    before = hid.Features.Count;
+    pad.SetColors(colors);
+    Equal(before, hid.Features.Count, "an identical frame is deduped");
+    pad.Dispose();
+}
+
+/*---------------- RazerHid: nobody home on the pad ----------------*/
+{
+    // The other thing Chris's log could have said: the pad enumerates but no
+    // transaction id answers (mouse asleep, nothing paired). That must be
+    // "no device", quietly - not an exception, not a phantom entry.
+    var found = RazerHid.OpenPad(() => new FakeHid { Respond = _ => null });
+    Equal(0, found.Count, "a pad that answers nothing yields no device");
+}
+
+/*---------------- RazerHid: a known mouse over a feature-only handle ----------------*/
+{
+    const byte ST_OK = 0x02;
+    const int ARGS = 9;
+    byte[] Mouse(byte[] req)
+    {
+        var r = new byte[91];
+        r[1] = ST_OK; r[7] = req[7]; r[8] = req[8];
+        if (req[7] == 0x00 && req[8] == 0x81) { r[ARGS] = 2; r[ARGS + 1] = 1; }   // fw v2.1
+        return r;
+    }
+    var hid = new FakeHid { Respond = Mouse, FeatureOnly = true };
+    var mouse = RazerHid.OpenKnown(() => hid, 0x00AA, RazerHid.BasiliskV3Pro);
+    Check(mouse != null, "a known mouse opens over a handle another program holds");
+    Equal("v2.1", mouse!.Firmware, "the firmware version is read at open");
+    Equal(13, mouse.LedCount, "Basilisk V3 Pro: 13 LEDs");
+
+    int before = hid.Features.Count;
+    mouse.SetColors(Enumerable.Repeat(new Rgb(255, 0, 0), 13).ToArray());
+    var frame = hid.Features.Skip(before).First(f => f[7] == 0x0F && f[8] == 0x03);
+    Check(frame[6] == 5 + 3 * 13 && frame[ARGS + 4] == 12 && frame[ARGS + 5] == 255 && frame[ARGS + 6] == 0,
+        "one 13-LED custom frame, all red");
+    mouse.Dispose();
+    Check(hid.IsDisposed, "Dispose closes the handle");
+}
+
 /*---------------- DeviceManager: the registration rule ----------------*/
 {
     // The family name - what the per-device disable list, the detect log and
@@ -3018,6 +3115,12 @@ sealed class FakeHid : UnifiedRgb.Core.Native.IHidTransport
     public Func<int, byte[], bool>? Accept;
     /// <summary>Same for feature reports.</summary>
     public Func<int, byte[], bool>? AcceptFeature;
+    /// <summary>For request/reply protocols carried on feature reports (Razer):
+    /// when Replies is empty, the answer to GetFeature is computed from the
+    /// LAST report sent with SetFeature, so a reply can echo the command it is
+    /// for. Return null to answer nothing.</summary>
+    public Func<byte[], byte[]?>? Respond;
+    public byte[]? LastFeature;
     public bool FeatureOnly { get; set; }
     public bool IsDisposed { get; private set; }
     public int WriteTimeoutMs { get; set; } = 400;
@@ -3046,13 +3149,16 @@ sealed class FakeHid : UnifiedRgb.Core.Native.IHidTransport
         if (IsDisposed) return false;
         var copy = (byte[])report.Clone();
         Features.Add(copy);
+        LastFeature = copy;
         return AcceptFeature?.Invoke(Features.Count, copy) ?? true;
     }
 
     public bool GetFeature(byte[] report)
     {
-        if (IsDisposed || Replies.Count == 0) return false;
-        var r = Replies.Dequeue();
+        if (IsDisposed) return false;
+        byte[]? r = Replies.Count > 0 ? Replies.Dequeue()
+                  : Respond != null && LastFeature != null ? Respond(LastFeature) : null;
+        if (r == null) return false;
         Array.Copy(r, report, Math.Min(r.Length, report.Length));
         return true;
     }
