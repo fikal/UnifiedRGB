@@ -47,6 +47,7 @@ public sealed class LogitechG403 : IRgbDevice
     /// <summary>Per cluster: do not send again until this tick. Set when a send
     /// fails, cleared when one succeeds.</summary>
     readonly long[] _retryAfter;
+    readonly bool[] _silent;             // per cluster: currently in a not-answering streak (logged once)
     readonly bool[] _persisted;          // _lastPer[i] has been committed to onboard memory
     long _lastChangeTick;
 
@@ -63,6 +64,7 @@ public sealed class LogitechG403 : IRgbDevice
         _clusterEffect = clusterEffect;
         _lastPer = new Rgb?[clusterEffect.Length];
         _retryAfter = new long[clusterEffect.Length];
+        _silent = new bool[clusterEffect.Length];
         _persisted = new bool[clusterEffect.Length];
         Name = name;
         if (feature == FEAT_8071) { _fnSetEffect = 0x10; _fnSwControl = 0x50; _swSimple = false; }
@@ -241,8 +243,20 @@ public sealed class LogitechG403 : IRgbDevice
                 if (!SendEffect(i, c, persist: false))
                 {
                     _retryAfter[i] = Environment.TickCount64 + RetryAfterFailMs;
+                    // Said out loud, once per streak. A mouse that stops answering
+                    // HID++ while its cursor still moves is a lighting problem; one
+                    // that stops answering at the same moment the cursor dies is the
+                    // mouse or its USB path. Without this line a bundle could not
+                    // tell those apart, and "my mouse froze, was it you?" stayed a
+                    // guess.
+                    if (!_silent[i])
+                    {
+                        _silent[i] = true;
+                        Log.Warn("LogitechG403", $"{Name}: cluster {i} stopped answering HID++ (write refused or no reply); retrying every {RetryAfterFailMs / 1000}s");
+                    }
                     continue;
                 }
+                if (_silent[i]) { _silent[i] = false; Log.Info("LogitechG403", $"{Name}: cluster {i} is answering again"); }
                 _retryAfter[i] = 0;
                 _lastPer[i] = c;
                 _persisted[i] = false;
