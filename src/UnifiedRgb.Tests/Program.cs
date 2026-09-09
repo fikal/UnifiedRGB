@@ -963,6 +963,7 @@ static string TempDir()
 /*---------------- LogitechG403: a refused write is not cached (B4) ----------------*/
 {
     LogitechG403.RetryAfterFailMs = 0;   // retry at once, or this test sleeps five seconds
+    LogitechG403.MinFrameGapMs = 0;      // frames fire back to back here; the pacer has its own test
     var hid = new FakeHid();
     for (int i = 0; i < 40; i++) hid.Replies.Enqueue(FakeHid.HidppReply(14));
     var mouse = new LogitechG403(hid, dev: 0xFF, rgbIdx: 14, feature: 0x8070,
@@ -994,6 +995,7 @@ static string TempDir()
     mouse.SetColors(new[] { red, red });
     Equal(before, hid.Writes.Count, "once both landed, the identical frame is fully deduped");
     LogitechG403.RetryAfterFailMs = 5000;
+    LogitechG403.MinFrameGapMs = 33;
 }
 
 /*---------------- LogitechG403: a refused persist is retried, a landed one is not ----------------*/
@@ -1002,6 +1004,7 @@ static string TempDir()
     for (int i = 0; i < 40; i++) hid.Replies.Enqueue(FakeHid.HidppReply(14));
     var mouse = new LogitechG403(hid, 0xFF, 14, 0x8070, new byte[] { 1, 1 }, "G403");
     var red = new Rgb(255, 0, 0);
+    LogitechG403.MinFrameGapMs = 0;
 
     // claim(1), cluster 0(2), cluster 1(3), then the commits: cluster 0(4), cluster 1(5)
     hid.Accept = (n, _) => n != 4;
@@ -1018,6 +1021,33 @@ static string TempDir()
     before = hid.Writes.Count;
     mouse.SetColors(new[] { red, red }, persist: true);
     Equal(before, hid.Writes.Count, "a cluster already committed is not written to flash again");
+    LogitechG403.MinFrameGapMs = 33;
+}
+
+/*---------------- LogitechG403: lighting traffic is paced to ~30 Hz ----------------*/
+{
+    // The mouse's one microcontroller services the sensor at 1000 Hz and every
+    // HID++ request we send. Under an animated effect the engine offers a
+    // changed frame at 60 fps, which for two clusters is up to 120 exchanges a
+    // second, around the clock. Frames closer than the gap are skipped; the
+    // engine's dedup and keepalive send the next changed one.
+    var hid = new FakeHid();
+    for (int i = 0; i < 40; i++) hid.Replies.Enqueue(FakeHid.HidppReply(14));
+    var mouse = new LogitechG403(hid, 0xFF, 14, 0x8070, new byte[] { 1, 1 }, "G403");
+    var red = new Rgb(255, 0, 0); var blue = new Rgb(0, 0, 255);
+
+    mouse.SetColors(new[] { red, red });
+    int afterFirst = hid.Writes.Count;
+    Check(afterFirst > 0, "the first frame goes out");
+    mouse.SetColors(new[] { blue, blue });             // immediately: inside the gap
+    Equal(afterFirst, hid.Writes.Count, "a changed frame inside the 33 ms gap is skipped, not queued");
+    Thread.Sleep(45);
+    mouse.SetColors(new[] { blue, blue });             // the engine offers it again
+    Check(hid.Writes.Count > afterFirst, "the same change goes out once the gap has passed");
+
+    int beforePersist = hid.Writes.Count;
+    mouse.SetColors(new[] { blue, blue }, persist: true);   // a static apply, right away
+    Check(hid.Writes.Count > beforePersist, "a persist (static apply) is never paced: it commits at once");
 }
 
 /*---------------- ThermalrightLcd: the frame format, and a refused report (B5) ----------------*/

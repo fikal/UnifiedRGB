@@ -214,11 +214,27 @@ public sealed class LogitechG403 : IRgbDevice
     /// <summary>Stream the colours; with <paramref name="persist"/> also commit
     /// them to onboard memory right away (static applies - the effect engine
     /// streams with false).</summary>
+    /// <summary>Lighting traffic is paced to ~30 Hz. A mouse is an input device
+    /// first: its one microcontroller services the sensor at 1000 Hz AND every
+    /// HID++ request we send, and under an animated effect the engine offers a
+    /// changed frame at 60 fps, which for two clusters is up to 120 request/
+    /// reply exchanges a second, around the clock. Logitech's own software does
+    /// not do that, and on two LEDs the difference between 30 and 60 fps is
+    /// invisible. A frame that arrives too soon is simply skipped; the engine's
+    /// dedup and keepalive send the next changed one.</summary>
+    /// <remarks>Internal and settable ONLY so the harness can drive frames back to
+    /// back; nothing else should touch it.</remarks>
+    internal static int MinFrameGapMs = 33;
+    long _lastFrameTick;
+
     public void SetColors(IReadOnlyList<Rgb> colors, bool persist)
     {
         if (colors.Count == 0) return;
         lock (_writeLock)
         {
+            long tick = Environment.TickCount64;
+            if (!persist && tick - _lastFrameTick < MinFrameGapMs) return;
+            _lastFrameTick = tick;
             bool claimed = false, changed = false;
             for (int i = 0; i < _clusterEffect.Length; i++)
             {
