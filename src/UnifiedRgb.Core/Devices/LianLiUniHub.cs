@@ -290,8 +290,8 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IH
                 for (int l = 0; l < _outer && f * _outer + l < MaxPerChannel; l++)
                     _chan[outerPort * MaxPerChannel + f * _outer + l] = l < _outer / 2 ? oA : oB;
             }
-            Flush();
-            _primed = true;
+            _primed = false;
+            _primed = Flush();
         }
     }
 
@@ -334,19 +334,20 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IH
             }
             if (changed || !_primed)           // the hub latches its last commit
             {
-                _primed = true;
-                Flush();
+                // Invalidate before sending, including when the transport throws.
+                // The shadow is desired state, not proof the hub committed it.
+                _primed = false;
+                _primed = Flush();
             }
         }
     }
 
-    void Flush()
+    bool Flush()
     {
-        if (_disposed) return;   // hub torn down (Rescan) mid-write
+        if (_disposed) return false;   // hub torn down (Rescan) mid-write
         // Only the ACTIVE connector's two ports (inner=2g, outer=2g+1) - other
         // connectors are left untouched so any fans there aren't blanked.
-        SendChannel(2 * _group);
-        SendChannel(2 * _group + 1);
+        return SendChannel(2 * _group) && SendChannel(2 * _group + 1);
     }
 
     // Reused wire packets (always called under _lock; every meaningful byte is
@@ -356,11 +357,11 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IH
     readonly byte[] _pktCol = new byte[Pkt];
     readonly byte[] _pktCommit = new byte[Pkt];
 
-    void SendChannel(int ch)
+    bool SendChannel(int ch)
     {
         var start = _pktStart;
         start[0] = TxId; start[1] = 0x10; start[2] = 0x60; start[3] = (byte)(1 + ch / 2); start[4] = 0x04;
-        _hid.Write(start);
+        if (!_hid.Write(start)) return false;
 
         var col = _pktCol;
         col[0] = TxId; col[1] = (byte)(0x30 + ch);
@@ -372,12 +373,12 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IH
             float k = sum > 460 ? 460f / sum : 1f;
             col[p++] = (byte)(c.R * k); col[p++] = (byte)(c.B * k); col[p++] = (byte)(c.G * k);
         }
-        _hid.Write(col);
+        if (!_hid.Write(col)) return false;
 
         var commit = _pktCommit;
         commit[0] = TxId; commit[1] = (byte)(0x10 + ch);
         commit[2] = ModeStatic; commit[3] = Speed000; commit[4] = DirLtr; commit[5] = Bright100;
-        _hid.Write(commit);
+        return _hid.Write(commit);
     }
 
     /*-----------------------------------------------------*\

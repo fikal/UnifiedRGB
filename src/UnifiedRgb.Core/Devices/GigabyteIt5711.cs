@@ -432,6 +432,10 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
                     if (last[i] != _shadow[off + i]) { same = false; break; }
                 if (same) return false;
             }
+            // Earlier chunks can land before a later report fails or throws.
+            // The old frame then no longer describes the hardware, even if
+            // the next request returns to exactly that colour.
+            _fanValid[def.Id] = false;
             if (!StreamHeaderColors(def.Id, _shadow, off, def.Count, def.Order))
             {
                 Log.Occasional($"gigabyte:stream:{def.Id}", "GigabyteIt5711",

@@ -28,6 +28,8 @@ public sealed class EffectEngine
         public Rgb BaseColor;
 
         internal LedPos[] Pos = Array.Empty<LedPos>();
+        /// <summary>Coordinates used when rendering this channel, including desk placement.</summary>
+        public ReadOnlySpan<LedPos> Positions => Pos;
         /// <summary>The device's LIVE static frame (not a copy): non-zone
         /// channels compose every hardware frame over it. Bumping BaseVersion
         /// (InvalidateBase) tells the worker to re-snapshot it.</summary>

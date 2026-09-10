@@ -36,9 +36,13 @@ public static class ChromaShimInstaller
         ("RzChromaSDK.dll",   "RzChromaSDK_real.dll"),
     };
     static string ActiveDll => System.IO.Path.Combine(BinDir, Shims[0].Dll);
-    static string SourceOf(string name) => System.IO.Path.Combine(AppContext.BaseDirectory, name);
+    internal static System.IO.Stream? OpenBundledShim(string name) =>
+        typeof(ChromaShimInstaller).Assembly.GetManifestResourceStream("Chroma." + name);
 
-    public static bool ShimAvailable => System.IO.File.Exists(SourceOf(Shims[0].Dll));
+    public static bool ShimAvailable
+    {
+        get { using var stream = OpenBundledShim(Shims[0].Dll); return stream != null; }
+    }
 
     /// <summary>Is OUR shim currently the active DLL?</summary>
     public static bool Installed => System.IO.File.Exists(ActiveDll) && IsOurs(ActiveDll);
@@ -67,10 +71,10 @@ public static class ChromaShimInstaller
         foreach (var dir in BinDirs)
             foreach (var (dll, backupName) in Shims)
             {
-                string source = SourceOf(dll);
-                if (!System.IO.File.Exists(source)) continue;   // 32-bit shim not built into this release
                 try
                 {
+                    using var source = OpenBundledShim(dll);
+                    if (source == null) continue;   // optional 32-bit shim not built
                     string active = System.IO.Path.Combine(dir, dll);
                     string backup = System.IO.Path.Combine(dir, backupName);
                     System.IO.Directory.CreateDirectory(dir);
@@ -81,7 +85,7 @@ public static class ChromaShimInstaller
                         System.IO.File.Move(active, backup);
                         Log.Info("chroma", $"backed up real Razer SDK {dll} in {dir}");
                     }
-                    System.IO.File.Copy(source, active, overwrite: true);
+                    using (var output = System.IO.File.Create(active)) source.CopyTo(output);
                     if (dir == BinDir && dll == Shims[0].Dll) canonicalOk = true;
                     Log.Info("chroma", $"shim installed -> {active}");
                 }

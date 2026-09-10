@@ -112,7 +112,7 @@ public sealed class LightingController
                 if (dev is LogitechG403 g) g.SetColors(snap, persist: true);
                 else dev.SetColors(snap);
             }
-        });
+        }, moveToEnd: true);
     }
 
     /// <summary>Write one zone of a zone-writable device from its stored frame,
@@ -127,7 +127,7 @@ public sealed class LightingController
         {
             Master.Scale(slice);
             lock (GateOf(dev)) zw.SetZone(off, slice);
-        });
+        }, moveToEnd: true);
     }
 
     /// <summary>Repaint a range with its stored static colors: the zone alone
@@ -188,7 +188,7 @@ public sealed class LightingController
     public void PushBlack(IRgbDevice dev)
     {
         var black = new Rgb[dev.LedCount];
-        Applier.Post(LaneOf(dev), dev, () => { lock (GateOf(dev)) dev.SetColors(black); });
+        Applier.Post(LaneOf(dev), dev, () => { lock (GateOf(dev)) dev.SetColors(black); }, moveToEnd: true);
     }
 
     /// <summary>Full device frame = static colors with every running channel

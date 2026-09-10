@@ -39,6 +39,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Read as streams by the installer, including inside a single-file app. -->
+    <EmbeddedResource Include="..\..\native\chroma-shim\RzChromaSDK64.dll"
+                      Condition="Exists('..\..\native\chroma-shim\RzChromaSDK64.dll')"
+                      LogicalName="Chroma.RzChromaSDK64.dll" />
+    <EmbeddedResource Include="..\..\native\chroma-shim\RzChromaSDK.dll"
+                      Condition="Exists('..\..\native\chroma-shim\RzChromaSDK.dll')"
+                      LogicalName="Chroma.RzChromaSDK.dll" />
     <InternalsVisibleTo Include="UnifiedRgb.Tests" />
   </ItemGroup>
 

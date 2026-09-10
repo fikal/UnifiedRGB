@@ -69,10 +69,12 @@ public sealed class CoalescingApplier
     /// the hardware: a whole-device job re-posted in place runs BEFORE a
     /// partial that was posted after its first version, so the stale partial
     /// paints over the newer whole frame. The rule for callers is therefore
-    /// ONE key per hardware range that can be written more than one way; the
-    /// SDK path keeps a single accumulated frame per device for exactly this
-    /// reason (LightingController.PushExternalFrame).</summary>
-    public void Post(object laneKey, object key, Action work)
+    /// one accumulated frame per device (LightingController.PushExternalFrame)
+    /// or moveToEnd for overlapping static ranges that retain separate keys
+    /// to avoid disturbing effects on sibling zones.</summary>
+    /// <param name="moveToEnd">For overlapping static ranges, place a
+    /// replacement after intervening writes so the newest intent wins.</param>
+    public void Post(object laneKey, object key, Action work, bool moveToEnd = false)
     {
         Lane? lane;
         bool start;
@@ -86,6 +88,7 @@ public sealed class CoalescingApplier
             // looked it up - an orphan lane Drain would not see.
             lock (lane.Lock)
             {
+                if (moveToEnd) lane.Pending.Remove(key);
                 lane.Pending[key] = work;
                 start = !lane.Running;
                 if (start) lane.Running = true;

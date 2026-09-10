@@ -176,21 +176,23 @@ static class DevicesSuite
             // The mouse's one microcontroller services the sensor at 1000 Hz and every
             // HID++ request we send. Under an animated effect the engine offers a
             // changed frame at 60 fps, which for two clusters is up to 120 exchanges a
-            // second, around the clock. Frames closer than the gap are skipped; the
-            // engine's dedup and keepalive send the next changed one.
+            // second, around the clock. Frames closer than the gap wait so a
+            // one-shot command is delivered even if the engine has stopped.
             var hid = new FakeHid();
             for (int i = 0; i < 40; i++) hid.Replies.Enqueue(FakeHid.HidppReply(14));
             var mouse = new LogitechG403(hid, 0xFF, 14, 0x8070, new byte[] { 1, 1 }, "G403");
             var red = new Rgb(255, 0, 0); var blue = new Rgb(0, 0, 255);
 
+            var paced = System.Diagnostics.Stopwatch.StartNew();
             mouse.SetColors(new[] { red, red });
             int afterFirst = hid.Writes.Count;
             t.Check(afterFirst > 0, "the first frame goes out");
             mouse.SetColors(new[] { blue, blue });             // immediately: inside the gap
-            t.Equal(afterFirst, hid.Writes.Count, "a changed frame inside the 33 ms gap is skipped, not queued");
-            Thread.Sleep(45);
+            t.Check(hid.Writes.Count > afterFirst, "a changed frame inside the gap is delivered");
+            t.Check(paced.ElapsedMilliseconds >= 32, "consecutive frames preserve the 33 ms pacing gap");
+            int afterBlue = hid.Writes.Count;
             mouse.SetColors(new[] { blue, blue });             // the engine offers it again
-            t.Check(hid.Writes.Count > afterFirst, "the same change goes out once the gap has passed");
+            t.Equal(afterBlue, hid.Writes.Count, "the delivered frame remains deduplicated");
 
             int beforePersist = hid.Writes.Count;
             mouse.SetColors(new[] { blue, blue }, persist: true);   // a static apply, right away

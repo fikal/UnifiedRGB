@@ -807,6 +807,9 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         // flag the user's live canvas as show-only (that would let a profile's
         // screen reload over an edit in progress, and skip the save at exit).
         var sc = string.IsNullOrEmpty(a.Scene) ? null : _scenes.Scenes.FirstOrDefault(x => x.Name == a.Scene);
+        // Keep the old ownership for the skip check: marking this step as
+        // show-only must not make an edited canvas look like a saved scene.
+        bool wasShowScene = _liveIsShowScene;
         if (sc != null) _liveIsShowScene = true;
         if (!string.IsNullOrEmpty(a.Profile) &&
             !string.Equals(_currentProfile(), a.Profile, StringComparison.OrdinalIgnoreCase))
@@ -814,7 +817,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         if (sc != null &&
             // Only safe to skip when the show itself put this screen up. If the
             // user has been editing, the live design is no longer that scene.
-            !(_liveIsShowScene && _selectedSceneName == sc.Name))
+            !(wasShowScene && _selectedSceneName == sc.Name))
         {
             _selectedSceneName = sc.Name;   // reflect without re-loading twice
             OnChanged(nameof(SelectedSceneName));

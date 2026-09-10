@@ -30,11 +30,13 @@ static class Suites
         ("Canvas",        CanvasSuite.Run),
         ("CanvasLoad",    CanvasLoadSuite.Run),
         ("Undo",          UndoSuite.Run),
+        ("LcdScenes",     LcdScenesSuite.Run),
 
         // Drivers: real protocol bytes over FakeHid.
         ("Devices",       DevicesSuite.Run),
         ("GigabyteDriver", GigabyteDriverSuite.Run),
         ("LianBake",      LianBakeSuite.Run),
+        ("ReviewFixes",   ReviewFixesSuite.Run),
         ("Battery",       BatterySuite.Run),
         ("HardwareExit",  HardwareExitSuite.Run),
         ("Native",        NativeSuite.Run),

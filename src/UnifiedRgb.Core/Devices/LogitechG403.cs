@@ -267,8 +267,8 @@ public sealed class LogitechG403 : IRgbDevice
     /// changed frame at 60 fps, which for two clusters is up to 120 request/
     /// reply exchanges a second, around the clock. Logitech's own software does
     /// not do that, and on two LEDs the difference between 30 and 60 fps is
-    /// invisible. A frame that arrives too soon is simply skipped; the engine's
-    /// dedup and keepalive send the next changed one.</summary>
+    /// invisible. Wait for the next slot rather than dropping a frame: the
+    /// caller may be sending a one-shot lights-off command.</summary>
     /// <remarks>Internal and settable ONLY so the harness can drive frames back to
     /// back; nothing else should touch it.</remarks>
     internal static int MinFrameGapMs = 33;
@@ -280,8 +280,9 @@ public sealed class LogitechG403 : IRgbDevice
         lock (_writeLock)
         {
             long tick = Environment.TickCount64;
-            if (!persist && tick - _lastFrameTick < MinFrameGapMs) return;
-            _lastFrameTick = tick;
+            long wait = MinFrameGapMs - (tick - _lastFrameTick);
+            if (!persist && wait > 0) Thread.Sleep((int)wait);
+            _lastFrameTick = Environment.TickCount64;
             bool claimed = false, changed = false;
             for (int i = 0; i < _clusterEffect.Length; i++)
             {

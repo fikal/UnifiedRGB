@@ -189,9 +189,26 @@ public sealed class LianBakeService
         return false;
     }
 
-    /// <summary><paramref name="retry"/>: this is the single automatic re-bake
-    /// after an unconfirmed upload, so it must not clear the device's retry
-    /// mark (only a NEW bake request does, giving the next edit its own retry).</summary>
+    /// <summary>Identity of the inputs that affect every baked frame.</summary>
+    internal static string BakeSignature(IEnumerable<EffectEngine.Channel> channels, IReadOnlyList<Rgb> baseFrame)
+    {
+        var key = new System.Text.StringBuilder();
+        key.Append(FormattableString.Invariant($"brightness:{Master.Brightness:R}|"));
+        foreach (var c in channels.OrderBy(c => c.Offset))
+        {
+            key.Append(FormattableString.Invariant($"{c.Offset}:{c.Count}:{c.Effect.Name}:{c.Speed:R}:{c.BaseColor}:{c.Effect.BakeKey}:"));
+            if (c.Effect is IPaletteEffect pe) key.AppendJoin(",", pe.Palette);
+            foreach (var p in c.Positions)
+                key.Append(FormattableString.Invariant($";{p.X:R},{p.Y:R}"));
+            key.Append('|');
+        }
+        // Static sibling zones are baked into every frame too.
+        foreach (var color in baseFrame) key.Append(color.ToHex()).Append(',');
+        return key.ToString();
+    }
+
+    /// <summary><paramref name="retry"/> preserves the device's retry mark;
+    /// only a new bake request gives the next edit its own retry.</summary>
     void Rebake(LianLiWireless dev, bool retry = false)
     {
         var engine = _lighting.Engine;
@@ -211,9 +228,8 @@ public sealed class LianBakeService
         // motion / density / direction / tail / own palette): an edit to those
         // re-requested a bake, this check called it unchanged, and the fans
         // kept the old animation while the preview showed the new one.
-        string sig = string.Join("|", channels.OrderBy(c => c.Offset).Select(c =>
-            $"{c.Offset}:{c.Count}:{c.Effect.Name}:{c.Speed}:{c.BaseColor}:{c.Effect.BakeKey}:" +
-            (c.Effect is IPaletteEffect pe ? string.Join(",", pe.Palette) : "")));
+        var baseFrame = (Rgb[])_lighting.FrameFor(dev).Clone();
+        string sig = BakeSignature(channels, baseFrame);
         if (dev.SuppressStreaming && _lastSig.TryGetValue(dev, out var prev) && prev == sig) return;
         _lastSig[dev] = sig;
         if (!retry) _retried.Remove(dev);
@@ -239,7 +255,6 @@ public sealed class LianBakeService
         // on a WORKER — 28k+ LED evaluations per device was a visible dispatcher
         // hitch. A generation stamp makes a superseded bake's upload a no-op
         // (a slower older bake can otherwise finish after a newer one).
-        var baseFrame = (Rgb[])_lighting.FrameFor(dev).Clone();
         // The statics are stored at full range and scaled at the write boundary
         // everywhere else (PushFrame, the engine's base snapshot); the baked
         // frames ARE the write, so scale them here too - the channel LEDs below

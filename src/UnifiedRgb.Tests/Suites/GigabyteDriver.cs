@@ -203,5 +203,41 @@ static class GigabyteDriverSuite
                 "gigabyte(d): a refused effect-mask packet re-runs the whole init");
             board.Dispose();
         }
+
+        t.Section("partial stream failure followed by the last successful colour");
+        var original = HardwareConfig.Load();
+        try
+        {
+            new HardwareConfig
+            {
+                GigabyteArgbHeaders = new() { new() { Header = 2, Leds = 30, Name = "Test strip" } },
+            }.Save();
+            var hid = new FakeHid();
+            using var board = new GigabyteIt5711(hid, 0x5711);
+            var fan = board.Zones.First(z => z.IsFan);
+            board.SetZone(fan.Offset, Solid(fan.Count, Rgb.Red));
+
+            // A 30-LED header takes two reports. The first blue chunk lands,
+            // then the second is refused: the hardware no longer matches red.
+            hid.Features.Clear();
+            hid.AcceptFeature = (_, p) => !IsStream(p) || p[2] == 0;
+            board.SetZone(fan.Offset, Solid(fan.Count, Rgb.Blue));
+            t.Equal(2, hid.Features.Count(IsStream), "partial stream: both blue chunks attempted");
+
+            hid.AcceptFeature = null;
+            hid.Features.Clear();
+            board.SetZone(fan.Offset, Solid(fan.Count, Rgb.Red));
+            var repair = hid.Features.Where(IsStream).ToList();
+            t.Equal(2, repair.Count, "partial stream: returning to red repairs both chunks");
+            t.Check(repair.Count == 2 && repair.All(p =>
+                Enumerable.Range(0, p[4] / 3).All(i =>
+                    p[5 + i * 3] == 0 && p[6 + i * 3] == 255 && p[7 + i * 3] == 0)),
+                "partial stream: repair sends red in GRB order");
+
+            hid.Features.Clear();
+            board.SetZone(fan.Offset, Solid(fan.Count, Rgb.Red));
+            t.Equal(0, hid.Features.Count, "partial stream: a successful repair restores dedup");
+        }
+        finally { original.Save(); }
     }
 }
