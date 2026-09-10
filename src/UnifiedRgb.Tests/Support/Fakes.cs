@@ -13,7 +13,7 @@ namespace UnifiedRgb.Tests;
 |                                                              |
 | FakeHid is the important one - it is what lets a real driver |
 | be tested without its device: the exact bytes it puts on the |
-| wire for a given color, and what it does when the device    |
+| wire for a given color, and what it does when the device     |
 | refuses a packet, which is the path that has produced the    |
 | most field bugs and the one that was untestable before it.   |
 \*-----------------------------------------------------------*/

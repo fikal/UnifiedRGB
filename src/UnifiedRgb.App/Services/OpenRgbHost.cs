@@ -135,6 +135,9 @@ public sealed class OpenRgbHost : IOpenRgbHost
         _lighting.ForgetExternal(device);
         _ui.InvokeAsync(() =>
         {
+            // Per device, before the count is even consulted: this device is
+            // no longer held whether or not it was the last client to leave.
+            _vm.ReleaseHold(device);
             MainViewModel.LightState? restore = null;
             lock (_gate)
             {

@@ -662,6 +662,11 @@ public static class SetupBundle
                 problem = $"that bundle claims to hold {total / (1024 * 1024)} MB, which is more than a setup can be";
                 return null;
             }
+            // CLAIMS is the operative word above: Length is a number the bundle's
+            // author wrote into the zip's own central directory, and nothing makes
+            // the deflate stream honour it. The real ceiling is this budget, spent
+            // against bytes that actually came out.
+            long budget = MaxBundleBytes;
 
             string? manifestText = null;
             var texts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -671,7 +676,12 @@ public static class SetupBundle
             {
                 if (entry.FullName.EndsWith('/')) continue;   // directory marker
                 byte[] bytes;
-                try { bytes = ReadEntry(entry); }
+                try { bytes = ReadEntry(entry, ref budget); }
+                catch (BundleTooBigException ex)
+                {
+                    problem = ex.Message;
+                    return null;
+                }
                 catch (InvalidDataException)
                 {
                     problem = $"the bundle is damaged: '{entry.FullName}' could not be unpacked (the file is truncated or corrupt)";
@@ -766,11 +776,34 @@ public static class SetupBundle
         }
     }
 
-    static byte[] ReadEntry(ZipArchiveEntry entry)
+    /// <summary>A bundle that unpacks to more than a setup could possibly be.
+    /// Separate from the "damaged" cases because it is not damage: a zip bomb is
+    /// a deliberately made file, and the sentence the user sees should not blame
+    /// their download.</summary>
+    sealed class BundleTooBigException(string message) : Exception(message);
+
+    /// <summary>Read one entry with a hard ceiling on what comes OUT, spending a
+    /// budget shared across the whole archive. CopyTo followed the decompressed
+    /// stream wherever it went; a bundle is a file from the internet, and the
+    /// only size figure available before reading it is one the file states about
+    /// itself. Two hundred bytes of deflate can declare a length of 1 KB and
+    /// expand to gigabytes - an OutOfMemoryException on the UI thread, from
+    /// nothing worse than opening a file someone sent you.</summary>
+    static byte[] ReadEntry(ZipArchiveEntry entry, ref long budget)
     {
         using var s = entry.Open();
         using var ms = new MemoryStream();
-        s.CopyTo(ms);
+        var buf = new byte[81920];
+        int n;
+        while ((n = s.Read(buf, 0, buf.Length)) > 0)
+        {
+            budget -= n;
+            if (budget < 0)
+                throw new BundleTooBigException(
+                    $"'{entry.FullName}' unpacks to far more than the {MaxBundleBytes / (1024 * 1024)} MB a setup can hold, "
+                    + "so it was not opened");
+            ms.Write(buf, 0, n);
+        }
         return ms.ToArray();
     }
 
@@ -792,6 +825,19 @@ public static class SetupBundle
         string name = e.Name ?? "";
         if (name.Length == 0 || Path.GetFileName(name) != name) return null;
         if (name is "." or "..") return null;
+        // And the root/name/group triple has to be one WE publish. Confining the
+        // destination to our own two folders was not enough on its own: the
+        // group is what decides which consent checkbox covers the entry and what
+        // sentence the preview shows for it, so a bundle was free to carry
+        // settings.json under group "machine" and have it described to the user
+        // as "header layout, fan curves and hub layouts" on the way in. An
+        // unknown name is refused for the same reason - nothing should be able
+        // to write a file into our config folder that we do not put there
+        // ourselves. A bundle from a newer build carrying a new file is skipped
+        // rather than obeyed, which is the documented direction.
+        if (!Files.Any(f => f.Root == e.Root && f.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
+                            && f.Group == e.Group))
+            return null;
         return e.Root switch
         {
             RootLocal => AppPaths.Local(name),
@@ -1337,6 +1383,7 @@ public static class SetupBundle
         {
             // Roll back to exactly the state we found. A file we created is
             // deleted; a file we replaced is restored from its copy.
+            var stranded = new List<string>();
             foreach (string target in written)
             {
                 try
@@ -1344,11 +1391,32 @@ public static class SetupBundle
                     if (replaced.TryGetValue(target, out string? copy) && copy != null) File.Copy(copy, target, overwrite: true);
                     else File.Delete(target);
                 }
-                catch (Exception undo) { Log.Warn("bundle", $"rollback of {target} failed: {undo.Message}"); }
+                catch (Exception undo)
+                {
+                    stranded.Add(Path.GetFileName(target));
+                    Log.Warn("bundle", $"rollback of {target} failed: {undo.Message}");
+                }
             }
             foreach (string f in extracted) { try { File.Delete(f); } catch { } }
-            result.Problem = $"the import failed partway and was rolled back: {ex.Message}";
-            Log.Warn("bundle", $"import failed and was rolled back: {ex}");
+
+            // Only claim the rollback worked when it did. A failed undo used to
+            // report the same reassuring sentence as a clean one, so the user was
+            // told their setup was untouched while some of it had been replaced -
+            // and the folder holding the only copies of the originals was never
+            // named, because BackupDirectory is set on the success path alone.
+            if (stranded.Count == 0)
+            {
+                result.Problem = $"the import failed partway and was rolled back: {ex.Message}";
+                Log.Warn("bundle", $"import failed and was rolled back: {ex}");
+            }
+            else
+            {
+                result.BackupDirectory = Directory.Exists(backupDir) ? backupDir : null;
+                result.Problem = $"the import failed partway ({ex.Message}) and could NOT be fully undone: "
+                    + string.Join(", ", stranded) + " was left as the bundle wrote it"
+                    + (result.BackupDirectory != null ? $". Your original is in {result.BackupDirectory}" : "");
+                Log.Error("bundle", $"import failed and rollback was incomplete ({string.Join(", ", stranded)}): {ex}");
+            }
             return result;
         }
 

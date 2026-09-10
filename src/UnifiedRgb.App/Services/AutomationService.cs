@@ -90,7 +90,6 @@ public sealed class AutomationService : IDisposable
     AutomationMode _pauseHoldMode = AutomationMode.Base;
     string? _pauseHoldProfile;
     MainViewModel.LightState? _pauseLighting;
-    bool _resumePending;
 
     // Edge detection for the fan failsafe. It fires on the sensor hub's own
     // thread and is only visible as a flag, so the tick is where it becomes a
@@ -141,7 +140,6 @@ public sealed class AutomationService : IDisposable
             }
             else
             {
-                _resumePending = true;
                 ActivityLog.Note(ActivityKind.Paused, AutomationPause.Ended);
                 Log.Info("auto", "automation resumed by the user");
             }
@@ -271,8 +269,15 @@ public sealed class AutomationService : IDisposable
             });
 
             _vm.SetAutomationStatus(decision.Status, decision.Topic);
-            if (!_resumePending && decision.Mode == _mode && decision.Profile == _activeRuleProfile) return;
-            _resumePending = false;
+            // Resuming is not itself a transition. This used to be forced
+            // open by a _resumePending flag, which sent an un-paused desk
+            // straight back to the startup profile - wiping the lighting the
+            // user had set BY HAND during the pause, and filing it as "no
+            // rule matches any more". The flag was never needed: the paused
+            // branch above keeps _mode and _activeRuleProfile level with what
+            // is actually lit, so a decision that differs from them is
+            // already the only thing a resume has to re-assert.
+            if (decision.Mode == _mode && decision.Profile == _activeRuleProfile) return;
 
             // Only now, on an actual transition, is it worth asking what ELSE
             // wanted the lights. Re-running the app match costs one substring

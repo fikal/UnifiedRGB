@@ -24,7 +24,7 @@ namespace UnifiedRgb.Tests;
 | The Gigabyte and ENE register assertions are here rather     |
 | than with their drivers because this is the caller that      |
 | reaches them: the hardware-static exit path sends the same   |
-| packet the per-frame path does, and ENE's effect color      |
+| packet the per-frame path does, and ENE's effect color       |
 | window sits directly below REG_DIRECT, so the layout is      |
 | pinned to the hardware rather than to a remembered number.   |
 \*-----------------------------------------------------------*/

@@ -15,3 +15,8 @@ src/UnifiedRgb.Publisher/
 
 # x86 shim resource compile output (build.bat regenerates it)
 native/chroma-shim/version32.res
+
+# x64 shim resource compile output (build.bat regenerates it on every run,
+# and now does so in CI too - a tracked copy makes release.ps1 refuse to
+# release on a "dirty tree" for a file nobody edited)
+native/chroma-shim/version.res

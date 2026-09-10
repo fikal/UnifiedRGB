@@ -1314,8 +1314,13 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         RefreshDeviceHealth();
         _watchdog = new Services.DeviceWatchdog(RecoverDevices, () => new UnifiedRgb.Core.RecoveryConditions(
             // An SDK client holding a device: a recovery rescan would drop
-            // every claim at once, so the policy waits for it instead.
-            SdkClientHolds: Devices.Any(d => _lighting.IsClaimed(d)),
+            // every claim at once, so the policy waits for it instead. Both
+            // sources, exactly as the health rebuild does: IsClaimed only turns
+            // true on the client's FIRST PAINTED FRAME, so asking it alone let a
+            // client that had claimed a device but not yet drawn to it be
+            // rescanned straight through - which is the one thing the comment
+            // on RecoverDevices promises cannot happen.
+            SdkClientHolds: Devices.Any(d => _sdkHeld.Contains(d) || _lighting.IsClaimed(d)),
             // A scheduled dark window or a locked session. We still redetect;
             // we just do not turn anything on. See RecoverDevices.
             LightsSuppressed: LightsSuppressed));
@@ -1940,6 +1945,16 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // holding. On the logoff path that would be the thing that costs the
         // session, so the wait is what gets the budget.
         var devices = Devices.ToArray();
+        // Shared out per device rather than first-come. A device that CANNOT
+        // deliver refuses INSTANTLY - an unplugged Lian Li hub returns false in
+        // microseconds - and must-land then burns the entire remaining window
+        // sleeping between attempts that were never going to land. One absent
+        // device therefore used to eat all 2000 ms and hand every later device
+        // a budget of zero, i.e. a single attempt: exactly the regression the
+        // shared window was written to prevent. An early device that finishes
+        // fast still gives its unspent time back, because the clock is re-read
+        // each pass.
+        int pending = devices.Count(d => configured.ContainsKey(d.Name));
         var worker = new Thread(() =>
         {
             foreach (var device in devices)
@@ -1947,10 +1962,12 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
                 if (!configured.TryGetValue(device.Name, out var behavior)) continue;
                 try
                 {
-                    // Whatever is left of the shared window, and never less
+                    // This device's fair share of what is left, and never less
                     // than zero: a budget of zero still gets one attempt, which
                     // is what the old code gave every device.
-                    int budget = (int)Math.Clamp(deadline - Environment.TickCount64, 0, ExitBudgetMs);
+                    long left = Math.Max(0, deadline - Environment.TickCount64);
+                    int budget = (int)Math.Clamp(left / Math.Max(1, pending), 0, ExitBudgetMs);
+                    pending--;
                     // The drain above can time out with an effect worker still
                     // inside a write; the gate makes this the write that lands last.
                     string? what;

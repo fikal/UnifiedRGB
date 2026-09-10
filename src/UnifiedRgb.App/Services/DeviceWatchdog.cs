@@ -282,25 +282,68 @@ public sealed class DeviceWatchdog : IDisposable
     /// is a debounce that does not work.</summary>
     void Arm(long now)
     {
+        if (!_policy.Pending) { _timer.Stop(); _armedFor = long.MinValue; return; }
+        // Leave a RUNNING timer alone unless the policy has actually pushed the
+        // moment further out. Restarting unconditionally is what let a flapping
+        // port starve the timer forever: once MaxDeferMs caps the deferral
+        // DelayFrom returns 0, the interval floors at 50 ms, and any event
+        // inside that 50 ms began the countdown again - so the ceiling that
+        // exists precisely for a flapping port was the one thing that could
+        // never fire.
+        long due = _policy.DueAt;
+        if (_timer.IsEnabled && due <= _armedFor) return;
         _timer.Stop();
-        if (!_policy.Pending) return;
+        _armedFor = due;
         // Never zero: a DispatcherTimer with a zero interval fires on every
         // dispatcher pass, which is a busy loop dressed as a timer.
         _timer.Interval = TimeSpan.FromMilliseconds(Math.Max(50, _policy.DelayFrom(now)));
         _timer.Start();
     }
 
+    /// <summary>Absolute tick the running timer is counting towards, so Arm can
+    /// tell a genuine deferral from a restart that would reset the debounce.</summary>
+    long _armedFor = long.MinValue;
+
     void Fire()
     {
         _timer.Stop();
+        _armedFor = long.MinValue;
         if (_disposed) return;
         long now = Environment.TickCount64;
-        var plan = _policy.Claim(now, _conditions());
+        // Remembered before the claim consumes it, so a failed recovery below
+        // can put the same request back.
+        var reason = _policy.PendingReason;
+
+        RecoveryPlan plan;
+        // The conditions lambda walks the device list and asks the lighting
+        // controller about every claim; it is exactly as trustworthy as the
+        // recovery the catch below guards, and it used to run OUTSIDE any try.
+        // A throw here escapes a DispatcherTimer tick handler, which does not
+        // log an error - it ends the process.
+        try { plan = _policy.Claim(now, _conditions()); }
+        catch (Exception ex)
+        {
+            Log.Error("watchdog", $"could not read the recovery conditions: {ex}");
+            Arm(Environment.TickCount64);
+            return;
+        }
+
         switch (plan.Action)
         {
             case RecoveryAction.Rescan:
                 try { _recover(plan); }
-                catch (Exception ex) { Log.Error("watchdog", $"recovery failed: {ex}"); }
+                catch (Exception ex)
+                {
+                    // Claim has already dropped the pending request and stamped
+                    // the clock, so without this a rescan that threw halfway was
+                    // the end of it: a torn-down device list, no lights, and
+                    // nothing scheduled to try again. Re-note it and let the
+                    // ordinary debounce have another go.
+                    Log.Error("watchdog", $"recovery failed, will try again: {ex}");
+                    long after = Environment.TickCount64;
+                    _policy.Note(reason, after);
+                    Arm(after);
+                }
                 break;
             case RecoveryAction.Wait:
                 Arm(now);
@@ -311,7 +354,7 @@ public sealed class DeviceWatchdog : IDisposable
     /// <summary>A rescan the user asked for, or one anything else performed,
     /// counts as the recovery: dropping the pending one avoids doing the whole
     /// teardown twice for one gesture.</summary>
-    public void NoteRescanHappened() { _policy.Cancel(Environment.TickCount64); _timer.Stop(); }
+    public void NoteRescanHappened() { _policy.Cancel(Environment.TickCount64); _timer.Stop(); _armedFor = long.MinValue; }
 
     public void Dispose()
     {

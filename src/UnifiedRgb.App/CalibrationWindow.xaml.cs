@@ -73,11 +73,6 @@ public partial class CalibrationWindow : Window
     /// <summary>The patch choices, in the order Core cycles them.</summary>
     public IReadOnlyList<RefChoice> References { get; }
 
-    /// <summary>True once the aid has taken the devices over at any point in
-    /// this session. Restoration is performed by the aid's live-state callback;
-    /// this flag records whether a reference session was started.</summary>
-    public bool LightingNeedsRestoring { get; private set; }
-
     /// <summary>The normal entry point: the devices to offer, and the aid that
     /// will light them. The caller owns the aid because the caller owns the
     /// LightingController it writes through.</summary>
@@ -433,7 +428,6 @@ public partial class CalibrationWindow : Window
             // handing it the same device seven times would stop and repaint it
             // seven times per patch.
             _aid.Start(Rows.Select(r => r.Device).Distinct(), CurrentReference);
-            LightingNeedsRestoring = true;
         }
         else
         {
@@ -460,6 +454,14 @@ public partial class CalibrationWindow : Window
 
     void ResetAll_Click(object sender, RoutedEventArgs e)
     {
+        // Every device and every zone on the machine, gone from memory AND from
+        // calibration.json in one click, with no undo - and this button sits a
+        // short distance from the one that resets a single row. Everything else
+        // in the app that destroys work at this scale asks first.
+        if (!Dialogs.Confirm(this, "Reset every device?",
+                "Every color trim you have made, on every device and every zone, "
+                + "goes back to untouched. This cannot be undone.",
+                "Reset Everything")) return;
         Calibration.ResetAll();
         _dirty = true;
         SaveIfDirty();

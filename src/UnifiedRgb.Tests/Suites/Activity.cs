@@ -232,6 +232,19 @@ static class ActivitySuite
                 t.Check(restored.Dirty, "paused unlock retains the unsaved flag despite startup-profile return being enabled");
                 t.Equal(1, vm.Lighting.Engine.ChannelsFor(dev).Count, "paused unlock resumes the live effect");
 
+                // Un-pausing is not itself a transition. It used to force one,
+                // and Base means "back to the startup profile": resuming wiped
+                // the hand-edited blue, put rule A's red on, and filed it in the
+                // activity log as "no rule matches any more". Nothing has
+                // changed here - no schedule, no app rule, not locked - so the
+                // only correct answer is to leave the lighting alone.
+                service.Paused = false;
+                var afterResume = vm.CaptureState();
+                t.Equal(b.Name, afterResume.ProfileName, "resuming automation with nothing changed keeps the user's profile");
+                t.Equal(new UnifiedRgb.Core.Rgb(0, 0, 255), afterResume.Frames[dev.Name][0],
+                    "resuming automation with nothing changed keeps the hand-edited frame");
+                t.Check(afterResume.Dirty, "resuming automation with nothing changed keeps the unsaved flag");
+
                 UnifiedRgb.App.MainViewModel.LightState? captured = null;
                 var aid = new UnifiedRgb.App.Services.CalibrationAid(vm.Lighting,
                     () => captured = vm.CaptureState(),

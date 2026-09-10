@@ -88,9 +88,13 @@ for that long per packet is why it was cut from 2000.
 
 Callers always pass exactly `LedCount` colors (or a zone's count to
 `SetZone`). Do not rely on it: never index past `colors.Count`. The convention
-for a short frame is **repeat the last color** (`colors[Math.Min(i,
-colors.Count - 1)]`). Do not drop the whole frame silently, and do not pad
-with black - both have been done, and both looked like a dead device.
+for a short frame is **repeat the last color** - `WritePolicy.ColorAt` is
+that one line, already written. Since `SetColors` returns a verdict a driver
+may instead refuse a short frame outright and return `false`, which is honest
+and visible. What is banned is dropping it **silently** and padding the tail
+with **black** - both have been done, and both looked like a dead device.
+`EneDram` and `CorsairStrafeMk2` still black-pad; that is a defect on the
+list, not a licence to copy.
 
 ### The verdict: what `SetColors` returns
 
@@ -184,8 +188,10 @@ color still lit because the off command was dropped.
 Those go through `WritePolicy.MustLand`, which is the only place in the app
 that retries a write immediately. It:
 
-- calls `InvalidateCache()` before **every** attempt, so a stale "it already
-  shows this" cannot turn into a success for a frame the hardware never got;
+- calls `InvalidateCache()` before **every** attempt - the two device-typed
+  overloads do, so a stale "it already shows this" cannot turn into a success
+  for a frame the hardware never got. The `Func<bool>` overload cannot see a
+  device and does not: its callers invalidate inside their own lambda;
 - retries to a bounded deadline (`MustLandBudgetMs`, spent per device out of
   the exit path's single 2000 ms window);
 - treats a throw as one refused attempt rather than an escape route, because
@@ -193,8 +199,9 @@ that retries a write immediately. It:
 - logs at **error** level, naming the device and the attempt count, when it
   still could not deliver.
 
-Callers: `LightingController.PushFrame` / `PushZone` / `PushBlack`,
-`HardwareExit.Apply`, and the identify blink's restore. A streaming caller
+Callers: `LightingController.PushFrame` / `PushZone` / `PushBlack` /
+`PushReference` (the calibration reference patch), `HardwareExit.Apply`, and
+the identify blink's restore. A streaming caller
 must **not** use it: an SDK client's frames retry themselves, and a retry loop
 on an applier lane at a client's frame rate is a stutter, not a fix.
 

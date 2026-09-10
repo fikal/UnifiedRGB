@@ -125,10 +125,14 @@ public sealed partial class MainViewModel
     /// lets go and what a rescan calls when every claim dies at once.</summary>
     readonly HashSet<IRgbDevice> _sdkHeld = new();
 
-    /// <summary>Set while a rebuild is already queued, so a burst of
+    /// <summary>Non-zero while a rebuild is already queued, so a burst of
     /// transitions (a dongle pulled while six devices are streaming) costs one
-    /// dispatcher hop rather than six.</summary>
-    bool _healthRefreshQueued;
+    /// dispatcher hop rather than six. An int through Interlocked rather than a
+    /// bool: the writers are effect workers, applier lanes and SDK socket
+    /// threads, and an unsynchronised read that saw a stale "queued" dropped
+    /// that device's transition entirely - the badge for a device that had just
+    /// died simply never appeared.</summary>
+    int _healthRefreshQueued;
 
     /// <summary>Subscribe once, at construction. The handler runs on whichever
     /// thread wrote - an effect worker, an applier lane, an SDK socket - so
@@ -137,8 +141,7 @@ public sealed partial class MainViewModel
     {
         UnifiedRgb.Core.DeviceHealth.Shared.Changed += _ =>
         {
-            if (_healthRefreshQueued) return;
-            _healthRefreshQueued = true;
+            if (Interlocked.Exchange(ref _healthRefreshQueued, 1) == 1) return;
             _dispatcher.BeginInvoke(new Action(() =>
             {
                 // Cleared AFTER the rebuild, not before: the rebuild itself
@@ -146,7 +149,7 @@ public sealed partial class MainViewModel
                 // raise transitions of its own, and clearing first would have
                 // each of those queue yet another rebuild.
                 try { RefreshDeviceHealth(); }
-                finally { _healthRefreshQueued = false; }
+                finally { Interlocked.Exchange(ref _healthRefreshQueued, 0); }
             }));
         };
     }
@@ -240,6 +243,20 @@ public sealed partial class MainViewModel
         // here is what turns an invisible takeover into the "controlled by
         // another app" badge, and it costs one dictionary probe.
         UnifiedRgb.Core.DeviceHealth.Shared.SetHeldByOther(device, true, "an OpenRGB client");
+    }
+
+    /// <summary>One client let go of one device. The wholesale clear in
+    /// RestoreState only runs when the LAST client leaves, so without this a
+    /// second client still holding a different device kept every released
+    /// device in _sdkHeld - and RefreshDeviceHealth ORs that set, so the
+    /// released device re-declared itself "controlled by another app", advising
+    /// the user to close a program that had already let go, for the rest of the
+    /// session.</summary>
+    public void ReleaseHold(IRgbDevice device)
+    {
+        if (!_sdkHeld.Remove(device)) return;
+        UnifiedRgb.Core.DeviceHealth.Shared.SetHeldByOther(device, false, "an OpenRGB client");
+        RefreshDeviceHealth();
     }
 
     public void RestoreState(LightState s, bool honorSuppression = false)

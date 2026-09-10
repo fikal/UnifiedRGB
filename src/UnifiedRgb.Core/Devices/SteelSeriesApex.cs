@@ -80,11 +80,25 @@ public sealed class SteelSeriesApex : IRgbDevice, IKeyMappedDevice
         _outputLen = outputLen;
         Name = name;
         _positions = BuildPositions();
-        // Enter direct-lighting mode.
+        // Enter direct-lighting mode. The verdict is kept: a refused init
+        // (vendor software holding the interface at scan time) used to be
+        // dropped on the floor, after which every color report succeeded, the
+        // driver reported connected, and the keyboard showed its onboard
+        // profile for the whole session with nothing that would ever retry.
+        _needInit = !EnterDirectMode();
+    }
+
+    bool _needInit;
+
+    /// <summary>The one feature report that takes the keyboard off its onboard
+    /// profile. Idempotent, so retrying it costs nothing.</summary>
+    bool EnterDirectMode()
+    {
         var init = new byte[_featureLen];
         init[1] = PKT_INIT;
-        _hid.SetFeature(init);
+        bool ok = _hid.SetFeature(init);
         Thread.Sleep(10);
+        return ok;
     }
 
     public static SteelSeriesApex? TryOpen()
@@ -167,6 +181,9 @@ public sealed class SteelSeriesApex : IRgbDevice, IKeyMappedDevice
             if (WritePolicy.Unchanged(_last, colors)) return true;
 
             int n = Math.Min(Keys.Length, colors.Count);
+            // Retried here rather than never: this is the only path the
+            // keyboard is reachable on after construction.
+            if (_needInit) _needInit = !EnterDirectMode();
             var buf = _featureBuf ??= new byte[_featureLen];
             Array.Clear(buf);
             buf[1] = PKT_DIRECT;

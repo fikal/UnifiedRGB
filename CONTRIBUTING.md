@@ -26,6 +26,10 @@ the PR.
   - lives in `src/UnifiedRgb.Core/Devices/`, takes an `IHidTransport` and
     opens it via `HidNative.OpenFirst`, degrading to "not present" (or a
     `DetectionNotes` report when the hardware is there but unusable);
+  - **returns a verdict**: `SetColors` (and `SetZone`) answer `bool` - `true`
+    only when the hardware took the frame - and implement `InvalidateCache()`
+    so a retry cannot be deduped away. `WritePolicy` has the helpers and
+    `ADDING_A_DEVICE.md` has the contract;
   - **dedupes identical frames**, committing the cache only after a write
     landed, and reuses its wire buffers;
   - comes with a `FakeHid` fixture pinning its wire format and its

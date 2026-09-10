@@ -174,6 +174,32 @@ public static class Dialogs
         ShowBlurred(owner, win);
     }
 
+    /// <summary>A yes/no guard for something that cannot be undone. The confirm
+    /// button carries the VERB rather than "OK", because a dialog offering
+    /// Cancel and OK makes the reader go back and re-read the sentence to work
+    /// out which button is the one that destroys their work. Enter cancels for
+    /// the same reason: the muscle-memory keystroke must not be the
+    /// irreversible one.</summary>
+    public static bool Confirm(Window owner, string title, string message, string confirmText)
+    {
+        bool ok = false;
+        Window win = null!;
+        void Done(bool r) { ok = r; win.Close(); }
+
+        (win, var body) = MakeDialog(owner, onEscape: () => Done(false), onEnter: () => Done(false));
+
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 22, 0, 0) };
+        buttons.Children.Add(Btn("Cancel", false, () => Done(false)));
+        buttons.Children.Add(Btn(confirmText, true, () => Done(true)));
+
+        body.Children.Add(Title(title));
+        body.Children.Add(Message(message));
+        body.Children.Add(buttons);
+
+        ShowBlurred(owner, win);
+        return ok;
+    }
+
     public static MessageBoxResult AskSaveChanges(Window owner, string profileName)
     {
         var result = MessageBoxResult.Cancel;

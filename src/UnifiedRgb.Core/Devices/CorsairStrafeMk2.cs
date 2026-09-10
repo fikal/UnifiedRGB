@@ -207,7 +207,11 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
     {
         _hid = hid;
         (_positions, _rects, _aspect) = BuildGeometry();
-        RunInit();
+        // A refused init at scan time (iCUE still holding the interface is
+        // the ordinary cause) is not fatal and is not final: latch it and let
+        // the first write retry, rather than spend the session streaming
+        // colors at a keyboard still on its onboard profile.
+        _needInit = !RunInit();
     }
 
     /// <summary>Normalize the key-unit layout into 0..1 positions + footprints.</summary>
@@ -241,20 +245,26 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
         return r == null ? null : new CorsairStrafeMk2(r.Value.Handle);
     }
 
-    void RunInit()
+    /// <summary>Put the keyboard into software lighting mode. Returns whether
+    /// every packet that MATTERS was taken - the firmware-info read is best
+    /// effort and does not count. The verdict is the point: colors sent to a
+    /// keyboard that never left hardware mode are accepted at the HID layer
+    /// and change nothing on the keys, so an init that is dropped silently is
+    /// a driver that reports healthy while showing the onboard profile.</summary>
+    bool RunInit()
     {
         // Firmware-info read (best effort).
         var fw = new byte[PKT]; fw[1] = 0x0E; fw[2] = 0x01; _hid.Write(fw);
         _hid.Read(new byte[PKT], 200);
 
-        Send(0x07, 0x04, 0x02);                 // SpecialFunctionControl
+        bool ok = Send(0x07, 0x04, 0x02);       // SpecialFunctionControl
         Thread.Sleep(10);
         var p = new byte[PKT]; p[1] = 0x07; p[2] = 0x05; p[3] = 0x02; p[5] = 0x03;
-        _hid.Write(p);                          // LightingControl (software mode)
+        ok &= _hid.Write(p);                    // LightingControl (software mode)
         Thread.Sleep(10);
 
         // Key-mapping setup: 07 05 08 + 4x 07 40 1E identifier packets.
-        p = new byte[PKT]; p[1] = 0x07; p[2] = 0x05; p[3] = 0x08; p[5] = 0x01; _hid.Write(p);
+        p = new byte[PKT]; p[1] = 0x07; p[2] = 0x05; p[3] = 0x08; p[5] = 0x01; ok &= _hid.Write(p);
         int id = 0;
         for (int i = 0; i < 4; i++)
         {
@@ -265,10 +275,11 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
                 p[5 + 2 * j] = (byte)id++;
                 p[5 + 2 * j + 1] = 0xC0;
             }
-            _hid.Write(p);
+            ok &= _hid.Write(p);
             Thread.Sleep(5);
         }
         Thread.Sleep(20);
+        return ok;
     }
 
     /// <summary>One three-byte command packet. Returns whether the keyboard
@@ -341,7 +352,12 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
     {
         lock (_writeLock)
         {
-            if (_needInit) { _needInit = false; RunInit(); }
+            // Cleared only when the init actually LANDED. Clearing first meant
+            // one refused re-init (iCUE grabbing the handle for a moment after
+            // a handback) left the keyboard in hardware mode permanently while
+            // every later color packet was accepted and the driver reported
+            // connected.
+            if (_needInit) _needInit = !RunInit();
             int n = colors.Count;
             // A skipped identical frame is a SUCCESS: the keyboard already
             // shows exactly what was asked for.

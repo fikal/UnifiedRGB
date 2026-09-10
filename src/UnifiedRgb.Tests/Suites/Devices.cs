@@ -18,7 +18,7 @@ namespace UnifiedRgb.Tests;
 | That second half is why these sections sit together: the     |
 | refusal paths are the ones that have historically produced   |
 | the most field bugs. A refused packet cached as sent leaves  |
-| the device on its old color with nothing in the log to say  |
+| the device on its old color with nothing in the log to say   |
 | so, and before this seam existed it could not be tested at   |
 | all.                                                         |
 \*-----------------------------------------------------------*/

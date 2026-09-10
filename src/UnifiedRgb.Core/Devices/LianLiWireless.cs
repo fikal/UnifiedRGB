@@ -387,7 +387,6 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         // final one - a double-send would just halve the animation rate.
         bool streaming = sinceLast < 400;
         _lastSendMs = Environment.TickCount64;
-        _lastSent = (Rgb[])_shadow.Clone();
 
         var data = LianLiTinyuz.Encode(BuildWireBytes());
 
@@ -415,13 +414,18 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         if (!ok)
         {
             // The dongle refused a bulk write, so nothing went on the air.
-            // Drop the cache: the next call - the engine keepalive, a retry
-            // from the must-land path - has to send this frame again rather
-            // than match it and skip.
-            _lastSent = null;
+            // Leave the cache alone: the next call - the engine keepalive, a
+            // retry from the must-land path - has to send this frame again
+            // rather than match it and skip.
             return WritePolicy.Refused("lianli-wl:tx", "LianLi",
                 "the transmitter refused a frame packet; the frame will be sent again");
         }
+        // Commit the cache only now. It used to be stamped before the encode
+        // and the send, so a throw anywhere in between left _lastSent holding
+        // a frame the dongle never received - and because nothing on the
+        // streaming path calls InvalidateCache, the keepalive deduped that
+        // frame away for the life of the object.
+        _lastSent = (Rgb[])_shadow.Clone();
         return true;
     }
 

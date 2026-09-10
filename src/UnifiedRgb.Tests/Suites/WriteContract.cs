@@ -101,6 +101,40 @@ static class WriteContractSuite
             t.Check(kb.SetColors(frame), "the recovered frame reports true");
             t.Equal(init + 3, hid.Features.Count, "...and was re-sent rather than cached");
         }
+
+        t.Section("a refused mode-init is retried, not forgotten");
+        {
+            // The nastiest way for a driver to lie. The init packet is what
+            // takes a keyboard OFF its onboard profile; every color report
+            // after it is accepted at the HID layer whether or not it landed.
+            // So an init that is dropped on the floor leaves a keyboard showing
+            // its own lighting while the driver reports true, the frame cache
+            // fills, and device health reads Connected - forever, because
+            // nothing ever tried again.
+            var hid = new FakeHid { AcceptFeature = (_, _) => false };
+            var kb = new SteelSeriesApex(hid, featureLen: 643, outputLen: 65, name: "Apex");
+            t.Equal(1, hid.Features.Count, "the constructor attempts the direct-mode init");
+
+            var frame = new Rgb[kb.LedCount];
+            frame[0] = new Rgb(4, 5, 6);
+            t.Check(!kb.SetColors(frame), "a frame sent while the init is still refused reports false");
+            hid.AcceptFeature = null;
+            t.Check(kb.SetColors(frame), "the frame lands once the keyboard answers again");
+            t.Check(hid.Features.Count >= 4, "...and the init was re-sent rather than assumed done");
+
+            // Corsair, on the report transport, has the same hazard and the
+            // extra twist that it latches a re-init flag of its own.
+            var chid = new FakeHid { Accept = (_, _) => false };
+            var strafe = new CorsairStrafeMk2(chid);
+            int afterCtor = chid.Writes.Count;
+            t.Check(afterCtor > 1, "the constructor attempts the software-mode init");
+            chid.Accept = null;
+            var kbFrame = new Rgb[strafe.LedCount];
+            kbFrame[0] = new Rgb(7, 8, 9);
+            t.Check(strafe.SetColors(kbFrame), "the first frame after the keyboard answers again lands");
+            t.Check(chid.Writes.Count > afterCtor + 3,
+                "...and re-ran the init sequence rather than streaming color at a keyboard still in hardware mode");
+        }
     }
 
     /*---------------- the non-allocating frame helpers ----------------*/

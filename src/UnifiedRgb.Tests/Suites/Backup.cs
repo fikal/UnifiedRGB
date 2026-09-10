@@ -56,6 +56,7 @@ static class BackupSuite
         {
             RoundTrip(t, temp);
             Refusals(t, temp);
+            Destinations(t);
             ImportRegressions(t, temp);
         }
         finally
@@ -63,6 +64,52 @@ static class BackupSuite
             try { Directory.Delete(temp, recursive: true); } catch { }
             CleanConfig();
         }
+    }
+
+    /*--- where a bundle is allowed to write ---*/
+
+    /// <summary>A bundle is a file from the internet, and every field in its
+    /// manifest is something its author chose. These are the answers to "what
+    /// can it make us overwrite" and "can it lie about what a file IS".</summary>
+    static void Destinations(Harness t)
+    {
+        t.Section("a bundle cannot choose where it lands");
+        static UnifiedRgb.App.Services.BundleEntry E(string root, string name, string group)
+            => new() { Root = root, Name = name, Group = group, Path = "config/" + name };
+
+        string legit = UnifiedRgb.App.Services.SetupBundle.TargetPathFor(
+            E(UnifiedRgb.App.Services.SetupBundle.RootConfig, "hardware.json", "machine"))!;
+        t.Check(legit != null, "a file we publish, in its own group, is accepted");
+        t.Equal(AppPaths.Config("hardware.json"), legit, "...and lands in our config folder");
+
+        // Escapes. Nothing here may resolve to a path at all.
+        foreach (string name in new[] { @"..\..\Startup\evil.cmd", "sub/dir.json", "..", ".", "" })
+            t.Check(UnifiedRgb.App.Services.SetupBundle.TargetPathFor(
+                E(UnifiedRgb.App.Services.SetupBundle.RootConfig, name, "machine")) == null,
+                $"a name that is not a bare published file name is refused: '{name}'");
+
+        // A root of its own invention.
+        t.Check(UnifiedRgb.App.Services.SetupBundle.TargetPathFor(
+            E("startup", "hardware.json", "machine")) == null, "an unknown root is refused");
+
+        // The mislabel. Confining the FOLDER is not enough: the group decides
+        // which consent checkbox covers the entry and which sentence the
+        // preview shows, so settings.json carried as "machine" would be
+        // described to the user as fan curves and hub wiring on the way in.
+        t.Check(UnifiedRgb.App.Services.SetupBundle.TargetPathFor(
+            E(UnifiedRgb.App.Services.SetupBundle.RootConfig, "settings.json", "machine")) == null,
+            "a real file of ours carried under the WRONG group is refused");
+        t.Check(UnifiedRgb.App.Services.SetupBundle.TargetPathFor(
+            E(UnifiedRgb.App.Services.SetupBundle.RootConfig, "settings.json", "settings")) != null,
+            "...and is accepted under its own group");
+
+        // A file we never publish, even sitting in the right folder.
+        t.Check(UnifiedRgb.App.Services.SetupBundle.TargetPathFor(
+            E(UnifiedRgb.App.Services.SetupBundle.RootConfig, "backend.json", "settings")) == null,
+            "a config file we deliberately never export cannot be written by a bundle");
+        t.Check(UnifiedRgb.App.Services.SetupBundle.TargetPathFor(
+            E(UnifiedRgb.App.Services.SetupBundle.RootConfig, "anything.json", "settings")) == null,
+            "a file name we do not publish at all is refused");
     }
 
     /*--- 3. stable device identity ---*/

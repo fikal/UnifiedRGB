@@ -316,6 +316,15 @@ public static class Calibration
     /// whole device every frame.</summary>
     public static int Version => Volatile.Read(ref _version);
 
+    /// <summary>A device's zone layout changed under us. Plans are cached per
+    /// device instance and only revalidated on a Version bump, so a driver that
+    /// rebuilds LedCount and Zones at runtime (the Lian Li hub hot-reloads its
+    /// layout file) would otherwise keep trimming the OLD offsets forever - the
+    /// user's zone trim quietly landing on the wrong LEDs until the next
+    /// calibration edit or restart. Bumping here also republishes the driver's
+    /// new arrays: the increment is the release the readers pair with.</summary>
+    public static void NoteLayoutChanged() => Interlocked.Increment(ref _version);
+
     // Loading in the static constructor rather than from an explicit startup
     // call, because the write path (effect workers, the applier) can be the
     // first thing to touch this class and it must not be able to run against

@@ -247,6 +247,10 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IH
             if (txt == _cfgSeen) return;
             LoadCfg();
             BuildLayout();
+            // LedCount and Zones just moved. Anything caching a per-device plan
+            // against the old offsets has to be told, or a zone trim keeps
+            // being applied to the LEDs that zone used to cover.
+            Calibration.NoteLayoutChanged();
             Log.Info("LianLiUni", $"layout reloaded: inner={_inner} outer={_outer} fans={_fans} tune={_tune}");
             if (_tune) Probe();
         }
