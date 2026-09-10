@@ -92,6 +92,20 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
     readonly Rgb?[] _lastStatic = new Rgb?[16];
     bool _directInit;
     int _effectDisabled;
+    /// <summary>A static zone's colour only shows on the apply packet. When
+    /// that packet is refused the effect registers already hold the new
+    /// colours (their reports were accepted, and _lastStatic says so), so what
+    /// must be re-sent next time is the apply alone - even if no static zone
+    /// changes in that frame.</summary>
+    bool _applyPending;
+    /// <summary>The colour of every LED as last requested, in device order.
+    /// SetColors replaces it; SetZone merges a slice into it; the zone writers
+    /// read from it. It exists so a SetZone that covers only PART of a zone
+    /// (OpenRGB's single-LED SDK command, via LightingController.PushExternalFrame)
+    /// can still repaint that zone whole - the hardware takes a header's LEDs
+    /// only as a complete stream, and there is no other record of the LEDs the
+    /// caller did not mention. Guarded by _writeLock like everything else.</summary>
+    readonly Rgb[] _shadow;
 
     readonly ushort _pid;
     public string Name { get; }
@@ -167,6 +181,11 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
         }
         Zones = zones;
         _ledCount = off;
+        _shadow = new Rgb[_ledCount];
+        // One dedup buffer per fan header, allocated here so the failure path
+        // in UpdateZone has nothing to allocate and nothing to insert.
+        foreach (var def in ZoneDefs)
+            if (def.Kind == ZoneKind.Fan) _fanLast[def.Id] = new Rgb[def.Count];
         ResetController();
     }
 
@@ -201,7 +220,19 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
         ApplyEffect();
     }
 
-    void ApplyEffect() => Cc(0x28, 0xFF, _pid == 0x5711 ? (byte)0x07 : (byte)0x00);
+    /// <summary>Commit the effect registers. Returns whether the board took the
+    /// packet: static zones do not show until it does, so the frame path has
+    /// to know when to send it again.</summary>
+    /// <summary>Every apply goes through here so the pending flag always
+    /// reflects the LAST attempt, whoever made it: the hardware-persistence
+    /// path and the CLI probe used to apply without clearing it, and the next
+    /// frame then sent one apply the board had already taken.</summary>
+    bool ApplyEffect()
+    {
+        bool ok = Cc(0x28, 0xFF, _pid == 0x5711 ? (byte)0x07 : (byte)0x00);
+        _applyPending = !ok;
+        return ok;
+    }
 
     static (byte Argb, int Mask) HeaderInfo(int header) => header switch
     {
@@ -213,32 +244,37 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
 
     static byte LedCountEnum(int c) => c <= 32 ? (byte)0 : c <= 64 ? (byte)1 : c <= 256 ? (byte)2 : c <= 512 ? (byte)3 : (byte)4;
 
-    void SetLedCount(int c0, int c1, int c2, int c3)
+    bool SetLedCount(int c0, int c1, int c2, int c3)
     {
         byte d1 = LedCountEnum(c0), d2 = LedCountEnum(c1), d3 = LedCountEnum(c2), d4 = LedCountEnum(c3);
-        Cc(0x34, (byte)((d2 << 4) | d1), (byte)((d4 << 4) | d3));
+        return Cc(0x34, (byte)((d2 << 4) | d1), (byte)((d4 << 4) | d3));
     }
 
     /*-----------------------------------------------------*\
     | Direct (per-LED) mode: set the fan-header LED counts   |
     | and disable their builtin effects, once.               |
     \*-----------------------------------------------------*/
-    void EnsureDirectMode()
+    /// <summary>False when the board refused either setup report. _directInit
+    /// latches only on success: a refused count or mask used to be recorded
+    /// as done, and the headers then streamed into a firmware effect that was
+    /// never disabled (packets accepted, nothing showing) until a rescan.</summary>
+    bool EnsureDirectMode()
     {
-        if (_directInit) return;
+        if (_directInit) return true;
         var counts = new int[4];
         int mask = 0;
         foreach (var def in ZoneDefs)
             if (def.Kind == ZoneKind.Fan) { counts[def.Id - 1] = def.Count; mask |= HeaderInfo(def.Id).Mask; }
-        SetLedCount(counts[0], counts[1], counts[2], counts[3]);
+        if (!SetLedCount(counts[0], counts[1], counts[2], counts[3])) return false;
         Thread.Sleep(20);
         // Assign, don't OR: the mask is fully derived from ZoneDefs, and a
         // header-test bit OR'd in by SetHeaderLeds must not survive the
         // re-init that restores the tested header's built-in effect.
         _effectDisabled = mask;
-        Cc(0x32, (byte)_effectDisabled);
+        if (!Cc(0x32, (byte)_effectDisabled)) return false;
         Thread.Sleep(20);
         _directInit = true;
+        return true;
     }
 
     /// <summary>Resolve a wire-order string to three channel selectors ONCE per
@@ -257,10 +293,13 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
 
     /// <summary>Stream per-LED colors to a fan header in the configured wire
     /// order, no count/effect re-setup — fast enough for animation. Reads
-    /// directly out of the caller's list at an offset (no slice copy).</summary>
+    /// directly out of the caller's list at an offset (no slice copy).
+    /// True only when the board accepted EVERY packet; the stream stops at the
+    /// first refusal (each one can cost the 400 ms report timeout, and the
+    /// caller re-sends the whole header next frame regardless).</summary>
     readonly byte[] _streamPkt = new byte[BUF];   // reused: this runs per frame at 60fps
 
-    void StreamHeaderColors(int header, IReadOnlyList<Rgb> src, int srcStart, int count, string order = "GRB")
+    bool StreamHeaderColors(int header, IReadOnlyList<Rgb> src, int srcStart, int count, string order = "GRB")
     {
         var (argb, _) = HeaderInfo(header);
         var (ia, ib, ic) = OrderIdx(order);
@@ -281,9 +320,10 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
                 int o = 5 + i * 3;
                 pkt[o] = Chan(c, ia); pkt[o + 1] = Chan(c, ib); pkt[o + 2] = Chan(c, ic);
             }
-            _hid.SetFeature(pkt);
+            if (!_hid.SetFeature(pkt)) return false;
             k += n;
         }
+        return true;
     }
 
     /// <summary>colors[i] = color for LED i (see zone layout). Fan zones stream
@@ -291,85 +331,141 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
     /// Statics + apply go FIRST: effect-register zones only take effect on the
     /// apply packet, so committing them before the (milliseconds-long) fan
     /// streaming keeps the chipset/IO accents in phase with the fans during
-    /// animated effects instead of trailing by a write cycle.</summary>
-    public void SetColors(IReadOnlyList<Rgb> colors) => WriteZones(0, colors, containedOnly: false);
-
-    /// <summary>Update only the zones fully contained in [offset, offset+count),
-    /// leaving all other zones on the hardware untouched.</summary>
-    public void SetZone(int offset, IReadOnlyList<Rgb> colors) => WriteZones(offset, colors, containedOnly: true);
-
-    /// <summary>The one statics-then-fans loop behind SetColors and SetZone.
-    /// containedOnly restricts the write to zones fully inside the range
-    /// (SetZone's contract); a full frame touches every zone, and a short one
-    /// blanks the zones past its end through UpdateZone's bounds guard.</summary>
-    void WriteZones(int offset, IReadOnlyList<Rgb> colors, bool containedOnly)
+    /// animated effects instead of trailing by a write cycle.
+    /// A short frame blanks the FAN LEDs past its end and leaves the static
+    /// zones past it as they are, which is what this driver has always done
+    /// with them (a static zone past the end was skipped, never blacked).</summary>
+    public void SetColors(IReadOnlyList<Rgb> colors)
     {
-        int end = offset + colors.Count;
         lock (_writeLock)
         {
-            EnsureDirectMode();
-            bool anyStatic = false;
             for (int z = 0; z < ZoneDefs.Length; z++)
-                if (ZoneDefs[z].Kind != ZoneKind.Fan && Covered(z))
-                    anyStatic |= UpdateZone(z, colors, _zoneOffset[z] - offset);
-            if (anyStatic) ApplyEffect();
-            for (int z = 0; z < ZoneDefs.Length; z++)
-                if (ZoneDefs[z].Kind == ZoneKind.Fan && Covered(z))
-                    UpdateZone(z, colors, _zoneOffset[z] - offset);
+            {
+                var def = ZoneDefs[z];
+                int off = _zoneOffset[z];
+                for (int i = 0; i < def.Count; i++)
+                {
+                    int idx = off + i;
+                    if (idx < colors.Count) _shadow[idx] = colors[idx];
+                    else if (def.Kind == ZoneKind.Fan) _shadow[idx] = Rgb.Black;
+                }
+            }
+            WriteZones(0, _ledCount);
         }
+    }
 
-        bool Covered(int z) => !containedOnly || (_zoneOffset[z] >= offset && _zoneOffset[z] + ZoneDefs[z].Count <= end);
+    /// <summary>Update only LEDs [offset, offset+count), leaving every other
+    /// LED on the hardware as it is. The slice is merged into the shadow frame
+    /// and every zone it TOUCHES is repainted whole from there: a fan header
+    /// takes its LEDs only as a complete stream, so a write to one LED inside
+    /// an 8-LED ring re-streams the ring with the other seven unchanged. The
+    /// old rule - repaint only zones fully inside the range - sent nothing at
+    /// all for that write, and OpenRGB's single-LED command silently did
+    /// nothing on this board.</summary>
+    public void SetZone(int offset, IReadOnlyList<Rgb> colors)
+    {
+        int start = Math.Max(0, offset);
+        int end = Math.Min(_ledCount, offset + colors.Count);
+        if (end <= start) return;
+        lock (_writeLock)
+        {
+            for (int i = start; i < end; i++) _shadow[i] = colors[i - offset];
+            WriteZones(start, end);
+        }
+    }
+
+    /// <summary>The one statics-then-apply-then-fans loop behind SetColors and
+    /// SetZone: repaint, from the shadow, every zone that intersects the LED
+    /// range [start, end). Caller holds _writeLock.
+    ///
+    /// Nothing here is cached until the board has accepted it. A refused
+    /// packet used to be recorded as sent, so an identical frame later - the
+    /// engine's keepalive re-send included - produced zero reports and the
+    /// zone stayed on its old colour until something changed.</summary>
+    void WriteZones(int start, int end)
+    {
+        if (!EnsureDirectMode())
+        {
+            // Retried in full on the next call; nothing below was committed.
+            Log.Occasional("gigabyte:init", "GigabyteIt5711",
+                "direct-mode setup refused - the frame will be re-sent on the next call");
+            return;
+        }
+        bool anyStatic = false;
+        for (int z = 0; z < ZoneDefs.Length; z++)
+            if (ZoneDefs[z].Kind != ZoneKind.Fan && Intersects(z))
+                anyStatic |= UpdateZone(z);
+        if ((anyStatic || _applyPending) && !ApplyEffect())
+            Log.Occasional("gigabyte:apply", "GigabyteIt5711",
+                "apply packet refused - static zones will be committed on the next call");
+        for (int z = 0; z < ZoneDefs.Length; z++)
+            if (ZoneDefs[z].Kind == ZoneKind.Fan && Intersects(z))
+                UpdateZone(z);
+
+        bool Intersects(int z) => _zoneOffset[z] < end && _zoneOffset[z] + ZoneDefs[z].Count > start;
     }
 
     // Per-zone dedup for FAN zones: a static color on an ARGB header used to
     // re-stream feature reports at 60 fps forever (statics were deduped, fans
     // were not — the exact gap the IRgbDevice contract warns about).
-    readonly Dictionary<int, Rgb[]> _lastFan = new();
+    // Indexed by header number (1-4). _fanLast[h] is allocated once in the
+    // constructor; _fanValid[h] says whether it describes what the board
+    // shows, and is the thing invalidation clears.
+    readonly Rgb[]?[] _fanLast = new Rgb[]?[5];
+    readonly bool[] _fanValid = new bool[5];
 
-    /// <summary>Returns true when a static zone actually changed (needs apply).</summary>
-    bool UpdateZone(int z, IReadOnlyList<Rgb> src, int srcStart)
+    /// <summary>Repaint zone z from the shadow frame. Returns true when a
+    /// static zone's effect packet landed (so the frame needs an apply); a fan
+    /// zone never needs one. Dedup caches are committed only after the board
+    /// accepted the packets.</summary>
+    bool UpdateZone(int z)
     {
         var def = ZoneDefs[z];
+        int off = _zoneOffset[z];
         if (def.Kind == ZoneKind.Fan)
         {
-            if (!_lastFan.TryGetValue(def.Id, out var last) || last.Length != def.Count)
-                _lastFan[def.Id] = last = new Rgb[def.Count];
-            else
+            var last = _fanLast[def.Id]!;
+            if (_fanValid[def.Id])
             {
                 bool same = true;
                 for (int i = 0; i < def.Count; i++)
-                {
-                    int s = srcStart + i;
-                    var c = s >= 0 && s < src.Count ? src[s] : Rgb.Black;
-                    if (last[i] != c) { same = false; break; }
-                }
+                    if (last[i] != _shadow[off + i]) { same = false; break; }
                 if (same) return false;
             }
-            for (int i = 0; i < def.Count; i++)
+            if (!StreamHeaderColors(def.Id, _shadow, off, def.Count, def.Order))
             {
-                int s = srcStart + i;
-                last[i] = s >= 0 && s < src.Count ? src[s] : Rgb.Black;
+                Log.Occasional($"gigabyte:stream:{def.Id}", "GigabyteIt5711",
+                    $"header {def.Id} stream refused - will be re-sent on the next call");
+                return false;
             }
-            StreamHeaderColors(def.Id, src, srcStart, def.Count, def.Order);
+            Array.Copy(_shadow, off, last, 0, def.Count);
+            _fanValid[def.Id] = true;
             return false;
         }
-        if (srcStart < 0 || srcStart >= src.Count || _lastStatic[def.Id] == src[srcStart]) return false;
-        _lastStatic[def.Id] = src[srcStart];
-        SendZoneEffect(def.Id, src[srcStart]);
+        var c = _shadow[off];
+        if (_lastStatic[def.Id] == c) return false;
+        if (!SendZoneEffect(def.Id, c))
+        {
+            Log.Occasional($"gigabyte:static:{def.Id}", "GigabyteIt5711",
+                $"effect {def.Id} packet refused - will be re-sent on the next call");
+            return false;
+        }
+        _lastStatic[def.Id] = c;
         return true;
     }
 
-    void SendZoneEffect(int led, Rgb c) => SendZoneEffect(led, c, null);
+    bool SendZoneEffect(int led, Rgb c) => SendZoneEffect(led, c, null);
 
     /// <summary>timing: optional (offset, value) overrides on the effect packet
     /// — used by the CLI fade probe to find the field that disables the
-    /// firmware's smooth transition between static colors.</summary>
-    public void SendZoneEffect(int led, Rgb c, (int Offset, byte Value)[]? timing)
+    /// firmware's smooth transition between static colors. Returns whether the
+    /// board took the report.</summary>
+    public bool SendZoneEffect(int led, Rgb c, (int Offset, byte Value)[]? timing)
     {
         lock (_writeLock)   // the CLI probe calls this unlocked; the frame path already holds it
         {
             FillZoneEffect(_ctlPkt, led, c, timing);
-            _hid.SetFeature(_ctlPkt);
+            return _hid.SetFeature(_ctlPkt);
         }
     }
 
@@ -445,7 +541,7 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
             // scratch: both caches now describe a board state we just replaced.
             _directInit = false;
             Array.Clear(_lastStatic);
-            _lastFan.Clear();
+            Array.Clear(_fanValid);
         }
     }
 
@@ -506,7 +602,7 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
     /// EnsureDirectMode to re-send the ZoneDefs counts and effect mask.</summary>
     void InvalidateHeader(int header)
     {
-        _lastFan.Remove(header);
+        _fanValid[header] = false;
         _lastStatic[HeaderEffectIdx[header]] = null;
         _directInit = false;
     }

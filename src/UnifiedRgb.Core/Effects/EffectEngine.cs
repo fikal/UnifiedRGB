@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 
 namespace UnifiedRgb.Core.Effects;
 
@@ -56,6 +57,33 @@ public sealed class EffectEngine
     readonly List<Channel> _channels = new();
     readonly Stopwatch _clock = Stopwatch.StartNew();
 
+    /// <summary>One write gate per device INSTANCE, shared by every path that
+    /// puts a frame on that device: the effect workers here and the static /
+    /// external / lights-off writes the app posts through its applier.
+    ///
+    /// This is what makes stopping an effect actually final. The two paths
+    /// used to have no serialization boundary between them at all: a worker
+    /// blocked inside a slow device write outlived StopAll's 300 ms join,
+    /// StopAll returned, the app posted the static replacement, and whichever
+    /// write the driver finished LAST is what the hardware kept - and that was
+    /// the effect's frame often enough to be reported ("switched to a static,
+    /// the device stayed on the old effect's colour"), with nothing left
+    /// running to correct it. With every writer taking this gate, the stale
+    /// frame can still land, but only BEFORE the replacement, which is then
+    /// the last word.
+    ///
+    /// Static (not per engine) because the app's writes have no engine in
+    /// hand, and keyed weakly by instance so a Rescan that replaces every
+    /// device object leaks nothing and pins nothing: the gate is collected
+    /// with its device.</summary>
+    static readonly ConditionalWeakTable<IRgbDevice, object> _gates = new();
+
+    /// <summary>The write gate for a device - hold it (lock) around every
+    /// hardware write to that device, from any thread. Lock order when a
+    /// caller also holds a finer lock (the engine's per-device DeviceWrite):
+    /// gate first, then the finer one.</summary>
+    public static object WriteGateFor(IRgbDevice dev) => _gates.GetValue(dev, static _ => new object());
+
     /// <summary>Start an effect on [offset, offset+count) of a device, replacing
     /// any overlapping channel on that device.</summary>
     /// <summary>positions overrides the device-local coordinates, which is how
@@ -102,11 +130,14 @@ public sealed class EffectEngine
         foreach (var c in victims) JoinWorker(c);
         // Pruned only AFTER the joins. Dropping it while a worker was still
         // inside a slow write let the replacement worker allocate a DIFFERENT
-        // state object for the same device - two live writers, no mutual
-        // exclusion and two independent dedups. Keyed by device instance, so
-        // it still has to go once nothing is using it or a rescan would leave
-        // one behind (pinning the replaced device with it) for every device
-        // that ever ran an effect.
+        // state object for the same device - two independent dedups, and
+        // (before the write gate) two live writers with no mutual exclusion.
+        // The gate now serializes the writes regardless, but the dedup
+        // split is still real: a replacement worker that cannot see the
+        // frame the old one just sent streams its first frames unconditionally.
+        // Keyed by device instance, so it still has to go once nothing is
+        // using it or a rescan would leave one behind (pinning the replaced
+        // device with it) for every device that ever ran an effect.
         lock (_lock)
             if (!_channels.Any(c => ReferenceEquals(c.Device, dev))) _deviceWrites.Remove(dev);
     }
@@ -120,12 +151,17 @@ public sealed class EffectEngine
         lock (_lock) _deviceWrites.Clear();   // after the joins, as above
     }
 
-    /// <summary>Wait for a stopped channel's worker. One device write can
-    /// outlast the bound (HID write timeouts, the wireless receiver's paced
-    /// transmit); the worker re-checks Running right before every write, so a
-    /// timeout here means at most one already-started frame is still landing
-    /// - logged so a "switched effect but the device kept the old one" report
-    /// has a trace.</summary>
+    /// <summary>Wait for a stopped channel's worker, bounded. One device write
+    /// can outlast the bound (HID write timeouts, the wireless receiver's paced
+    /// transmit), and a timed-out join is NOT treated as teardown complete:
+    /// the worker may still be inside the write it started before the stop.
+    /// What keeps that safe is the per-device write gate (WriteGateFor), not
+    /// the join - the straggler finishes under the gate, the replacement write
+    /// takes the gate after it and lands last, and the worker re-checks Running
+    /// under the gate so it never starts ANOTHER write. So at most one
+    /// already-started frame is still landing, and it cannot be the final one.
+    /// Logged all the same so a "switched effect but the device kept the old
+    /// one" report has a trace pointing at the slow driver.</summary>
     static void JoinWorker(Channel c)
     {
         if (c.Worker is { } w && !w.Join(300))
@@ -295,6 +331,10 @@ public sealed class EffectEngine
         // Reused across frames: the compose path must not allocate at 60 fps.
         var litRanges = zoneDev == null ? new List<(int Off, int Count)>() : null;
         var shared = zoneDev == null ? WriteStateFor(ch.Device) : null;
+        // The per-device write gate shared with the app's static/external
+        // writes (see WriteGateFor). Taken once: it is per instance and the
+        // channel holds the instance, so it cannot change under us.
+        var gate = WriteGateFor(ch.Device);
 
         // Dedup at the write boundary: slow effects (Time Warmth changes per
         // MINUTE, Palette Cycle holds each color) used to stream 60 identical
@@ -376,35 +416,52 @@ public sealed class EffectEngine
 
                 long now = Environment.TickCount64;
                 bool same;
+                bool stop = false;
                 if (zoneDev != null)
                 {
                     same = haveLast && SameFrame(sendBuf, lastSent, sendBuf.Length);
                     if (!(same && now - lastWrite < KeepaliveMs))
                     {
-                        // Re-check at the write boundary: StopRange/StopAll may
-                        // have cleared Running while this frame rendered, and
-                        // the replacement channel or the static restore can
-                        // already be writing this range - a stale frame landing
-                        // now would win until the next differing frame (up to
-                        // the keepalive).
-                        if (!ch.Running) break;
-                        zoneDev.SetZone(ch.Offset, zoneBuf);
-                        Array.Copy(sendBuf, lastSent, sendBuf.Length);
-                        haveLast = true;
-                        lastWrite = now;
+                        // The write happens under the device's gate, and
+                        // Running is re-checked INSIDE it, right before the
+                        // write. StopRange/StopAll may have cleared Running
+                        // while this frame rendered - or while this thread
+                        // waited for the gate behind the static restore or
+                        // the replacement channel - and a stale frame landing
+                        // after either of those would win until the next
+                        // differing frame (up to the keepalive). Checking
+                        // outside the gate was not enough: the stop could
+                        // land between the check and the write.
+                        lock (gate)
+                        {
+                            if (!ch.Running) stop = true;
+                            else
+                            {
+                                zoneDev.SetZone(ch.Offset, zoneBuf);
+                                Array.Copy(sendBuf, lastSent, sendBuf.Length);
+                                haveLast = true;
+                                lastWrite = now;
+                            }
+                        }
                     }
                 }
                 else
                 {
-                    // One writer at a time per device, and one dedup shared by
-                    // every channel on it.
-                    bool stop = false;
+                    // Gate first (the boundary shared with the app's writes),
+                    // then the engine's own per-device state: one writer at a
+                    // time on the wire, and one dedup shared by every channel
+                    // on the device. The dedup compare sits under the gate too
+                    // - it is ~100 struct compares, nothing against a USB
+                    // write, and keeping the order fixed rules out a deadlock
+                    // with any future path that holds shared and wants the gate.
+                    lock (gate)
                     lock (shared!)
                     {
                         same = shared.HaveLast && shared.LastSent.Length == full!.Length
                                && SameFrame(full!, shared.LastSent, full!.Length);
                         if (!(same && now - shared.LastWrite < KeepaliveMs))
                         {
+                            // Same re-check as the zone path, same reason.
                             if (!ch.Running) stop = true;
                             else
                             {
@@ -416,8 +473,8 @@ public sealed class EffectEngine
                             }
                         }
                     }
-                    if (stop) break;
                 }
+                if (stop) break;
                 idleStreak = same ? idleStreak + 1 : 0;
                 failures = 0;
             }

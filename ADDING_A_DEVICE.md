@@ -172,15 +172,21 @@ unchanged frames is the usual reason it does not.
 
 The harness (`src/UnifiedRgb.Tests`) has `FakeHid`, an `IHidTransport` made
 of lists: it records every report a driver writes, answers reads from a
-queue, and refuses whichever writes a test says to. Every HID driver has an
-`internal` constructor that takes the transport, and the harness can see it.
+queue, and refuses whichever writes a test says to. It lives in
+`Support/Fakes.cs`. Every HID driver has an `internal` constructor that takes
+the transport, and the harness can see it.
 
-A driver PR should come with a block like the existing ones: build the driver
-over a `FakeHid`, send a known colour, and pin the bytes that come out -
-report id, magic, checksum, where the colour sits. Then refuse a write and
-prove the frame is sent again rather than cached. The Sayo block is the
-smallest example; the Logitech and Thermalright blocks show the failure
-paths.
+A driver PR should come with a section in `Suites/Devices.cs` alongside the
+ones already there: build the driver over a `FakeHid`, send a known colour,
+and pin the bytes that come out - report id, magic, checksum, where the colour
+sits. Then refuse a write and prove the frame is sent again rather than
+cached. The Sayo section is the smallest example; the Logitech and
+Thermalright sections show the failure paths. Run that one suite while you
+iterate, rather than the whole set:
+
+```
+dotnet run --project src/UnifiedRgb.Tests -- Devices
+```
 
 Those fixtures are what let a protocol decoded from a USB capture survive a
 refactor. Without them, the only test is plugging the device in.

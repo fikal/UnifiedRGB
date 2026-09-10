@@ -51,6 +51,11 @@ public sealed class DeviceManager : IDisposable
         // bundle is read for.
         // Notes describe the pass we are about to run, not the last one.
         DetectionNotes.Clear();
+        // Same for the Logitech claim set the OpenRGB bridge consults: TryOpen
+        // clears it itself, but a pass that SKIPS the family (the user disabled
+        // it) never calls TryOpen, and the bridge would then keep hiding a mouse
+        // nobody drives - the very case the claim set exists to fix.
+        LogitechG403.ClearClaimed();
         var absent = new List<string>();
 
         foreach (var factory in Factories)

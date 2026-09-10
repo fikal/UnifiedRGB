@@ -20,6 +20,35 @@ public sealed class PatternEffect : IEffect
     public PatternColor Color { get; set; } = PatternColor.Rainbow;
     public PatternMotion Motion { get; set; } = PatternMotion.Rotate;
 
+    /// <summary>Motion-aware period (see RenderCore for the terms). The
+    /// inherited 4 s default was wrong for Breathe, whose sin(t*speed*2) has a
+    /// period of pi/|speed|: the bake repeated a discontinuous 4 s segment and
+    /// the fans popped at every wrap.
+    ///  - Rotate / Chase / Wave ride `move` = t*speed*0.25 (one ring turn per
+    ///    4/|speed| s); Rotate and Chase through Frac(p)/head, Wave through its
+    ///    sin((u*Density - move)*2pi) brightness. All three close on 4/|speed|.
+    ///  - Breathe is the only user of `breathe` and has no move term.
+    ///  - Static has no time term at all: 0 = constant, any window is a period.
+    /// Audio motions are not Bakeable, so their period is irrelevant.</summary>
+    public double LoopSeconds(double speed) => Motion switch
+    {
+        PatternMotion.Static => 0.0,
+        // Rotating one solid colour is the same colour everywhere at every
+        // instant: constant, so it must not pin the bake window (a 4 s period
+        // beside a 9 s effect would otherwise force that device to stream).
+        PatternMotion.Rotate when Color == PatternColor.Solid => 0.0,
+        PatternMotion.Breathe => Fx.Loop(Math.PI, speed),
+        _ => Fx.Loop(4.0, speed),
+    };
+
+    /// <summary>Everything the baker's signature does not already carry. It
+    /// has name/speed/base color, and Palette only for IPaletteEffect, which
+    /// this is not (its palette editor is the pattern editor's own). Without
+    /// this an edit to any of these re-requested a bake, the unchanged
+    /// signature short-circuited it, and the fans kept the old animation.</summary>
+    public string BakeKey
+        => $"{Color}:{Motion}:{Density}:{Reverse}:{TailLength}:{string.Join(",", Palette)}";
+
     public void Render(IRgbDevice device, int offset, Rgb[] buf, LedPos[] pos,
                        double seconds, double speed, Rgb baseColor)
     {

@@ -38,7 +38,8 @@ public sealed partial class MainViewModel
         var dev = Devices.OfType<GigabyteIt5711>().FirstOrDefault();
         if (dev == null) return;
         var white = Enumerable.Repeat(Rgb.White, Math.Clamp(leds, 1, 64)).ToArray();
-        _applier.Post(LaneOf(dev), ("hdrtest", header), () => dev.SetHeaderLeds(header, white));
+        _applier.Post(LaneOf(dev), ("hdrtest", header),
+            () => { lock (EffectEngine.WriteGateFor(dev)) dev.SetHeaderLeds(header, white); });   // ordered against a running effect's frames
     }
 
     /// <summary>Undo a header test: re-push the board's stored static frame

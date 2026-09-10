@@ -1082,7 +1082,8 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
 
             if (choice.Effect is { } fx)
             {
-                tfx.Channel = _engine.Start(d, 0, d.LedCount, FrameFor(d), fx, 1.0, new Rgb(255, 255, 255));
+                tfx.Channel = EffectBlockedByClient(d) ? null
+                            : _engine.Start(d, 0, d.LedCount, FrameFor(d), fx, 1.0, new Rgb(255, 255, 255));
             }
             else
             {
@@ -1144,7 +1145,12 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         RescanCommand        = new RelayCommand(_ => Rescan());
         SaveProfileCommand   = new RelayCommand(_ => SaveProfile(),
             _ => !string.IsNullOrWhiteSpace(ProfileName) || SelectedProfile != null);
-        LoadProfileCommand   = new RelayCommand(_ => LoadProfile(SelectedProfile), _ => SelectedProfile != null);
+        // Through ApplyProfile, not LoadProfile: the button is a user choice
+        // and the automation has to hear about it (LightingApplied) exactly as
+        // it hears about a hotkey. Bypassing it left an override's stale return
+        // point in place, and the rule's end restored the old snapshot over the
+        // profile the user had just explicitly applied.
+        LoadProfileCommand   = new RelayCommand(_ => { if (SelectedProfile is Profile p) ApplyProfile(p); }, _ => SelectedProfile != null);
         DeleteProfileCommand = new RelayCommand(_ => DeleteProfile(), _ => SelectedProfile != null);
         AddPaletteColorCommand  = new RelayCommand(_ => { PatternPalette.Add(Current); OnChanged(nameof(HasPalette)); SyncFanOutPalettes(); RequestLianRebake(); MarkDirty(); });
         RemovePaletteColorCommand = new RelayCommand(o => { if (o is Rgb c && PatternPalette.Count > 1) { PatternPalette.Remove(c); OnChanged(nameof(HasPalette)); SyncFanOutPalettes(); RequestLianRebake(); MarkDirty(); } });
@@ -1432,10 +1438,29 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // The desk is a mode: with it on, every effect renders across it. The
         // canvas argument is what turns it ON for a "Whole desk" apply; once on,
         // it applies to everything.
-        fx.Channel = _engine.Start(dev, off, count, FrameFor(dev), effect, SignedSpeed(fx), bc,
+        fx.Channel = EffectBlockedByClient(dev) ? null
+                   : _engine.Start(dev, off, count, FrameFor(dev), effect, SignedSpeed(fx), bc,
                                    CanvasPositions(dev, off, count));
         RequestLianRebake();
         MarkDirty();
+    }
+
+    /// <summary>An SDK client holds this device: it paints the whole device
+    /// from its own picture on every write, and a worker started underneath it
+    /// would be repainted over at the client's rate (a flicker fight, and on
+    /// the board a fan header re-streamed per SDK write). The client took the
+    /// device with our effects stopped (BeginExternal); starting one now is
+    /// refused the same way. The assignment is NOT kept: the client's release
+    /// restores the snapshot taken when it claimed the device, which predates
+    /// this choice, and a profile saved meanwhile records the device as static
+    /// (CaptureEffects skips a target with no channel) - the same outcome as
+    /// picking the effect before the client arrived.</summary>
+    bool EffectBlockedByClient(IRgbDevice dev)
+    {
+        if (!_lighting.IsClaimed(dev)) return false;
+        UnifiedRgb.Core.Log.Occasional($"claimed:{dev.Name}", "lighting",
+            $"{dev.Name}: an SDK client has this device - not starting an effect on it until it lets go");
+        return true;
     }
 
 
@@ -1558,12 +1583,22 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // disposed device. Clients reconnect once the new list is up.
         _sdkServer?.Dispose();
         _sdkServer = null;
+        // An in-flight bake renders on a worker and posts its upload later; the
+        // device it targets is about to be disposed. Invalidate every bake
+        // generation so a late upload is dropped instead of landing on a dead
+        // handle (or, after the redetect, replacing the fresh instance's state).
+        _bake.Invalidate();
         _lighting.StopAndDrain();   // queued static writes must not land on disposed handles
         _targetFx.Clear();          // device instances are replaced
         _manager.Dispose();
         _lighting.ForgetFrames();
         Devices.Clear();
-        _manager.DetectAll(IsFamilyDisabled);
+        // The OpenRGB bridge is a user setting, not a device family the user
+        // can disable, so it needs its own gate here: with the option off the
+        // bridge detector still connected to any separately running OpenRGB,
+        // built proxy devices and switched them to custom mode. The CLI keeps
+        // calling OpenRgbLink.DetectAll directly, on purpose.
+        _manager.DetectAll(f => IsFamilyDisabled(f) || (f == nameof(OpenRgbLink) && !_store.Settings.UseOpenRgb));
         foreach (var d in _manager.Devices)
         {
             // Per-device families (OpenRGB proxies) can't be skipped at the
@@ -1636,10 +1671,15 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // Each step isolated: one throw here used to skip the rest (port 54235
         // stayed bound, device handles stayed open).
         static void Safely(Action a) { try { a(); } catch (Exception ex) { UnifiedRgb.Core.Log.Warn("shutdown", ex.Message); } }
-        Safely(() => _lighting.StopAndDrain());   // the exit-restore writes must finish before the handles go
+        // Quiesce every producer of device writes BEFORE the drain, or the drain
+        // proves nothing: the SDK server kept accepting frames from its socket
+        // threads while the applier drained, and anything queued in that gap
+        // ran after the exit behaviours (overwriting the chosen exit state) or
+        // after the handles were disposed.
         // Order matters: tell the host we are going down BEFORE stopping the
         // server, or its per-device releases queue a restore onto a dispatcher
-        // that will never pump again.
+        // that will never pump again. Server.Stop waits for in-flight client
+        // callbacks, so once it returns nothing else posts.
         Safely(() => _sdkHost?.Shutdown());
         Safely(() => { _sdkServer?.Dispose(); _sdkServer = null; });   // stop taking SDK writes
         Safely(() =>
@@ -1648,6 +1688,9 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             _gsi?.Dispose();
             _gsi = null;
         });
+        // (_bake.Stop above already abandoned every outstanding bake, so no
+        // late upload can post after this drain.)
+        Safely(() => _lighting.StopAndDrain());   // the exit-restore writes must finish before the handles go
         Safely(ApplyExitBehaviors);               // ...and before the handles close
         Safely(_manager.Dispose);
         Safely(Lcd.Dispose);   // saves the design, releases the panel + the PawnIO temp reader
@@ -1666,8 +1709,14 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         _applier.Post(LaneOf(device), ("exit-preview", device), () =>
         {
-            try { UnifiedRgb.Core.HardwareExit.Apply(device, behavior); }
-            catch (Exception ex) { UnifiedRgb.Core.Log.Warn("exit", $"{device.Name}: {ex.Message}"); }
+            // Under the device's write gate, like every other write that is not
+            // an effect frame: an effect worker still inside a slow write must
+            // finish before this lands, or its frame lands after ours.
+            lock (EffectEngine.WriteGateFor(device))
+            {
+                try { UnifiedRgb.Core.HardwareExit.Apply(device, behavior); }
+                catch (Exception ex) { UnifiedRgb.Core.Log.Warn("exit", $"{device.Name}: {ex.Message}"); }
+            }
         });
     }
 
@@ -1684,18 +1733,21 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
 
         _applier.Post(LaneOf(device), (device, "identify"), () =>
         {
+            // Each write takes the device's write gate (the same one effect
+            // workers and the static path use), never the whole blink: holding
+            // it across the sleeps would stall a running effect for ~0.8 s.
             try
             {
                 for (int i = 0; i < 3; i++)
                 {
-                    device.SetColors(white);
+                    lock (EffectEngine.WriteGateFor(device)) device.SetColors(white);
                     Thread.Sleep(140);
-                    device.SetColors(dark);
+                    lock (EffectEngine.WriteGateFor(device)) device.SetColors(dark);
                     Thread.Sleep(140);
                 }
                 // Put back what it was showing. A running effect repaints on its
                 // next frame anyway; this is for a device sitting on a static.
-                device.SetColors(restore);
+                lock (EffectEngine.WriteGateFor(device)) device.SetColors(restore);
             }
             catch (Exception ex) { UnifiedRgb.Core.Log.Warn("identify", $"{device.Name}: {ex.Message}"); }
         });
@@ -1726,8 +1778,11 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
                 if (!configured.TryGetValue(device.Name, out var behavior)) continue;
                 try
                 {
-                    if (UnifiedRgb.Core.HardwareExit.Apply(device, behavior) is string what)
-                        UnifiedRgb.Core.Log.Info("exit", $"{device.Name}: {what}");
+                    // The drain above can time out with an effect worker still
+                    // inside a write; the gate makes this the write that lands last.
+                    string? what;
+                    lock (EffectEngine.WriteGateFor(device)) what = UnifiedRgb.Core.HardwareExit.Apply(device, behavior);
+                    if (what != null) UnifiedRgb.Core.Log.Info("exit", $"{device.Name}: {what}");
                 }
                 catch (Exception ex)
                 {

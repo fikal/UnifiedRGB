@@ -9,6 +9,11 @@
 // its Razer gear AND feeds UnifiedRGB. With no real DLL present we run
 // standalone (capture only). Same source for both cases and both bitnesses.
 //
+// Effect timing follows the SDK contract in BOTH modes: Create*Effect with a
+// NULL id applies the effect now; with a non-NULL id it is only stored (keyed
+// by the id - synthesized standalone, the real DLL's GUID in proxy mode) until
+// SetEffect(id) selects it. Proxy mode used to send at Create instead (bug 28).
+//
 // Install: back up the real  ...\Razer Chroma SDK\bin\RzChromaSDK64.dll  to
 // RzChromaSDK64_real.dll (and RzChromaSDK.dll to RzChromaSDK_real.dll) if any,
 // then place our builds as RzChromaSDK64.dll / RzChromaSDK.dll. This is an
@@ -19,6 +24,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <map>
 #include <mutex>
 #include <string>
@@ -210,33 +216,41 @@ static void SendFrame(uint8_t type, uint16_t rows, uint16_t cols, const COLORREF
 }
 
 // ---------------------------------------------------------------------------
-// Capture: the color grid is decoded from pParam BEFORE forwarding, so proxy
-// mode taps the exact bytes Razer will render.
+// Capture: decode the color grid from pParam into a Frame. ONE decoder per
+// device serves both modes (standalone stores/sends it; proxy decodes it
+// around the real call) - the two used to carry separate copies of the layout
+// rules and could drift apart. A Frame stays empty (colors.empty()) for
+// effect types we don't capture and for a NULL pParam (invalid per the SDK -
+// the real DLL rejects it too, so nothing is painted rather than a black
+// grid). Allocates: callers run it inside a try.
 // ---------------------------------------------------------------------------
-static void CaptureKeyboard(int effect, PRZPARAM param)
+struct Frame { uint8_t type; uint16_t rows, cols; std::vector<COLORREF> colors; };
+
+static void DecodeKeyboard(int effect, PRZPARAM param, Frame& f)
 {
-    static int n = 0;
-    if (n++ < 3) ShimLog("CreateKeyboardEffect effect=%d param=%p", effect, param);
     if (!param) return;
-    if (effect == KB::CUSTOM2)
-        SendFrame(1, KB2_ROWS, KB2_COLS, reinterpret_cast<COLORREF*>(param));   // v2 layout, Color[8][24] first
-    else if (effect == KB::CUSTOM || effect == KB::CUSTOM_KEY)
-        SendFrame(1, KB_ROWS, KB_COLS, reinterpret_cast<COLORREF*>(param));
+    if (effect == KB::CUSTOM || effect == KB::CUSTOM_KEY || effect == KB::CUSTOM2)
+    {
+        bool v2 = effect == KB::CUSTOM2;   // v2 layout: Color[8][24] first, then Key[8][24]
+        f.type = 1; f.rows = v2 ? KB2_ROWS : KB_ROWS; f.cols = v2 ? KB2_COLS : KB_COLS;
+        f.colors.resize((size_t)f.rows * f.cols);
+        memcpy(f.colors.data(), param, f.colors.size() * sizeof(COLORREF));
+    }
     else if (effect == KB::STATIC)
-        SendFrame(1, 1, 1, reinterpret_cast<COLORREF*>(param));
+    { f.type = 1; f.rows = 1; f.cols = 1; f.colors.assign(1, *reinterpret_cast<COLORREF*>(param)); }
 }
-static void CaptureChromaLink(int effect, PRZPARAM param)
+static void DecodeChromaLink(int effect, PRZPARAM param, Frame& f)
 {
-    static int n = 0;
-    if (n++ < 3) ShimLog("CreateChromaLinkEffect effect=%d param=%p", effect, param);
     if (!param) return;
-    if (effect == CL::CUSTOM)   SendFrame(2, 1, 5, reinterpret_cast<COLORREF*>(param));
-    else if (effect == CL::STATIC) SendFrame(2, 1, 1, reinterpret_cast<COLORREF*>(param));
+    if (effect == CL::CUSTOM)
+    { f.type = 2; f.rows = 1; f.cols = 5; f.colors.resize(5); memcpy(f.colors.data(), param, 5 * sizeof(COLORREF)); }
+    else if (effect == CL::STATIC)
+    { f.type = 2; f.rows = 1; f.cols = 1; f.colors.assign(1, *reinterpret_cast<COLORREF*>(param)); }
 }
+typedef void (*Decoder)(int, PRZPARAM, Frame&);
 
 // Standalone mode still needs a SetEffect->frame path (no real DLL to defer
 // to), so remember the last captured frame per synthesized id.
-struct Frame { uint8_t type; uint16_t rows, cols; std::vector<COLORREF> colors; };
 static std::map<uint64_t, Frame> g_pending;
 static std::mutex g_fxMtx;
 static std::atomic<uint64_t> g_counter{1};             // was a plain ++ outside the lock: duplicate ids across threads
@@ -286,6 +300,84 @@ static void LogCreate(const char* what, int effect, PRZPARAM param, RZEFFECTID* 
     if (n++ < 6) ShimLog("%s effect=%d param=%p id=%s", what, effect, param, id ? "yes (deferred to SetEffect)" : "null (apply now)");
 }
 
+// ---------------------------------------------------------------------------
+// Proxy-mode deferral (bug 28). The old proxy path SENT every Create to
+// UnifiedRGB at once and forwarded SetEffect untouched, so a host that
+// pre-creates a palette of effects and picks one per scene with SetEffect
+// flashed the whole palette at startup, and its actual selections never
+// reached UnifiedRGB at all. Now the real DLL creates first and the GUID it
+// writes keys the stored frame; SetEffect looks the GUID up, sends, then
+// forwards. Bounded like g_pending (a host that creates per frame and never
+// DeleteEffect()s would grow it without limit); GUIDs are opaque, so a
+// sequence index says which entry is the oldest. Shares g_fxMtx - the two
+// stores are never live at the same time and one lock is easier to reason
+// about than two.
+// ---------------------------------------------------------------------------
+struct GuidLess { bool operator()(const GUID& a, const GUID& b) const noexcept { return memcmp(&a, &b, sizeof(GUID)) < 0; } };
+struct ProxyEntry { uint64_t seq; Frame frame; };
+static std::map<GUID, ProxyEntry, GuidLess> g_proxy;   // real id -> frame
+static std::map<uint64_t, GUID> g_proxyOrder;            // seq -> real id; begin() is the oldest
+static uint64_t g_proxySeq = 0;                          // only touched under g_fxMtx
+static bool IsGuidNull(const GUID& g) { static const GUID z{}; return memcmp(&g, &z, sizeof(GUID)) == 0; }
+
+static void StoreProxy(const RZEFFECTID& id, const Frame& f)
+{
+    // The frame copy is the allocation that can realistically fail; make it
+    // before either map is touched so a throw leaves both untouched.
+    ProxyEntry e{ 0, f };
+    std::lock_guard<std::mutex> lock(g_fxMtx);
+    auto old = g_proxy.find(id);
+    if (old != g_proxy.end()) { g_proxyOrder.erase(old->second.seq); g_proxy.erase(old); }   // real DLL recycled an id
+    while (g_proxy.size() >= kMaxPending && !g_proxyOrder.empty())
+    {
+        auto oldest = g_proxyOrder.begin();
+        g_proxy.erase(oldest->second);
+        g_proxyOrder.erase(oldest);
+    }
+    e.seq = ++g_proxySeq;
+    auto ins = g_proxy.emplace(id, std::move(e)).first;
+    // Keep the two maps in step: an entry the index can't see would never be
+    // evicted, so undo the insert if the (tiny) index node fails to allocate.
+    try { g_proxyOrder.emplace(ins->second.seq, id); }
+    catch (...) { g_proxy.erase(ins); throw; }
+}
+static bool TakeProxyFrame(const RZEFFECTID& id, Frame& out)
+{
+    std::lock_guard<std::mutex> lock(g_fxMtx);
+    auto it = g_proxy.find(id);
+    if (it == g_proxy.end()) return false;
+    out = it->second.frame; return true;   // copy out: SendFrame can block 50 ms and must not run under g_fxMtx
+}
+static void EraseProxy(const RZEFFECTID& id)
+{
+    std::lock_guard<std::mutex> lock(g_fxMtx);
+    auto it = g_proxy.find(id);
+    if (it == g_proxy.end()) return;
+    g_proxyOrder.erase(it->second.seq);
+    g_proxy.erase(it);
+}
+
+// Proxy Create: the real DLL is the authority - it always gets the call and
+// its result is what the host sees. We decode BEFORE forwarding so we tap the
+// exact bytes Razer will render, but a decode/store failure (allocation) only
+// loses this one capture; it never blocks the forward or changes the result.
+// NULL id = apply now (sent whatever the real DLL said: UnifiedRGB's devices
+// don't depend on Razer hardware being present). Non-NULL id = store under
+// the GUID the real DLL wrote, and only when it reports success - on failure
+// nothing was written into *id, and GUID_NULL (what hosts pass to mean "no
+// effect") must never become a key.
+static RZRESULT ProxyCreate(Fn_eff real, Decoder decode, int effect, PRZPARAM param, RZEFFECTID* id)
+{
+    Frame f{};
+    try { decode(effect, param, f); } catch (...) { f.colors.clear(); }
+    const RZRESULT r = real(effect, param, id);
+    if (f.colors.empty()) return r;                     // effect type we don't capture, NULL param, or decode failed
+    if (!id) { SendFrame(f.type, f.rows, f.cols, f.colors.data()); return r; }
+    if (r != RZRESULT_SUCCESS || IsGuidNull(*id)) return r;
+    try { StoreProxy(*id, f); } catch (...) { /* capture lost; the real effect exists, so the host's result stands */ }
+    return r;
+}
+
 extern "C" {
 
 __declspec(dllexport) RZRESULT Init()            { ShimLog("Init()"); EnsureReal(); ShimLog(g_real ? "  proxy: real DLL loaded" : "  standalone (no real DLL)"); return g_r.Init ? g_r.Init() : RZRESULT_SUCCESS; }
@@ -300,19 +392,9 @@ __declspec(dllexport) RZRESULT CreateKeyboardEffect(int effect, PRZPARAM param, 
     try
     {
         EnsureReal();
-        // Proxy: tap the bytes at Create (Razer's own SDK owns the Set timing).
-        if (g_r.Keyboard) { CaptureKeyboard(effect, param); return g_r.Keyboard(effect, param, id); }
         LogCreate("CreateKeyboardEffect", effect, param, id);
-        Frame f{};
-        if (effect == KB::CUSTOM || effect == KB::CUSTOM_KEY || effect == KB::CUSTOM2)
-        {
-            bool v2 = effect == KB::CUSTOM2;
-            f.type = 1; f.rows = v2 ? KB2_ROWS : KB_ROWS; f.cols = v2 ? KB2_COLS : KB_COLS;
-            f.colors.resize((size_t)f.rows * f.cols);
-            if (param) memcpy(f.colors.data(), param, f.colors.size() * 4);
-        }
-        else if (effect == KB::STATIC && param)
-        { f.type = 1; f.rows = 1; f.cols = 1; f.colors.assign(1, *(COLORREF*)param); }
+        if (g_r.Keyboard) return ProxyCreate(g_r.Keyboard, DecodeKeyboard, effect, param, id);
+        Frame f{}; DecodeKeyboard(effect, param, f);      // standalone
         return Deliver(f, id);
     }
     catch (...) { return RZRESULT_FAILED; }
@@ -323,11 +405,9 @@ __declspec(dllexport) RZRESULT CreateChromaLinkEffect(int effect, PRZPARAM param
     try
     {
         EnsureReal();
-        if (g_r.ChromaLink) { CaptureChromaLink(effect, param); return g_r.ChromaLink(effect, param, id); }
         LogCreate("CreateChromaLinkEffect", effect, param, id);
-        Frame f{};
-        if (effect == CL::CUSTOM && param) { f.type = 2; f.rows = 1; f.cols = 5; f.colors.resize(5); memcpy(f.colors.data(), param, 20); }
-        else if (effect == CL::STATIC && param) { f.type = 2; f.rows = 1; f.cols = 1; f.colors.assign(1, *(COLORREF*)param); }
+        if (g_r.ChromaLink) return ProxyCreate(g_r.ChromaLink, DecodeChromaLink, effect, param, id);
+        Frame f{}; DecodeChromaLink(effect, param, f);    // standalone
         return Deliver(f, id);
     }
     catch (...) { return RZRESULT_FAILED; }
@@ -343,9 +423,16 @@ __declspec(dllexport) RZRESULT SetEffect(RZEFFECTID id)
 {
     try
     {
-        if (g_r.SetEffect) return g_r.SetEffect(id);      // proxy path already captured at Create
-        Frame f;                                          // standalone: send the stored frame
-        if (TakeFrame(id, f) && !f.colors.empty()) SendFrame(f.type, f.rows, f.cols, f.colors.data());
+        Frame f;
+        if (g_r.SetEffect)
+        {
+            // Proxy: send the frame deferred at Create (a mouse/headset/... id
+            // simply misses), THEN forward. The lookup copies and can throw;
+            // Razer must get the Set regardless, so that failure is swallowed.
+            try { if (TakeProxyFrame(id, f)) SendFrame(f.type, f.rows, f.cols, f.colors.data()); } catch (...) {}
+            return g_r.SetEffect(id);
+        }
+        if (TakeFrame(id, f) && !f.colors.empty()) SendFrame(f.type, f.rows, f.cols, f.colors.data());   // standalone
         return RZRESULT_SUCCESS;
     }
     catch (...) { return RZRESULT_FAILED; }
@@ -353,7 +440,8 @@ __declspec(dllexport) RZRESULT SetEffect(RZEFFECTID id)
 
 __declspec(dllexport) RZRESULT DeleteEffect(RZEFFECTID id)
 {
-    if (g_r.DeleteEffect) return g_r.DeleteEffect(id);
+    // Proxy: drop our copy first (find/erase, no allocation), then forward.
+    if (g_r.DeleteEffect) { EraseProxy(id); return g_r.DeleteEffect(id); }
     uint64_t c; memcpy(&c, &id.Data1, sizeof(c));
     std::lock_guard<std::mutex> lock(g_fxMtx); g_pending.erase(c);
     return RZRESULT_SUCCESS;

@@ -51,8 +51,16 @@ public static class OpenRgbManager
         }
     }
 
-    /// <summary>True when a server is reachable (ours or the user's own).</summary>
-    public static bool IsServerUp() => OpenRgbClient.IsServerUp(port: Port);
+    /// <summary>True when an OpenRGB backend is reachable on the bridge port:
+    /// the bundled instance or the user's own install. NOT our own SDK server:
+    /// it also defaults to 6742 and answers the same probe, and our own SDK
+    /// server answering the protocol probe is not a bridge backend. Treating
+    /// it as one made EnsureRunningAsync report success without launching
+    /// OpenRGB, after which the bridge had nothing behind it. The app moves
+    /// the SDK server off this port before starting the bridge; until it has,
+    /// this says "down" so the launch path runs.</summary>
+    public static bool IsServerUp() =>
+        !OpenRgbServer.IsOwnListener(Port) && OpenRgbClient.IsServerUp(port: Port);
 
     static string? FindExe() =>
         Directory.Exists(Root)
@@ -111,6 +119,11 @@ public static class OpenRgbManager
     public static async Task<bool> EnsureRunningAsync(Action<string>? status = null)
     {
         if (IsServerUp()) return true;
+        // The port is spoken for from HERE, download included: a first-run
+        // install takes minutes, and the app has already moved its own SDK
+        // server aside for us. A Rescan in that window re-created it on 6742
+        // and the launch that followed could never bind.
+        Interlocked.Exchange(ref _launching, 1);
         try
         {
             await InstallAsync(status);
@@ -123,31 +136,44 @@ public static class OpenRgbManager
             Log.Warn("openrgb", $"setup failed: {ex.Message}");
             return false;
         }
+        finally { Interlocked.Exchange(ref _launching, 0); }
     }
+
+    /// <summary>True while a launch (or relaunch loop) is in progress: the SDK
+    /// port is spoken for even though nothing answers on it yet. The app's own
+    /// SDK server consults this so a Rescan the user triggers mid-relaunch does
+    /// not bind 6742 and leave OpenRGB unable to.</summary>
+    public static bool Launching => Volatile.Read(ref _launching) != 0;
+    static int _launching;
 
     static bool Launch(Action<string>? status)
     {
-        // Bounded relaunch loop: the crash-bisect (one buggy detector killing
-        // the whole scan) and the first-run conflict-policy restart both work
-        // by narrowing the detector config and relaunching. log2(~300
-        // detectors) + slack fits comfortably in the bound.
-        bool policyRestartDone = false;
-        for (int attempt = 0; attempt < 14; attempt++)
+        Interlocked.Exchange(ref _launching, 1);
+        try
         {
-            switch (LaunchOnce(status, ref policyRestartDone))
+            // Bounded relaunch loop: the crash-bisect (one buggy detector killing
+            // the whole scan) and the first-run conflict-policy restart both work
+            // by narrowing the detector config and relaunching. log2(~300
+            // detectors) + slack fits comfortably in the bound.
+            bool policyRestartDone = false;
+            for (int attempt = 0; attempt < 14; attempt++)
             {
-                case LaunchResult.Ok: return true;
-                case LaunchResult.Failed: return false;
-                case LaunchResult.Relaunch: Stop(); continue;
+                switch (LaunchOnce(status, ref policyRestartDone))
+                {
+                    case LaunchResult.Ok: return true;
+                    case LaunchResult.Failed: return false;
+                    case LaunchResult.Relaunch: Stop(); continue;
+                }
             }
+            status?.Invoke("OpenRGB kept restarting — giving up for this session");
+            // Also to the log. The bridge going dark for a session takes half
+            // someone's devices with it, and the only trace used to be that
+            // [openrgb] lines simply stopped appearing. Absence of a line is the
+            // one thing nobody can diagnose from.
+            Log.Warn("openrgb", "kept restarting, giving up for this session");
+            return false;
         }
-        status?.Invoke("OpenRGB kept restarting — giving up for this session");
-        // Also to the log. The bridge going dark for a session takes half
-        // someone's devices with it, and the only trace used to be that
-        // [openrgb] lines simply stopped appearing. Absence of a line is the
-        // one thing nobody can diagnose from.
-        Log.Warn("openrgb", "kept restarting, giving up for this session");
-        return false;
+        finally { Interlocked.Exchange(ref _launching, 0); }
     }
 
     enum LaunchResult { Ok, Failed, Relaunch }
@@ -359,8 +385,15 @@ public static class OpenRgbManager
     /// <summary>Restart the bundled instance (after a detector-config change).</summary>
     public static bool Restart(Action<string>? status = null)
     {
-        Stop();
-        return Launch(status);
+        // Flagged across the Stop too, so the port reads as spoken for during
+        // the gap between the old instance dying and the new one binding.
+        Interlocked.Exchange(ref _launching, 1);
+        try
+        {
+            Stop();
+            return Launch(status);
+        }
+        finally { Interlocked.Exchange(ref _launching, 0); }
     }
 
     /// <summary>After a bridge-up that skipped natively-driven devices: turn

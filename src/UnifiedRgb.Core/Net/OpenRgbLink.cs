@@ -44,6 +44,15 @@ public static class OpenRgbLink
 
         var list = new List<IRgbDevice>();
         var nameCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        // Our own SDK server on the bridge port is not a backend. Connecting to
+        // it would enumerate the devices this very app exposes and wrap each
+        // one as a "bridged" copy of itself: two writers on one device, and a
+        // device list that grows by one copy per rescan.
+        if (OpenRgbServer.IsOwnListener(OpenRgbManager.Port))
+        {
+            Log.Info("openrgb", $"port {OpenRgbManager.Port} is our own SDK server, not an OpenRGB backend; nothing to bridge");
+            return list;
+        }
         if (!OpenRgbClient.IsServerUp(port: OpenRgbManager.Port)) return list;
         try
         {
@@ -92,7 +101,9 @@ public static class OpenRgbLink
         return list;
     }
 
-    static bool IsNativelyCovered(OpenRgbClient.DeviceInfo info)
+    /// <summary>Is this remote device one our own drivers already own? Internal
+    /// so the Logitech rule below can be tested without hardware.</summary>
+    internal static bool IsNativelyCovered(OpenRgbClient.DeviceInfo info)
     {
         var m = Regex.Match(info.Location, @"vid[_&#]?([0-9a-fA-F]{4}).{0,4}pid[_&#]?([0-9a-fA-F]{4})",
                             RegexOptions.IgnoreCase);
@@ -101,7 +112,14 @@ public static class OpenRgbLink
             int vid = Convert.ToInt32(m.Groups[1].Value, 16);
             int pid = Convert.ToInt32(m.Groups[2].Value, 16);
             if (NativeHardware.Any(h => h.Vid == vid && h.Pid == pid)) return true;
-            if (vid == 0x046D) return true;                 // any Logitech: native HID++ driver
+            // Logitech: covered only for the product the native HID++ driver
+            // actually opened this pass. It used to be "any 046D", which hid
+            // every Logitech device OpenRGB could drive whenever the native
+            // driver could not: a second Logitech device (TryOpen returns at
+            // most one), or one whose lighting is not the HID++ 0x8070/0x8071
+            // feature at all. Native factories run before this bridge in
+            // DeviceManager, so the claimed set is complete by the time we ask.
+            if (vid == 0x046D && LogitechG403.IsClaimedProductId((ushort)pid)) return true;
         }
         // Non-HID natives, matched by identity rather than location:
         if (info.Type == 1 && (info.Name.Contains("ENE", StringComparison.OrdinalIgnoreCase)

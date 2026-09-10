@@ -303,6 +303,12 @@ public sealed class AutomationService : IDisposable
                     Log.Warn("auto", $"a rule wanted profile '{profile}', which no longer exists");
                 break;
             case AutomationMode.Base:
+                // Relight the pump LCD FIRST, whichever branch below wins. Lock
+                // and the scheduled dark window blank it (LightsOff), and only
+                // the RestoreState branch used to turn it back on: with a
+                // startup profile set (the default return policy) an ordinary
+                // unlock restored the RGB and left the panel black.
+                _vm.SetPumpLcdOn(true);
                 // Back to the startup profile, if there is one and the user has
                 // not asked otherwise. The saved baseline is whatever happened
                 // to be on screen when the rule fired, which after an evening of

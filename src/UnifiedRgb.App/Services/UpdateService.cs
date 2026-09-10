@@ -95,9 +95,14 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
         catch (Exception ex) { Log.Warn("update", $"previous-install cleanup failed: {ex.Message}"); }
     }
 
-    /// <summary>Download the new build, verify its published SHA-256, then hand
-    /// off to a batch script that swaps the exe once its lock releases and
-    /// restarts. See inline comments for the field lessons baked in here.</summary>
+    /// <summary>Resolve the build's published SHA-256, download it, verify the
+    /// bytes against that hash, then hand off to a batch script that swaps the
+    /// exe once its lock releases and restarts. Verification is a HARD
+    /// requirement: with no published hash nothing is downloaded and the
+    /// current install is left alone - the file-version check further down is
+    /// an identity check, not an integrity one, and used to be all that stood
+    /// between a hash-less release and an installed binary. See inline
+    /// comments for the field lessons baked in here.</summary>
     public async Task InstallAsync()
     {
         if (_running) return;
@@ -121,9 +126,25 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             string stamp = $"{Environment.ProcessId}-{Guid.NewGuid():N}";
             string temp = Path.Combine(targetDir, $"UnifiedRGB-update-{stamp}.exe");
             string swapResult = Path.Combine(targetDir, $"unifiedrgb-update-{stamp}.result");
-            staged = temp;
             var latest = await UpdateClient.GetLatestAsync();
+            // The hash is resolved BEFORE any bytes are fetched, and its absence
+            // ends the attempt. Both hash checks below used to be skipped when
+            // ResolveShaAsync came back null (release JSON without a .sha256
+            // asset or a hash in the notes, or that asset not fetched), and the
+            // install went ahead on file-version metadata alone - an unverified
+            // binary swapped in over an elevated process. Refusing here, with
+            // nothing staged, leaves nothing to clean up; the button stays
+            // retryable because the usual cause is a release whose .sha256
+            // asset has not finished publishing yet.
             string? sha = latest != null ? await UpdateClient.ResolveShaAsync(latest) : null;
+            if (!IsSha256(sha))
+            {
+                Log.Warn("update", $"release {latest?.Version ?? "(unknown)"} has no usable published SHA-256 ('{sha ?? "null"}') - not downloading; current install left intact");
+                setText("update could not be verified — try again later");
+                _running = false;
+                return;
+            }
+            staged = temp;
             setText("downloading 0%");
             string? err = await UpdateClient.DownloadAsync(temp,
                 pct => Application.Current.Dispatcher.Invoke(() => setText($"downloading {pct}%")),
@@ -137,18 +158,16 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             }
 
             // Integrity: the publisher registered the build's SHA-256; refuse
-            // a download that doesn't match (corruption or tampering).
-            if (!string.IsNullOrEmpty(sha))
+            // a download that doesn't match (corruption or tampering). Never
+            // skipped - a missing hash already ended the attempt above.
+            string got = await Task.Run(() => UpdateClient.HashFile(temp));
+            if (!string.Equals(got, sha, StringComparison.OrdinalIgnoreCase))
             {
-                string got = await Task.Run(() => UpdateClient.HashFile(temp));
-                if (!string.Equals(got, sha, StringComparison.OrdinalIgnoreCase))
-                {
-                    Log.Error("update", $"download hash mismatch: expected {sha}, got {got}");
-                    try { File.Delete(temp); } catch { }
-                    setText("update failed integrity check — try again");
-                    _running = false;
-                    return;
-                }
+                Log.Error("update", $"download hash mismatch: expected {sha}, got {got}");
+                try { File.Delete(temp); } catch { }
+                setText("update failed integrity check — try again");
+                _running = false;
+                return;
             }
 
             // IDENTITY (not just integrity): the feed's version is metadata a
@@ -207,8 +226,9 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             // already belong to an unrelated process (Windows recycles PIDs fast).
             string imageName = Path.GetFileName(target);
             // Re-verify the payload right before every move attempt - closes the
-            // window between the managed hash check and the swap.
-            string verify = string.IsNullOrEmpty(sha) ? "" :
+            // window between the managed hash check and the swap. Always
+            // emitted: sha is guaranteed by the gate before the download.
+            string verify =
                 $"certutil -hashfile \"{temp}\" SHA256 | findstr /i /c:\"{sha}\" >nul || goto tampered";
             // The result redirect goes FIRST: cmd expands %n% before it parses
             // redirection, so `echo ok %n%>file` with n=2 became `echo ok 2>file`
@@ -294,5 +314,17 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             _running = false;
             throw;
         }
+    }
+
+    /// <summary>A usable published hash is exactly 64 hex digits. Anything
+    /// else ("", a truncated token, a placeholder) would make the managed
+    /// compare fail and, worse, the batch `findstr` match nothing - so it is
+    /// rejected before the download rather than after it.</summary>
+    static bool IsSha256([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] string? s)
+    {
+        if (s is not { Length: 64 }) return false;
+        foreach (char c in s)
+            if (!Uri.IsHexDigit(c)) return false;
+        return true;
     }
 }

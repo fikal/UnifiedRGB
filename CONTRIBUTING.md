@@ -4,12 +4,16 @@
 
 ```
 dotnet build src/UnifiedRgb.App -c Debug
-dotnet run --project src/UnifiedRgb.Tests
+dotnet run --project src/UnifiedRgb.Tests              # every suite
+dotnet run --project src/UnifiedRgb.Tests -- Devices   # just one
+dotnet run --project src/UnifiedRgb.Tests -- --list    # the suite names
 ```
 
 The tests round-trip the wire codecs (e.g. the Lian Li tinyuz compressor) —
-they must stay green. UI changes should be exercised by hand; say what you
-clicked in the PR.
+they must stay green. Tests live one file per area under
+`src/UnifiedRgb.Tests/Suites/`; a new area is a file there plus one line in
+`Suites.cs`. UI changes should be exercised by hand; say what you clicked in
+the PR.
 
 ## What makes a good PR here
 

@@ -52,6 +52,10 @@ public sealed partial class MainViewModel
         /// <summary>Unsaved-changes flag at capture time, so an override round
         /// trip doesn't quietly drop the close-time save prompt.</summary>
         public bool Dirty { get; init; }
+        /// <summary>The pump screen at capture time (null = no panel). A rule's
+        /// profile can bring its own screen; restoring the LEDs without this
+        /// left the panel on the rule's screen after the rule ended.</summary>
+        public LcdDesignerViewModel.LcdSnapshot? Screen { get; init; }
     }
 
     public LightState CaptureState() => new()
@@ -60,6 +64,7 @@ public sealed partial class MainViewModel
         Effects = CaptureEffects(),
         ProfileName = SelectedProfile?.Name,
         Dirty = _dirty,
+        Screen = Lcd.SnapshotDesign(),
     };
 
     /// <summary>Stop our effects on one device, leaving every other device
@@ -80,6 +85,8 @@ public sealed partial class MainViewModel
         OnChanged(nameof(SelectedProfile));
         OnChanged(nameof(IsStartupProfile));   // direct field write bypasses the setter
         SyncWheelToSelection();
+        // The screen goes back with the LEDs: the snapshot is the whole desk.
+        if (s.Screen != null) Lcd.RestoreDesign(s.Screen);
         // Wake the pump LCD back up (LightsOff blanked it during sleep/lock).
         SetPumpLcdOn(true);
     }
@@ -289,7 +296,17 @@ public sealed partial class MainViewModel
         var server = new UnifiedRgb.Core.Net.OpenRgbServer(_sdkHost);
         // Fired from a socket thread; the status line is a UI binding.
         server.ClientsChanged += () => _dispatcher.BeginInvoke(() => OnChanged(nameof(SdkServerStatus)));
-        server.Start(SdkServerLan);
+        // With the bridge up, the default port belongs to the bundled OpenRGB,
+        // so take the alternate outright rather than racing it for 6742. With
+        // the bridge option on but OpenRGB NOT running (install or launch
+        // failed) the ecosystem port is free and ours to use, so SDK clients
+        // that expect 6742 still find us. IsServerUp probes honestly here: our
+        // previous server is already disposed, so it cannot answer the probe.
+        // "Up" OR "being launched": the crash-bisect relaunch loop and the
+        // detector-config restart leave the port empty for seconds at a time,
+        // and a Rescan the user triggers inside that window must not take it.
+        bool bridgeOwnsPort = _store.Settings.UseOpenRgb && (OpenRgbManager.IsServerUp() || OpenRgbManager.Launching);
+        server.Start(SdkServerLan, bridgeOwnsPort ? OpenRgbServer.AlternatePort : 0);
         _sdkServer = server;
         OnChanged(nameof(SdkServerStatus));
     }
@@ -680,9 +697,25 @@ public sealed partial class MainViewModel
         {
             OpenRgbStatus = "starting...";
             await _openRgbStop;   // an off->on toggle: let the teardown finish first
+            // Our own SDK server prefers the same port the bridge backend uses.
+            // Sitting on 6742 it answered EnsureRunning's "is a server up?" probe
+            // and no OpenRGB was ever launched; the Rescan below then stopped
+            // our server and the bridge had no backend at all. Move off the port
+            // first: SyncSdkServer restarts the server after the Rescan, and with
+            // OpenRGB holding 6742 by then it lands on the alternate port.
+            if (_sdkServer is { Port: OpenRgbServer.DefaultPort })
+            {
+                Log.Info("openrgb", $"moving our SDK server off port {OpenRgbServer.DefaultPort} for the bridge backend");
+                _sdkServer.Dispose();
+                _sdkServer = null;
+            }
             bool ok = await Task.Run(() => OpenRgbManager.EnsureRunningAsync(
                 s => Application.Current.Dispatcher.Invoke(() => OpenRgbStatus = s)));
-            if (!ok) { return; }
+            // No backend: bring our SDK server back on its usual port (it was
+            // moved aside above, and a Rescan mid-install may have restarted it
+            // on the alternate) so a failed bridge does not also cost the user
+            // their SDK clients.
+            if (!ok) { RestartSdkServer(); return; }
 
             Rescan();
             // A server that vanished between "up" and now = OpenRGB crashed while

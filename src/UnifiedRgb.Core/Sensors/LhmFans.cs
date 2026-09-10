@@ -172,22 +172,50 @@ public sealed class LhmFans : IDisposable
         catch (Exception ex) { Log.Warn("lhm", $"set duty failed: {ex.Message}"); return false; }
     }
 
-    /// <summary>Hand a fan back to the board's own (BIOS) control.</summary>
-    public void Restore(int index)
+    /// <summary>Hand a fan back to the board's own (BIOS) control. False when
+    /// the takeover release THREW: the header is then still on whatever duty we
+    /// last wrote, and the caller must not record it as handed back (SensorHub
+    /// keeps retrying such fans). A fan we never had control of - no control
+    /// paired, or an index that no longer exists - has nothing to release and
+    /// reports true.</summary>
+    public bool Restore(int index)
     {
-        if ((uint)index >= (uint)_fans.Count) return;
-        try { _fans[index].Control?.SetDefault(); }
-    catch (Exception ex) { Log.Warn("fans", $"'{_fans[index].Name}' would not go back to auto: {ex.Message}"); }
+        if ((uint)index >= (uint)_fans.Count) return true;
+        try { _fans[index].Control?.SetDefault(); return true; }
+        catch (Exception ex)
+        {
+            // Rate-limited: the hub retries a refused handback every tick, and
+            // a header that keeps refusing would otherwise write this line
+            // every 1.5 s for as long as the app runs.
+            Log.Occasional($"lhm-restore:{index}", "fans",
+                $"'{_fans[index].Name}' would not go back to auto: {ex.Message}");
+            return false;
+        }
     }
 
-    public void RestoreAll()
+    /// <summary>Restore every fan; returns the ones whose release failed (empty
+    /// = all back on the BIOS curve). Index for the caller's retry bookkeeping,
+    /// name for its log line.</summary>
+    public List<(int Index, string Name)> RestoreAll()
     {
-        for (int i = 0; i < _fans.Count; i++) Restore(i);
+        var failed = new List<(int Index, string Name)>();
+        for (int i = 0; i < _fans.Count; i++)
+            if (!Restore(i)) failed.Add((i, _fans[i].Name));
+        return failed;
     }
 
     public void Dispose()
     {
-        try { RestoreAll(); } catch { }
+        // Last chance before the driver goes: a header still under software
+        // control after Close() keeps our duty until reboot, so say which.
+        try
+        {
+            var failed = RestoreAll();
+            if (failed.Count > 0)
+                Log.Warn("lhm", "closing with fans still under software control: "
+                    + string.Join(", ", failed.Select(f => $"'{f.Name}'")));
+        }
+        catch { }
         try { _computer.Close(); } catch { }
     }
 }

@@ -60,7 +60,18 @@ public sealed class CoalescingApplier
 
     /// <summary>Queue a device write. Coalescing is latest-wins PER KEY (one
     /// key per device/zone); laneKey picks the worker — writes on different
-    /// lanes run in parallel, writes on one lane run in order.</summary>
+    /// lanes run in parallel, writes on one lane run in order.
+    ///
+    /// A re-post of a key that is already pending replaces the job IN PLACE:
+    /// it keeps the old job's position in the queue, and that is deliberate -
+    /// it is what keeps the lane's in-order promise for jobs posted later
+    /// under OTHER keys. It is also a trap for a caller whose keys overlap on
+    /// the hardware: a whole-device job re-posted in place runs BEFORE a
+    /// partial that was posted after its first version, so the stale partial
+    /// paints over the newer whole frame. The rule for callers is therefore
+    /// ONE key per hardware range that can be written more than one way; the
+    /// SDK path keeps a single accumulated frame per device for exactly this
+    /// reason (LightingController.PushExternalFrame).</summary>
     public void Post(object laneKey, object key, Action work)
     {
         Lane? lane;

@@ -96,6 +96,15 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
     /// animation is playing on the receiver instead. Set by the app's baker.</summary>
     public bool SuppressStreaming { get; set; }
 
+    /// <summary>Raised on the TELEMETRY thread (outside _lock) when an uploaded
+    /// animation was never confirmed by the fans before the resend deadline.
+    /// The baker owns SuppressStreaming and its upload-signature cache, so only
+    /// it can recover: without this hook the fans sat frozen on the previous
+    /// animation with streaming suppressed and the identical settings skipped
+    /// as "already uploaded" forever. Subscribers must marshal to their own
+    /// thread.</summary>
+    public event Action? AnimationUnconfirmed;
+
     // ILianFanDevice: three parts per fan (the SL-INF's real light zones).
     // Cached: WPF re-reads bound properties on every notify, and these used
     // to allocate a fresh array/LINQ list per get.
@@ -485,7 +494,7 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
             _pendingData = data;
             _pendingTotalFrame = cur.Count;
             _pendingIntervalMs = ms;
-            _animDeadlineMs = Environment.TickCount64 + AnimConfirmTimeoutMs;
+            Volatile.Write(ref _animDeadlineMs, Environment.TickCount64 + AnimConfirmTimeoutMs);
             _animPending = true;
             SendEffect(data, cur.Count, ms, _pendingIndex);
         }
@@ -550,15 +559,36 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
             Log.Info("LianLi", "animation confirmed by fans");
             return;
         }
-        if (Environment.TickCount64 > _animDeadlineMs)
-        {
-            _animPending = false;
-            Log.Occasional("LianLi", "animtimeout", "animation not confirmed before timeout - giving up resends");
-            return;
-        }
+        if (ExpireAnimationIfOverdue()) return;
         lock (_lock)
             if (_animPending && _pendingData != null)
                 SendEffect(_pendingData, _pendingTotalFrame, _pendingIntervalMs, _pendingIndex);
+    }
+
+    /// <summary>The confirmation deadline, checked on the WALL CLOCK from the
+    /// telemetry loop on every pass, not only from a successful poll. Reconcile
+    /// runs only when the receiver answered with our fan's record; with the RX
+    /// interface unreadable (no WinUSB driver, unplugged) the deadline was
+    /// never evaluated, the upload stayed pending forever, the baker never
+    /// heard, and the fans sat frozen on the previous animation while the
+    /// telemetry thread polled at 150 ms indefinitely.</summary>
+    bool ExpireAnimationIfOverdue()
+    {
+        // The deadline is written under _lock by UploadAnimation and read here
+        // without it: a volatile read at least never sees a stale cached value
+        // once a fresh upload has re-armed it.
+        if (!_animPending || _disposed || Environment.TickCount64 <= Volatile.Read(ref _animDeadlineMs)) return false;
+        _animPending = false;
+        // Forget the hash too: the fans never took this animation, so the
+        // baker's retry of the IDENTICAL frames must not be deduplicated
+        // away by UploadAnimation. Lock-free like IntervalScale's reset
+        // (_lock may be held by a frame send for hundreds of ms).
+        Interlocked.Exchange(ref _lastAnimHash, 0);
+        Log.Occasional("LianLi", "animtimeout", "animation not confirmed before timeout - giving up resends");
+        // Outside _lock: the handler (the baker) marshals to the UI thread
+        // and may schedule another upload, which takes _lock itself.
+        AnimationUnconfirmed?.Invoke();
+        return true;
     }
 
     void SendEffect(byte[] data) => SendEffect(data, 1, 200, NextEffectIndexBuf());
@@ -716,6 +746,8 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
             {
                 try { PollTelemetry(); }
                 catch (Exception ex) { Log.Occasional("LianLi", "telemetry", $"telemetry poll failed: {ex.Message}"); }
+                try { ExpireAnimationIfOverdue(); }   // whether or not the poll got an answer
+                catch (Exception ex) { Log.Occasional("LianLi", "animexpire", $"animation expiry failed: {ex.Message}"); }
                 // Poll fast while an animation upload awaits confirmation (drives the
                 // resend), slow otherwise (RPM/PWM only need a lazy refresh).
                 Thread.Sleep(_animPending ? 150 : 1500);

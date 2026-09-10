@@ -111,9 +111,20 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
     \*-----------------------------------------------------*/
     static ushort Swap(ushort reg) => (ushort)(((reg << 8) & 0xFF00) | ((reg >> 8) & 0x00FF));
 
+    // Every ENE transaction is two bus operations: select the register, then
+    // move the data. The select can fail on its own (mutex timeout, NAK), and
+    // when it does the data operation still runs against WHATEVER REGISTER WAS
+    // SELECTED LAST - a colour block written after a failed select lands in a
+    // mode or control register, and a read returns that register's stale
+    // byte as if it were the one asked for. So every helper below
+    // short-circuits on the select; only RegWrite used to.
+
+    /// <summary>The byte, or -1 when EITHER transaction failed. A failed select
+    /// followed by a successful read would hand detection a stale byte from
+    /// the previous register as the device name or LED count.</summary>
     static int RegRead(PawnSmbus bus, byte addr, ushort reg)
     {
-        bus.WriteWordData(addr, 0x00, Swap(reg));
+        if (!bus.WriteWordData(addr, 0x00, Swap(reg))) return -1;
         return bus.ReadByteData(addr, 0x81);
     }
 
@@ -125,7 +136,7 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
 
     bool RegWriteBlock(ushort reg, ReadOnlySpan<byte> data)
     {
-        _bus.WriteWordData(_addr, 0x00, Swap(reg));
+        if (!_bus.WriteWordData(_addr, 0x00, Swap(reg))) return false;
         if (_bus.WriteBlockData(_addr, 0x03, data)) return true;
         // Fallback: byte-at-a-time through the auto-increment data register.
         foreach (var b in data)
@@ -138,7 +149,7 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
     /// caller can revert to small chunks instead of degrading to per-byte I/O.</summary>
     bool TryBlock(ushort reg, ReadOnlySpan<byte> data)
     {
-        _bus.WriteWordData(_addr, 0x00, Swap(reg));
+        if (!_bus.WriteWordData(_addr, 0x00, Swap(reg))) return false;
         return _bus.WriteBlockData(_addr, 0x03, data);
     }
 
@@ -355,20 +366,41 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
                 buf[i * 3 + 1] = c.B;
                 buf[i * 3 + 2] = c.G;
             }
+            // `landed` is the verdict for the WHOLE frame, whichever path wrote
+            // it: the frame is cached only when every chunk was accepted. The
+            // fallback path used to discard its results, so a stick that NAKed
+            // the colour bytes still had the frame recorded in _last, and every
+            // identical frame after it - the engine's once-a-second keepalive
+            // included - was deduped away. The stick sat on stale colours until
+            // the colour changed or a rescan.
+            bool landed = false;
             if (_batchedBlocks)
             {
-                bool ok = true;
-                for (int off = 0; off < buf.Length && ok; off += 30)   // 30 = 10 LEDs, under the 32 B SMBus cap
-                    ok = TryBlock((ushort)(_directReg + off), buf.AsSpan(off, Math.Min(30, buf.Length - off)));
-                if (!ok)
+                landed = true;
+                for (int off = 0; off < buf.Length && landed; off += 30)   // 30 = 10 LEDs, under the 32 B SMBus cap
+                    landed = TryBlock((ushort)(_directReg + off), buf.AsSpan(off, Math.Min(30, buf.Length - off)));
+                if (!landed)
                 {
                     _batchedBlocks = false;
                     Log.Warn("EneDram", $"host rejected batched block write at 0x{_addr:X2} - reverting to 3-byte chunks");
                 }
             }
             if (!_batchedBlocks)
+            {
+                landed = true;
                 for (int off = 0; off < buf.Length; off += 3)
-                    RegWriteBlock((ushort)(_directReg + off), buf.AsSpan(off, 3));
+                    // Stop at the first refused chunk rather than finishing the
+                    // frame: each transaction can wait up to 2 s on the
+                    // machine-wide SMBus mutex, and a partial frame is re-sent
+                    // in full on the next call anyway.
+                    if (!RegWriteBlock((ushort)(_directReg + off), buf.AsSpan(off, 3))) { landed = false; break; }
+            }
+            if (!landed)
+            {
+                Log.Occasional($"ene:{_addr:X2}:frame", "EneDram",
+                    $"colour write failed at 0x{_addr:X2} - the frame will be re-sent on the next call");
+                return;
+            }
 
             // Don't dedup a frame written while direct mode is still off: the
             // next call (engine keepalive or user apply) must repeat the enable.

@@ -415,9 +415,28 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     public void DeleteSelectedElement() => DeleteElement();
 
     /// <summary>Re-render the pump now and schedule a debounced save.</summary>
+    /// <summary>Counts the user's own changes to what the pump shows: canvas
+    /// edits, picking a screen, saving or deleting one. An automation snapshot
+    /// records it, and a restore whose count has moved on leaves the panel
+    /// alone - the user changed the screen during the override and that edit
+    /// is the newest intent, exactly as LightingApplied protects RGB edits.
+    /// Screens put up by a profile or a show do not count.</summary>
+    int _userEdits;
+
     public void TouchLcd()
     {
-        _liveIsShowScene = false;   // a user edit: the live design is the canvas again
+        _userEdits++;
+        MarkCanvas();
+    }
+
+    /// <summary>The live design is the user's canvas (not a show scene):
+    /// re-render and schedule the debounced save. WITHOUT counting a user
+    /// edit - a design loaded by a profile's screen, or put back by an
+    /// automation restore, goes through here too, and counting those would
+    /// make every override look like the user had edited during it.</summary>
+    void MarkCanvas()
+    {
+        _liveIsShowScene = false;   // the live design is the canvas again
         _clockSecond = -1;
         _lcd?.Refresh();
         _lcdSave.Stop(); _lcdSave.Start();
@@ -671,6 +690,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         get => _selectedSceneName;
         set
         {
+            _userEdits++;   // the dropdown: the user's choice
             _selectedSceneName = value;
             OnChanged();
             // Selecting a scene loads it into the editor (and onto the pump).
@@ -698,7 +718,14 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
             return false;
         }
         if (_lcd.Design.SceneName == sc.Name && !_liveIsShowScene) return true;
-        SelectedSceneName = sc.Name;
+        // Not through the SelectedSceneName setter: that is the user's dropdown
+        // and counts as their edit. And while a show has the panel, the profile's
+        // screen is shown with the same show-only status - loading it as the
+        // user's canvas used to flush it into lcd.json over their real design
+        // on the show's very next step.
+        _selectedSceneName = sc.Name;
+        OnChanged(nameof(SelectedSceneName));
+        LoadDesignIntoEditor(FromScene(sc), fromShow: _liveIsShowScene);
         return true;
     }
 
@@ -763,8 +790,28 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         // and restarts every effect channel, so a step that names the running
         // profile visibly resets the animation instead of leaving it alone.
         // Steps that genuinely change nothing now just tick past.
-        if (!string.IsNullOrEmpty(a.Scene) &&
-            _scenes.Scenes.FirstOrDefault(x => x.Name == a.Scene) is LcdScene sc &&
+        //
+        // Profile FIRST, screen second. A profile carries its own pump screen
+        // (LoadProfile shows it), so with the order reversed a step asking for
+        // screen A plus a lighting profile saved with screen B finished on B:
+        // the step's explicit choice was overwritten by the profile's implicit
+        // one. The explicitly selected screen must have the last word.
+        //
+        // A step that names a scene is show territory from here on: flag it
+        // BEFORE the profile applies, so the profile's own screen (if any) is
+        // put up show-only like the scene that follows it. Loaded as the
+        // user's canvas instead, it started the debounced save, and the scene
+        // load right after flushed it - the profile's screen replaced the
+        // user's real canvas in lcd.json on the show's first step.
+        // Resolved first: a step naming a scene that was since deleted must not
+        // flag the user's live canvas as show-only (that would let a profile's
+        // screen reload over an edit in progress, and skip the save at exit).
+        var sc = string.IsNullOrEmpty(a.Scene) ? null : _scenes.Scenes.FirstOrDefault(x => x.Name == a.Scene);
+        if (sc != null) _liveIsShowScene = true;
+        if (!string.IsNullOrEmpty(a.Profile) &&
+            !string.Equals(_currentProfile(), a.Profile, StringComparison.OrdinalIgnoreCase))
+            _applyProfile(a.Profile);
+        if (sc != null &&
             // Only safe to skip when the show itself put this screen up. If the
             // user has been editing, the live design is no longer that scene.
             !(_liveIsShowScene && _selectedSceneName == sc.Name))
@@ -773,9 +820,44 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
             OnChanged(nameof(SelectedSceneName));
             LoadDesignIntoEditor(FromScene(sc), fromShow: true);
         }
-        if (!string.IsNullOrEmpty(a.Profile) &&
-            !string.Equals(_currentProfile(), a.Profile, StringComparison.OrdinalIgnoreCase))
-            _applyProfile(a.Profile);
+    }
+
+    /// <summary>What the pump is showing right now, detached: the live design
+    /// plus whether a show put it there. Automation snapshots carry this next
+    /// to the LED frames, so an app/sensor rule that applied a profile with a
+    /// different screen can put the ORIGINAL screen back - the snapshot used
+    /// to restore only the RGB and leave the panel on the rule's screen.</summary>
+    public sealed record LcdSnapshot(LcdDesign Design, bool FromShow, int Edits);
+
+    public LcdSnapshot? SnapshotDesign()
+        => _lcd == null ? null : new LcdSnapshot(SceneStore.Clone(_lcd.Design), _liveIsShowScene, _userEdits);
+
+    /// <summary>Put a snapshot back on the panel. A design the user had on the
+    /// canvas comes back as the canvas (persisted, undoable); one a show had put
+    /// up comes back with the same show-only status so it is never written to
+    /// lcd.json as if the user had drawn it. A no-op when the panel is already
+    /// showing that exact design, so a round trip does not reset a running clock
+    /// element. And a no-op when the user changed the screen since the snapshot
+    /// was taken: a rule window can last hours, and restoring over an edit made
+    /// during it would revert the edit on the panel and then, through the
+    /// debounced save, on disk.</summary>
+    public void RestoreDesign(LcdSnapshot snap)
+    {
+        if (_lcd == null) return;
+        if (_userEdits != snap.Edits)
+        {
+            Log.Info("lcd", "keeping the screen you set during the override");
+            return;
+        }
+        if (Fingerprint(_lcd.Design) == Fingerprint(snap.Design) && _liveIsShowScene == snap.FromShow) return;
+        var d = SceneStore.Clone(snap.Design);
+        // The Screens dropdown follows the canvas: a saved screen selects
+        // itself, an unnamed design selects nothing - leaving the rule's screen
+        // selected let an empty-name "Save screen" overwrite it with this canvas.
+        _selectedSceneName = d.SceneName != null && SceneNames.Contains(d.SceneName) ? d.SceneName : null;
+        OnChanged(nameof(SelectedSceneName));
+        LoadDesignIntoEditor(d, fromShow: snap.FromShow);
+        if (!snap.FromShow) _liveIsShowScene = false;   // the user's canvas again
     }
 
     /// <summary>True while the live design was swapped in by a running show
@@ -858,7 +940,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         // and recording it later would undo to something the user never saw.
         if (fromShow) { _history.EndGesture(); _undoSettle.Stop(); _baseline = Snapshot(); }
         if (fromShow) { _liveIsShowScene = true; _clockSecond = -1; _lcd.Refresh(); }
-        else TouchLcd();
+        else MarkCanvas();   // not a user edit in itself: the caller decides that
     }
 
     /// <summary>Save the canvas as a scene: under the typed name if given,
@@ -878,6 +960,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         }
         // The canvas IS this screen from here on: the next "Save screen" with
         // an empty name updates it, and a restart comes back selected on it.
+        _userEdits++;
         _lcd.Design.SceneName = sc.Name;
         sc.Design = SceneStore.Clone(_lcd.Design);
         _scenes.Save();
@@ -889,11 +972,16 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
 
     public void DeleteScene()
     {
-        if (_selectedSceneName == null) return;
-        _scenes.Scenes.RemoveAll(x => x.Name == _selectedSceneName);
-        SceneNames.Remove(_selectedSceneName);
+        if (_selectedSceneName is not string name) return;
+        _userEdits++;
+        // Own the name locally: removing it from SceneNames makes the bound
+        // ComboBox push a null selection back through the setter at once, so
+        // anything read from _selectedSceneName after that line is already gone.
+        _selectedSceneName = null;
         // The design stays on the pump, it just is not a saved screen anymore.
-        if (_lcd != null && _lcd.Design.SceneName == _selectedSceneName) _lcd.Design.SceneName = null;
+        if (_lcd != null && _lcd.Design.SceneName == name) _lcd.Design.SceneName = null;
+        _scenes.Scenes.RemoveAll(x => x.Name == name);
+        SceneNames.Remove(name);
         _selectedSceneName = null;
         OnChanged(nameof(SelectedSceneName)); OnChanged(nameof(SceneChoices));
         _scenes.Save();

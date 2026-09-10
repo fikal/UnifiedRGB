@@ -56,6 +56,12 @@ public sealed class LightingController
     /// the user's lighting again instead of inheriting the last one's pixels.</summary>
     public void ForgetExternal(IRgbDevice dev) => _external.TryRemove(dev, out _);
 
+    /// <summary>True while an SDK client is painting this device. Its writes
+    /// go out whole from the client's picture, so an effect started on the
+    /// device meanwhile would be repainted over at the client's write rate:
+    /// the view model refuses to start one until the client lets go.</summary>
+    public bool IsClaimed(IRgbDevice dev) => _external.ContainsKey(dev);
+
     /// <summary>Every claim dropped at once (a rescan replaces the instances
     /// these are keyed by, and shutdown wants nothing held).</summary>
     public void ForgetExternalAll() => _external.Clear();
@@ -69,6 +75,24 @@ public sealed class LightingController
         Applier.PruneIdle();
     }
 
+    /// <summary>Every hardware write posted from here runs under the device's
+    /// write gate - the one boundary shared with the effect workers, which
+    /// write their devices directly from their own threads and never touch
+    /// the applier.
+    ///
+    /// The lane alone was not enough. Stopping an effect gives its worker
+    /// 300 ms to leave the write it is in; a slow driver (HID timeout, the
+    /// wireless receiver's paced transmit) can take longer, the engine gives
+    /// up, and the static replacement posted right after would race the
+    /// worker's last frame to the hardware - and lose often enough that "I
+    /// picked a static and the device kept the effect's colour" was a real
+    /// report. Under the gate the straggler finishes first, THEN the
+    /// replacement writes, and the replacement is what stays.
+    ///
+    /// Any other write to a device that bypasses this class (the view model's
+    /// identify blink and exit-behaviour preview) must take the same gate.</summary>
+    static object GateOf(IRgbDevice dev) => EffectEngine.WriteGateFor(dev);
+
     /// <summary>Write the device's whole stored frame: snapshot (the frame keeps
     /// changing on the UI thread), scale by master brightness on the worker,
     /// post latest-wins per device.</summary>
@@ -79,12 +103,15 @@ public sealed class LightingController
         Applier.Post(LaneOf(dev), dev, () =>
         {
             Master.Scale(snap);
-            // A static colour on the mouse is committed to its onboard memory
-            // in the same write (the engine streams effect frames without the
-            // persist byte; a one-shot static apply would otherwise sit
-            // uncommitted until Dispose).
-            if (dev is LogitechG403 g) g.SetColors(snap, persist: true);
-            else dev.SetColors(snap);
+            lock (GateOf(dev))
+            {
+                // A static colour on the mouse is committed to its onboard
+                // memory in the same write (the engine streams effect frames
+                // without the persist byte; a one-shot static apply would
+                // otherwise sit uncommitted until Dispose).
+                if (dev is LogitechG403 g) g.SetColors(snap, persist: true);
+                else dev.SetColors(snap);
+            }
         });
     }
 
@@ -96,7 +123,11 @@ public sealed class LightingController
         var frame = FrameFor(dev);
         var slice = new Rgb[count];
         for (int i = 0; i < count; i++) slice[i] = off + i < frame.Length ? frame[off + i] : Rgb.Black;
-        Applier.Post(LaneOf(dev), (dev, off), () => { Master.Scale(slice); zw.SetZone(off, slice); });
+        Applier.Post(LaneOf(dev), (dev, off), () =>
+        {
+            Master.Scale(slice);
+            lock (GateOf(dev)) zw.SetZone(off, slice);
+        });
     }
 
     /// <summary>Repaint a range with its stored static colors: the zone alone
@@ -125,38 +156,31 @@ public sealed class LightingController
         // the device looking the way it found it.
         var live = _external.GetOrAdd(dev, d => (Rgb[])FrameFor(d).Clone());
 
-        // A whole-device write needs no merge, and a device that can address
-        // zones takes the slice directly - neither disturbs anything outside it.
-        bool wholeDevice = offset == 0 && count == dev.LedCount;
-        if (wholeDevice || dev is IZoneWritable)
-        {
-            var slice = new Rgb[count];
-            for (int i = 0; i < count; i++) slice[i] = colors[i];
-            lock (live)
-                for (int i = 0; i < count && offset + i < live.Length; i++) live[offset + i] = colors[i];
-            Master.Scale(slice);
-            if (wholeDevice) Applier.Post(LaneOf(dev), (dev, "ext"), () => dev.SetColors(slice));
-            else Applier.Post(LaneOf(dev), (dev, "ext", offset),
-                              () => ((IZoneWritable)dev).SetZone(offset, slice));
-            return;
-        }
-
-        // Written whole, so what goes out is this client's accumulated picture,
-        // scaled once at the boundary.
+        // Always written WHOLE, from this client's accumulated picture, under
+        // ONE applier key per device. Zone-capable devices used to take a
+        // partial as a SetZone under its own (dev, "ext", offset) key, and the
+        // two key shapes could not be ordered against each other: the applier
+        // replaces a re-posted key in place, so behind a busy lane "full red,
+        // zone blue, full green" ran green then blue, and "zone blue, full
+        // red, zone green" ran green then red - either way the LED ended on
+        // the older write. One key means one queue position and the newest
+        // post always carries every earlier one's pixels. It costs nothing
+        // real: a claimed device has no effect running on it (BeginExternal
+        // stops them), so nothing outside the client's range is disturbed, and
+        // the zone drivers dedup per zone, so an unchanged zone is not
+        // re-sent.
         //
-        // Mutate, snapshot AND queue under the one lock. The applier coalesces
-        // latest-wins per key and both clients here use the same key, so with
-        // the queue outside the lock two clients could interleave as
+        // Mutate, snapshot AND queue under the one lock. Two clients on one
+        // device (ownership allows it) could otherwise interleave as
         // A-mutates, A-snapshots, B-mutates, B-snapshots, B-queues, A-queues -
         // and A's older snapshot, which does not contain B's pixels, replaces
-        // B's in the queue. B's write is then simply never sent. Ownership
-        // explicitly allows two clients on one device, so this is reachable.
+        // B's in the queue. B's write is then simply never sent.
         lock (live)
         {
             for (int i = 0; i < count && offset + i < live.Length; i++) live[offset + i] = colors[i];
             var whole = (Rgb[])live.Clone();
             Master.Scale(whole);
-            Applier.Post(LaneOf(dev), (dev, "ext"), () => dev.SetColors(whole));
+            Applier.Post(LaneOf(dev), (dev, "ext"), () => { lock (GateOf(dev)) dev.SetColors(whole); });
         }
     }
 
@@ -164,7 +188,7 @@ public sealed class LightingController
     public void PushBlack(IRgbDevice dev)
     {
         var black = new Rgb[dev.LedCount];
-        Applier.Post(LaneOf(dev), dev, () => dev.SetColors(black));
+        Applier.Post(LaneOf(dev), dev, () => { lock (GateOf(dev)) dev.SetColors(black); });
     }
 
     /// <summary>Full device frame = static colors with every running channel

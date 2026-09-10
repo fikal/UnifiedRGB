@@ -88,10 +88,56 @@ public sealed class LogitechG403 : IRgbDevice
             : null;
     }
 
+    /*-----------------------------------------------------------*\
+    | Which Logitech product IDs this driver opened in the current  |
+    | detection pass. The OpenRGB bridge reads it to decide whether |
+    | a Logitech device OpenRGB reports is ours or is free for it   |
+    | to drive: only a PID in here is "natively covered". Anything  |
+    | else Logitech (a second device, or lighting that is not the   |
+    | HID++ RGB feature) would otherwise be hidden from both sides. |
+    | Cleared at the start of TryOpen, so it describes THIS pass;   |
+    | Dispose leaves it alone, since a rescan re-runs TryOpen.      |
+    \*-----------------------------------------------------------*/
+    static readonly HashSet<ushort> s_claimed = new();
+    static readonly object s_claimedGate = new();
+
+    /// <summary>Snapshot of the product IDs claimed this pass.</summary>
+    internal static IReadOnlySet<ushort> ClaimedProductIds
+    {
+        get { lock (s_claimedGate) return new HashSet<ushort>(s_claimed); }
+    }
+
+    /// <summary>Did this driver open <paramref name="pid"/> in the current pass?</summary>
+    internal static bool IsClaimedProductId(ushort pid)
+    {
+        lock (s_claimedGate) return s_claimed.Contains(pid);
+    }
+
+    /// <summary>Record a claim. Internal so a test can stand in for a mouse
+    /// that is not plugged into the build machine; TryOpen is the only other
+    /// caller.</summary>
+    internal static void NoteClaimed(ushort pid)
+    {
+        lock (s_claimedGate) s_claimed.Add(pid);
+    }
+
+    /// <summary>Forget every claim. TryOpen calls this first; tests call it to
+    /// start from a known state.</summary>
+    internal static void ClearClaimed()
+    {
+        lock (s_claimedGate) s_claimed.Clear();
+    }
+
     /// <summary>Probe every Logitech HID++ interface (any PID) for the RGB
-    /// feature — covers most modern Logitech G mice, not just the G403.</summary>
+    /// feature — covers most modern Logitech G mice, not just the G403.
+    /// Known limitation: returns at most ONE device (the first interface that
+    /// answers), so a second Logitech device with HID++ lighting is left
+    /// unopened. Multi-device support is a separate change; the claimed-PID
+    /// set above is what lets the OpenRGB bridge pick the second one up in
+    /// the meantime.</summary>
     public static LogitechG403? TryOpen()
     {
+        ClearClaimed();   // this pass, not the last one
         var tried = new HashSet<ushort>();
         // Query writes fixed 20-byte reports, and hidclass rejects a buffer
         // shorter than a collection's report length. Probe the canonical
@@ -117,6 +163,7 @@ public sealed class LogitechG403 : IRgbDevice
                         ? "Logitech Mouse" : $"Logitech {iface.Product.Replace("Gaming Mouse", "").Trim()}";
                     Log.Info("LogitechG403",
                         $"'{name}' (pid {iface.ProductId:X4}) via usage 0x{iface.Usage:X4}, reports out {iface.OutputLength} B / in {iface.InputLength} B");
+                    NoteClaimed(iface.ProductId);   // the bridge must leave this one to us
                     return new LogitechG403(hid, dev, idx, feat, clusterEffects, name);
                 }
             }

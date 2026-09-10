@@ -23,11 +23,22 @@ piece of logic can be tested without a window, it belongs in Core.
 
 **Tests.** `src/UnifiedRgb.Tests` is a zero-dependency console harness:
 `dotnet run --project src/UnifiedRgb.Tests` (a plain `dotnet test` runs the
-same thing). `Check(bool, name)` and `Equal(expected, actual, name)`; exit code
-is the failure count (929 pass as of 1.1.1). The harness references the App
-project, so stop the running app before building it. Every feature adds tests for its pure
-parts. Fixtures (JSON payloads, wire bytes) go inline as strings or byte
-arrays; no test files on disk.
+same thing). `t.Check(bool, name)` and `t.Equal(expected, actual, name)` are
+the whole framework; exit code is the failure count.
+
+The layout is one file per area under `Suites/`, each a
+`static class XSuite` with a `Run(Harness t)` that walks its sections. Adding
+tests means a new file there and one line in `Suites.cs`, which is the table
+of what exists and what order it runs in. Shared fakes and helpers live in
+`Support/`. Pass a suite name to run only that one:
+`dotnet run --project src/UnifiedRgb.Tests -- Devices`, and `--list` prints
+the names.
+
+The harness references the App project, so stop the running app before
+building it. It also refuses to start unless its config redirect is in
+effect, so it can never touch the real profile. Every feature adds tests for
+its pure parts. Fixtures (JSON payloads, wire bytes) go inline as strings or
+byte arrays; no test files on disk.
 
 **No NuGet.** The product has a no-NuGet rule and the tests inherit it.
 `TcpListener`, `HttpListener`, `System.Text.Json` and the WinRT projections

@@ -292,9 +292,11 @@ public sealed class LcdController : IDisposable
     /*-----------------------------------------------------*\
     | Background: still image, or an animated GIF played at  |
     | its own frame delays. GIF frames are composited (each  |
-    | over the previous, honoring frame offsets) and scaled  |
-    | to the panel once at load, so playback is just picking |
-    | the frame whose time has come.                          |
+    | onto the canvas the previous frame's DISPOSAL left,    |
+    | honoring frame offsets) and scaled to the panel once   |
+    | at load, so playback is just picking the frame whose   |
+    | time has come. Frames are Pbgra32 with real alpha: the |
+    | panel render lays them over its opaque black base.     |
     \*-----------------------------------------------------*/
     List<(BitmapSource Frame, TimeSpan Delay)>? _gif;
     int _gifIndex;
@@ -396,39 +398,98 @@ public sealed class LcdController : IDisposable
         var dec = new GifBitmapDecoder(new Uri(path),
             BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
         if (dec.Frames.Count == 0) return;
+        // The canvas is the GIF's logical screen, not its first frame: an
+        // optimised GIF's first frame can be a sub-rectangle, and a canvas
+        // sized to it would crop every later frame that reaches past it.
+        // The first frame is the floor in case the header is missing/wrong.
         int w = dec.Frames[0].PixelWidth, h = dec.Frames[0].PixelHeight;
+        if (dec.Metadata is BitmapMetadata gmd)
+        {
+            try { if (gmd.GetQuery("/logscrdesc/Width") is ushort lw && lw > 0) w = Math.Max(w, lw); } catch { }
+            try { if (gmd.GetQuery("/logscrdesc/Height") is ushort lh && lh > 0) h = Math.Max(h, lh); } catch { }
+        }
         _bgNatW = Math.Max(1, w); _bgNatH = Math.Max(1, h);
         // Composite at panel scale: full-res frames of a large GIF would cost
         // tens of MB for zero visible gain on a 320x240 screen.
         double scale = Math.Min(1.0, Math.Min((double)LW / w, (double)LH / h));
         int cw = Math.Max(1, (int)(w * scale)), chh = Math.Max(1, (int)(h * scale));
-        var frames = new List<(BitmapSource, TimeSpan)>();
-        BitmapSource? prev = null;
         // 96 composited panel-scale frames ≈ 29 MB worst case (was 150 ≈ 46 MB
         // resident for a tray app); longer GIFs loop their first 96 frames.
         int max = Math.Min(dec.Frames.Count, 96);
+
+        // Pass 1: each frame's placement, timing and disposal from its Image
+        // Descriptor / Graphic Control Extension. Disposal is what happens to
+        // a frame's rectangle once its delay is up, i.e. what the NEXT frame
+        // is drawn onto - so the whole sequence is planned before any pixel
+        // is rendered (GifCanvas.Plan), and the plan is what the tests pin.
+        var draw = new Rect[max];
+        var delays = new TimeSpan[max];
+        var placed = new (Int32Rect Rect, int Disposal)[max];
         for (int i = 0; i < max; i++)
         {
             var f = dec.Frames[i];
-            int left = 0, top = 0, delayCs = 10;
+            int left = 0, top = 0, fw = f.PixelWidth, fh = f.PixelHeight, delayCs = 10, disposal = 0;
             if (f.Metadata is BitmapMetadata md)
             {
                 try { if (md.GetQuery("/imgdesc/Left") is ushort l) left = l; } catch { }
                 try { if (md.GetQuery("/imgdesc/Top") is ushort t) top = t; } catch { }
+                // WIC hands each frame over at its own sub-image size, so the
+                // descriptor normally agrees with the bitmap. When it does not,
+                // the descriptor is the size the offset was written for.
+                try { if (md.GetQuery("/imgdesc/Width") is ushort iw && iw > 0 && iw != fw) fw = iw; } catch { }
+                try { if (md.GetQuery("/imgdesc/Height") is ushort ih && ih > 0 && ih != fh) fh = ih; } catch { }
                 try { if (md.GetQuery("/grctlext/Delay") is ushort d) delayCs = d; } catch { }
+                // WIC reports the GCE disposal as a byte (0/1 leave, 2 restore
+                // to background, 3 restore to previous). Without it every frame
+                // was drawn over the previous composite, so GIFs that rely on
+                // 2/3 to erase a moving sprite accumulated its old positions.
+                try
+                {
+                    var q = md.GetQuery("/grctlext/Disposal");
+                    if (q is byte db) disposal = db;
+                    else if (q is ushort ds) disposal = ds;
+                }
+                catch { }
             }
+            draw[i] = new Rect(left * scale, top * scale, fw * scale, fh * scale);
+            placed[i] = (GifCanvas.PixelRect(draw[i], cw, chh), disposal);
+            delays[i] = TimeSpan.FromMilliseconds(Math.Max(delayCs * 10, 60));
+        }
+        var plan = GifCanvas.Plan(placed);
+
+        // Pass 2: composite. The canvas lives in a Pbgra32 byte buffer between
+        // frames because two of the disposal methods edit it in ways a
+        // DrawingContext cannot: clearing a rectangle to transparent (drawing
+        // "transparent" over pixels blends to a no-op) and putting an earlier
+        // state back. All-zero Pbgra32 is transparent, which is what the GIF's
+        // "background" is here - the panel render lays its own base under it.
+        int stride = cw * 4;
+        var canvas = new byte[stride * chh];
+        byte[]? beforePrev = null;   // snapshot from before a frame that disposal 3 will undo
+        var frames = new List<(BitmapSource, TimeSpan)>(max);
+        for (int i = 0; i < max; i++)
+        {
+            var step = plan[i];
+            if (step.RestorePrevious && beforePrev != null) Array.Copy(beforePrev, canvas, canvas.Length);
+            if (step.Clear.HasArea) GifCanvas.ClearRect(canvas, stride, step.Clear);
+            // Only a frame the next step will want to undo is worth copying.
+            beforePrev = i + 1 < max && plan[i + 1].RestorePrevious ? (byte[])canvas.Clone() : null;
+
+            var under = BitmapSource.Create(cw, chh, 96, 96, PixelFormats.Pbgra32, null, canvas, stride);
             var dv = new DrawingVisual();
             using (var dc = dv.RenderOpen())
             {
-                if (prev != null) dc.DrawImage(prev, new Rect(0, 0, cw, chh));
-                dc.DrawImage(f, new Rect(left * scale, top * scale,
-                    f.PixelWidth * scale, f.PixelHeight * scale));
+                dc.DrawImage(under, new Rect(0, 0, cw, chh));
+                dc.DrawImage(dec.Frames[i], draw[i]);
             }
             var rtb = new RenderTargetBitmap(cw, chh, 96, 96, PixelFormats.Pbgra32);
             rtb.Render(dv);
             rtb.Freeze();
-            prev = rtb;
-            frames.Add((rtb, TimeSpan.FromMilliseconds(Math.Max(delayCs * 10, 60))));
+            // What is shown is the composite AFTER drawing; the frame's own
+            // disposal only applies once its delay is up, i.e. at the top of
+            // the next iteration, so the canvas carries the drawn state on.
+            rtb.CopyPixels(canvas, stride, 0);
+            frames.Add((rtb, delays[i]));
         }
         _gif = frames;
         _gifIndex = 0;
@@ -578,5 +639,66 @@ public sealed class LcdController : IDisposable
         _timerRef?.Stop();
         _streamThread?.Join(1500);
         _lcd.Dispose();
+    }
+}
+
+/// <summary>The disposal arithmetic of LcdController.LoadGif, kept apart from
+/// the rendering so it can be tested: nothing in the framework writes a GIF
+/// Graphic Control Extension (GifBitmapEncoder drops it), so a GIF with
+/// disposal metadata cannot be built inside the harness. A top-level class
+/// rather than a nested one so touching it does not run LcdController's
+/// WPF static initialisers (brushes, typefaces) on a test thread.</summary>
+public static class GifCanvas
+{
+    /// <summary>What the compositor does to the canvas BEFORE drawing one
+    /// frame: put back the canvas as it was before the previous frame drew
+    /// (its disposal was 3), or clear a rectangle to transparent (2). Neither
+    /// = draw straight over whatever the previous frame left (0/1).</summary>
+    public readonly record struct Step(bool RestorePrevious, Int32Rect Clear);
+
+    /// <summary>Plan every frame's step from each frame's rectangle (canvas
+    /// pixels) and GIF disposal method (WIC /grctlext/Disposal: 0 unspecified,
+    /// 1 leave, 2 restore to background, 3 restore to previous). Frame i's
+    /// step is decided by frame i-1: disposal says what happens to a frame
+    /// once its delay has elapsed, which is just before the next one is drawn.
+    /// Frame 0 always starts on an untouched canvas, and the last frame's
+    /// disposal is never applied because nothing follows it (the loop restarts
+    /// from the stored first composite). Reserved values 4-7 are treated as
+    /// "leave", the way browsers do.</summary>
+    public static Step[] Plan(IReadOnlyList<(Int32Rect Rect, int Disposal)> frames)
+    {
+        var steps = new Step[frames.Count];
+        for (int i = 1; i < steps.Length; i++)
+        {
+            var (rect, disposal) = frames[i - 1];
+            steps[i] = disposal switch
+            {
+                2 => new Step(false, rect),
+                3 => new Step(true, Int32Rect.Empty),
+                _ => default,
+            };
+        }
+        return steps;
+    }
+
+    /// <summary>The whole pixels a scaled frame rectangle touches, clamped to
+    /// the canvas. Rounded OUTWARD (floor/ceil): a disposal-2 clear must take
+    /// the anti-aliased edge of a frame drawn at a fractional offset with it,
+    /// or a one-pixel ghost outline is left behind every step.</summary>
+    public static Int32Rect PixelRect(Rect r, int canvasW, int canvasH)
+    {
+        int x0 = Math.Clamp((int)Math.Floor(r.X), 0, canvasW);
+        int y0 = Math.Clamp((int)Math.Floor(r.Y), 0, canvasH);
+        int x1 = Math.Clamp((int)Math.Ceiling(r.Right), 0, canvasW);
+        int y1 = Math.Clamp((int)Math.Ceiling(r.Bottom), 0, canvasH);
+        return x1 > x0 && y1 > y0 ? new Int32Rect(x0, y0, x1 - x0, y1 - y0) : Int32Rect.Empty;
+    }
+
+    /// <summary>Zero (= transparent, in premultiplied BGRA) a rectangle of a
+    /// Pbgra32 buffer. The rect must already be clamped (PixelRect does).</summary>
+    public static void ClearRect(byte[] pbgra, int stride, Int32Rect rect)
+    {
+        for (int y = rect.Y; y < rect.Y + rect.Height; y++)
+            Array.Clear(pbgra, y * stride + rect.X * 4, rect.Width * 4);
     }
 }

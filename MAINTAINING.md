@@ -62,7 +62,9 @@ built FileVersion == the version being released.
   (what `release.ps1` and CI run; the exit code is the failure count). The
   Tests csproj also hooks `AfterTargets="VSTest"` so a plain `dotnet test`
   runs the same harness and fails on any failure - that Target is not dead
-  wiring, keep it.
+  wiring, keep it. Suites live one per file under `Suites/` and are listed in
+  `Suites.cs`; `Program.cs` is only the gate, the loop and the summary, and
+  `-- <name>` runs a single suite.
 - The swap script inside the updater is version-frozen in each shipped
   build; its retry/taskkill quirks encode real field failures — see the
   comments in `UpdateService.cs` before "simplifying" it.

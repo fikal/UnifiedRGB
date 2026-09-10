@@ -122,7 +122,8 @@ public sealed partial class MainViewModel
             // what the switch says and what people expect from it. CanvasPositions
             // returns null when the desk is off or this device has no place on
             // it, so the effect then runs per-device exactly as before.
-            fx.Channel = _engine.Start(dev, a.Offset, a.Count, FrameFor(dev), effect,
+            fx.Channel = EffectBlockedByClient(dev) ? null
+                       : _engine.Start(dev, a.Offset, a.Count, FrameFor(dev), effect,
                                        SignedSpeed(fx), baseColor,
                                        CanvasPositions(dev, a.Offset, a.Count));
         }
@@ -173,15 +174,23 @@ public sealed partial class MainViewModel
 
         // Renaming the selected profile: replace it instead of duplicating,
         // and carry the startup-profile setting to the new name.
+        Profile? renamedFrom = null;
         if (prior != null && !newName.Equals(prior.Name, StringComparison.OrdinalIgnoreCase))
         {
             bool wasStartup = string.Equals(_store.Settings.StartupProfile, prior.Name, StringComparison.OrdinalIgnoreCase);
             _store.Delete(prior.Name);
             Profiles.Remove(prior);
             if (wasStartup) { _store.Settings.StartupProfile = newName; _store.SaveSettings(); }
+            renamedFrom = prior;
         }
 
-        var p = _store.Capture(newName, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), Lcd.CurrentScreen);
+        // A rename deletes the old profile before the new one is captured, so
+        // Capture's "keep what the profile already had for absent devices" rule
+        // found nothing under the new name: the remembered frames and effects of
+        // an unplugged or disabled device, and an unavailable screen, were lost
+        // on every rename. The old profile object is handed over explicitly.
+        var p = _store.Capture(newName, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), Lcd.CurrentScreen,
+                               carryFrom: renamedFrom);
         var existing = Profiles.FirstOrDefault(x => x.Name.Equals(p.Name, StringComparison.OrdinalIgnoreCase));
         if (existing != null) Profiles.Remove(existing);
         Profiles.Add(p);

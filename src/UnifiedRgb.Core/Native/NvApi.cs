@@ -323,6 +323,22 @@ public static class NvApi
         catch { return false; }
     }
 
+    /// <summary>Whether any cooler is in MANUAL control right now, as the
+    /// card reports it - null when the API would not answer. This is what
+    /// tells "a duty a crashed run left behind" from "the driver's own auto",
+    /// which the process-local engaged flag cannot after a restart.</summary>
+    public static bool? IsGpuFanManual(IntPtr gpu)
+    {
+        try
+        {
+            if (!TryGetFanControl(gpu, out var ctl)) return null;
+            for (int i = 0; i < ctl.Count; i++)
+                if (ctl.Items[i].ControlMode != 0) return true;
+            return false;
+        }
+        catch { return null; }
+    }
+
     /// <summary>The lowest manual duty the card accepts (its CurrentMinLevel;
     /// the driver silently clamps anything below it). Below this, only the
     /// driver's auto mode can go — including zero-RPM, where the vBIOS allows

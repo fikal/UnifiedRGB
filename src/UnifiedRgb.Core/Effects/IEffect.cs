@@ -31,11 +31,23 @@ public interface IEffect
 
     /// <summary>The natural loop period in seconds at the given speed - the
     /// bake window. There is NO seam crossfade in the baker: it renders exactly
-    /// one period and the hardware loops it, so every Bakeable effect must
-    /// return a true period - every time-dependent term must close over it
-    /// (and it must land inside the baker's 1.5..12 s clamp at speed 1) or the
-    /// fans pop at every wrap. Default: 4 s at speed 1.</summary>
+    /// one period (or a common multiple when several channels share a device)
+    /// and the hardware loops it, so every Bakeable effect must return a true
+    /// period - every time-dependent term must close over it - or the fans pop
+    /// at every wrap. The baker only accepts windows up to 12 s, so a period
+    /// above that at speed 1 makes the device stream instead of bake. A return
+    /// of 0 means the effect is time-invariant (a static pattern): any window
+    /// is a period, and the baker ignores it when choosing one. Default: 4 s
+    /// at speed 1.</summary>
     double LoopSeconds(double speed) => 4.0 / Math.Max(0.1, Math.Abs(speed));
+
+    /// <summary>Every render-affecting input that is not already the effect's
+    /// name, speed, base color or IPaletteEffect palette, so the baker's upload
+    /// signature changes when the output does. An effect with such settings
+    /// (motion mode, density, direction...) that leaves this empty is skipped
+    /// as "unchanged" after an edit: the preview updates but the fans keep the
+    /// old animation. Stateless effects leave the default.</summary>
+    string BakeKey => "";
 
     /// <summary>pos[i] is LED i's normalized position (0..1). Length == buffer.</summary>
     void Render(Rgb[] buffer, LedPos[] pos, double seconds, double speed, Rgb baseColor);

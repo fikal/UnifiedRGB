@@ -66,6 +66,34 @@ public sealed class OpenRgbServer : IDisposable
     const int ClientReadTimeoutMs = 120_000;
     const int ClientWriteTimeoutMs = 3_000;
 
+    /// <summary>How long Stop waits, in total, for client threads to leave
+    /// their host callbacks. Bounded because a callback can be marshalling to
+    /// the UI thread, and Stop is usually called FROM the UI thread: waiting
+    /// forever there is a deadlock, waiting this long is a stall and a log
+    /// line. Client threads are background threads, so a straggler cannot
+    /// hold the process open either way.</summary>
+    const int StopJoinBudgetMs = 500;
+
+    /*-----------------------------------------------------------*\
+    | Which ports THIS process's servers hold right now. Exists so  |
+    | the rest of the app can tell our own SDK server apart from an |
+    | OpenRGB backend on the same port: both answer a TCP probe on   |
+    | 6742 and both speak the protocol, so a probe alone cannot.    |
+    | Without this, the bridge saw "6742 is open", declared OpenRGB  |
+    | running without launching it, and then proxied our own device |
+    | list back to ourselves.                                       |
+    \*-----------------------------------------------------------*/
+    static readonly HashSet<int> s_ownPorts = new();
+    static readonly object s_ownPortsGate = new();
+
+    /// <summary>True when an OpenRgbServer in this process is currently bound
+    /// to <paramref name="port"/>. Answers for any instance, so a caller does
+    /// not need a reference to the server the app happens to hold.</summary>
+    public static bool IsOwnListener(int port)
+    {
+        lock (s_ownPortsGate) return s_ownPorts.Contains(port);
+    }
+
     readonly IOpenRgbHost _host;
 
     /// <summary>Claims. Touched from every client thread and the sweep timer,
@@ -75,6 +103,14 @@ public sealed class OpenRgbServer : IDisposable
     readonly ExternalOwnership<IRgbDevice> _owned;
     readonly object _gate = new();
     readonly List<Client> _clients = new();
+
+    /// <summary>Every thread currently inside Serve, so Stop can wait for them.
+    /// Kept apart from _clients: that list is cleared by Stop as it closes
+    /// sockets, but a thread is still running until Serve's finally says so,
+    /// and it is the thread, not the socket, that may be inside a host
+    /// callback. A thread adds itself before it starts and removes itself on
+    /// the way out; both under _gate.</summary>
+    readonly List<Thread> _serving = new();
 
     TcpListener? _listener;
     Thread? _accept;
@@ -129,6 +165,9 @@ public sealed class OpenRgbServer : IDisposable
             Log.Warn("orgb-server", $"ports {DefaultPort} and {AlternatePort} are both in use");
             return 0;
         }
+        // Registered the moment the bind succeeds, before the accept thread
+        // exists: a probe from the bridge can arrive at any point after this.
+        lock (s_ownPortsGate) s_ownPorts.Add(Port);
 
         _stopping = false;
         _accept = new Thread(AcceptLoop) { IsBackground = true, Name = "orgb-accept" };
@@ -142,21 +181,55 @@ public sealed class OpenRgbServer : IDisposable
         return Port;
     }
 
+    /// <summary>Close the port and every client, then wait (briefly) for the
+    /// client threads to finish. When this returns, no client thread is still
+    /// inside a host callback, unless the wait timed out and said so in the
+    /// log. The wait matters at shutdown: the host tears down lighting right
+    /// after this, and a client thread still in PushExternal would be painting
+    /// onto devices that are being disposed underneath it.</summary>
     public void Stop()
     {
         _stopping = true;
         _sweep?.Dispose(); _sweep = null;
+        bool wasListening = _listener != null;
         try { _listener?.Stop(); } catch { }
         _listener = null;
+        // Off the registry before the clients are torn down, so a bridge probe
+        // racing this Stop sees the port as free-to-be-OpenRGB's, not ours.
+        if (wasListening) lock (s_ownPortsGate) s_ownPorts.Remove(Port);
 
         List<Client> clients;
         lock (_gate) { clients = new List<Client>(_clients); _clients.Clear(); }
         foreach (var c in clients) c.Close();
 
+        // Closing a socket wakes its thread out of Read; a thread inside a host
+        // callback has to finish that call on its own. Wait for them, within
+        // the budget, skipping ourselves: a callback is allowed to call Stop
+        // (the host reacting to a client), and a thread joining itself waits
+        // out the whole budget for nothing.
+        JoinServingThreads();
+
         List<IRgbDevice> held;
         lock (_gate) held = _owned.ReleaseAll();
         foreach (var device in held) SafeEnd(device);
         ClientsChanged?.Invoke();
+    }
+
+    void JoinServingThreads()
+    {
+        List<Thread> threads;
+        lock (_gate) threads = new List<Thread>(_serving);
+        long deadline = Environment.TickCount64 + StopJoinBudgetMs;
+        int stragglers = 0;
+        foreach (var t in threads)
+        {
+            if (t == Thread.CurrentThread || !t.IsAlive) continue;
+            int remaining = (int)(deadline - Environment.TickCount64);
+            if (remaining <= 0 || !t.Join(remaining)) stragglers++;
+        }
+        if (stragglers > 0)
+            Log.Warn("orgb-server",
+                $"stop: {stragglers} client thread(s) still inside a host callback after {StopJoinBudgetMs} ms; not waiting further");
     }
 
     /// <summary>Devices were re-detected: the instances clients were addressing
@@ -187,6 +260,10 @@ public sealed class OpenRgbServer : IDisposable
             catch { break; }          // stopped, or the listener died
 
             var client = new Client(Interlocked.Increment(ref _nextClientId), tcp);
+            // Accepted in the same instant Stop closed the listener: Stop has
+            // already snapshotted the clients it will close, so this one would
+            // be nobody's to close. Drop it here rather than serve it.
+            if (_stopping) { client.Close(); break; }
             bool room;
             lock (_gate)
             {
@@ -202,6 +279,9 @@ public sealed class OpenRgbServer : IDisposable
             ClientsChanged?.Invoke();
 
             var thread = new Thread(() => Serve(client)) { IsBackground = true, Name = "orgb-client" };
+            // Listed before it starts, so Stop can never miss a thread that is
+            // running but has not reached Serve yet.
+            lock (_gate) _serving.Add(thread);
             thread.Start();
         }
     }
@@ -261,6 +341,9 @@ public sealed class OpenRgbServer : IDisposable
             }
             client.Close();
             ClientsChanged?.Invoke();
+            // Last, after the restore above: that EndExternal is itself a host
+            // callback, and Stop's wait has to cover it too.
+            lock (_gate) _serving.Remove(Thread.CurrentThread);
         }
     }
 

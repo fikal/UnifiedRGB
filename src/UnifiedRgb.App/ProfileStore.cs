@@ -284,11 +284,17 @@ public sealed class ProfileStore
     /// same-named profile) and persist. Devices absent right now (disabled or
     /// unplugged) keep their previously saved colors and effect assignments —
     /// disabling a device must never bleed its data out of profiles.</summary>
+    /// <param name="carryFrom">The profile this one replaces under a DIFFERENT
+    /// name (a rename). It has already been deleted, so it cannot be found by
+    /// name; its absent-device data and screen carry over from here.</param>
     public Profile Capture(string name, IEnumerable<(IRgbDevice Device, Rgb[] Frame)> frames,
                            string[]? customColors = null, List<EffectAssignment>? effects = null,
-                           string? screen = null)
+                           string? screen = null, Profile? carryFrom = null)
     {
-        var old = Profiles.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        // A rename carries the RENAMED profile's data, even onto a name that
+        // already exists: "rename A to B" means A's remembered devices, not the
+        // old B's.
+        var old = carryFrom ?? Profiles.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
         // The screen follows the same rule as an absent device: nothing known
         // right now (no panel, or a canvas that is not a saved screen) keeps
         // what the profile already had rather than silently dropping it.
