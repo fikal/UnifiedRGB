@@ -10,7 +10,7 @@ namespace UnifiedRgb.App;
 /// <summary>Per-device "when the app is closed, show…".
 ///
 /// One row per detected device. What a row offers comes from the device
-/// itself, so a driver that grows the ability to hold a colour appears here
+/// itself, so a driver that grows the ability to hold a color appears here
 /// with no change to this window; a device that cannot do it says so plainly
 /// rather than offering an option that would quietly do nothing.</summary>
 public partial class ExitBehaviorWindow : Window
@@ -52,7 +52,7 @@ public partial class ExitBehaviorWindow : Window
     }
 
     /// <summary>Closing with the X or Alt+F4 does not raise LostFocus on a
-    /// text box being edited, so a typed colour would be dropped. The class
+    /// text box being edited, so a typed color would be dropped. The class
     /// promises every edit sticks; this is what keeps that true.</summary>
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
@@ -124,12 +124,12 @@ public sealed class ExitRow : INotifyPropertyChanged
         set
         {
             // Keep what renders and what is saved in step: an unparseable hex
-            // would leave the swatch showing the old colour while the config
+            // would leave the swatch showing the old color while the config
             // took the typo.
             string clean = Rgb.TryFromHex(value, out var c) ? c.ToHex() : _colorHex;
             _colorHex = clean;
             // Notified even when the value did not change, so a typo snaps the
-            // box back to the colour actually held instead of leaving the text
+            // box back to the color actually held instead of leaving the text
             // and the swatch disagreeing.
             Notify(nameof(ColorHex));
         }

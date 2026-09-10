@@ -10,6 +10,16 @@ public sealed class DeviceManager : IDisposable
     readonly List<IRgbDevice> _devices = new();
     readonly Dictionary<IRgbDevice, string> _family = new();
 
+    /// <summary>What the last COMPLETED pass found, by name and family.
+    ///
+    /// Deliberately not cleared by Dispose. Rescan's order is dispose, then
+    /// detect, so anything Dispose cleared would be gone by the time the new
+    /// pass wanted to compare against it - and the comparison is the whole
+    /// point: a device that was in this map and is not in the new list is a
+    /// device the user just unplugged, which is the single most useful thing
+    /// a scan can notice and the thing the app said nothing about before.</summary>
+    readonly Dictionary<string, string> _lastSeen = new(StringComparer.Ordinal);
+
     public IReadOnlyList<IRgbDevice> Devices => _devices;
 
     /// <summary>Driver-family name (factory type) that produced each device —
@@ -57,11 +67,16 @@ public sealed class DeviceManager : IDisposable
         // nobody drives - the very case the claim set exists to fix.
         LogitechG403.ClearClaimed();
         var absent = new List<string>();
+        // Families the user turned off are not "missing" - they were never
+        // asked for. Without this a disable would report every device in the
+        // family as having gone away, once, which is a lie with an alarming
+        // remedy attached to it.
+        var skipped = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var factory in Factories)
         {
             string name = factory.Method.DeclaringType?.Name ?? "?";
-            if (skipFamily?.Invoke(name) == true) { Log.Info("detect", $"{name}: skipped (disabled)"); continue; }
+            if (skipFamily?.Invoke(name) == true) { skipped.Add(name); Log.Info("detect", $"{name}: skipped (disabled)"); continue; }
             try
             {
                 var dev = factory();
@@ -82,7 +97,7 @@ public sealed class DeviceManager : IDisposable
         foreach (var factory in MultiFactories)
         {
             string name = factory.Method.DeclaringType?.Name ?? "?";
-            if (skipFamily?.Invoke(name) == true) { Log.Info("detect", $"{name}: skipped (disabled)"); continue; }
+            if (skipFamily?.Invoke(name) == true) { skipped.Add(name); Log.Info("detect", $"{name}: skipped (disabled)"); continue; }
             try
             {
                 var found = factory();
@@ -101,6 +116,8 @@ public sealed class DeviceManager : IDisposable
             }
         }
 
+        NoteDevicesThatWentAway(skipped);
+
         if (absent.Count > 0) Log.Info("detect", "not present: " + string.Join(", ", absent));
         // Said individually and at WARN: each of these is a device the user
         // owns and expects to see, and the reason is the whole answer to the
@@ -110,6 +127,39 @@ public sealed class DeviceManager : IDisposable
                              + (b.Remedy != null ? $" -> {b.Remedy}" : ""));
         Log.Info("detect", $"{_devices.Count} device(s): "
             + (_devices.Count == 0 ? "none" : string.Join(", ", _devices.Select(d => $"{d.Name} ({d.LedCount})"))));
+    }
+
+    /// <summary>Compare this pass against the last one and say, in the same
+    /// channel every other "seen but not usable" reason goes to, which devices
+    /// have stopped being here.
+    ///
+    /// This is the detection half of the health signal. The write verdict
+    /// catches a device that is still enumerated but has stopped answering; a
+    /// device that has been physically pulled stops being enumerated at all,
+    /// and there is no write left to refuse. Only a scan can see that, and
+    /// only by remembering what it saw last time.
+    ///
+    /// Keyed by NAME rather than instance, because the instances of the last
+    /// pass are exactly the ones that have just been disposed. Two devices
+    /// sharing a name collapse into one entry here, which is acceptable for a
+    /// message whose whole content is "one of your devices is gone".</summary>
+    void NoteDevicesThatWentAway(HashSet<string> skippedFamilies)
+    {
+        if (_lastSeen.Count > 0)
+        {
+            var present = new HashSet<string>(_devices.Select(d => d.Name), StringComparer.Ordinal);
+            foreach (var (name, family) in _lastSeen)
+            {
+                if (present.Contains(name) || skippedFamilies.Contains(family)) continue;
+                DetectionNotes.Report(family, name, BlockReason.WentAway,
+                    "it answered on the last scan and is not on the bus now",
+                    "check the cable or the dongle; it comes back on its own when it does");
+            }
+        }
+
+        _lastSeen.Clear();
+        foreach (var d in _devices)
+            _lastSeen[d.Name] = _family.TryGetValue(d, out var f) ? f : "?";
     }
 
     public void Dispose()

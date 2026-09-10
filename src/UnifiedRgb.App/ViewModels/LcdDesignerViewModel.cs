@@ -319,7 +319,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     /// <summary>Call BEFORE a one-shot action: an add, a delete, a background
     /// change. Always records, because these are never a continuation of
     /// anything. Coalescing them was a bug: acting within half a second of any
-    /// property change (a colour box writing back as the selection moved, say)
+    /// property change (a color box writing back as the selection moved, say)
     /// folded the action into that burst and left nothing to undo.</summary>
     public void CaptureUndoNow()
     {
@@ -666,7 +666,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     | chains actions (delay -> scene and/or lighting), loops,|
     | and can be the startup show.                           |
     \*-----------------------------------------------------*/
-    readonly SceneStore _scenes = SceneStore.Load();
+    SceneStore _scenes = SceneStore.Load();
     SceneSequencer? _sequencer;
 
     public ObservableCollection<string> SceneNames { get; } = new();
@@ -774,6 +774,26 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
             SelectedSequence = active;
             _sequencer.Start(active);
         }
+    }
+
+    /// <summary>Replace imported stores without leaving old timers or save handlers alive.</summary>
+    public void ReloadScenes(bool currentScreenChanged)
+    {
+        _sequencer?.Stop();
+        _lcdSave.Stop();
+        foreach (var seq in _scenes.Sequences)
+            foreach (var action in seq.Actions) action.PropertyChanged -= SceneActionChanged;
+        SelectedSequence = null;
+        SceneNames.Clear();
+        Sequences.Clear();
+        _scenes = SceneStore.Load();
+        _selectedSceneName = null;
+        OnChanged(nameof(SelectedSceneName));
+        if (currentScreenChanged && _lcd != null)
+            LoadDesignIntoEditor(LcdDesign.Load());
+        InitScenes();
+        OnChanged(nameof(SceneChoices));
+        OnChanged(nameof(ProfileChoices));
     }
 
     readonly Func<string?> _currentProfile;

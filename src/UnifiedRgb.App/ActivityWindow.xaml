@@ -1,0 +1,134 @@
+<Window x:Class="UnifiedRgb.App.ActivityWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:UnifiedRgb.App"
+        Title="Lighting activity" WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ResizeMode="NoResize" SizeToContent="Height" Width="700" MaxHeight="740"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        MouseLeftButtonDown="Drag_Down">
+
+    <Window.Resources>
+        <!-- Window-scoped on purpose: this converter exists for these rows only
+             and has no business in the app-wide dictionary. Note there is NO
+             implicit TextBlock style here, and there must never be one: the
+             app-level implicit style is the only thing giving text its light
+             foreground, and a local one would displace it and paint every row
+             black on black. -->
+        <local:ActivityKindBrushConverter x:Key="KindBrush"/>
+    </Window.Resources>
+
+    <Border Background="#FF1B1D24" CornerRadius="12" Padding="22"
+            BorderBrush="#FF2A2E38" BorderThickness="1">
+        <!-- Grid, not a StackPanel: when MaxHeight bites it is the LIST that
+             gives up height and scrolls, while the pause control above it and
+             the buttons below it stay on screen. A StackPanel would clip the
+             footer off the bottom instead. -->
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- Title bar. No system chrome on this window, so the caption is
+                 ours and dragging is handled at the window level. -->
+            <Grid Margin="0,0,0,2">
+                <StackPanel>
+                    <TextBlock Text="Lighting activity" FontSize="19" FontWeight="SemiBold"/>
+                    <TextBlock Text="Why your lighting changed, newest first. Kept for this session only."
+                               Opacity="0.55" FontSize="12" Margin="0,2,0,0"/>
+                </StackPanel>
+                <Button Content="&#x2715;" HorizontalAlignment="Right" VerticalAlignment="Top"
+                        Padding="8,3" Click="Close_Click" ToolTip="Close this window"/>
+            </Grid>
+
+            <!-- The pause sits ABOVE the list, not under it. Someone opens this
+                 window because the rules are fighting them, so the control that
+                 stops the fight has to be the first thing in reach. -->
+            <Border x:Name="PauseCard" Grid.Row="1" Background="#FF14161C" CornerRadius="10"
+                    Padding="14" Margin="0,14,0,0" BorderThickness="1" BorderBrush="#FF2A2E38">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Color and words both carry the state: the dot is the
+                         glance, the line under it is the confirmation. -->
+                    <Ellipse x:Name="StateDot" Grid.Column="0" Width="10" Height="10"
+                             Fill="#FF4CD07A" VerticalAlignment="Center" Margin="2,0,12,0"/>
+
+                    <StackPanel Grid.Column="1">
+                        <TextBlock x:Name="StateText" Text="Automation is running"
+                                   FontSize="14" FontWeight="SemiBold"/>
+                        <TextBlock x:Name="ConsequenceText" Opacity="0.6" FontSize="12"
+                                   TextWrapping="Wrap" Margin="0,3,0,0"
+                                   Text="Pausing freezes the lighting you have now. Rules and schedules stop changing it until you resume, and the pause lasts for this session only."/>
+                    </StackPanel>
+
+                    <Button x:Name="PauseButton" Grid.Column="2" Content="Pause automation"
+                            Style="{StaticResource Accent}" Padding="18,7" MinWidth="158"
+                            Margin="16,0,0,0" VerticalAlignment="Center" Click="Pause_Click"/>
+                </Grid>
+            </Border>
+
+            <!-- MinHeight so the empty state has somewhere to sit: a fresh
+                 session has no entries at all and a zero-height list would
+                 read as a broken window. -->
+            <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto"
+                          Margin="0,14,0,0" MinHeight="140">
+                <Grid>
+                    <ItemsControl x:Name="Entries">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="#FF262932" CornerRadius="8" Margin="0,0,0,6">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="3"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="146"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+
+                                        <!-- A color per kind, so a run of the
+                                             same source is one visible block
+                                             rather than something to read. -->
+                                        <Border Grid.Column="0" CornerRadius="8,0,0,8"
+                                                Background="{Binding Kind, Converter={StaticResource KindBrush}}"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding TimeText}"
+                                                   FontFamily="Consolas" FontSize="12" Opacity="0.5"
+                                                   VerticalAlignment="Top" Margin="12,9,0,9"/>
+                                        <TextBlock Grid.Column="2" Text="{Binding Category}"
+                                                   FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap"
+                                                   Foreground="{Binding Kind, Converter={StaticResource KindBrush}}"
+                                                   VerticalAlignment="Top" Margin="12,9,0,9"/>
+                                        <TextBlock Grid.Column="3" Text="{Binding Display}"
+                                                   FontSize="13" TextWrapping="Wrap"
+                                                   VerticalAlignment="Top" Margin="12,9,12,9"/>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock x:Name="EmptyText" Visibility="Collapsed" Opacity="0.5"
+                               TextWrapping="Wrap" Margin="4,20,4,20" MaxWidth="440"
+                               HorizontalAlignment="Left" VerticalAlignment="Top"
+                               Text="Nothing has changed your lighting yet. When a rule, a schedule, a sensor or an SDK client takes over, the reason will show up here."/>
+                </Grid>
+            </ScrollViewer>
+
+            <Grid Grid.Row="3" Margin="0,14,0,0">
+                <TextBlock x:Name="CountText" Opacity="0.45" FontSize="12" VerticalAlignment="Center"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="Clear" Padding="16,5" Click="Clear_Click"
+                            ToolTip="Forget the entries listed here. This history is never saved, so nothing else is lost."/>
+                    <Button Content="Close" Style="{StaticResource Accent}" Padding="18,5"
+                            Margin="8,0,0,0" Click="Close_Click"/>
+                </StackPanel>
+            </Grid>
+        </Grid>
+    </Border>
+</Window>

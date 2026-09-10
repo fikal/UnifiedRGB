@@ -28,7 +28,7 @@ public partial class CanvasWindow : Window
     bool _gestureRecorded;
 
     /// <summary>Every LED dot on screen with the device and index it belongs to,
-    /// so the live refresh can repaint their colours without rebuilding the
+    /// so the live refresh can repaint their colors without rebuilding the
     /// canvas underneath a drag.</summary>
     readonly List<(SolidColorBrush Brush, IRgbDevice Device, int Led)> _dots = new();
 
@@ -69,7 +69,7 @@ public partial class CanvasWindow : Window
 
     /*--- drawing ---*/
 
-    /// <summary>Repaint just the LED colours. Cheap, and safe mid-drag: it
+    /// <summary>Repaint just the LED colors. Cheap, and safe mid-drag: it
     /// touches no layout, so it cannot move what is under the mouse.</summary>
     void RefreshDots()
     {

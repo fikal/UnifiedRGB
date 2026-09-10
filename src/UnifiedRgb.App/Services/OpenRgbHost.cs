@@ -1,5 +1,6 @@
 using System.Windows.Threading;
 using UnifiedRgb.Core;
+using UnifiedRgb.Core.Automation;
 using UnifiedRgb.Core.Net;
 
 namespace UnifiedRgb.App.Services;
@@ -68,6 +69,11 @@ public sealed class OpenRgbHost : IOpenRgbHost
     public void BeginExternal(IRgbDevice device)
     {
         Log.Info("lighting", $"{device.Name}: handed to an SDK client, your lighting saved");
+        // An SDK client is the one source of lighting change with no visible
+        // trace at all: nothing in the UI moves, the status line does not
+        // mention it, and the user is left thinking their effects broke.
+        ActivityLog.Note(ActivityKind.SdkClient,
+            $"An OpenRGB client took control of {device.Name}. Your lighting is saved and comes back when it lets go.");
         _ui.Invoke(() =>
         {
             lock (_gate)
@@ -94,6 +100,14 @@ public sealed class OpenRgbHost : IOpenRgbHost
     public void ResetExternal()
     {
         if (_shuttingDown) return;
+        // Only worth a history line when a client actually held something:
+        // every rescan calls this, and a rescan with no SDK client attached is
+        // not a lighting event.
+        bool held;
+        lock (_gate) held = _externalCount > 0;
+        if (held)
+            ActivityLog.Note(ActivityKind.SdkClient,
+                "Devices were rescanned, so every OpenRGB client lost its claim and your lighting is back.");
         // Whatever the clients had painted dies with the claims: the device
         // instances themselves are being replaced.
         _lighting.ForgetExternalAll();
@@ -106,7 +120,7 @@ public sealed class OpenRgbHost : IOpenRgbHost
                 _snapshot = null;
                 _externalCount = 0;
             }
-            if (restore != null) _vm.RestoreState(restore);
+            if (restore != null) _vm.RestoreState(restore, honorSuppression: true);
         });
     }
 
@@ -114,6 +128,8 @@ public sealed class OpenRgbHost : IOpenRgbHost
     {
         if (_shuttingDown) return;
         Log.Info("lighting", $"{device.Name}: SDK client done, your lighting coming back");
+        ActivityLog.Note(ActivityKind.SdkClient,
+            $"The OpenRGB client released {device.Name}, so your lighting is coming back.");
         // The next client to claim this device starts from the user's lighting,
         // not from where the departing one left the pixels.
         _lighting.ForgetExternal(device);
@@ -129,7 +145,7 @@ public sealed class OpenRgbHost : IOpenRgbHost
                     _snapshot = null;
                 }
             }
-            if (restore != null) _vm.RestoreState(restore);
+            if (restore != null) _vm.RestoreState(restore, honorSuppression: true);
         });
     }
 }

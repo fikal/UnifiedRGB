@@ -271,9 +271,11 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
         Thread.Sleep(20);
     }
 
-    void Send(byte a, byte b, byte c)
+    /// <summary>One three-byte command packet. Returns whether the keyboard
+    /// took it, so the handback can report honestly.</summary>
+    bool Send(byte a, byte b, byte c)
     {
-        var p = new byte[PKT]; p[1] = a; p[2] = b; p[3] = c; _hid.Write(p);
+        var p = new byte[PKT]; p[1] = a; p[2] = b; p[3] = c; return _hid.Write(p);
     }
 
     // A frame is three sequential channel streams; concurrent writers (an
@@ -290,13 +292,16 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
     readonly byte[] _bCh = new byte[168];
     readonly byte[] _pktBuf = new byte[PKT];
 
-    /// <summary>Only the handback. A static colour would be a software-mode
+    /// <summary>Only the handback. A static color would be a software-mode
     /// frame, which is exactly the state we are leaving, so it is no more
     /// durable than "keeps its last colors" already is.</summary>
     public HardwareExitCaps ExitCaps => HardwareExitCaps.ReturnToHardware;
     public IReadOnlyList<string> HardwareEffects => Array.Empty<string>();
-    public void SetHardwareStatic(Rgb color) { }
-    public void SetHardwareEffect(string name, Rgb? color) { }
+    // Neither is offered by ExitCaps, so HardwareExit never reaches them.
+    // They return false because that is the honest answer to "did anything
+    // reach the keyboard": nothing did.
+    public bool SetHardwareStatic(Rgb color) => false;
+    public bool SetHardwareEffect(string name, Rgb? color) => false;
 
     /// <summary>Put the keyboard back on its onboard profile. The counterpart
     /// of RunInit's two software-mode packets, with the hardware value: 0x01
@@ -304,36 +309,43 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
     ///
     /// Flagged rather than assumed final, because "Apply now" can be pressed
     /// with the app still running: the next FRAME re-runs the init and takes
-    /// the keyboard back. Note that a keyboard sitting on a static colour with
+    /// the keyboard back. Note that a keyboard sitting on a static color with
     /// no effect running has no next frame, so it stays on its onboard profile
     /// until something actually changes its lighting.</summary>
-    public void ReturnToHardware()
+    public bool ReturnToHardware()
     {
         lock (_writeLock)
         {
             var p = new byte[PKT]; p[1] = 0x07; p[2] = 0x05; p[3] = 0x01; p[5] = 0x03;
-            _hid.Write(p);
+            // Both packets are attempted even if the first is refused: the
+            // second is the one that actually selects hardware mode, and the
+            // verdict is the AND of the two so a caller with a must-land
+            // budget tries the pair again rather than believing a half
+            // handback.
+            bool ok = _hid.Write(p);
             Thread.Sleep(10);
-            Send(0x07, 0x04, 0x01);
+            ok &= Send(0x07, 0x04, 0x01);
             _needInit = true;
             _last = null;                 // repaint, don't dedup against a frame it is no longer showing
+            return ok;
         }
     }
 
+    /// <summary>Drop the cached frame so the next one is written even if it is
+    /// identical (the must-land path and any mode change).</summary>
+    public void InvalidateCache() { lock (_writeLock) _last = null; }
+
     bool _needInit;
 
-    public void SetColors(IReadOnlyList<Rgb> colors)
+    public bool SetColors(IReadOnlyList<Rgb> colors)
     {
         lock (_writeLock)
         {
             if (_needInit) { _needInit = false; RunInit(); }
             int n = colors.Count;
-            if (_last != null && _last.Length == n)
-            {
-                bool same = true;
-                for (int i = 0; i < n; i++) if (_last[i] != colors[i]) { same = false; break; }
-                if (same) return;
-            }
+            // A skipped identical frame is a SUCCESS: the keyboard already
+            // shows exactly what was asked for.
+            if (WritePolicy.Unchanged(_last, colors)) return true;
             Array.Clear(_rCh); Array.Clear(_gCh); Array.Clear(_bCh);
             for (int i = 0; i < Keys.Length && i < n; i++)
             {
@@ -353,17 +365,14 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
             ok &= SendChannel(2, _gCh, 1);       // green
             ok &= SendChannel(3, _bCh, 2);       // blue (finish)
             if (!ok)
-            {
-                _last = null;
-                Log.Occasional("strafe-write", "StrafeMk2", "a frame packet was refused; the frame will be sent again");
-                return;
-            }
-            if (_last == null || _last.Length != n) _last = new Rgb[n];
-            for (int i = 0; i < n; i++) _last[i] = colors[i];
+                return WritePolicy.Refused(ref _last, "strafe-write", "StrafeMk2",
+                    "a frame packet was refused; the frame will be sent again");
+            WritePolicy.Cache(ref _last, colors);
+            return true;
         }
     }
 
-    /// <summary>One colour channel: three stream packets and a commit. True
+    /// <summary>One color channel: three stream packets and a commit. True
     /// only if the keyboard took all four.</summary>
     bool SendChannel(byte channel, byte[] vals, byte finish)
     {

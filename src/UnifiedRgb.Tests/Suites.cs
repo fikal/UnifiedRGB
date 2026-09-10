@@ -16,11 +16,13 @@ static class Suites
 {
     public static readonly (string Name, Action<Harness> Run)[] All =
     {
-        // Pure logic: colour maths, codecs, file formats, curves.
+        // Pure logic: color maths, codecs, file formats, curves.
         ("Color",         ColorSuite.Run),
+        ("Calibration",   CalibrationSuite.Run),
         ("Codec",         CodecSuite.Run),
         ("Storage",       StorageSuite.Run),
         ("Profiles",      ProfilesSuite.Run),
+        ("Backup",        BackupSuite.Run),
         ("Fans",          FansSuite.Run),
         ("SensorRules",   SensorRulesSuite.Run),
         ("SensorHub",     SensorHubSuite.Run),
@@ -37,6 +39,8 @@ static class Suites
         ("GigabyteDriver", GigabyteDriverSuite.Run),
         ("LianBake",      LianBakeSuite.Run),
         ("ReviewFixes",   ReviewFixesSuite.Run),
+        ("WriteContract", WriteContractSuite.Run),
+        ("DeviceHealth",  DeviceHealthSuite.Run),
         ("Battery",       BatterySuite.Run),
         ("HardwareExit",  HardwareExitSuite.Run),
         ("Native",        NativeSuite.Run),
@@ -46,6 +50,7 @@ static class Suites
 
         // Automation, scheduling and the app's own rules.
         ("Automation",    AutomationSuite.Run),
+        ("Activity",      ActivitySuite.Run),
 
         // Anything that opens a socket, a pipe or a process comes last.
         ("Chroma",        ChromaSuite.Run),

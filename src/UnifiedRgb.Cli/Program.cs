@@ -741,7 +741,7 @@ if (args.Length >= 1 && args[0] == "--mouse")
 }
 
 // --razer                    detect Razer mice, print fw/serial/DPI/stages/poll/battery + the raw probe
-// --razer color RRGGBB       hold a colour for 3 s
+// --razer color RRGGBB       hold a color for 3 s
 // --razer dpi X [Y]          set the live DPI (onboard)
 // --razer stages A X1 X2..   set the onboard DPI stages (A = active, 1-based)
 // --razer poll HZ            set the polling rate (125/500/1000)

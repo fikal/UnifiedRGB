@@ -145,10 +145,11 @@ static class ReviewFixesSuite
         public DeviceType Type => DeviceType.Other;
         public int LedCount => 2;
         public IReadOnlyList<RgbZone> Zones => Array.Empty<RgbZone>();
-        public void SetColors(IReadOnlyList<Rgb> colors)
-        { for (int i = 0; i < colors.Count; i++) Frame[i] = colors[i]; }
-        public void SetZone(int offset, IReadOnlyList<Rgb> colors)
-        { for (int i = 0; i < colors.Count; i++) Frame[offset + i] = colors[i]; }
+        // Canned success: this fake records ordering, not delivery.
+        public bool SetColors(IReadOnlyList<Rgb> colors)
+        { for (int i = 0; i < colors.Count; i++) Frame[i] = colors[i]; return true; }
+        public bool SetZone(int offset, IReadOnlyList<Rgb> colors)
+        { for (int i = 0; i < colors.Count; i++) Frame[offset + i] = colors[i]; return true; }
         public void Dispose() { }
     }
 }

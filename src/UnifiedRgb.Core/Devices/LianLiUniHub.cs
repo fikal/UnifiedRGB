@@ -6,14 +6,14 @@ namespace UnifiedRgb.Core.Devices;
 /// <summary>Lian Li UNI FAN SL-Infinity WIRED controller (USB HID 0CF2:A102).
 /// Streamed live over USB. Protocol from OpenRGB's hardware-verified
 /// LianLiUniHubSLInfinityController: per channel send three OUTPUT reports
-/// (report id 0xE0, padded to 353 bytes) - start, colour (R,B,G wire order),
+/// (report id 0xE0, padded to 353 bytes) - start, color (R,B,G wire order),
 /// commit (static mode = display exactly what we send, brightness 0x00=100%);
 /// LEDs power-limited to sum(R,B,G)<=460.
 ///
 /// The per-fan LED count is NOT reported by the hub (OpenRGB makes the user
 /// configure it too), so it's read from a hot-reloadable config file
 /// (lianli-uni-layout.json) - innerPerFan/outerPerFan/fanCount, plus a `tune`
-/// flag that paints a per-fan colour probe so the layout can be dialed in live
+/// flag that paints a per-fan color probe so the layout can be dialed in live
 /// without rebuilding.</summary>
 public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IHardwareModes
 {
@@ -30,7 +30,7 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IH
     // False until the hub has received at least one commit from THIS instance.
     // _chan starts all-black, so the dedup in Write() saw a black first frame
     // (fans saved as off, LightsOff at launch) as "unchanged" and never sent
-    // it - the hub kept playing its power-on effect until a non-black colour
+    // it - the hub kept playing its power-on effect until a non-black color
     // was applied. Same class as the wireless driver's first-apply field bug.
     bool _primed;
 
@@ -38,7 +38,7 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IH
     // Ene6K77Fan.Constants). fanCount is the one thing the hub can't report, so
     // it defaults to the product max (4) - enough to light any SL-Infinity setup.
     // All three are overridable via an OPTIONAL config file (not auto-created);
-    // `tune:true` there paints the per-fan colour probe for other layouts.
+    // `tune:true` there paints the per-fan color probe for other layouts.
     const int Groups = 4, MaxFans = 4;   // 4 connectors, up to 4 fans daisy-chained each
     int _inner = 8, _outer = 12, _fans = 1;
     int _group;                          // active connector 0..3 (color ports 2g / 2g+1)
@@ -203,7 +203,7 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IH
             int b = f * perFan;
             // Whole fan + its two parts (inner ring, outer ring) - each a
             // selectable target in the zone picker, so a fan can be lit as one
-            // colour or its inner/outer set independently.
+            // color or its inner/outer set independently.
             zones.Add(new RgbZone { Name = $"Fan {f + 1}", Offset = b, Count = perFan, IsFan = true });
             zones.Add(new RgbZone { Name = $"Fan {f + 1} · inner", Offset = b, Count = _inner });
             zones.Add(new RgbZone { Name = $"Fan {f + 1} · outer", Offset = b + _inner, Count = _outer });
@@ -229,7 +229,7 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IH
     {
         if (_disposed) return;
         // Tach poll only while someone is actually reading RPMs (the Cooling
-        // panel). Unobserved, this used to block colour writes >=20 ms per
+        // panel). Unobserved, this used to block color writes >=20 ms per
         // poll, 40x/min, forever.
         if (Environment.TickCount64 - System.Threading.Volatile.Read(ref _lastRpmTouch) < 10_000)
             RefreshSpeeds();
@@ -253,7 +253,7 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IH
         catch { }
     }
 
-    /// <summary>Refresh the cached per-group tach. Under the same lock as colour
+    /// <summary>Refresh the cached per-group tach. Under the same lock as color
     /// writes so the feature-report read never overlaps an output-report burst.</summary>
     void RefreshSpeeds()
     {
@@ -270,7 +270,7 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IH
         return s != null && group >= 0 && group < s.Length ? s[group] : 0;
     }
 
-    /*----- probe: one colour per fan, inner + outer, so the count can be tuned -----*/
+    /*----- probe: one color per fan, inner + outer, so the count can be tuned -----*/
     void Probe()
     {
         // Discriminating probe: inner = dim white; outer FIRST half = red, outer
@@ -296,12 +296,24 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IH
     }
 
     /*----- normal operation: map a full device frame onto the two channels -----*/
-    public void SetColors(IReadOnlyList<Rgb> colors) => Write(0, colors);
-    public void SetZone(int offset, IReadOnlyList<Rgb> colors) => Write(offset, colors);
+    public bool SetColors(IReadOnlyList<Rgb> colors) => Write(0, colors);
+    public bool SetZone(int offset, IReadOnlyList<Rgb> colors) => Write(offset, colors);
 
-    void Write(int offset, IReadOnlyList<Rgb> colors)
+    /// <summary>Forget that the hub is primed, so the next write re-sends both
+    /// ports even when the shadow has not changed (the must-land path and any
+    /// mode change). The shadow itself is left alone: it is the desired state,
+    /// and it is still what the re-send should carry.</summary>
+    public void InvalidateCache() { lock (_lock) _primed = false; }
+
+    /// <summary>True when the hub is showing the shadow frame - it took the
+    /// commit, or it was already latched on exactly these colors.</summary>
+    bool Write(int offset, IReadOnlyList<Rgb> colors)
     {
-        if (_tune) return;   // tuning: the probe owns the display
+        // Tuning: the probe owns the display and this frame is deliberately
+        // discarded, so nothing reached the fans. Reporting a success here
+        // would let a must-land caller stop trying while the probe pattern is
+        // still lit.
+        if (_tune) return false;
         lock (_lock)
         {
             int perFan = _inner + _outer;
@@ -332,13 +344,15 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IH
                 }
                 if (_chan[slot] != colors[i]) { _chan[slot] = colors[i]; changed = true; }
             }
-            if (changed || !_primed)           // the hub latches its last commit
-            {
-                // Invalidate before sending, including when the transport throws.
-                // The shadow is desired state, not proof the hub committed it.
-                _primed = false;
-                _primed = Flush();
-            }
+            if (!changed && _primed) return true;   // already latched on it: a skip is a success
+            // Invalidate before sending, including when the transport throws.
+            // The shadow is desired state, not proof the hub committed it.
+            _primed = false;                   // the hub latches its last commit
+            _primed = Flush();
+            if (!_primed)
+                return WritePolicy.Refused("lianli-uni:write", "LianLiUni",
+                    "the hub refused a frame packet; the frame will be sent again");
+            return true;
         }
     }
 
@@ -386,19 +400,23 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IH
     \*-----------------------------------------------------*/
 
     /// <summary>The hub is not a stream: it holds the last committed frame and
-    /// keeps showing it, which is why a colour set here survives the app
+    /// keeps showing it, which is why a color set here survives the app
     /// closing. Effects live in L-Connect's own indices and are not driven
     /// from here, so static is all this offers.</summary>
     public HardwareExitCaps ExitCaps => HardwareExitCaps.Static;
     public IReadOnlyList<string> HardwareEffects => Array.Empty<string>();
-    public void SetHardwareEffect(string name, Rgb? color) { }
-    public void ReturnToHardware() { }
+    // Neither is offered by ExitCaps, so HardwareExit never reaches them; the
+    // honest answer to "did anything reach the hub" is no.
+    public bool SetHardwareEffect(string name, Rgb? color) => false;
+    public bool ReturnToHardware() => false;
 
-    public void SetHardwareStatic(Rgb color)
+    public bool SetHardwareStatic(Rgb color)
     {
         var frame = new Rgb[LedCount];
         Array.Fill(frame, color);
-        SetColors(frame);          // the commit packet already says "static mode"
+        // The commit packet already says "static mode", so the ordinary frame
+        // path IS the handover, and its verdict is this one.
+        return SetColors(frame);
     }
 
     public void Dispose()

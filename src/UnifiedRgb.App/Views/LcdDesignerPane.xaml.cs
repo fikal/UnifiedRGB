@@ -151,7 +151,7 @@ public partial class LcdDesignerPane : UserControl
             Stroke = GuideBrush, StrokeThickness = 1, SnapsToDevicePixels = true,
         });
 
-    // Magenta, the colour every forms designer uses for this, and nothing else
+    // Magenta, the color every forms designer uses for this, and nothing else
     // on this dark canvas looks like it.
     static readonly System.Windows.Media.Brush GuideBrush = CreateGuideBrush();
 

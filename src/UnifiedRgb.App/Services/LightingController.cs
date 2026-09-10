@@ -85,7 +85,7 @@ public sealed class LightingController
     /// wireless receiver's paced transmit) can take longer, the engine gives
     /// up, and the static replacement posted right after would race the
     /// worker's last frame to the hardware - and lose often enough that "I
-    /// picked a static and the device kept the effect's colour" was a real
+    /// picked a static and the device kept the effect's color" was a real
     /// report. Under the gate the straggler finishes first, THEN the
     /// replacement writes, and the replacement is what stays.
     ///
@@ -95,23 +95,40 @@ public sealed class LightingController
 
     /// <summary>Write the device's whole stored frame: snapshot (the frame keeps
     /// changing on the UI thread), scale by master brightness on the worker,
-    /// post latest-wins per device.</summary>
+    /// post latest-wins per device.
+    ///
+    /// This is a static apply, which is TERMINAL: unlike an effect frame there
+    /// is no frame behind it to correct a refusal, so a dropped packet here
+    /// leaves the device on the color the user just replaced, with nothing
+    /// anywhere to say why. It goes through WritePolicy.MustLand, which
+    /// bypasses the driver's dedup - the device may have slept, reset or been
+    /// handed back to its firmware since the cache was filled - and retries to
+    /// a bounded deadline before saying so loudly.</summary>
     public void PushFrame(IRgbDevice dev)
     {
         var snap = (Rgb[])FrameFor(dev).Clone();
         Engine.InvalidateBase(dev);   // running non-zone channels re-snapshot the edited statics
         Applier.Post(LaneOf(dev), dev, () =>
         {
-            Master.Scale(snap);
+            // Calibration then master brightness, on the CLONE only. The stored
+            // frame keeps the color the user actually picked, so trimming a
+            // device never rewrites their saved colors.
+            Master.Finish(dev, snap);
+            // The gate is held across the retries, not just the first attempt:
+            // it is the boundary shared with the effect workers, and a
+            // straggler frame landing between two of our tries would be the
+            // thing left showing.
             lock (GateOf(dev))
-            {
-                // A static colour on the mouse is committed to its onboard
-                // memory in the same write (the engine streams effect frames
-                // without the persist byte; a one-shot static apply would
-                // otherwise sit uncommitted until Dispose).
-                if (dev is LogitechG403 g) g.SetColors(snap, persist: true);
-                else dev.SetColors(snap);
-            }
+                WritePolicy.MustLand(dev.Name, "static apply", () =>
+                {
+                    dev.InvalidateCache();
+                    // A static color on the mouse is committed to its onboard
+                    // memory in the same write (the engine streams effect frames
+                    // without the persist byte; a one-shot static apply would
+                    // otherwise sit uncommitted until Dispose).
+                    return DeviceHealth.Attempt(dev, () =>
+                        dev is LogitechG403 g ? g.SetColors(snap, persist: true) : dev.SetColors(snap));
+                });
         }, moveToEnd: true);
     }
 
@@ -125,8 +142,15 @@ public sealed class LightingController
         for (int i = 0; i < count; i++) slice[i] = off + i < frame.Length ? frame[off + i] : Rgb.Black;
         Applier.Post(LaneOf(dev), (dev, off), () =>
         {
-            Master.Scale(slice);
-            lock (GateOf(dev)) zw.SetZone(off, slice);
+            // The slice is a copy of the stored range, so finishing it here
+            // trims the hardware without touching what was stored.
+            // The slice starts at device LED `off`, so the trim is told
+            // where it sits: a zone with its own trim gets that one rather
+            // than whatever governs the top of the device.
+            Master.Finish(dev, slice, off);
+            // Terminal for the same reason PushFrame is: a static zone has no
+            // next frame behind it.
+            lock (GateOf(dev)) WritePolicy.MustLand(dev, zw, off, slice, "static zone apply");
         }, moveToEnd: true);
     }
 
@@ -179,16 +203,68 @@ public sealed class LightingController
         {
             for (int i = 0; i < count && offset + i < live.Length; i++) live[offset + i] = colors[i];
             var whole = (Rgb[])live.Clone();
-            Master.Scale(whole);
-            Applier.Post(LaneOf(dev), (dev, "ext"), () => { lock (GateOf(dev)) dev.SetColors(whole); });
+            // Calibration applies to an SDK client's pixels for the same reason
+            // master brightness does: the trim describes the HARDWARE, not the
+            // user's taste, so a client's white has to be the same white as
+            // everything else on the desk or the mismatch is back the moment a
+            // game starts painting.
+            Master.Finish(dev, whole);
+            // Deliberately NOT a must-land write: an SDK client streams, so
+            // the frame behind this one is the retry, and holding a lane
+            // through a retry loop at a client's frame rate would be the thing
+            // that made the whole bridge stutter. The driver's own backoff and
+            // the client's next frame cover a refusal.
+            Applier.Post(LaneOf(dev), (dev, "ext"), () => { lock (GateOf(dev)) DeviceHealth.Attempt(dev, () => dev.SetColors(whole)); });
         }
     }
 
-    /// <summary>Black the device WITHOUT touching its stored frame (lights-off).</summary>
+    /// <summary>Black the device WITHOUT touching its stored frame (lights-off).
+    ///
+    /// The most terminal write there is, and the one whose failure users
+    /// actually see: nothing follows a lights-off, so a refused packet leaves
+    /// the machine sleeping with a color still lit. Must-land, therefore -
+    /// dedup bypassed (a device that reverted to its firmware's boot rainbow
+    /// still has "black" in the driver's cache) and retried to a deadline.</summary>
     public void PushBlack(IRgbDevice dev)
     {
         var black = new Rgb[dev.LedCount];
-        Applier.Post(LaneOf(dev), dev, () => { lock (GateOf(dev)) dev.SetColors(black); }, moveToEnd: true);
+        // No Master.Finish here, and that is deliberate rather than an
+        // oversight: black is a fixed point of the whole write-boundary
+        // transform. Gamma of zero is zero, any gain times zero is zero, and a
+        // ceiling never raises a value - just as master brightness has never
+        // been applied here, because scaling zero is still zero. Running the
+        // transform would be provably identical and only invite the question
+        // of whether a trimmed device can fail to turn off.
+        Applier.Post(LaneOf(dev), dev, () =>
+        {
+            lock (GateOf(dev)) WritePolicy.MustLand(dev, black, "lights off");
+        }, moveToEnd: true);
+    }
+
+    /// <summary>Drive a device to one flat reference color for the CALIBRATION
+    /// AID, without touching its stored frame. See CalibrationAid for the
+    /// session around this; this is just the write.
+    ///
+    /// The color goes through Master.Finish exactly like every other frame, and
+    /// that is the entire point of the aid: the user is looking at the trimmed
+    /// output while they move the sliders, so the patch has to be what the
+    /// hardware would really show, not the raw request. A raw patch would let
+    /// them "match" devices that are still mismatched the moment the aid
+    /// closes.
+    ///
+    /// Terminal, so must-land: the aid puts a color up and then nothing else
+    /// writes until the user moves something. A dropped packet would leave one
+    /// device showing the previous patch, which is the worst possible outcome
+    /// for a screen whose entire job is comparing devices side by side.</summary>
+    public void PushReference(IRgbDevice dev, Rgb color)
+    {
+        var frame = new Rgb[dev.LedCount];
+        for (int i = 0; i < frame.Length; i++) frame[i] = color;
+        Applier.Post(LaneOf(dev), (dev, "calref"), () =>
+        {
+            Master.Finish(dev, frame);
+            lock (GateOf(dev)) WritePolicy.MustLand(dev, frame, "calibration reference");
+        }, moveToEnd: true);
     }
 
     /// <summary>Full device frame = static colors with every running channel

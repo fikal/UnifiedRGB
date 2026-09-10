@@ -23,6 +23,69 @@ public partial class SettingsPane : UserControl
         catch (Exception ex) { UnifiedRgb.Core.Log.Error("pawnio", ex); }
     }
 
+    /// <summary>The recent-decisions history and the automation pause. Takes no
+    /// arguments: it reads the one shared activity log and the live automation
+    /// service directly, the same way they are written.</summary>
+    void Activity_Click(object sender, RoutedEventArgs e)
+    {
+        var owner = Owner;
+        Dialogs.ShowBlurred(owner, new ActivityWindow { Owner = owner });
+    }
+
+    /// <summary>Per-device color trim. The window drives the hardware itself
+    /// with a reference patch. Capture the live state before stopping effects
+    /// and restore it, including unsaved edits, when the aid stops.</summary>
+    void Calibration_Click(object sender, RoutedEventArgs e)
+    {
+        var owner = Owner;
+        MainViewModel.LightState? beforeAid = null;
+        var aid = new Services.CalibrationAid(VM.Lighting,
+            capture: () => beforeAid = VM.CaptureState(),
+            restore: () => { if (beforeAid != null) VM.RestoreState(beforeAid, honorSuppression: true); beforeAid = null; },
+            refresh: VM.RefreshCalibrationLighting);
+        var win = new CalibrationWindow(VM.Devices, aid) { Owner = owner };
+        Dialogs.ShowBlurred(owner, win);
+    }
+
+    /// <summary>Write the whole setup to one portable file.</summary>
+    void ExportSetup_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "Save your setup",
+            Filter = Services.SetupBundle.FileFilter,
+            DefaultExt = Services.SetupBundle.FileExtension,
+            FileName = $"UnifiedRGB setup {DateTime.Now:yyyy-MM-dd}{Services.SetupBundle.FileExtension}",
+        };
+        if (dlg.ShowDialog(Owner) != true) return;
+
+        var result = Services.SetupBundle.Export(dlg.FileName, VM.Devices);
+        Dialogs.Info(Owner, "Backup",
+            result.Ok
+                ? $"Saved {result.FileCount} settings file(s) and {result.AssetCount} image(s) to\n{result.Path}"
+                : $"That did not work: {result.Problem}");
+    }
+
+    /// <summary>Read a setup file back. The window previews every change and
+    /// writes nothing until the user picks, so this only has to reload what the
+    /// import replaced - without that, our in-memory copy would be saved back
+    /// over the imported files the next time anything changed.</summary>
+    void ImportSetup_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Open a setup file",
+            Filter = Services.SetupBundle.FileFilter,
+            DefaultExt = Services.SetupBundle.FileExtension,
+            CheckFileExists = true,
+        };
+        if (dlg.ShowDialog(Owner) != true) return;
+
+        var owner = Owner;
+        var win = new ImportSetupWindow(dlg.FileName, VM.Devices, VM.ReloadAfterImport) { Owner = owner };
+        Dialogs.ShowBlurred(owner, win);
+    }
+
     void ManageRules_Click(object sender, RoutedEventArgs e)
     {
         var owner = Owner;

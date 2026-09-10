@@ -33,7 +33,7 @@ public sealed class PatternEffect : IEffect
     public double LoopSeconds(double speed) => Motion switch
     {
         PatternMotion.Static => 0.0,
-        // Rotating one solid colour is the same colour everywhere at every
+        // Rotating one solid color is the same color everywhere at every
         // instant: constant, so it must not pin the bake window (a 4 s period
         // beside a 9 s effect would otherwise force that device to stream).
         PatternMotion.Rotate when Color == PatternColor.Solid => 0.0,
@@ -172,7 +172,7 @@ public sealed class PatternEffect : IEffect
         return Lerp(pal[a], pal[a + 1], x - a);
     }
 
-    /// <summary>Cyclic: wraps the last colour back to the first (ring gradients).</summary>
+    /// <summary>Cyclic: wraps the last color back to the first (ring gradients).</summary>
     Rgb SamplePalette(double f) => PaletteFx.Sample(Palette, f);
 
     static double Coord(LedPos p, int axis) => axis switch

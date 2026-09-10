@@ -225,6 +225,7 @@ public sealed partial class MainViewModel
     void LoadProfile(Profile? p)
     {
         if (p == null) return;
+        _recoveryLighting.ApplyProfile(p);
         // Stop the channels FIRST: workers write devices directly, so a final
         // effect frame could land after the static write below and leave a
         // range frozen mid-effect until the next write.

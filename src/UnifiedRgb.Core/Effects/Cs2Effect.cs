@@ -13,7 +13,7 @@ namespace UnifiedRgb.Core.Effects;
 ///
 /// Ordered by urgency and the loudest wins outright rather than blending: a
 /// flashbang beats a kill, a kill beats a bomb, a bomb beats your health bar.
-/// Blending them would make a colour that means nothing.
+/// Blending them would make a color that means nothing.
 ///
 /// Reads the server's published snapshot and nothing else. No allocation per
 /// frame, and no work at all when the game is not running.</summary>
@@ -140,7 +140,7 @@ public sealed class Cs2Effect : IEffect
     /// fall through to the health bar.</summary>
     Rgb? WholeDeviceColor(GameState s, double t)
     {
-        // Round over: the winner's colour, held rather than pulsed, because the
+        // Round over: the winner's color, held rather than pulsed, because the
         // round is done and there is nothing left to react to.
         if (s.Phase == RoundPhase.Over && s.WinTeam != Team.None)
             return TeamColor(s.WinTeam);
@@ -159,7 +159,7 @@ public sealed class Cs2Effect : IEffect
         if (!s.Playing || s.Health <= 0)
             return ColorUtil.Scale(TeamColor(s.Team), 0.10 + 0.04 * Math.Sin(t * 0.9));
 
-        // Freezetime: the team colour, so buy time reads as calm.
+        // Freezetime: the team color, so buy time reads as calm.
         if (s.Phase == RoundPhase.FreezeTime)
             return ColorUtil.Scale(TeamColor(s.Team), 0.55);
 
@@ -174,12 +174,12 @@ public sealed class Cs2Effect : IEffect
     }
 
     /// <summary>Health as a bar along the device: the lit part is what you have
-    /// left, in the colour it deserves, and the rest is a dark rail so the empty
+    /// left, in the color it deserves, and the rest is a dark rail so the empty
     /// part still reads as part of the bar rather than as a dead device.
     ///
-    /// One flat colour used to be the whole effect, which meant a healthy player
+    /// One flat color used to be the whole effect, which meant a healthy player
     /// saw an unchanging green light. A bar gives it something to say at a
-    /// glance, and it degrades gracefully: a one-LED device is just the colour.</summary>
+    /// glance, and it degrades gracefully: a one-LED device is just the color.</summary>
     void HealthBar(Rgb[] buf, LedPos[] pos, GameState s, double t)
     {
         double health = Math.Clamp(s.Health / 100.0, 0, 1);
@@ -231,7 +231,7 @@ public sealed class Cs2Effect : IEffect
         ticks == 0 ? null : (Environment.TickCount64 - ticks) / 1000.0;
 
     /// <summary>Not playing: a slow, dim blue breath. Unmistakably "no game",
-    /// rather than a colour that could be mistaken for a game state.</summary>
+    /// rather than a color that could be mistaken for a game state.</summary>
     static Rgb Idle(double t) =>
         ColorUtil.Scale(ColorUtil.HsvToRgb(215, 0.85, 1.0), 0.14 + 0.08 * Math.Sin(t * 0.7));
 

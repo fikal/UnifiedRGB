@@ -52,6 +52,26 @@ built FileVersion == the version being released.
   effect, so it can never touch the real profile - do not weaken that.
 - HID drivers hold an `IHidTransport`; `FakeHid` in the harness drives a
   real driver without hardware. See `ADDING_A_DEVICE.md`.
+- **CI rehearses the packaging, not just the source.**
+  `.github/workflows/build.yml` compiles both Chroma shims with MSVC before it
+  builds anything managed, using the same `native/chroma-shim/build.bat` as
+  local builds. The script locates MSVC with vswhere and stops on toolset,
+  resource, compiler, or export-dump failures. CI rejects missing exports or
+  the wrong PE bitness, and then
+  confirms both DLLs really landed as embedded resources in
+  `UnifiedRgb.Core.dll` - a build with no shims on disk succeeds quietly and
+  ships an app with no Chroma section at all. It then runs the same
+  `dotnet publish` `release.ps1` uses and checks the exe's FileVersion against
+  the csproj. So a green run means **the artifact built**, not only that the
+  source compiles.
+- **What the CI smoke test does and does not prove.** It publishes
+  `UnifiedRgb.Diag` single-file self-contained, runs it with `--no-elevate`,
+  and fails unless it exits 0 and its report reaches the end-of-report banner:
+  that is real evidence a published binary starts, unpacks its runtime and
+  drives Core end to end. It says nothing about `UnifiedRgb.App.exe` itself.
+  A WPF tray app that requires admin, a desktop session and real hardware
+  cannot honestly be launched on a runner, so the UI, the device drivers and
+  the updater still need a human on real hardware before a release.
 
 ## Things that look vestigial but are intentional
 

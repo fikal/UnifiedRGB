@@ -8,6 +8,7 @@ native/chroma-shim/*.dll
 native/chroma-shim/*.obj
 native/chroma-shim/*.lib
 native/chroma-shim/*.exp
+native/chroma-shim/exports-*.txt
 
 # maintainer-only publishing tool (not part of the public tree)
 src/UnifiedRgb.Publisher/

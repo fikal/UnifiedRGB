@@ -30,8 +30,16 @@ public sealed class EffectAssignment
 }
 
 /// <summary>A saved lighting setup: per-device LED frames, keyed by device
-/// name (device identity is stable per machine), plus the effect assignments
-/// and user swatches that were live when it was captured.</summary>
+/// name (a name is stable for as long as one machine keeps one set of
+/// drivers), plus the effect assignments and user swatches that were live when
+/// it was captured.
+///
+/// The keys stay names on purpose. Every profile ever saved uses them, as do
+/// canvas.json and the exit behaviours, and re-keying them would invalidate
+/// people's saved setups for a benefit they only see when they MOVE machines.
+/// The move is where a name stops being enough, so that is where identity is
+/// added: a setup bundle records Core's DeviceIdentity next to each name and
+/// remaps the keys on import. See Services/SetupBundle.cs.</summary>
 public sealed class Profile
 {
     // Not `required`: System.Text.Json throws for a missing required member, so
@@ -193,9 +201,34 @@ public sealed class ProfileStore
     public ProfileStore()
     {
         Directory.CreateDirectory(Dir);
+        ReadFromDisk();
+        // Write the migration back straight away. Settings are only saved when
+        // something changes, so otherwise an upgraded night schedule would live
+        // in memory until the user happened to touch an unrelated setting.
+        if (MigrateNightMode(Settings)) SaveSettings();
+    }
+
+    /// <summary>Re-read both files from disk into THIS store.
+    ///
+    /// For the setup importer, which rewrites profiles.json and settings.json
+    /// underneath the running app. Without it the app would keep the list it
+    /// loaded at startup and the next routine save would put the pre-import
+    /// profiles straight back over the imported ones. The list instance is
+    /// kept (cleared and refilled) because the view model binds to it.</summary>
+    public void Reload()
+    {
+        ReadFromDisk();
+        if (MigrateNightMode(Settings)) SaveSettings();
+        Log.Info("store", $"profiles and settings re-read from disk ({Profiles.Count} profile(s))");
+    }
+
+    void ReadFromDisk()
+    {
+        Profiles.Clear();
         // A null list entry ("[null]") is dropped rather than left to NRE the
         // first name lookup at startup.
-        Profiles = LoadJson<List<Profile?>>(ProfilesPath, "profiles.json")?.OfType<Profile>().ToList() ?? new();
+        Profiles.AddRange(LoadJson<List<Profile?>>(ProfilesPath, "profiles.json")?.OfType<Profile>()
+                          ?? Enumerable.Empty<Profile>());
         // Same for a null EFFECT entry ("Effects": [null]) and a null Device:
         // scrubbed once here so Capture's carry-over of absent devices and the
         // view-model's restore never meet one (an NRE on the first re-save).
@@ -205,10 +238,6 @@ public sealed class ProfileStore
             foreach (var e in p.Effects ?? new()) e.Device ??= "";
         }
         Settings = LoadJson<SettingsData>(SettingsPath, "settings.json") ?? new();
-        // Write the migration back straight away. Settings are only saved when
-        // something changes, so otherwise an upgraded night schedule would live
-        // in memory until the user happened to touch an unrelated setting.
-        if (MigrateNightMode(Settings)) SaveSettings();
     }
 
     /// <summary>Read a JSON store; null when absent or unreadable. A CORRUPT

@@ -69,7 +69,7 @@ public sealed class EffectEngine
     /// StopAll returned, the app posted the static replacement, and whichever
     /// write the driver finished LAST is what the hardware kept - and that was
     /// the effect's frame often enough to be reported ("switched to a static,
-    /// the device stayed on the old effect's colour"), with nothing left
+    /// the device stayed on the old effect's color"), with nothing left
     /// running to correct it. With every writer taking this gate, the stale
     /// frame can still land, but only BEFORE the replacement, which is then
     /// the last word.
@@ -105,7 +105,7 @@ public sealed class EffectEngine
             Pos = positions ?? ZonePositions(dev, offset, count),
             Canvas = positions != null,
             LastFrame = new Rgb[count],
-            // Held by reference, not cloned: a static colour picked later on a
+            // Held by reference, not cloned: a static color picked later on a
             // sibling zone of a non-zone device (G403 Wheel/Logo) used to be
             // overwritten forever by the Start-time snapshot. The array is
             // stable per device (LightingController.FrameFor) and outlives
@@ -191,7 +191,7 @@ public sealed class EffectEngine
     }
 
     /// <summary>The device's static frame was edited and pushed (a static
-    /// colour on a zone beside a running effect). Non-zone channels compose
+    /// color on a zone beside a running effect). Non-zone channels compose
     /// every hardware frame over the statics, so they re-snapshot the live
     /// frame on their next pass instead of streaming a stale copy.</summary>
     public void InvalidateBase(IRgbDevice dev)
@@ -251,7 +251,7 @@ public sealed class EffectEngine
     /// composes the whole device, each one's output changes whenever ANY of
     /// them changes - so a per-channel "same as last time?" is false every
     /// frame, the idle throttle never engages, and a channel holding a single
-    /// colour streams it at 60 fps because a sibling is animating. Deduped per
+    /// color streams it at 60 fps because a sibling is animating. Deduped per
     /// device, the first channel to render a given frame writes it and the
     /// others recognise their own identical composite and go quiet.</summary>
     sealed class DeviceWrite
@@ -347,6 +347,20 @@ public sealed class EffectEngine
         var scaledBase = zoneDev == null ? new Rgb[full!.Length] : null;
         double scaledForBrightness = -1;   // forces the first pre-scale
         int seenBase = -1;                 // BaseVersion the pre-scale was taken at
+        // The calibration Version the pre-scale was taken at. The cached base
+        // is the OUTPUT of the whole write-boundary transform, so a trim change
+        // stales it exactly the way a brightness change does; without this the
+        // statics under a running effect would keep the old trim until
+        // something else happened to bump BaseVersion.
+        int seenCalibration = -1;
+        // Hoisted out of the frame loop: the channel holds one device instance
+        // for its whole life, so reaching through ch.Device 60 times a second
+        // buys nothing. The DEVICE and not its name, because the write
+        // boundary needs the zone layout to know which trim each pixel is
+        // under, and the trim's per-device plan is cached against this very
+        // instance (see Calibration), so holding the instance here is also
+        // what keeps the per-frame path off the allocator.
+        var dev = ch.Device;
         bool haveLast = false;
         long lastWrite = 0;
         int idleStreak = 0;   // consecutive unchanged frames — throttles the render rate
@@ -385,35 +399,47 @@ public sealed class EffectEngine
                     Array.Copy(zoneBuf, ch.LastFrame, ch.Count);
                     ch.HasFrame = true;
                 }
-                // Master brightness scales at the write boundary — effects
-                // render at full range, hardware gets the dimmed frame.
+                // The write boundary: this device's calibration trim and then
+                // master brightness (Master.Finish is the pair, in that order,
+                // and Calibration.cs argues the order). Effects render at full
+                // range into untrimmed buffers; only what goes to the wire is
+                // transformed, and each pixel is transformed exactly once.
                 if (zoneDev != null)
                 {
-                    Master.Scale(zoneBuf);
+                    // zoneBuf is this channel's slice, so its index 0 is the
+                    // device's LED ch.Offset and the trim has to be told so.
+                    Master.Finish(dev, zoneBuf, ch.Offset);
                 }
                 else
                 {
-                    // Base statics are pre-scaled ONCE per brightness value
-                    // and re-taken when InvalidateBase says the live frame
-                    // changed; per frame only the channel's own slice gets
-                    // scaled (the old path re-scaled the entire device every
-                    // frame). Version is read BEFORE the copy so a bump that
-                    // lands mid-copy triggers one more re-copy next frame.
+                    // Base statics are pre-transformed ONCE per (brightness,
+                    // base version, calibration version) and re-taken when any
+                    // of the three moves; per frame only the channel's own
+                    // slice is transformed (the old path re-scaled the entire
+                    // device every frame). Versions are read BEFORE the copy so
+                    // a bump that lands mid-copy triggers one more re-copy next
+                    // frame.
                     double b = Master.Brightness;
                     int ver = ch.BaseVersion;
-                    if (b != scaledForBrightness || ver != seenBase)
+                    int cal = Calibration.Version;
+                    if (b != scaledForBrightness || ver != seenBase || cal != seenCalibration)
                     {
                         Array.Copy(ch.BaseFrame, scaledBase!, Math.Min(ch.BaseFrame.Length, scaledBase!.Length));
-                        Master.Scale(scaledBase!);
+                        // The whole device, so buf[0] IS device LED 0.
+                        Master.Finish(dev, scaledBase!);
                         scaledForBrightness = b;
                         seenBase = ver;
+                        seenCalibration = cal;
                     }
                     // Statics first, then EVERY channel's slice over the top -
                     // this channel's fresh render included - and each of those
-                    // ranges scaled where it lies. The base is already scaled.
+                    // ranges transformed where it lies. The base is already
+                    // done, and transforming it twice would square the gamma.
                     Array.Copy(scaledBase!, full!, full!.Length);
                     ComposeDevice(ch.Device, ch, zoneBuf, full!, litRanges!);
-                    foreach (var (off, n) in litRanges!) Master.Scale(full!, off, n);
+                    // litRanges indexes the FULL device frame, so the buffer
+                    // offset and the device offset are the same number here.
+                    foreach (var (off, n) in litRanges!) Master.Finish(dev, full!, off, n, off);
                 }
 
                 long now = Environment.TickCount64;
@@ -437,9 +463,20 @@ public sealed class EffectEngine
                         lock (gate)
                         {
                             if (!ch.Running) stop = true;
-                            else
+                            // The engine keeps a dedup cache of its own on top
+                            // of each driver's, and it used to commit that
+                            // cache whether or not the driver had delivered
+                            // anything - the exact half of the contract the
+                            // drivers were fixed for. A refused zone leaves
+                            // the cache describing the frame BEFORE it, so the
+                            // next frame differs and is written, and the
+                            // keepalive re-send is not skipped either because
+                            // lastWrite does not move.
+                            // Landed() passes the verdict straight through, so
+                            // the branch reads as before; it is the streaming
+                            // path's feed into the per-device health state.
+                            else if (DeviceHealth.WriteZone(ch.Device, zoneDev, ch.Offset, zoneBuf))
                             {
-                                zoneDev.SetZone(ch.Offset, zoneBuf);
                                 Array.Copy(sendBuf, lastSent, sendBuf.Length);
                                 haveLast = true;
                                 lastWrite = now;
@@ -465,9 +502,15 @@ public sealed class EffectEngine
                         {
                             // Same re-check as the zone path, same reason.
                             if (!ch.Running) stop = true;
-                            else
+                            // And the same dedup-after-success rule: a frame
+                            // the device refused must not be recorded as the
+                            // one it is showing, or every identical frame
+                            // after it - the once-a-second keepalive included,
+                            // which exists precisely to cover a lost packet -
+                            // is skipped by this cache before the driver ever
+                            // sees it.
+                            else if (DeviceHealth.WriteFrame(ch.Device, full!))
                             {
-                                ch.Device.SetColors(full!);
                                 if (shared.LastSent.Length != full!.Length) shared.LastSent = new Rgb[full!.Length];
                                 Array.Copy(full!, shared.LastSent, full!.Length);
                                 shared.HaveLast = true;

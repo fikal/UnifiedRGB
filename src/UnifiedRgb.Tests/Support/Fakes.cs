@@ -13,7 +13,7 @@ namespace UnifiedRgb.Tests;
 |                                                              |
 | FakeHid is the important one - it is what lets a real driver |
 | be tested without its device: the exact bytes it puts on the |
-| wire for a given colour, and what it does when the device    |
+| wire for a given color, and what it does when the device    |
 | refuses a packet, which is the path that has produced the    |
 | most field bugs and the one that was untestable before it.   |
 \*-----------------------------------------------------------*/
@@ -27,7 +27,9 @@ sealed class FakeHardwareDevice : IRgbDevice, IHardwareModes
     public DeviceType Type => DeviceType.Other;
     public int LedCount => 1;
     public IReadOnlyList<RgbZone> Zones => new[] { new RgbZone { Name = "All", Offset = 0, Count = 1 } };
-    public void SetColors(IReadOnlyList<Rgb> colors) { }
+    // Canned success: this fake stands in for hardware that always takes what
+    // it is given, so the exit-path tests exercise the decision, not delivery.
+    public bool SetColors(IReadOnlyList<Rgb> colors) => true;
     public void Dispose() { }
 
     public HardwareExitCaps ExitCaps { get; init; } = HardwareExitCaps.Static;
@@ -37,9 +39,9 @@ sealed class FakeHardwareDevice : IRgbDevice, IHardwareModes
     public (string Name, Rgb? Color)? EffectSet;
     public int HandbackCount;
 
-    public void SetHardwareStatic(Rgb color) => StaticSet = color;
-    public void SetHardwareEffect(string name, Rgb? color) => EffectSet = (name, color);
-    public void ReturnToHardware() => HandbackCount++;
+    public bool SetHardwareStatic(Rgb color) { StaticSet = color; return true; }
+    public bool SetHardwareEffect(string name, Rgb? color) { EffectSet = (name, color); return true; }
+    public bool ReturnToHardware() { HandbackCount++; return true; }
 }
 
 /// <summary>A device with declared zones, for the SDK blob tests.</summary>
@@ -61,7 +63,7 @@ sealed class FakeZonedDevice : IRgbDevice
             return list;
         }
     }
-    public void SetColors(IReadOnlyList<Rgb> colors) { }
+    public bool SetColors(IReadOnlyList<Rgb> colors) => true;   // canned success
     public void Dispose() { }
 }
 
@@ -126,11 +128,12 @@ sealed class FakeDevice : IRgbDevice
     public readonly List<(long Start, Rgb[] Frame)> Writes = new();
     public int WriteCount { get { lock (Writes) return Writes.Count; } }
     public Rgb[]? Last { get { lock (Writes) return Writes.Count == 0 ? null : Writes[^1].Frame; } }
-    public void SetColors(IReadOnlyList<Rgb> colors)
+    public bool SetColors(IReadOnlyList<Rgb> colors)
     {
         long start = Stopwatch.GetTimestamp();
         if (WriteDelayMs > 0) Thread.Sleep(WriteDelayMs);
         lock (Writes) Writes.Add((start, colors.ToArray()));
+        return true;   // canned success: this fake models a device that never refuses
     }
     public void Dispose() { }
 }
@@ -139,7 +142,7 @@ sealed class FakeDevice : IRgbDevice
 /// answers its reads from a queue, and fails whichever writes a test says to.
 ///
 /// This is what lets a real driver be tested without the hardware - the exact
-/// bytes it puts on the wire for a given colour, and what it does when the
+/// bytes it puts on the wire for a given color, and what it does when the
 /// device refuses a packet, which is the path that has produced the most
 /// field bugs and the one that was untestable until now.</summary>
 sealed class FakeHid : UnifiedRgb.Core.Native.IHidTransport
@@ -213,7 +216,7 @@ sealed class FakeHid : UnifiedRgb.Core.Native.IHidTransport
     }
 }
 
-/// <summary>Constant-colour effect with a render counter and a settable
+/// <summary>Constant-color effect with a render counter and a settable
 /// LiveInput flag (drives the engine's idle-throttle branch).</summary>
 sealed class CountingEffect : IEffect
 {

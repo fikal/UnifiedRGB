@@ -21,7 +21,7 @@ public interface IOpenRgbHost
     void BeginExternal(IRgbDevice device);
 
     /// <summary>Paint a client's frame. offset is where in the device the
-    /// colours start, which is how a zone write is expressed.</summary>
+    /// colors start, which is how a zone write is expressed.</summary>
     void PushExternal(IRgbDevice device, int offset, IReadOnlyList<Rgb> colors);
 
     /// <summary>The client is gone: put the user's lighting back.</summary>
@@ -417,7 +417,7 @@ public sealed class OpenRgbServer : IDisposable
 
             case OpenRgbProtocol.PktSetCustomMode:
                 // We are always in the one mode we advertise. Clients send this
-                // before writing colours, and expect no reply.
+                // before writing colors, and expect no reply.
                 break;
 
             case OpenRgbProtocol.PktResizeZone:
@@ -428,7 +428,7 @@ public sealed class OpenRgbServer : IDisposable
     }
 
     /// <summary>Both LED writes, which differ only in a zone index up front.
-    /// Layout: u32 payload length, [u32 zone], u16 count, then count colours.</summary>
+    /// Layout: u32 payload length, [u32 zone], u16 count, then count colors.</summary>
     void ApplyWrite(Client client, uint deviceIndex, byte[] payload, bool zoneWrite)
     {
         var device = DeviceAt(deviceIndex);
@@ -464,7 +464,7 @@ public sealed class OpenRgbServer : IDisposable
         catch (Exception ex) { Log.Warn("orgb-server", $"write {device.Name}: {ex.Message}"); }
     }
 
-    /// <summary>One LED: u32 payload length, i32 led index, then one colour.
+    /// <summary>One LED: u32 payload length, i32 led index, then one color.
     /// Home Assistant and Stream Deck integrations use this, and without it
     /// they were silently ignored AND never claimed the device, so the silence
     /// sweep tore their session down underneath them.</summary>

@@ -50,13 +50,20 @@ public sealed class SayoDevice : IRgbDevice
         return null;
     }
 
-    public void SetColors(IReadOnlyList<Rgb> colors)
+    /// <summary>Drop the cached color so the next frame is written even if it
+    /// is the one already recorded (the must-land path and any mode change).</summary>
+    public void InvalidateCache() { lock (_writeLock) _last = null; }
+
+    public bool SetColors(IReadOnlyList<Rgb> colors)
     {
-        if (colors.Count == 0) return;
+        // No color to send is not a delivery: an empty frame is a caller bug
+        // (everything above passes exactly LedCount), and reporting it as a
+        // success would let a must-land caller believe the pad was painted.
+        if (colors.Count == 0) return false;
         lock (_writeLock)
         {
             var c = colors[0];
-            if (_last == c) return;
+            if (_last == c) return true;   // already showing it: a skip is a success
 
             // SAYO_MODE_PACK(speed=3(1x), color=STATIC(0), mode=STATIC(0)).
             byte modeByte = (3 & 0x3) << 6 | (0 & 0x3) << 4 | (0 & 0xF);
@@ -69,12 +76,14 @@ public sealed class SayoDevice : IRgbDevice
             };
             // Commit the dedup only when the write landed, so a dropped packet is
             // retried by the next apply / engine keepalive instead of cached.
-            if (SendPacket(payload)) _last = c;
-            else
+            if (!SendPacket(payload))
             {
                 _last = null;
-                Log.Occasional($"sayo:{Name}", "Sayo", "HID write failed - will retry on the next frame");
+                return WritePolicy.Refused($"sayo:{Name}", "Sayo",
+                    "HID write failed - will retry on the next frame");
             }
+            _last = c;
+            return true;
         }
     }
 

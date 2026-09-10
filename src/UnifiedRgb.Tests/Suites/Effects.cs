@@ -292,7 +292,7 @@ static class EffectsSuite
 
             // Not just once: EVERY frame must carry both, or the two workers alternate
             // between a correct frame and one that drops a slice.
-            // Deduped per DEVICE now, so a constant-colour effect settles and only the
+            // Deduped per DEVICE now, so a constant-color effect settles and only the
             // 1 s keepalive writes - the point being that whatever does land carries
             // both slices.
             int n = dev.WriteCount;
@@ -335,7 +335,7 @@ static class EffectsSuite
             var dev = new FakeDevice { Name = "ThreeZone", LedCount = 3 };
             var frame = new Rgb[3];
             var red = new Rgb(255, 0, 0); var blue = new Rgb(0, 0, 255); var green = new Rgb(0, 255, 0);
-            frame[2] = green;                    // a static colour on the third zone
+            frame[2] = green;                    // a static color on the third zone
             engine.Start(dev, 0, 1, frame, new CountingEffect(), 1, red);
             engine.Start(dev, 1, 1, frame, new CountingEffect(), 1, blue);
             t.Check(WaitUntil(() => dev.Last is { } l && l[0] == red && l[1] == blue && l[2] == green, 3000),

@@ -48,7 +48,13 @@ public sealed class LogitechG403 : IRgbDevice
     /// fails, cleared when one succeeds.</summary>
     readonly long[] _retryAfter;
     readonly bool[] _silent;             // per cluster: currently in a not-answering streak (logged once)
-    readonly bool[] _persisted;          // _lastPer[i] has been committed to onboard memory
+    // What is actually in the mouse's flash, per cluster, rather than a "it is
+    // up to date" flag. A flag was enough while the only reason to re-send a
+    // color was that it had CHANGED; the must-land path also re-sends an
+    // unchanged color, because it has to bypass the dedup cache (which can be
+    // describing a mouse that has since slept or been reset), and with a flag
+    // every one of those re-sends would have been a fresh write to flash.
+    readonly Rgb?[] _persistedPer;
     long _lastChangeTick;
 
     public string Name { get; }
@@ -65,7 +71,7 @@ public sealed class LogitechG403 : IRgbDevice
         _lastPer = new Rgb?[clusterEffect.Length];
         _retryAfter = new long[clusterEffect.Length];
         _silent = new bool[clusterEffect.Length];
-        _persisted = new bool[clusterEffect.Length];
+        _persistedPer = new Rgb?[clusterEffect.Length];
         Name = name;
         if (feature == FEAT_8071) { _fnSetEffect = 0x10; _fnSwControl = 0x50; _swSimple = false; }
         else                      { _fnSetEffect = 0x30; _fnSwControl = 0x80; _swSimple = true; }
@@ -240,7 +246,7 @@ public sealed class LogitechG403 : IRgbDevice
     // (effect worker + static apply) so replies aren't cross-matched.
     readonly object _writeLock = new();
 
-    /// <summary>SET_EFFECT's 'persist' byte writes the colour to the mouse's
+    /// <summary>SET_EFFECT's 'persist' byte writes the color to the mouse's
     /// onboard memory. It used to ride every changed frame — an animated effect
     /// committed to flash at frame rate, 24/7. Frames now stream without it.
     /// A static apply commits at once (SetColors with persist: true, the
@@ -256,9 +262,20 @@ public sealed class LogitechG403 : IRgbDevice
     internal static int RetryAfterFailMs = 5000;
     const int PersistAfterMs = 300_000;
 
-    public void SetColors(IReadOnlyList<Rgb> colors) => SetColors(colors, persist: false);
+    public bool SetColors(IReadOnlyList<Rgb> colors) => SetColors(colors, persist: false);
 
-    /// <summary>Stream the colours; with <paramref name="persist"/> also commit
+    /// <summary>Forget every cluster's color so the next frame is written
+    /// even if it is identical (the must-land path and any mode change). The
+    /// backoff clock is cleared with it: a caller that has decided this write
+    /// MUST land is not served by a driver that is still waiting out a
+    /// five-second sulk from an earlier refusal.</summary>
+    public void InvalidateCache()
+    {
+        lock (_writeLock)
+            for (int i = 0; i < _clusterEffect.Length; i++) { _lastPer[i] = null; _retryAfter[i] = 0; }
+    }
+
+    /// <summary>Stream the colors; with <paramref name="persist"/> also commit
     /// them to onboard memory right away (static applies - the effect engine
     /// streams with false).</summary>
     /// <summary>Lighting traffic is paced to ~30 Hz. A mouse is an input device
@@ -274,11 +291,23 @@ public sealed class LogitechG403 : IRgbDevice
     internal static int MinFrameGapMs = 33;
     long _lastFrameTick;
 
-    public void SetColors(IReadOnlyList<Rgb> colors, bool persist)
+    /// <summary>True when every cluster is showing what was asked for: each
+    /// one either took the color or already had it. False when any cluster
+    /// refused, and also when a cluster was SKIPPED by the backoff above -
+    /// that cluster is knowingly still on its old color, and calling that a
+    /// success would let a must-land caller stop trying at the one moment the
+    /// mouse most needs to be told again.
+    ///
+    /// A refused flash commit does NOT make this false: persistence is a
+    /// separate durability step with a retry rule of its own (CommitPersist),
+    /// and the color the caller asked for did reach the mouse.</summary>
+    public bool SetColors(IReadOnlyList<Rgb> colors, bool persist)
     {
-        if (colors.Count == 0) return;
+        // No color to send is not a delivery.
+        if (colors.Count == 0) return false;
         lock (_writeLock)
         {
+            bool landed = true;
             long tick = Environment.TickCount64;
             long wait = MinFrameGapMs - (tick - _lastFrameTick);
             if (!persist && wait > 0) Thread.Sleep((int)wait);
@@ -289,21 +318,21 @@ public sealed class LogitechG403 : IRgbDevice
                 var c = colors[Math.Min(i, colors.Count - 1)];
                 if (_lastPer[i] == c) continue;
                 // A cluster whose last send failed is left alone briefly. Not
-                // recording a failed colour is correct, but it also means the
+                // recording a failed color is correct, but it also means the
                 // retry is never deduped: a mouse that stops answering (asleep,
                 // or its input reports taken by G HUB) would otherwise be sent
                 // a claim plus an effect on EVERY frame, each blocking ~200 ms
                 // on a read timeout while holding _writeLock. The engine's own
                 // breaker cannot help - it counts thrown exceptions, and a
                 // failed write here returns rather than throwing.
-                if (Environment.TickCount64 < _retryAfter[i]) continue;
+                if (Environment.TickCount64 < _retryAfter[i]) { landed = false; continue; }
                 if (!claimed) { ClaimSoftwareControl(); claimed = true; }
                 // Record it only once the mouse has taken it. Marking first
-                // meant a dropped write poisoned the dedup: the colour was
+                // meant a dropped write poisoned the dedup: the color was
                 // never sent, but every identical frame after it - including
                 // the engine's own keepalive re-send, which exists precisely
                 // to paper over a lost packet - matched the cache and was
-                // skipped, so the zone stayed on the old colour for good.
+                // skipped, so the zone stayed on the old color for good.
                 if (!SendEffect(i, c, persist: false))
                 {
                     _retryAfter[i] = Environment.TickCount64 + RetryAfterFailMs;
@@ -318,12 +347,12 @@ public sealed class LogitechG403 : IRgbDevice
                         _silent[i] = true;
                         Log.Warn("LogitechG403", $"{Name}: cluster {i} stopped answering HID++ (write refused or no reply); retrying every {RetryAfterFailMs / 1000}s");
                     }
+                    landed = false;
                     continue;
                 }
                 if (_silent[i]) { _silent[i] = false; Log.Info("LogitechG403", $"{Name}: cluster {i} is answering again"); }
                 _retryAfter[i] = 0;
                 _lastPer[i] = c;
-                _persisted[i] = false;
                 changed = true;
             }
             long now = Environment.TickCount64;
@@ -331,16 +360,18 @@ public sealed class LogitechG403 : IRgbDevice
             if (persist || (!changed && now - _lastChangeTick >= PersistAfterMs))
             {
                 CommitPersist();
-                // Stamp the ATTEMPT, not just a colour change. Only a
-                // successful commit sets _persisted, which is right - but the
+                // Stamp the ATTEMPT, not just a color change. Only a
+                // successful commit records the flashed color, which is
+                // right - but the
                 // window that decides whether to try is driven by
-                // _lastChangeTick, and that only moved when a colour changed.
+                // _lastChangeTick, and that only moved when a color changed.
                 // So once a commit failed, every keepalive (1/s, forever)
                 // retried it, and in the case where the write landed and only
                 // the reply was lost that is a real write to the mouse's flash
                 // once a second. PersistAfterMs exists precisely to stop that.
                 _lastChangeTick = now;
             }
+            return landed;
         }
     }
 
@@ -359,15 +390,15 @@ public sealed class LogitechG403 : IRgbDevice
     }
 
     /// <summary>Re-send, with the persist byte, every cluster whose current
-    /// colour has not been saved yet. Caller holds _writeLock.</summary>
+    /// color has not been saved yet. Caller holds _writeLock.</summary>
     void CommitPersist()
     {
         for (int i = 0; i < _clusterEffect.Length; i++)
         {
-            if (_persisted[i] || _lastPer[i] is not Rgb c) continue;
+            if (_lastPer[i] is not Rgb c || _persistedPer[i] == c) continue;
             // Same inversion as above: a failed commit must be retried, not
             // remembered as done.
-            if (SendEffect(i, c, persist: true)) _persisted[i] = true;
+            if (SendEffect(i, c, persist: true)) _persistedPer[i] = c;
         }
     }
 

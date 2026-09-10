@@ -5,15 +5,73 @@ on:
     branches: [master, main]
   pull_request:
 
+# A push that lands while an earlier run is still going makes that run's answer
+# worthless, and this job now publishes real artifacts, so it is not cheap.
+# Cancel the superseded run instead of paying for both.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-latest
+    # The packaging rehearsal below takes most of the wall clock. The cap is
+    # here so that a probe which hangs fails the run instead of holding a
+    # runner until the six hour default expires.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
+
+      # The shims are compiled BEFORE the managed build on purpose. Core.csproj
+      # embeds native/chroma-shim/RzChromaSDK*.dll behind an Exists() condition,
+      # so a build that ran first would quietly produce a Core.dll with no
+      # Chroma payload and nothing would say so.
+      #
+      # Use the same toolset discovery and compiler commands locally and in CI.
+      - name: Build Chroma shims
+        shell: cmd
+        run: call native\chroma-shim\build.bat
+
+      # The DLLs are gitignored, so there is nothing committed to compare them
+      # against: this proves they still compile and still export the entry
+      # points a Chroma client looks up by name. build.bat only prints its
+      # dumpbin output, which means a missing export scrolls past unnoticed.
+      # Here a missing name fails the run.
+      - name: Verify Chroma shim exports
+        shell: pwsh
+        run: |
+          $expected = @(
+            'Init', 'InitSDK', 'UnInit', 'CreateEffect', 'CreateKeyboardEffect', 'CreateMouseEffect',
+            'CreateHeadsetEffect', 'CreateMousepadEffect', 'CreateKeypadEffect', 'CreateChromaLinkEffect',
+            'SetEffect', 'DeleteEffect', 'RegisterEventNotification', 'UnregisterEventNotification', 'QueryDevice')
+          $targets = @(
+            @{ Name = '64-bit'; Dll = 'native/chroma-shim/RzChromaSDK64.dll'; Dump = 'native/chroma-shim/exports-x64.txt'; Machine = 0x8664 },
+            @{ Name = '32-bit'; Dll = 'native/chroma-shim/RzChromaSDK.dll';   Dump = 'native/chroma-shim/exports-x86.txt'; Machine = 0x014C })
+          foreach ($t in $targets) {
+            if (-not (Test-Path $t.Dll)) { throw "$($t.Name) shim did not build: $($t.Dll) is missing" }
+            # Read the PE machine word. A 32-bit build that actually produced an
+            # x64 image would load in no 32-bit game, and its export list would
+            # still look perfectly healthy.
+            $fs = [IO.File]::OpenRead((Resolve-Path $t.Dll))
+            try {
+              $br = [IO.BinaryReader]::new($fs)
+              $fs.Position = 0x3C
+              $fs.Position = $br.ReadInt32() + 4
+              $machine = $br.ReadUInt16()
+            } finally { $fs.Dispose() }
+            if ($machine -ne $t.Machine) { throw ("{0} shim is PE machine 0x{1:X4}, expected 0x{2:X4}" -f $t.Name, $machine, $t.Machine) }
+            # Export names sit at the end of their dumpbin line, so anchoring
+            # keeps 'Init' from matching 'UnInit' or 'InitSDK'.
+            $dump = Get-Content $t.Dump -Raw
+            $missing = @($expected | Where-Object { $dump -notmatch ('(?m)\s' + [regex]::Escape($_) + '\s*$') })
+            if ($missing.Count) { throw "$($t.Name) shim is missing exports: $($missing -join ', ')" }
+            $kb = [math]::Round((Get-Item $t.Dll).Length / 1KB)
+            Write-Host "$($t.Name) shim OK: all $($expected.Count) exports present, $kb KB"
+          }
 
       # Public CI builds carry NO backend (see AppPaths.Backend): update
       # checks skip and support bundles save locally. That is by design.
@@ -22,5 +80,120 @@ jobs:
       - name: Build
         run: dotnet build UnifiedRgb.slnx -c Release
 
+      # The failure this catches is the quiet one: the shims are an optional
+      # EmbeddedResource, so a build with no DLLs on disk succeeds and produces
+      # an app whose entire Chroma section is missing. The resource NAMES only
+      # appear in the assembly's metadata when the resource was really embedded,
+      # and the C# side keeps its own copies of those strings as UTF-16, so an
+      # ASCII match here can only have come from the resource table.
+      - name: Verify the Chroma shims were embedded
+        shell: pwsh
+        run: |
+          $core = Get-ChildItem 'src/UnifiedRgb.Core/bin/Release' -Recurse -Filter 'UnifiedRgb.Core.dll' |
+              Where-Object { $_.FullName -notmatch '\\ref\\' } |
+              Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $core) { throw 'No UnifiedRgb.Core.dll under src/UnifiedRgb.Core/bin/Release' }
+          $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($core.FullName))
+          foreach ($res in 'Chroma.RzChromaSDK64.dll', 'Chroma.RzChromaSDK.dll') {
+            if (-not $text.Contains($res)) { throw "$($core.Name) has no embedded '$res' - the shim was not picked up and the app would ship without Chroma" }
+          }
+          Write-Host "Both Chroma shims embedded in $($core.FullName)"
+
       - name: Tests
         run: dotnet run --project src/UnifiedRgb.Tests -c Release
+
+      # The same publish release.ps1 performs. It is the only build shape users
+      # ever receive, and it is the one that breaks on its own: single file
+      # bundling, self extraction of the WPF native DLLs and ReadyToRun all sit
+      # outside the ordinary build. Keep these arguments identical to the ones
+      # in release.ps1.
+      - name: Publish the shipped executable
+        shell: pwsh
+        run: |
+          dotnet publish src/UnifiedRgb.App -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          if ($LASTEXITCODE -ne 0) { throw 'Publish failed' }
+          $exe = Get-ChildItem 'src/UnifiedRgb.App/bin/Release' -Recurse -Filter 'UnifiedRgb.App.exe' |
+              Where-Object { $_.FullName -match '\\win-x64\\publish\\' } |
+              Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $exe) { throw 'Publish reported success but produced no UnifiedRgb.App.exe under bin/Release/**/win-x64/publish' }
+          # The same stale artifact guard release.ps1 uses: a publish that
+          # quietly reused an older output once shipped an old build under a new
+          # version number.
+          $want = [regex]::Match((Get-Content 'src/UnifiedRgb.App/UnifiedRgb.App.csproj' -Raw), '<Version>([^<]+)</Version>').Groups[1].Value
+          if (-not $want) { throw 'UnifiedRgb.App.csproj has no <Version> element' }
+          $got = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exe.FullName).FileVersion
+          if ($got -ne "$want.0") { throw "Published exe reports FileVersion $got, csproj says $want" }
+          # A single file self contained WPF build is well over a hundred MB. An
+          # apphost without its bundle would be a few hundred KB and would still
+          # satisfy every check above.
+          $mb = [math]::Round($exe.Length / 1MB, 1)
+          if ($mb -lt 20) { throw "Published exe is only $mb MB - the single file bundle did not get attached" }
+          Write-Host "Published $($exe.FullName)  v$got  $mb MB"
+
+      # What this proves: a published single file self contained binary out of
+      # this tree really starts on a machine that has no .NET installed for it,
+      # unpacks its runtime, loads Core, and runs Core's whole read-only
+      # hardware survey through to the end of its report. That is where a
+      # packaging break surfaces first, and it is the same
+      # DiagnosticReport.Collect the app's Settings -> Support page uses.
+      #
+      # What it does NOT prove: nothing here launches UnifiedRgb.App.exe. That
+      # one is a WPF tray app with requireAdministrator in its manifest and it
+      # wants a desktop session and real RGB hardware, so a runner cannot
+      # honestly exercise it. Coverage for the shipped exe stops at the step
+      # above: the bundle was produced and carries the right version. Drivers,
+      # the UI and the updater still need a human on real hardware.
+      #
+      # --no-elevate stops the tool relaunching itself through UAC, which would
+      # detach the process and leave this step nothing to wait on or judge.
+      - name: Smoke test a published binary
+        shell: pwsh
+        run: |
+          dotnet publish src/UnifiedRgb.Diag -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          if ($LASTEXITCODE -ne 0) { throw 'Diagnostic publish failed' }
+          $diag = Get-ChildItem 'src/UnifiedRgb.Diag/bin/Release' -Recurse -Filter 'UnifiedRGB-Diagnostic.exe' |
+              Where-Object { $_.FullName -match '\\win-x64\\publish\\' } |
+              Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $diag) { throw 'Diagnostic publish produced no UnifiedRGB-Diagnostic.exe' }
+          # Deliberately not Start-Process -PassThru: the object it hands back
+          # has lost the process handle, so ExitCode reads back as $null and the
+          # comparison below would be meaningless.
+          $psi = [System.Diagnostics.ProcessStartInfo]::new()
+          $psi.FileName = $diag.FullName
+          $psi.Arguments = '--no-elevate'
+          $psi.WorkingDirectory = $diag.DirectoryName
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardInput = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $p = [System.Diagnostics.Process]::Start($psi)
+          # Closing stdin makes the tool's closing "press any key" throw, which
+          # it already swallows, instead of waiting on a runner that will never
+          # type. Both output streams must be draining before the wait: the tool
+          # prints the entire report to stdout and would block on a full pipe.
+          $p.StandardInput.Close()
+          $stdout = $p.StandardOutput.ReadToEndAsync()
+          $stderr = $p.StandardError.ReadToEndAsync()
+          # Collection shells out to PowerShell for a few CIM and event log
+          # queries, each capped at 20 s inside the tool itself. Five minutes is
+          # well clear of that, so reaching this timeout means something really
+          # hung and the run should say so rather than keep waiting.
+          if (-not $p.WaitForExit(300000)) {
+            $p.Kill($true)
+            throw 'Published diagnostic tool did not finish within 5 minutes'
+          }
+          $out = $stdout.GetAwaiter().GetResult()
+          $err = $stderr.GetAwaiter().GetResult()
+          ($out -split '\r?\n' | Select-Object -Last 25) | ForEach-Object { Write-Host $_ }
+          if ($err.Trim()) { Write-Host '--- stderr ---'; Write-Host $err }
+          if ($p.ExitCode -ne 0) { throw "Published diagnostic tool exited with code $($p.ExitCode)" }
+          # It writes the report next to itself. A missing report, or one
+          # missing its closing banner, means collection died part way through
+          # and the published binary is not usable.
+          $report = Join-Path $diag.DirectoryName 'UnifiedRGB-Diagnostic.txt'
+          if (-not (Test-Path $report)) { throw "Published diagnostic tool wrote no report at $report" }
+          $text = Get-Content $report -Raw
+          foreach ($marker in 'UnifiedRGB Diagnostic Report', '--- HID DEVICES (all) ---', 'END OF REPORT') {
+            if (-not $text.Contains($marker)) { throw "Report is missing '$marker' - collection stopped early" }
+          }
+          Write-Host "Published binary ran to completion and wrote a $($text.Length) character report"

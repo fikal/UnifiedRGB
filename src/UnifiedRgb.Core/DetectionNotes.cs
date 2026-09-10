@@ -13,6 +13,14 @@ public enum BlockReason
     PartlyWorking,
     /// <summary>It is there and the attempt failed for a reason we can name.</summary>
     Failed,
+    /// <summary>It was here on the last scan and it is not here now.
+    ///
+    /// The one reason that is about a CHANGE rather than a state, and the one
+    /// the user is most likely to have caused a second ago. Before this, an
+    /// unplugged device simply vanished from the list with nothing anywhere
+    /// saying it had ever been there, which reads identically to "the app
+    /// stopped supporting my keyboard".</summary>
+    WentAway,
 }
 
 /// <summary>One thing the app can see but cannot fully drive, and what to do
@@ -30,7 +38,24 @@ public sealed record BlockedDevice(string Family, string What, BlockReason Reaso
         BlockReason.NeedsAdministrator => "needs administrator",
         BlockReason.DriverMissing => "a driver is missing",
         BlockReason.PartlyWorking => "partly working",
+        BlockReason.WentAway => "it has gone",
         _ => "failed",
+    };
+
+    /// <summary>The same fact in the vocabulary of DeviceHealth, so the two
+    /// channels the user sees - the health badge on a device we hold, and this
+    /// list of things we could not open - are never two different words for
+    /// the same situation.
+    ///
+    /// HeldByOtherSoftware IS "controlled by another app"; that is not a
+    /// coincidence, it is the reason this maps at all rather than a parallel
+    /// enum being invented next to it. Everything else here is hardware the
+    /// app cannot currently drive, which is what "not responding" means to a
+    /// person.</summary>
+    public DeviceHealthState Health => Reason switch
+    {
+        BlockReason.HeldByOtherSoftware => DeviceHealthState.ControlledElsewhere,
+        _ => DeviceHealthState.NotResponding,
     };
 
     public override string ToString() =>
@@ -71,6 +96,15 @@ public static class DetectionNotes
     public static IReadOnlyList<BlockedDevice> Current
     {
         get { lock (_lock) return _notes.ToList(); }
+    }
+
+    /// <summary>True when anything on the list is a device that was working a
+    /// moment ago. That is the difference between "this rig has always had a
+    /// blocked device" - which is a settings-screen fact - and "something just
+    /// changed", which is worth saying out loud.</summary>
+    public static bool AnythingWentAway
+    {
+        get { lock (_lock) return _notes.Any(n => n.Reason == BlockReason.WentAway); }
     }
 
     /// <summary>Start a fresh detection pass. Notes describe what happened on

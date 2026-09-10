@@ -117,7 +117,7 @@
             <TextBlock x:Name="AddHint" Opacity="0.5" FontSize="11" Margin="2,8,0,0" TextWrapping="Wrap"
                        Text="A rule waits a few seconds before firing, and needs the reading to come well back before it releases, so a value sitting on the line cannot flicker your lights."/>
 
-            <TextBlock Text="{Binding AutomationStatus}" Foreground="#FF7FB4FF" FontSize="12" Margin="0,14,0,0" TextWrapping="Wrap"/>
+            <TextBlock Text="{Binding SensorStatus}" Foreground="#FF7FB4FF" FontSize="12" Margin="0,14,0,0" TextWrapping="Wrap"/>
         </StackPanel>
     </Border>
 </Window>

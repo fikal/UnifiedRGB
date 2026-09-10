@@ -48,7 +48,11 @@ generated name. A test in the harness enforces this.
 - `Zones` must be contiguous, non-overlapping, and sum exactly to `LedCount`,
   and the property must return the **same instance** every time. Anything
   else silently collapses to a single "All" zone over the SDK, and the preview
-  geometry cache keys on reference equality.
+  geometry cache keys on reference equality. Per-zone color calibration leans
+  on the same promise: `Calibration` resolves a device's trimmed zone ranges
+  once and caches the result against the device INSTANCE, rebuilding only when
+  a trim changes, so a device whose zones moved under it would be written
+  frames trimmed by the layout it used to have.
 - `LedPositions` and `LedGeometry` are either exactly `LedCount` long or
   `null`. A wrong length is silently discarded and your effects render as a
   straight line, with no message anywhere.
@@ -76,32 +80,75 @@ There is no formal budget, but you are inside three deadlines you cannot see:
 
 A full-device frame that takes more than a few tens of milliseconds is a
 problem. If your protocol needs settle delays, keep them small and outside
-the lock where you can, and never poll telemetry from inside the colour path.
+the lock where you can, and never poll telemetry from inside the color path.
 The HID write timeout is 400 ms per report; a wedged device holding your lock
 for that long per packet is why it was cut from 2000.
 
 ### Frame length
 
-Callers always pass exactly `LedCount` colours (or a zone's count to
+Callers always pass exactly `LedCount` colors (or a zone's count to
 `SetZone`). Do not rely on it: never index past `colors.Count`. The convention
-for a short frame is **repeat the last colour** (`colors[Math.Min(i,
+for a short frame is **repeat the last color** (`colors[Math.Min(i,
 colors.Count - 1)]`). Do not drop the whole frame silently, and do not pad
 with black - both have been done, and both looked like a dead device.
+
+### The verdict: what `SetColors` returns
+
+`SetColors` and `SetZone` return a `bool`, and it means exactly one thing:
+
+- **true** - the frame reached the device, **or** was correctly skipped
+  because the device is already showing precisely it. A deduped frame is a
+  success: the hardware is in the state the caller asked for.
+- **false** - the device **refused** it and is still showing something else.
+
+That is the only signal anything above a driver has. It used to be `void`, so
+a refusal was invisible outside the driver that saw it: the engine cached
+frames it had not delivered, and a lights-off that never went out looked
+exactly like one that did.
+
+Return honestly, and do not guess. A driver on a one-way bus that genuinely
+cannot observe delivery (`LianLiWireless` past the dongle, `OpenRgbDevice`
+past the socket) returns true for the part it *can* see and says so in a
+comment. "Probably fine" is not a verdict.
+
+Two cases people get wrong:
+
+- **Backing off is not delivering.** A driver that skips a cluster because it
+  is inside a retry window knows that cluster is on the wrong color. Return
+  false.
+- **Writing bytes nobody displays is not delivering.** `EneDram` returns false
+  when the color registers were accepted but direct mode is still off: the
+  stick took the bytes and is showing its onboard effect.
 
 ### Failure: return, log, do not throw
 
 The engine's breaker counts **thrown exceptions**: after 300 consecutive ones
-it stops the channel **permanently** and never restarts it. A `false` from
-the transport is invisible to it. Those are not interchangeable, so the rule
-is:
+it stops the channel **permanently** and never restarts it. A `false` return
+is invisible to it. Those are not interchangeable, so the rule is:
 
 - a transient failure (a refused report, a timed-out write, a device that is
-  asleep) **returns**. Log it with `Log.Occasional`, do not commit the dedup
-  cache (next section), and if the device keeps refusing, back off - a mouse
-  that does not answer must not be sent a claim and a colour on every frame,
-  each blocking on a read timeout;
+  asleep) **returns false**. Log it with `Log.Occasional`, do not commit the
+  dedup cache (next section), and if the device keeps refusing, back off - a
+  mouse that does not answer must not be sent a claim and a color on every
+  frame, each blocking on a read timeout;
 - throw only when the device is gone for good and stopping the channel is the
   right outcome.
+
+`WritePolicy.Refused` in `Devices/WritePolicy.cs` does the invalidate, the
+rate-limited log line and the `false` in one call, so a driver cannot return
+the failure and forget the invalidation.
+
+### Retry: the next frame, not this one
+
+On the streaming path **the retry is the next frame**, and that is deliberate.
+A driver that re-sends a refused packet immediately doubles its traffic to a
+device that has already stopped answering, and each of those attempts can wait
+out the 400 ms write timeout while holding the driver's lock. So: return
+false, drop the cache, back off if the refusals keep coming, and let the
+engine's once-a-second keepalive or the user's next apply be the retry.
+
+The bounded *immediate* retry exists in exactly one place, for the writes that
+have no next frame behind them.
 
 ### Dedup, and the half of the rule that keeps going wrong
 
@@ -113,15 +160,47 @@ in `IRgbDevice`. The half that is not:
    sent before sending it means a dropped packet is cached, and every
    identical frame after it - including the engine's own once-per-second
    keepalive re-send, which exists precisely to cover a lost packet - is
-   skipped. The zone stays on its old colour until something changes. This
-   exact bug has shipped in four drivers.
+   skipped. The zone stays on its old color until something changes. This
+   exact bug has shipped in four drivers. `WritePolicy.Unchanged` and
+   `WritePolicy.Cache` are the two halves, in the right order, without
+   allocating.
 2. **Invalidate the cache after any mode change.** Handing the device back
    to its own firmware, toggling direct mode, re-initialising after a
    resume: after any of these the hardware no longer shows what your cache
    says it does, and the next frame must go out even if it is "the same".
+   Expose that as `InvalidateCache()` - it is on `IRgbDevice` with a do
+   nothing default, and the must-land path below calls it.
 3. **Never write to flash at frame rate.** If your device can persist a
-   colour to onboard memory, that is a separate, rare operation, gated by a
+   color to onboard memory, that is a separate, rare operation, gated by a
    long quiet period. Streaming frames do not carry the persist flag.
+
+### The writes that must land
+
+A static apply, a lights-off and an exit behaviour are **terminal**: there is
+no next frame to correct a refusal. "It will be fixed on the next frame" is
+false for exactly the writes a user notices - the machine sleeping with a
+color still lit because the off command was dropped.
+
+Those go through `WritePolicy.MustLand`, which is the only place in the app
+that retries a write immediately. It:
+
+- calls `InvalidateCache()` before **every** attempt, so a stale "it already
+  shows this" cannot turn into a success for a frame the hardware never got;
+- retries to a bounded deadline (`MustLandBudgetMs`, spent per device out of
+  the exit path's single 2000 ms window);
+- treats a throw as one refused attempt rather than an escape route, because
+  the process is on its way out and there is nothing left to stop;
+- logs at **error** level, naming the device and the attempt count, when it
+  still could not deliver.
+
+Callers: `LightingController.PushFrame` / `PushZone` / `PushBlack`,
+`HardwareExit.Apply`, and the identify blink's restore. A streaming caller
+must **not** use it: an SDK client's frames retry themselves, and a retry loop
+on an applier lane at a client's frame rate is a stutter, not a fix.
+
+`IHardwareModes.SetHardwareStatic` / `SetHardwareEffect` / `ReturnToHardware`
+return `bool` for the same reason, and a driver that does not implement a
+mode returns false rather than pretending.
 
 ### Detection
 
@@ -177,11 +256,14 @@ queue, and refuses whichever writes a test says to. It lives in
 the transport, and the harness can see it.
 
 A driver PR should come with a section in `Suites/Devices.cs` alongside the
-ones already there: build the driver over a `FakeHid`, send a known colour,
-and pin the bytes that come out - report id, magic, checksum, where the colour
+ones already there: build the driver over a `FakeHid`, send a known color,
+and pin the bytes that come out - report id, magic, checksum, where the color
 sits. Then refuse a write and prove the frame is sent again rather than
-cached. The Sayo section is the smallest example; the Logitech and
-Thermalright sections show the failure paths. Run that one suite while you
+cached, **and that the refused call returned false while the deduped one
+returned true**. The Sayo section is the smallest example; the Logitech and
+Thermalright sections show the failure paths, and `Suites/WriteContract.cs`
+pins the contract itself - the three verdicts, and the must-land path - if you
+want the shape before you write your own. Run that one suite while you
 iterate, rather than the whole set:
 
 ```
@@ -206,14 +288,19 @@ Before opening the PR:
 - [ ] `Name` is stable and unique; `LedCount` and `Zones` never change after
       construction; `Zones` are contiguous and sum to `LedCount`
 - [ ] Every hardware transaction is under the driver's own lock
-- [ ] A full frame completes in well under 100 ms; no telemetry on the colour
+- [ ] A full frame completes in well under 100 ms; no telemetry on the color
       path
-- [ ] Short frames repeat the last colour; nothing indexes past
+- [ ] Short frames repeat the last color; nothing indexes past
       `colors.Count`
-- [ ] Transient failures return (logged, rate-limited, backed off); only a
-      dead device throws
+- [ ] `SetColors`/`SetZone` return true for delivered AND for correctly
+      deduped, false only for refused; a bus that cannot tell says so in a
+      comment rather than guessing
+- [ ] Transient failures return false (logged, rate-limited, backed off) and
+      leave the retry to the next frame; only a dead device throws
 - [ ] Dedup commits only after a successful write, and is invalidated after
-      any mode change
+      any mode change; `InvalidateCache()` drops it
+- [ ] `IHardwareModes` methods, if implemented, return whether the command
+      landed
 - [ ] Persist-to-flash, if any, is rare and never per frame
 - [ ] Detection never writes to unidentified hardware; blocked hardware is
       reported through `DetectionNotes`

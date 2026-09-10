@@ -324,36 +324,56 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         if (wait > 0) Thread.Sleep((int)wait);
     }
 
-    public void SetColors(IReadOnlyList<Rgb> colors)
+    /// <summary>Forget the last transmitted frame so the next call re-sends
+    /// even an identical one (the must-land path and any mode change). The
+    /// shadow is left alone: it is the desired state, and it is what the
+    /// re-send carries.</summary>
+    public void InvalidateCache() { lock (_lock) _lastSent = null; }
+
+    public bool SetColors(IReadOnlyList<Rgb> colors)
     {
-        if (colors.Count < LedCount || _disposed) return;
+        // A short frame is dropped whole here rather than padded, because the
+        // wire format carries every LED of every fan and a partial one would
+        // blank the rest. Nothing reached the fans, so say so.
+        if (colors.Count < LedCount || _disposed) return false;
         PaceOutsideLock();
         lock (_lock)
         {
-            if (_disposed) return;
+            if (_disposed) return false;
             for (int i = 0; i < LedCount; i++) _shadow[i] = colors[i];
-            Transmit();
+            return Transmit();
         }
     }
 
-    public void SetZone(int offset, IReadOnlyList<Rgb> colors)
+    public bool SetZone(int offset, IReadOnlyList<Rgb> colors)
     {
-        if (_disposed) return;
+        if (_disposed) return false;
         PaceOutsideLock();
         lock (_lock)
         {
-            if (_disposed) return;
+            if (_disposed) return false;
             for (int i = 0; i < colors.Count && offset + i < LedCount; i++)
                 _shadow[offset + i] = colors[i];
-            Transmit();
+            return Transmit();
         }
     }
 
     /// <summary>Send the shadow frame as a one-frame static effect. Skips
-    /// identical frames and paces the RF link. Caller holds _lock.</summary>
-    void Transmit()
+    /// identical frames and paces the RF link. Caller holds _lock.
+    ///
+    /// The verdict is only ever about the LOCAL half of the link: the dongle
+    /// either took our bulk writes or it did not. What happens on the air
+    /// after that is unknowable here - the RF protocol is one-way and data
+    /// packets carry no acknowledgement, which is precisely why a standalone
+    /// apply is sent twice and re-sent again once the frame has settled. So a
+    /// true from here means "the transmitter accepted every packet", and the
+    /// resends below are the driver's own answer to the part it cannot
+    /// observe. Guessing anything stronger would be a lie to the must-land
+    /// path.</summary>
+    bool Transmit()
     {
-        if (_lastSent != null && FramesEqual(_lastSent, _shadow)) return;
+        // Already sent exactly this: a skip is a success.
+        if (_lastSent != null && FramesEqual(_lastSent, _shadow)) return true;
         _lastAnimHash = 0;   // a static frame interrupts any playing animation
         _animPending = false;   // stop resending the superseded animation
         // Pace the RF link by WAITING, never by dropping: a discarded frame is
@@ -376,10 +396,14 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         // (field bug: the app showed the new color, the fans kept the last).
         // Standalone applies get a second immediate send; streams don't (the
         // next frame is the retry, and the settle resend covers the last one).
-        SendEffect(data);
+        bool ok = SendEffect(data);
         if (!streaming)
         {
             Thread.Sleep(30);
+            // The second copy is insurance against a lost RF packet, not a
+            // retry of a refused USB write, so it does not change the verdict:
+            // if the first one reached the dongle, the frame was delivered as
+            // far as this driver can tell.
             SendEffect(data);
         }
 
@@ -388,6 +412,17 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         // transmit it once more. Streams skip this (the shadow keeps
         // changing); the final resting state always gets an extra copy.
         (_settleTimer ??= new Timer(SettleResend)).Change(500, Timeout.Infinite);
+        if (!ok)
+        {
+            // The dongle refused a bulk write, so nothing went on the air.
+            // Drop the cache: the next call - the engine keepalive, a retry
+            // from the must-land path - has to send this frame again rather
+            // than match it and skip.
+            _lastSent = null;
+            return WritePolicy.Refused("lianli-wl:tx", "LianLi",
+                "the transmitter refused a frame packet; the frame will be sent again");
+        }
+        return true;
     }
 
     Timer? _settleTimer;
@@ -591,12 +626,15 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         return true;
     }
 
-    void SendEffect(byte[] data) => SendEffect(data, 1, 200, NextEffectIndexBuf());
+    bool SendEffect(byte[] data) => SendEffect(data, 1, 200, NextEffectIndexBuf());
 
     byte[] NextEffectIndexBuf() { var b = new byte[4]; NextEffectIndex(b); return b; }
 
-    void SendEffect(byte[] data, int totalFrame, double intervalMs, byte[] effectIndex)
+    /// <summary>True when the TRANSMITTER took every fragment. The receiver's
+    /// side of the link is unobservable (see Transmit).</summary>
+    bool SendEffect(byte[] data, int totalFrame, double intervalMs, byte[] effectIndex)
     {
+        bool ok = true;
         // The receiver plays each frame in HALF the interval it's given (measured:
         // 64f/140ms and 150f/60ms both loop in ~4.5s = commanded/2). Send double so
         // the real per-frame time matches what we intend and the fans run at the
@@ -635,23 +673,28 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
                 Array.Copy(data, offset, rf, 20, n);
                 offset += RfValidLen;
             }
-            SendRf(rf);
+            ok &= SendRf(rf);
             if (index == 0)
             {
                 // Meta packet goes out 4x, 20 ms apart (L-Connect-identical).
+                // The repeats are RF insurance, not USB retries, so they do
+                // not change the verdict the first one gave.
                 for (int k = 0; k < 3; k++) { Thread.Sleep(20); SendRf(rf); }
             }
             // No pacing on data packets - L-Connect sends them back-to-back and
             // relies on the effect_index read-back retry to cover any lost packet.
             index++;
         }
+        return ok;
     }
 
     readonly byte[] _rfPkt = new byte[64];   // reused fragment (all callers hold _lock)
 
-    void SendRf(byte[] rf)
+    /// <summary>True when the dongle accepted every 60-byte fragment.</summary>
+    bool SendRf(byte[] rf)
     {
-        if (_disposed) return;
+        if (_disposed) return false;   // torn down mid-write: nothing went out
+        bool ok = true;
         byte frag = 0;
         var pkt = _rfPkt;
         for (int off = 0; off < rf.Length; off += 60)
@@ -661,8 +704,12 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
             Array.Copy(rf, off, pkt, 4, n);
             if (n < 60) Array.Clear(pkt, 4 + n, 60 - n);   // stale tail from a longer fragment
             if (!_usb.Write(_usb.BulkOutPipe, pkt))
+            {
                 Log.Occasional("LianLi", "write", "bulk write failed");
+                ok = false;
+            }
         }
+        return ok;
     }
 
     static bool FramesEqual(Rgb[] a, Rgb[] b)

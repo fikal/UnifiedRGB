@@ -107,10 +107,38 @@
                                    Text="Ctrl+Alt+↑/↓ nudges it, even in games."/>
                     </StackPanel>
                 </Border>
+
+                <Border Style="{StaticResource SettingsCard}">
+                    <StackPanel>
+                        <TextBlock Text="Backup" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,10"
+                                   Text="Your profiles, pump screens and their images, shows, palettes, desk layout and rules, in one file you can keep or move to another PC. Opening one shows you exactly what would change before anything is written."/>
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="Save a backup…" Padding="14,6" Click="ExportSetup_Click"/>
+                            <Button Content="Open a backup…" Padding="14,6" Margin="8,0,0,0" Click="ImportSetup_Click"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
             </StackPanel>
 
             <!-- ===================== Automation ===================== -->
             <StackPanel Visibility="{Binding SettingsTab, Converter={StaticResource EqVis}, ConverterParameter=Automation}">
+
+                <!-- First on this page on purpose. Everything below competes to
+                     drive the lighting, and the question a user arrives with is
+                     not "what rules exist" but "why did my lights just change".
+                     The pause lives in here too, because that is the other
+                     thing they want when the rules are fighting them. -->
+                <Border Style="{StaticResource SettingsCard}">
+                    <StackPanel>
+                        <TextBlock Text="Why the lighting changed" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,8"
+                                   Text="A running history of what took over and why, plus a temporary pause that stops rules changing anything until you resume."/>
+                        <TextBlock Text="{Binding AutomationStatus}" Opacity="0.75" FontSize="12" Margin="0,0,0,6"/>
+                        <Button Content="Activity…" Padding="12,5" HorizontalAlignment="Left"
+                                Click="Activity_Click"/>
+                    </StackPanel>
+                </Border>
 
                 <Border Style="{StaticResource SettingsCard}">
                     <StackPanel>
@@ -161,7 +189,7 @@
                         </ItemsControl>
                         <Button Content="Manage sensor rules…" Padding="12,5" Margin="24,6,0,0" HorizontalAlignment="Left"
                                 Click="ManageSensorRules_Click"/>
-                        <TextBlock Text="{Binding AutomationStatus}" Style="{StaticResource Status}" Margin="0,12,0,0"/>
+                        <TextBlock Text="{Binding SensorStatus}" Style="{StaticResource Status}" Margin="0,12,0,0"/>
                     </StackPanel>
                 </Border>
 
@@ -169,11 +197,11 @@
                     <StackPanel>
                         <TextBlock Text="When a rule stops matching" Style="{StaticResource SectionTitle}"/>
                         <CheckBox IsChecked="{Binding ReturnToStartupProfile}">
-                            <TextBlock Text="Go back to the profile you start with"
+                            <TextBlock Text="Go back to your startup profile"
                                        TextWrapping="Wrap" MaxWidth="520"/>
                         </CheckBox>
                         <TextBlock Style="{StaticResource Hint}" Margin="24,4,0,0"
-                                   Text="Off, it goes back to whatever was on screen when the rule started. That sounds safer but is easy to get wrong: build a profile, save it, add a rule for it, and the lighting it returns to is that same profile."/>
+                                   Text="When this is off, the lights return to whatever was showing before the rule fired. If that was already the rule's own profile, nothing appears to change when it ends."/>
                     </StackPanel>
                 </Border>
             </StackPanel>
@@ -181,36 +209,93 @@
             <!-- ===================== Devices ===================== -->
             <StackPanel Visibility="{Binding SettingsTab, Converter={StaticResource EqVis}, ConverterParameter=Devices}">
 
-                <!-- First, because "why is my device missing" is the question
-                     this whole page exists to answer. Hidden when there is
-                     nothing to say. -->
-                <Border Style="{StaticResource SettingsCard}"
-                        Visibility="{Binding HasBlockedDevices, Converter={StaticResource BoolToVis}}">
+                <!-- First, because "why is my device missing" and "why did that
+                     one stop working" are the questions this whole page exists
+                     to answer. One list for both: a device we hold reports
+                     through the write verdict, hardware we could see but never
+                     open reports through the detection notes, and the user does
+                     not care which of those a problem came from. -->
+                <Border Style="{StaticResource SettingsCard}">
                     <StackPanel>
-                        <TextBlock Text="Seen but not usable" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock Text="Device health" Style="{StaticResource SectionTitle}"/>
                         <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,10"
-                                   Text="This hardware is plugged in and UnifiedRGB can see it, but something is stopping it from being driven."/>
-                        <ItemsControl ItemsSource="{Binding BlockedDevices}">
+                                   Text="What each device is doing right now. Anything that is not simply connected says why, and what would fix it."/>
+                        <ItemsControl ItemsSource="{Binding DeviceHealthRows}">
+                            <ItemsControl.Resources>
+                                <!-- A healthy device has no detail and no remedy, and an
+                                     empty TextBlock still takes its line height and its
+                                     margin: seven of those turned a compact list into a
+                                     column of half-empty boxes. Collapse the line when
+                                     there is nothing on it. BasedOn is not optional
+                                     either, because the app-level implicit TextBlock
+                                     style is the only thing supplying a foreground. -->
+                                <Style x:Key="HealthNote" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                    <Setter Property="FontSize" Value="12"/>
+                                    <Setter Property="TextWrapping" Value="Wrap"/>
+                                    <Setter Property="Margin" Value="17,3,0,0"/>
+                                    <Style.Triggers>
+                                        <Trigger Property="Text" Value="">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </ItemsControl.Resources>
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <Border Background="#20FFFFFF" CornerRadius="4" Padding="10,8" Margin="0,0,0,8">
+                                    <Border Background="#FF262932" CornerRadius="7" Padding="11,9" Margin="0,0,0,6">
                                         <StackPanel>
-                                            <StackPanel Orientation="Horizontal">
-                                                <TextBlock Text="{Binding What}" FontWeight="SemiBold"/>
-                                                <TextBlock Text="{Binding ReasonText}" Margin="8,0,0,0"
-                                                           Foreground="#FFE0A55F"/>
-                                            </StackPanel>
-                                            <TextBlock Text="{Binding Detail}" Opacity="0.75" FontSize="12"
-                                                       TextWrapping="Wrap" Margin="0,4,0,0"/>
-                                            <TextBlock Text="{Binding Remedy}" Foreground="#FF7FB4FF" FontSize="12"
-                                                       TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                            <Grid>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <!-- A dot reads as a state at a glance in a way
+                                                         a word never does, and it lines the names
+                                                         up into a column. -->
+                                                    <Ellipse Width="8" Height="8" VerticalAlignment="Center" Margin="0,0,9,0">
+                                                        <Ellipse.Style>
+                                                            <Style TargetType="Ellipse">
+                                                                <Setter Property="Fill" Value="#FF5FC97A"/>
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding IsProblem}" Value="True">
+                                                                        <Setter Property="Fill" Value="#FFE0A55F"/>
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Ellipse.Style>
+                                                    </Ellipse>
+                                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                                </StackPanel>
+                                                <!-- The state sits right, in the same faint pill the
+                                                     other screens use for an aside, so a ragged list
+                                                     of device names still has one clean edge. -->
+                                                <Border HorizontalAlignment="Right" VerticalAlignment="Center"
+                                                        Background="#14FFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1"
+                                                        CornerRadius="9" Padding="8,2">
+                                                    <TextBlock Text="{Binding StateText}" FontSize="11">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                                                <Setter Property="Foreground" Value="#FF8FD9A2"/>
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding IsProblem}" Value="True">
+                                                                        <Setter Property="Foreground" Value="#FFE7B878"/>
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+                                                </Border>
+                                            </Grid>
+                                            <TextBlock Text="{Binding Detail}" Opacity="0.75"
+                                                       Style="{StaticResource HealthNote}"/>
+                                            <TextBlock Text="{Binding Remedy}" Foreground="#FF7FB4FF"
+                                                       Style="{StaticResource HealthNote}"/>
                                         </StackPanel>
                                     </Border>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
-                        <Button Content="Scan again" Padding="14,6" HorizontalAlignment="Left"
-                                Margin="0,2,0,0" Command="{Binding RescanCommand}"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                            <Button Content="Scan again" Padding="14,6" Command="{Binding RescanCommand}"/>
+                            <Button Content="Color calibration" Padding="14,6" Margin="8,0,0,0" Click="Calibration_Click"/>
+                        </StackPanel>
                     </StackPanel>
                 </Border>
 

@@ -3,7 +3,7 @@ using UnifiedRgb.Core;
 namespace UnifiedRgb.Tests;
 
 /*-----------------------------------------------------------*\
-| Colour: the value type, the maths, and the master dimmer.    |
+| Color: the value type, the maths, and the master dimmer.    |
 |                                                              |
 | Everything downstream of here trusts these four sections. An |
 | effect is only as correct as the Rgb it hands over, a saved  |

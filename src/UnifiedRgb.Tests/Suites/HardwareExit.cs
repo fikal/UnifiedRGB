@@ -24,7 +24,7 @@ namespace UnifiedRgb.Tests;
 | The Gigabyte and ENE register assertions are here rather     |
 | than with their drivers because this is the caller that      |
 | reaches them: the hardware-static exit path sends the same   |
-| packet the per-frame path does, and ENE's effect colour      |
+| packet the per-frame path does, and ENE's effect color      |
 | window sits directly below REG_DIRECT, so the layout is      |
 | pinned to the hardware rather than to a remembered number.   |
 \*-----------------------------------------------------------*/
@@ -127,15 +127,15 @@ static class HardwareExitSuite
             t.Equal(5, GigabyteIt5711.EffectIndexOfHeader(1), "gigabyte: header 1 is effect 5");
             t.Equal(8, GigabyteIt5711.EffectIndexOfHeader(4), "gigabyte: header 4 is effect 8");
 
-            // ENE: the effect colour window is 15 bytes and REG_DIRECT sits directly
+            // ENE: the effect color window is 15 bytes and REG_DIRECT sits directly
             // after it, so a sixth LED would write straight into the direct and mode
             // registers. This pins the cap to the hardware layout rather than to a
             // number someone remembered.
             t.Equal(0x8021, EneDram.REG_MODE, "ene: mode register");
 
             // The effect window is PAIRED with the direct one, per generation. Writing
-            // V1's effect register on a V2 stick puts the colour in a bank the V2
-            // effect engine never reads, so the mode changes and the colour does not.
+            // V1's effect register on a V2 stick puts the color in a bank the V2
+            // effect engine never reads, so the mode changes and the color does not.
             // The earlier version of this test compared two constants from the same
             // file, which passed for any pair someone wrote down.
             t.Equal(0x8010, EneDram.REG_COLORS_EFFECT_V1, "ene: v1 effect colors");

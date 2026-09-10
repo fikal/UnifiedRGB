@@ -92,13 +92,13 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
     readonly Rgb?[] _lastStatic = new Rgb?[16];
     bool _directInit;
     int _effectDisabled;
-    /// <summary>A static zone's colour only shows on the apply packet. When
+    /// <summary>A static zone's color only shows on the apply packet. When
     /// that packet is refused the effect registers already hold the new
-    /// colours (their reports were accepted, and _lastStatic says so), so what
+    /// colors (their reports were accepted, and _lastStatic says so), so what
     /// must be re-sent next time is the apply alone - even if no static zone
     /// changes in that frame.</summary>
     bool _applyPending;
-    /// <summary>The colour of every LED as last requested, in device order.
+    /// <summary>The color of every LED as last requested, in device order.
     /// SetColors replaces it; SetZone merges a slice into it; the zone writers
     /// read from it. It exists so a SetZone that covers only PART of a zone
     /// (OpenRGB's single-LED SDK command, via LightingController.PushExternalFrame)
@@ -335,7 +335,7 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
     /// A short frame blanks the FAN LEDs past its end and leaves the static
     /// zones past it as they are, which is what this driver has always done
     /// with them (a static zone past the end was skipped, never blacked).</summary>
-    public void SetColors(IReadOnlyList<Rgb> colors)
+    public bool SetColors(IReadOnlyList<Rgb> colors)
     {
         lock (_writeLock)
         {
@@ -350,7 +350,20 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
                     else if (def.Kind == ZoneKind.Fan) _shadow[idx] = Rgb.Black;
                 }
             }
-            WriteZones(0, _ledCount);
+            return WriteZones(0, _ledCount);
+        }
+    }
+
+    /// <summary>Drop every cached zone so the next write goes out even if it
+    /// is identical (the must-land path and any mode change). _directInit is
+    /// deliberately left alone: the board's direct-mode setup is still valid,
+    /// and re-running it costs two reports and a 40 ms settle for nothing.</summary>
+    public void InvalidateCache()
+    {
+        lock (_writeLock)
+        {
+            Array.Clear(_lastStatic);
+            Array.Clear(_fanValid);
         }
     }
 
@@ -362,15 +375,17 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
     /// old rule - repaint only zones fully inside the range - sent nothing at
     /// all for that write, and OpenRGB's single-LED command silently did
     /// nothing on this board.</summary>
-    public void SetZone(int offset, IReadOnlyList<Rgb> colors)
+    public bool SetZone(int offset, IReadOnlyList<Rgb> colors)
     {
         int start = Math.Max(0, offset);
         int end = Math.Min(_ledCount, offset + colors.Count);
-        if (end <= start) return;
+        // An empty range asks for nothing, so nothing can have been refused:
+        // that is a success, not a failure to deliver.
+        if (end <= start) return true;
         lock (_writeLock)
         {
             for (int i = start; i < end; i++) _shadow[i] = colors[i - offset];
-            WriteZones(start, end);
+            return WriteZones(start, end);
         }
     }
 
@@ -381,26 +396,38 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
     /// Nothing here is cached until the board has accepted it. A refused
     /// packet used to be recorded as sent, so an identical frame later - the
     /// engine's keepalive re-send included - produced zero reports and the
-    /// zone stayed on its old colour until something changed.</summary>
-    void WriteZones(int start, int end)
+    /// zone stayed on its old color until something changed.</summary>
+    /// <summary>True only when every zone this call touched is now showing
+    /// what the shadow says - each one either accepted its packets or was
+    /// deduped because it already had them. Any refusal anywhere makes the
+    /// whole call false, which is what lets a static apply or a lights-off
+    /// know it has to try again.</summary>
+    bool WriteZones(int start, int end)
     {
         if (!EnsureDirectMode())
-        {
             // Retried in full on the next call; nothing below was committed.
-            Log.Occasional("gigabyte:init", "GigabyteIt5711",
+            return WritePolicy.Refused("gigabyte:init", "GigabyteIt5711",
                 "direct-mode setup refused - the frame will be re-sent on the next call");
-            return;
-        }
-        bool anyStatic = false;
+        bool landed = true, anyStatic = false;
         for (int z = 0; z < ZoneDefs.Length; z++)
             if (ZoneDefs[z].Kind != ZoneKind.Fan && Intersects(z))
-                anyStatic |= UpdateZone(z);
+            {
+                landed &= UpdateZone(z, out bool needsApply);
+                anyStatic |= needsApply;
+            }
         if ((anyStatic || _applyPending) && !ApplyEffect())
+        {
+            // The effect registers hold the new color but nothing on the
+            // board shows it until the apply lands, so this is a refusal of
+            // the whole write, not a detail.
+            landed = false;
             Log.Occasional("gigabyte:apply", "GigabyteIt5711",
                 "apply packet refused - static zones will be committed on the next call");
+        }
         for (int z = 0; z < ZoneDefs.Length; z++)
             if (ZoneDefs[z].Kind == ZoneKind.Fan && Intersects(z))
-                UpdateZone(z);
+                landed &= UpdateZone(z, out _);
+        return landed;
 
         bool Intersects(int z) => _zoneOffset[z] < end && _zoneOffset[z] + ZoneDefs[z].Count > start;
     }
@@ -414,12 +441,19 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
     readonly Rgb[]?[] _fanLast = new Rgb[]?[5];
     readonly bool[] _fanValid = new bool[5];
 
-    /// <summary>Repaint zone z from the shadow frame. Returns true when a
-    /// static zone's effect packet landed (so the frame needs an apply); a fan
-    /// zone never needs one. Dedup caches are committed only after the board
-    /// accepted the packets.</summary>
-    bool UpdateZone(int z)
+    /// <summary>Repaint zone z from the shadow frame. Returns whether the zone
+    /// is now showing the shadow - accepted, or deduped because it already
+    /// was. <paramref name="needsApply"/> comes back true when a static zone's
+    /// effect packet landed and therefore still needs the commit; a fan zone
+    /// never needs one.
+    ///
+    /// The two answers used to be one bool meaning "needs an apply", which is
+    /// false both when a zone was already correct and when its packet was
+    /// refused - so nothing above could tell those apart. Dedup caches are
+    /// still committed only after the board accepted the packets.</summary>
+    bool UpdateZone(int z, out bool needsApply)
     {
+        needsApply = false;
         var def = ZoneDefs[z];
         int off = _zoneOffset[z];
         if (def.Kind == ZoneKind.Fan)
@@ -430,31 +464,26 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
                 bool same = true;
                 for (int i = 0; i < def.Count; i++)
                     if (last[i] != _shadow[off + i]) { same = false; break; }
-                if (same) return false;
+                if (same) return true;   // already showing it: a skip is a success
             }
             // Earlier chunks can land before a later report fails or throws.
             // The old frame then no longer describes the hardware, even if
-            // the next request returns to exactly that colour.
+            // the next request returns to exactly that color.
             _fanValid[def.Id] = false;
             if (!StreamHeaderColors(def.Id, _shadow, off, def.Count, def.Order))
-            {
-                Log.Occasional($"gigabyte:stream:{def.Id}", "GigabyteIt5711",
+                return WritePolicy.Refused($"gigabyte:stream:{def.Id}", "GigabyteIt5711",
                     $"header {def.Id} stream refused - will be re-sent on the next call");
-                return false;
-            }
             Array.Copy(_shadow, off, last, 0, def.Count);
             _fanValid[def.Id] = true;
-            return false;
+            return true;
         }
         var c = _shadow[off];
-        if (_lastStatic[def.Id] == c) return false;
+        if (_lastStatic[def.Id] == c) return true;   // already showing it
         if (!SendZoneEffect(def.Id, c))
-        {
-            Log.Occasional($"gigabyte:static:{def.Id}", "GigabyteIt5711",
+            return WritePolicy.Refused($"gigabyte:static:{def.Id}", "GigabyteIt5711",
                 $"effect {def.Id} packet refused - will be re-sent on the next call");
-            return false;
-        }
         _lastStatic[def.Id] = c;
+        needsApply = true;
         return true;
     }
 
@@ -473,7 +502,7 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
         }
     }
 
-    /// <summary>The static-colour effect packet, filled into a reused buffer.
+    /// <summary>The static-color effect packet, filled into a reused buffer.
     /// One builder so the hardware-persistence path and the per-frame static
     /// path cannot drift apart: they are the same bytes, addressed by effect
     /// index.</summary>
@@ -516,36 +545,45 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
     /// be a promise this driver cannot keep.</summary>
     public HardwareExitCaps ExitCaps => HardwareExitCaps.Static;
     public IReadOnlyList<string> HardwareEffects => Array.Empty<string>();
-    public void SetHardwareEffect(string name, Rgb? color) { }
-    public void ReturnToHardware() { }
+    // Neither is offered by ExitCaps, so HardwareExit never reaches them; the
+    // honest answer to "did anything reach the board" is no.
+    public bool SetHardwareEffect(string name, Rgb? color) => false;
+    public bool ReturnToHardware() => false;
 
-    /// <summary>Leave every output on one colour with no host driving it.
+    /// <summary>Leave every output on one color with no host driving it.
     ///
     /// The fan headers are the interesting half: while we stream they are in
     /// direct mode with their onboard effects disabled, and direct mode stops
     /// the moment the process does. So they are switched back to the firmware's
     /// own static effect (each header has an effect index of its own) and the
-    /// disable mask is cleared, which is what makes the colour survive.</summary>
-    public void SetHardwareStatic(Rgb color)
+    /// disable mask is cleared, which is what makes the color survive.</summary>
+    public bool SetHardwareStatic(Rgb color)
     {
         lock (_writeLock)
         {
+            // Every step is attempted even after a refusal - a board left with
+            // some headers handed back and others still in direct mode is the
+            // worst of the three states - but the verdict is the AND of all of
+            // them, so an exit that must land sends the whole sequence again
+            // rather than believing a partial handover.
+            bool ok = true;
             foreach (var def in ZoneDefs)
             {
                 // A streamed header is addressed by its effect index here, not
                 // by the header number it uses in direct mode.
                 int effectIdx = def.Kind == ZoneKind.Fan ? HeaderEffectIdx[def.Id] : def.Id;
-                SendZoneEffect(effectIdx, color, null);
+                ok &= SendZoneEffect(effectIdx, color, null);
             }
             _effectDisabled = 0;
-            Cc(0x32, 0x00);          // hand the headers back to the effect engine
-            ApplyEffect();
+            ok &= Cc(0x32, 0x00);    // hand the headers back to the effect engine
+            ok &= ApplyEffect();
 
             // The next launch must re-establish direct mode and repaint from
             // scratch: both caches now describe a board state we just replaced.
             _directInit = false;
             Array.Clear(_lastStatic);
             Array.Clear(_fanValid);
+            return ok;
         }
     }
 
@@ -602,7 +640,7 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
     /// <summary>After a diagnostic write the dedup caches no longer describe
     /// the hardware: drop them so the next SetColors/SetZone repaints the
     /// header instead of deduping the frame away (a Test then Cancel left the
-    /// ring white until the colour changed or a rescan), and force
+    /// ring white until the color changed or a rescan), and force
     /// EnsureDirectMode to re-send the ZoneDefs counts and effect mask.</summary>
     void InvalidateHeader(int header)
     {

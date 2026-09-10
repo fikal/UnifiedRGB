@@ -24,7 +24,7 @@ static class EngineLightingSuite
     public static void Run(Harness t)
     {
         // Every static push scales by master brightness on the way out; the
-        // expectations below compare raw colours, so pin it for the duration
+        // expectations below compare raw colors, so pin it for the duration
         // and hand back whatever the rest of the harness had.
         double savedBrightness = Master.Brightness;
         Master.Brightness = 1.0;
@@ -229,7 +229,7 @@ static class EngineLightingSuite
         int _full, _zone;
         public int FullWrites => Volatile.Read(ref _full);
         public int ZoneWrites => Volatile.Read(ref _zone);
-        public void SetColors(IReadOnlyList<Rgb> colors)
+        public bool SetColors(IReadOnlyList<Rgb> colors)
         {
             lock (Lock)
             {
@@ -237,8 +237,9 @@ static class EngineLightingSuite
                 for (int i = 0; i < colors.Count && i < _shown.Length; i++) _shown[i] = colors[i];
             }
             Interlocked.Increment(ref _full);
+            return true;   // canned success: this fake never refuses a write
         }
-        public void SetZone(int offset, IReadOnlyList<Rgb> colors)
+        public bool SetZone(int offset, IReadOnlyList<Rgb> colors)
         {
             lock (Lock)
             {
@@ -246,6 +247,7 @@ static class EngineLightingSuite
                 for (int i = 0; i < colors.Count && offset + i < _shown.Length; i++) _shown[offset + i] = colors[i];
             }
             Interlocked.Increment(ref _zone);
+            return true;
         }
         public void Dispose() { }
     }
@@ -268,7 +270,7 @@ static class EngineLightingSuite
         int _calls;
         public int WriteCount { get { lock (_writes) return _writes.Count; } }
         public Rgb[]? Last { get { lock (_writes) return _writes.Count == 0 ? null : _writes[^1]; } }
-        public void SetColors(IReadOnlyList<Rgb> colors)
+        public bool SetColors(IReadOnlyList<Rgb> colors)
         {
             if (Interlocked.Increment(ref _calls) == 1)
             {
@@ -276,11 +278,12 @@ static class EngineLightingSuite
                 Release.Wait(5000);   // bounded: a broken gate must fail the test, not hang the harness
             }
             lock (_writes) _writes.Add(colors.ToArray());
+            return true;   // canned success: slow, but never refused
         }
         public void Dispose() { }
     }
 
-    /// <summary>Renders a different colour every call, so the engine's
+    /// <summary>Renders a different color every call, so the engine's
     /// write-boundary dedup never engages and each frame is a write.</summary>
     sealed class ChangingEffect : IEffect
     {

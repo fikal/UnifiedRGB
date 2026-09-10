@@ -189,11 +189,24 @@ public sealed class LianBakeService
         return false;
     }
 
-    /// <summary>Identity of the inputs that affect every baked frame.</summary>
-    internal static string BakeSignature(IEnumerable<EffectEngine.Channel> channels, IReadOnlyList<Rgb> baseFrame)
+    /// <summary>Identity of the inputs that affect every baked frame.
+    ///
+    /// <paramref name="device"/> is optional only because a caller comparing two
+    /// signatures against each other does not need it; the real bake always
+    /// passes it. It is here for the same reason master brightness is: the
+    /// baked frames are the finished write, so a per-device calibration trim
+    /// changes every one of them. Without it in the key, trimming the fans
+    /// would leave them replaying an animation baked from the OLD trim while
+    /// every streamed device on the desk already showed the new one, and the
+    /// user would conclude the sliders do not work on the fans. The
+    /// fingerprint covers this device's ZONE trims as well as its own, so
+    /// trimming one fan header on its own stales the bake just the same.</summary>
+    internal static string BakeSignature(IEnumerable<EffectEngine.Channel> channels, IReadOnlyList<Rgb> baseFrame,
+                                         string device = "")
     {
         var key = new System.Text.StringBuilder();
         key.Append(FormattableString.Invariant($"brightness:{Master.Brightness:R}|"));
+        key.Append("cal:").Append(Calibration.Fingerprint(device)).Append('|');
         foreach (var c in channels.OrderBy(c => c.Offset))
         {
             key.Append(FormattableString.Invariant($"{c.Offset}:{c.Count}:{c.Effect.Name}:{c.Speed:R}:{c.BaseColor}:{c.Effect.BakeKey}:"));
@@ -229,7 +242,7 @@ public sealed class LianBakeService
         // re-requested a bake, this check called it unchanged, and the fans
         // kept the old animation while the preview showed the new one.
         var baseFrame = (Rgb[])_lighting.FrameFor(dev).Clone();
-        string sig = BakeSignature(channels, baseFrame);
+        string sig = BakeSignature(channels, baseFrame, dev.Name);
         if (dev.SuppressStreaming && _lastSig.TryGetValue(dev, out var prev) && prev == sig) return;
         _lastSig[dev] = sig;
         if (!retry) _retried.Remove(dev);
@@ -255,12 +268,14 @@ public sealed class LianBakeService
         // on a WORKER — 28k+ LED evaluations per device was a visible dispatcher
         // hitch. A generation stamp makes a superseded bake's upload a no-op
         // (a slower older bake can otherwise finish after a newer one).
-        // The statics are stored at full range and scaled at the write boundary
-        // everywhere else (PushFrame, the engine's base snapshot); the baked
-        // frames ARE the write, so scale them here too - the channel LEDs below
-        // are scaled and an unscaled base left any LED outside the effect's
-        // range at full brightness under a dimmed master.
-        Master.Scale(baseFrame);
+        // The statics are stored at full range and finished at the write
+        // boundary everywhere else (PushFrame, the engine's base snapshot); the
+        // baked frames ARE the write, so finish them here too - the channel
+        // LEDs below are finished and an untransformed base left any LED
+        // outside the effect's range at full brightness and untrimmed under a
+        // dimmed, calibrated master. baseFrame is already a clone, so this
+        // still never touches stored state.
+        Master.Finish(dev, baseFrame);
         int myGen = _gen.AddOrUpdate(dev, 1, (_, g) => g + 1);
         Subscribe(dev, myGen);
         // Bake from the clock's current phase so the fans' frame 0 is the same
@@ -287,7 +302,13 @@ public sealed class LianBakeService
                         var buf = bufs[c];
                         if (engine.RenderChannelAt(ch, buf, time))
                         {
-                            Master.Scale(buf);
+                            // Each slice is finished exactly once, over a base
+                            // that was already finished above - the same
+                            // one-transform-per-pixel rule the streaming
+                            // compose path follows.
+                            // The channel's slice, so the trim is told it
+                            // starts at device LED ch.Offset.
+                            Master.Finish(dev, buf, ch.Offset);
                             for (int i = 0; i < ch.Count && ch.Offset + i < frame.Length; i++)
                                 frame[ch.Offset + i] = buf[i];
                         }

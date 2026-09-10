@@ -73,7 +73,7 @@
             <TextBlock x:Name="AddHint" Opacity="0.5" FontSize="11" Margin="2,8,0,0"
                        Text="Pick a running app (or Browse to an .exe), choose a profile, hit Add rule."/>
 
-            <TextBlock Text="{Binding AutomationStatus}" Foreground="#FF7FB4FF" FontSize="12" Margin="0,14,0,0" TextWrapping="Wrap"/>
+            <TextBlock Text="{Binding AppRuleStatus}" Foreground="#FF7FB4FF" FontSize="12" Margin="0,14,0,0" TextWrapping="Wrap"/>
         </StackPanel>
     </Border>
 </Window>

@@ -44,7 +44,7 @@ public static class OpenRgbProtocol
     // zone_type.
     public const int ZoneSingle = 0, ZoneLinear = 1;
 
-    // Mode flags and colour modes.
+    // Mode flags and color modes.
     public const uint ModeFlagPerLedColor = 1 << 5;
     public const int ModeColorsPerLed = 1;
 
@@ -63,7 +63,7 @@ public static class OpenRgbProtocol
         _ => TypeUnknown,
     };
 
-    /// <summary>OpenRGB packs a colour as 0x00BBGGRR.</summary>
+    /// <summary>OpenRGB packs a color as 0x00BBGGRR.</summary>
     public static uint ToWire(Rgb c) => (uint)(c.R | (c.G << 8) | (c.B << 16));
 
     public static Rgb FromWire(uint v) => new((byte)(v & 0xFF), (byte)((v >> 8) & 0xFF), (byte)((v >> 16) & 0xFF));
@@ -94,8 +94,8 @@ public static class OpenRgbProtocol
     /// <summary>Serialize one device as OpenRGB controller data: the exact
     /// inverse of OpenRgbClient.ParseDevice, which is how the tests check it.
     ///
-    /// One mode, "Direct", flagged per-LED colour: everything this app exposes
-    /// is a stream of colours, and advertising modes we cannot actually switch
+    /// One mode, "Direct", flagged per-LED color: everything this app exposes
+    /// is a stream of colors, and advertising modes we cannot actually switch
     /// to would just be a dropdown of dead entries in someone's client.
     ///
     /// Zones are SINGLE or LINEAR. No matrix: a matrix map is a promise about
@@ -126,7 +126,7 @@ public static class OpenRgbProtocol
         Add32(body, 0);                                     // speed
         Add32(body, 0);                                     // direction
         Add32(body, ModeColorsPerLed);                      // color_mode
-        Add16(body, 0);                                     // no mode colours
+        Add16(body, 0);                                     // no mode colors
 
         var zones = ZonesOf(device);
         Add16(body, zones.Count);
@@ -141,7 +141,7 @@ public static class OpenRgbProtocol
         }
 
         // LEDs. The count here is what a client reports as the device's LED
-        // count, so it has to match the colour array exactly.
+        // count, so it has to match the color array exactly.
         int leds = device.LedCount;
         Add16(body, leds);
         foreach (var z in zones)

@@ -89,7 +89,7 @@
                         Margin="8,0,0,0" Click="AddProfile_Click"/>
             </StackPanel>
 
-            <TextBlock Text="{Binding AutomationStatus}" Foreground="#FF7FB4FF" FontSize="12" Margin="0,14,0,0" TextWrapping="Wrap"/>
+            <TextBlock Text="{Binding ScheduleStatus}" Foreground="#FF7FB4FF" FontSize="12" Margin="0,14,0,0" TextWrapping="Wrap"/>
         </StackPanel>
     </Border>
 </Window>

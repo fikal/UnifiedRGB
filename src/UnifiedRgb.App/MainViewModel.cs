@@ -38,6 +38,13 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     // the partials' engine/applier calls readable.
     readonly Services.LightingController _lighting = new();
 
+    /// <summary>The write path, for the few windows that drive the hardware
+    /// themselves rather than through a profile. The color-calibration screen
+    /// is the case: it lights every device with the same reference patch so a
+    /// mismatch is visible while it is being trimmed, which is a write nothing
+    /// in the view model asked for and nothing should restore afterwards.</summary>
+    public Services.LightingController Lighting => _lighting;
+
     /// <summary>Charge for wireless gear. Idle unless something wireless is
     /// attached; see BatteryMonitor.</summary>
     readonly Services.BatteryMonitor _battery;
@@ -55,6 +62,13 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     Rgb[] FrameFor(IRgbDevice d) => _lighting.FrameFor(d);
     Rgb[] ComposedFrame(IRgbDevice dev) => _lighting.ComposedFrame(dev);
     readonly Services.LianBakeService _bake;
+
+    /// <summary>Hears a replug and a wake and puts the lighting back.
+    ///
+    /// Nullable and assigned LAST, because the constructor's own Rescan runs
+    /// before it exists and Rescan pokes it: a device found during startup is
+    /// not something to recover from.</summary>
+    Services.DeviceWatchdog? _watchdog;
 
     /*-----------------------------------------------------*\
     | Per-target effect state: every device/zone remembers  |
@@ -453,11 +467,11 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             var fx = CurrentFx();
             RippleOf(fx).Color = value;
-            // Solid means "the wheel colour", so make that true at once. Under
-            // Gradient the wheel was not the ripple's colour at all - it was
+            // Solid means "the wheel color", so make that true at once. Under
+            // Gradient the wheel was not the ripple's color at all - it was
             // mirroring the static frame, usually all black - and switching
             // used to leave it there while the keys rippled in the stored
-            // tint: two colours on screen, neither explained. A wheel the user
+            // tint: two colors on screen, neither explained. A wheel the user
             // has actually set wins; a black one takes the ripple's tint
             // rather than blanking the effect.
             if (value == PatternColor.Solid && fx.Channel is { } ch && Current != Rgb.Black)
@@ -830,10 +844,17 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
 
     /// <summary>Re-push every device's current static frame (after a
     /// brightness change; animated zones get overwritten next engine frame).</summary>
-    void ReapplyAllStatic()
+    public void RefreshCalibrationLighting()
+    {
+        if (LightsSuppressed) return;
+        ReapplyAllStatic(respectOwnership: true);
+    }
+
+    void ReapplyAllStatic(bool respectOwnership = false)
     {
         foreach (var d in Devices)
         {
+            if (respectOwnership && _lighting.IsClaimed(d)) continue;
             // The Lian Li handles brightness via re-baking (a direct SetColors
             // would interrupt a playing hardware animation). Only trust the flag
             // while a channel is actually running: a static "All devices" leaves
@@ -1121,7 +1142,11 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     public ICommand DeleteProfileCommand { get; }
 
 
-    public MainViewModel()
+    public MainViewModel() : this(startServices: true) { }
+
+    // Tests exercise real lighting state with fake devices without opening
+    // hardware, starting servers, or launching recovery and update workers.
+    internal MainViewModel(bool startServices)
     {
         _bake = new Services.LianBakeService(_lighting, () => Devices.OfType<LianLiWireless>());
         _battery = new Services.BatteryMonitor(_lighting.Applier, () => Devices, RefreshBatterySubtitles);
@@ -1252,6 +1277,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         foreach (var r in _store.Settings.SensorRules ?? new()) SensorRules.Add(r);
         foreach (var r in _store.Settings.Schedules ?? new()) Schedules.Add(r);
         Lcd.Attached += () => { BuildLeftItems(); OnChanged(nameof(ShowLcdPanel)); };
+        if (!startServices) { _initializing = false; return; }
         Lcd.Start();
         UnifiedRgb.Core.Effects.ChromaFeed.Start();      // DLL-shim pipe (Wallpaper Engine)
         UnifiedRgb.Core.Net.ChromaRestServer.Start();    // Chroma REST API :54235 (CS2 and modern games)
@@ -1272,6 +1298,28 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
 
         CheckForUpdate();
         if (_store.Settings.UseOpenRgb) StartOpenRgbBridge();
+
+        /*-------------------------------------------------*\
+        | Automatic recovery. Started last, once there is a  |
+        | device list to recover ONTO: a watchdog armed      |
+        | before the first detect would treat startup itself |
+        | as an arrival burst and rescan on top of the scan  |
+        | that was already running.                          |
+        |                                                    |
+        | Costs nothing while nothing happens - both         |
+        | triggers are push, and the debounce timer only     |
+        | runs between an event and the rescan it causes.    |
+        \*-------------------------------------------------*/
+        HookDeviceHealth();
+        RefreshDeviceHealth();
+        _watchdog = new Services.DeviceWatchdog(RecoverDevices, () => new UnifiedRgb.Core.RecoveryConditions(
+            // An SDK client holding a device: a recovery rescan would drop
+            // every claim at once, so the policy waits for it instead.
+            SdkClientHolds: Devices.Any(d => _lighting.IsClaimed(d)),
+            // A scheduled dark window or a locked session. We still redetect;
+            // we just do not turn anything on. See RecoverDevices.
+            LightsSuppressed: LightsSuppressed));
+        _watchdog.Start();
         Lcd.InitScenes();
         // Every profile-name list in the UI is computed from Profiles (Show tab
         // lights dropdowns, app-rule pickers); without this they stay frozen at
@@ -1301,7 +1349,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
 
     /// <param name="fromBrightness">The brightness slider is an explicit choice
     /// about level, so it is never capped. Every other path (wheel, hex, R/G/B,
-    /// swatches) is picking a colour, and gets the white guard.</param>
+    /// swatches) is picking a color, and gets the white guard.</param>
     void SetColor(Rgb c, bool fromBrightness = false)
     {
         if (!fromBrightness) c = SoftenWhite(c);
@@ -1570,12 +1618,79 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         MarkDirty();
     }
 
+    /*-----------------------------------------------------*\
+    | Automatic recovery: what actually happens when the     |
+    | watchdog decides it is time.                           |
+    |                                                        |
+    | Recovery is Rescan and nothing more, on purpose.       |
+    | Rescan already disposes every device, redetects, puts   |
+    | the static frames back by name and restarts the        |
+    | running effects from the same snapshot profiles use.   |
+    | A second restore path written next to it would be a    |
+    | second place for "my lighting came back almost right"  |
+    | to live, and that bug is worse than the dark device.   |
+    |                                                        |
+    | THREE THINGS IT DELIBERATELY DOES NOT DO.              |
+    |                                                        |
+    | 1. It does not stomp an SDK client. A rescan drops     |
+    |    every claim (ResetExternal), so recovering while a  |
+    |    client is driving the rig would yank the lighting   |
+    |    out from under it mid-scene. The policy defers for  |
+    |    up to about a minute waiting for the client to let  |
+    |    go, and only then goes ahead - a permanently dark   |
+    |    device is worse than one interrupted client frame.  |
+    |                                                        |
+    | 2. It does not clear an automation override. Rescan    |
+    |    restores whatever is CURRENTLY applied, which for   |
+    |    an active rule is that rule's lighting, and it does |
+    |    not raise LightingApplied - the event whose whole   |
+    |    job is to tell the automation the user has taken    |
+    |    over. So the override survives untouched, which is  |
+    |    the point: waking the machine is not the user       |
+    |    changing their mind.                                |
+    |                                                        |
+    | 3. It does not turn the lights on during a scheduled   |
+    |    dark window or a locked session. This is the one    |
+    |    that needs code rather than luck: LightsOff blacks  |
+    |    the hardware WITHOUT touching the stored frames, so |
+    |    Rescan's restore would faithfully repaint the       |
+    |    user's colors at 3 AM. The suppression is          |
+    |    therefore re-asserted immediately afterwards.       |
+    \*-----------------------------------------------------*/
+    void RecoverDevices(UnifiedRgb.Core.RecoveryPlan plan)
+    {
+        int before = Devices.Count;
+        Log.Info("watchdog", $"recovering after {plan.Reason} ({plan.CollapsedEvents} event(s) collapsed into one rescan)");
+        Rescan();
+
+        if (!plan.Relight)
+        {
+            // Redetect, then dark again. Doing it in this order rather than
+            // skipping the rescan means the hardware is open, known and ready
+            // the moment the window ends, instead of the user waking up to a
+            // device the app never noticed had come back.
+            LightsOff();
+            Log.Info("watchdog", "lights stay off: the automation is deliberately keeping them off");
+        }
+
+        // One plain sentence in the history the user can actually read. The
+        // log line above is for a support bundle; this is for the person
+        // asking why their lights blinked while they were making coffee.
+        UnifiedRgb.Core.Automation.ActivityLog.Note(UnifiedRgb.Core.Automation.ActivityKind.BackToBase,
+            UnifiedRgb.Core.RecoveryPolicy.Sentence(plan.Reason, Devices.Count, plan.Relight));
+        if (Devices.Count != before)
+            Log.Info("watchdog", $"device count {before} -> {Devices.Count}");
+    }
+
+    readonly Services.RecoveryLightingState _recoveryLighting = new();
+
     void Rescan()
     {
         // Carry the current lighting across the rescan: static frames by device
         // name, and effect assignments via the same snapshot profiles use.
-        var savedEffects = CaptureEffects();
-        var savedFrames = Devices.ToDictionary(d => d.Name, d => (Rgb[])FrameFor(d).Clone());
+        _recoveryLighting.Remember(Devices, FrameFor, CaptureEffects(), replaceEffects: !LightsSuppressed);
+        var savedEffects = _recoveryLighting.Effects;
+        var savedFrames = _recoveryLighting.Frames;
 
         // The SDK server goes first. StopAndDrain below is the guard against
         // writing to a handle that is about to close, and a socket thread posts
@@ -1609,16 +1724,31 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
 
         // Repaint statics on the fresh device instances.
         foreach (var d in Devices)
-            if (savedFrames.TryGetValue(d.Name, out var old)) RestoreFrame(d, old);
+            if (savedFrames.TryGetValue(d.Name, out var old))
+            {
+                if (LightsSuppressed) Array.Copy(old, FrameFor(d), Math.Min(old.Length, d.LedCount));
+                else RestoreFrame(d, old);
+            }
 
         RefreshBlockedDevices();                               // what this scan saw but could not use
+        // Health is keyed by device INSTANCE and every instance was just
+        // replaced, so the old entries are unreachable and would hold disposed
+        // handles alive for the life of the process. It also resets the story:
+        // what the previous handle was refusing says nothing about this one.
+        UnifiedRgb.Core.DeviceHealth.Shared.Reset();
+        _sdkHeld.Clear();                                      // the claims died with the instances
+        RefreshDeviceHealth();                                 // ...including the blocked-device rows
+        // Whatever was pending is now done. A user pressing Rescan while a
+        // replug debounce is running would otherwise get the whole teardown
+        // twice for one gesture.
+        _watchdog?.NoteRescanHappened();
         ApplyLianSpeed();                                      // carry the saved fan-speed calibration
         _battery.Rescan();                                     // charge, before the rows are built
         SyncSdkServer();                                       // SDK clients hold stale instances
         StartGsi();                                            // game state, if the user has it on
         SyncCanvas();                                          // a new device needs a place on the desk
         BuildLeftItems();                                      // devices + pump LCD row
-        RestoreEffects(savedEffects);
+        if (!LightsSuppressed) RestoreEffects(savedEffects);
         LandOnRunningLianTarget();
         SyncWheelToSelection();
     }
@@ -1657,6 +1787,10 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // so the next launch re-applies them. A slider value still on its
         // debounce is dropped here (Cooling.Stop below would flush it AFTER
         // the handback).
+        // Before anything else: a recovery that fired while the app was
+        // shutting down would rescan onto handles that are about to close.
+        _watchdog?.Dispose();
+        _watchdog = null;
         Cooling.DiscardPendingDuties();
         if (UnifiedRgb.Core.Sensors.SensorHub.AnyControlledFan)
             UnifiedRgb.Core.Sensors.SensorHub.RestoreAllFans("app exit", keepConfig: true);
@@ -1714,7 +1848,18 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             // finish before this lands, or its frame lands after ours.
             lock (EffectEngine.WriteGateFor(device))
             {
-                try { UnifiedRgb.Core.HardwareExit.Apply(device, behavior); }
+                try
+                {
+                    // A preview is terminal too: the user pressed "apply now"
+                    // and, unless an effect is running, nothing follows it to
+                    // correct a refusal. Apply already retries to a bounded
+                    // deadline; all this has to do is not swallow the verdict,
+                    // because a preview that silently did nothing is exactly
+                    // the report this whole change exists to answer.
+                    string? what = UnifiedRgb.Core.HardwareExit.Apply(device, behavior, out bool delivered);
+                    if (what != null && !delivered)
+                        UnifiedRgb.Core.Log.Warn("exit", $"{device.Name}: '{what}' was refused - the device kept its colors");
+                }
                 catch (Exception ex) { UnifiedRgb.Core.Log.Warn("exit", $"{device.Name}: {ex.Message}"); }
             }
         });
@@ -1740,14 +1885,29 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             {
                 for (int i = 0; i < 3; i++)
                 {
-                    lock (EffectEngine.WriteGateFor(device)) device.SetColors(white);
+                    // The verdicts feed device health like every other write.
+                    // A blink is a rare, deliberate, six-packet burst straight
+                    // at one device, which makes it an unusually clean signal:
+                    // if these are refused, that device really is not there.
+                    bool ok;
+                    lock (EffectEngine.WriteGateFor(device)) ok = device.SetColors(white);
+                    UnifiedRgb.Core.DeviceHealth.Shared.Report(device, ok);
                     Thread.Sleep(140);
-                    lock (EffectEngine.WriteGateFor(device)) device.SetColors(dark);
+                    lock (EffectEngine.WriteGateFor(device)) ok = device.SetColors(dark);
+                    UnifiedRgb.Core.DeviceHealth.Shared.Report(device, ok);
                     Thread.Sleep(140);
                 }
                 // Put back what it was showing. A running effect repaints on its
                 // next frame anyway; this is for a device sitting on a static.
-                lock (EffectEngine.WriteGateFor(device)) device.SetColors(restore);
+                // The restore is the last thing this job does and there is no
+                // frame behind it (a device sitting on a static has nothing to
+                // repaint it), so it is made to land rather than written once
+                // and hoped for: a refusal here leaves the device dark, which
+                // looks exactly like the blink broke it. Still under the gate,
+                // like the blink writes above - the retries are more attempts
+                // at the same write, not a licence to race an effect worker.
+                lock (EffectEngine.WriteGateFor(device))
+                    UnifiedRgb.Core.Devices.WritePolicy.MustLand(device, restore, "identify restore");
             }
             catch (Exception ex) { UnifiedRgb.Core.Log.Warn("identify", $"{device.Name}: {ex.Message}"); }
         });
@@ -1764,6 +1924,15 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         var configured = UnifiedRgb.Core.HardwareConfig.Load().ExitBehaviors;
         if (configured == null || configured.Count == 0) return;
 
+        // ONE deadline for the whole pass, shared out as each device is
+        // reached. Every command now retries until it lands, and per-device
+        // budgets would multiply: four wedged devices at the default budget
+        // each would overrun the 2000 ms window on their own and the join
+        // below would abandon the last of them mid-write. Spending the
+        // remaining time instead means an early device that needs three tries
+        // costs the later ones only what it actually used.
+        long deadline = Environment.TickCount64 + ExitBudgetMs;
+
         // On a worker, with the UI thread waiting on a deadline rather than on
         // the writes. Checking the clock BETWEEN devices only bounds how many
         // are started: one blocked write is unbounded, and an ENE write can
@@ -1778,11 +1947,23 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
                 if (!configured.TryGetValue(device.Name, out var behavior)) continue;
                 try
                 {
+                    // Whatever is left of the shared window, and never less
+                    // than zero: a budget of zero still gets one attempt, which
+                    // is what the old code gave every device.
+                    int budget = (int)Math.Clamp(deadline - Environment.TickCount64, 0, ExitBudgetMs);
                     // The drain above can time out with an effect worker still
                     // inside a write; the gate makes this the write that lands last.
                     string? what;
-                    lock (EffectEngine.WriteGateFor(device)) what = UnifiedRgb.Core.HardwareExit.Apply(device, behavior);
-                    if (what != null) UnifiedRgb.Core.Log.Info("exit", $"{device.Name}: {what}");
+                    bool delivered;
+                    lock (EffectEngine.WriteGateFor(device))
+                        what = UnifiedRgb.Core.HardwareExit.Apply(device, behavior, out delivered, budget);
+                    if (what == null) continue;
+                    // Said either way. "Left it on its exit color" and "tried
+                    // and could not" used to log identically, so a machine
+                    // found lit in the morning had a log line saying it had
+                    // been turned off.
+                    if (delivered) UnifiedRgb.Core.Log.Info("exit", $"{device.Name}: {what}");
+                    else UnifiedRgb.Core.Log.Warn("exit", $"{device.Name}: '{what}' did NOT reach the device - it keeps its last colors");
                 }
                 catch (Exception ex)
                 {
@@ -1793,9 +1974,18 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         { IsBackground = true, Name = "exit-behaviors" };
 
         worker.Start();
-        if (!worker.Join(2000))
+        // A little slack over the shared budget: the worker aims to be done by
+        // the deadline, and joining on exactly it would abandon a device that
+        // was on its last legitimate attempt.
+        if (!worker.Join(ExitBudgetMs + 250))
             UnifiedRgb.Core.Log.Warn("exit", "out of time: some devices keep their last colors");
     }
+
+    /// <summary>Total time every device's exit behaviour shares. This also
+    /// runs on the logoff path, where Windows gives the process a limited
+    /// window before it is killed, and a wedged SMBus write must not be what
+    /// costs the user their session.</summary>
+    const int ExitBudgetMs = 2000;
 
     public event PropertyChangedEventHandler? PropertyChanged;
     void OnChanged([CallerMemberName] string? n = null)

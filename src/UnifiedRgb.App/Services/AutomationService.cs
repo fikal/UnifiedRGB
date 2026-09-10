@@ -4,6 +4,9 @@ using Microsoft.Win32;
 using UnifiedRgb.Core;
 using UnifiedRgb.Core.Automation;
 using UnifiedRgb.Core.Sensors;
+// System.Diagnostics also defines an ActivityKind (distributed tracing), and
+// this file needs Stopwatch from that namespace, so name the one we mean.
+using ActivityKind = UnifiedRgb.Core.Automation.ActivityKind;
 
 namespace UnifiedRgb.App.Services;
 
@@ -79,15 +82,85 @@ public sealed class AutomationService : IDisposable
 
     bool _selfApplying;   // our own profile applies must not clear the return point
 
-    public AutomationService(MainViewModel vm)
+    /*--- Temporary pause. Per session and never persisted: see AutomationPause,
+          which owns the reasoning and the copy. The held mode and profile are
+          the lighting the pause froze, so a lock that happens mid-pause can be
+          undone exactly rather than approximately. ---*/
+    bool _paused;
+    AutomationMode _pauseHoldMode = AutomationMode.Base;
+    string? _pauseHoldProfile;
+    MainViewModel.LightState? _pauseLighting;
+    bool _resumePending;
+
+    // Edge detection for the fan failsafe. It fires on the sensor hub's own
+    // thread and is only visible as a flag, so the tick is where it becomes a
+    // sentence. Watched even while paused: it is a hardware event, not a
+    // lighting decision, and it is the single most alarming thing this app can
+    // do without being asked.
+    bool _failsafeSeen;
+
+    /// <summary>The recent-decisions history the UI shows. Exposed here purely
+    /// so the wiring is obvious from the service that writes most of it; it is
+    /// the one shared instance either way.</summary>
+    public static ActivityLog Activity => ActivityLog.Shared;
+
+    /// <summary>The live service, for the view model's pause binding.
+    ///
+    /// The window owns the instance in a private field and the view model has
+    /// no route to it, so the alternative was another hook property in the
+    /// style of WakeLightsHook. There is exactly one of these per process and
+    /// it lives for the whole session, so a plain reference says the same
+    /// thing with less ceremony. Null before the window is built and after
+    /// dispose, hence the nullable.</summary>
+    public static AutomationService? Current { get; private set; }
+
+    /// <summary>Stop rules changing the lighting until this is turned off
+    /// again. Deliberately temporary: it lives for the session only, so a
+    /// forgotten pause cannot quietly kill someone's schedules next week.
+    ///
+    /// Setting it ticks immediately rather than waiting up to two seconds for
+    /// the timer, because a pause button that takes a visible moment to do
+    /// anything reads as a broken pause button.</summary>
+    public bool Paused
+    {
+        get => _paused;
+        set
+        {
+            if (_paused == value) return;
+            _paused = value;
+            if (value)
+            {
+                // Freeze what is on now. Freeze() is what decides that "lights
+                // currently off" is the one state not worth freezing.
+                _pauseHoldMode = AutomationPause.Freeze(_mode);
+                _pauseHoldProfile = _pauseHoldMode == _mode ? _activeRuleProfile : null;
+                _pauseLighting = _mode is AutomationMode.Locked or AutomationMode.ScheduleOff
+                    ? _returnPoint : _vm.CaptureState();
+                ActivityLog.Note(ActivityKind.Paused, AutomationPause.Began);
+                Log.Info("auto", "automation paused by the user");
+            }
+            else
+            {
+                _resumePending = true;
+                ActivityLog.Note(ActivityKind.Paused, AutomationPause.Ended);
+                Log.Info("auto", "automation resumed by the user");
+            }
+            Tick();
+        }
+    }
+
+    public AutomationService(MainViewModel vm) : this(vm, monitor: true) { }
+
+    internal AutomationService(MainViewModel vm, bool monitor)
     {
         _vm = vm;
         _vm.WakeLightsHook = Wake;
         _vm.LightingApplied += OnUserLighting;
-        SystemEvents.SessionSwitch += OnSessionSwitch;
+        if (monitor) SystemEvents.SessionSwitch += OnSessionSwitch;
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         _timer.Tick += (_, _) => Tick();
-        _timer.Start();
+        if (monitor) _timer.Start();
+        Current = this;
     }
 
     /// <summary>The user (UI, hotkey, or a scene sequence) changed the
@@ -96,15 +169,27 @@ public sealed class AutomationService : IDisposable
     /// stomp it — the field bug: return-to-Base applied an old profile.</summary>
     void OnUserLighting()
     {
+        if (_paused && !_selfApplying)
+        {
+            _pauseLighting = _vm.CaptureState();
+            _pauseHoldMode = AutomationMode.Base;
+            _pauseHoldProfile = null;
+            _returnPoint = _pauseLighting;
+            return;
+        }
         if (_selfApplying || _mode == AutomationMode.Base) return;
         if (_mode == AutomationMode.ScheduleOff)
         {
             // Someone changing colors at 11 PM clearly wants lights.
             _scheduleOverride = true;
             Log.Info("auto", "user changed lighting during a scheduled dark window, staying awake until it ends");
+            ActivityLog.Note(ActivityKind.UserOverride,
+                "You lit things up during a scheduled dark window, so that schedule stays paused until the window ends.");
         }
         _returnPoint = null;
         Log.Info("auto", "lighting changed during an override, keeping it as the new baseline");
+        ActivityLog.Note(ActivityKind.UserOverride,
+            "You changed the lighting while a rule was running, so that is your baseline from now on.");
     }
 
     /// <summary>Wake lights button: leave night-off and restore what the user
@@ -127,6 +212,43 @@ public sealed class AutomationService : IDisposable
         try
         {
             var s = _vm.SettingsData;
+
+            // Before anything else, and regardless of the pause: the fans going
+            // back to automatic is the user's business whatever the lights are
+            // doing.
+            NoteFailsafe();
+
+            if (_paused)
+            {
+                // Nothing is gathered while paused: no schedule sweep, no
+                // foreground lookup, no sensor step. Held is a function of the
+                // frozen state and the lock alone, so a paused app is also the
+                // quietest the automation ever is.
+                var held = AutomationPause.Resolve(_pauseHoldMode, _pauseHoldProfile, _locked, s.LockLightsOff);
+                _vm.SetAutomationStatus(held.Status, held.Topic);
+                if (held.Mode == _mode && held.Profile == _activeRuleProfile) return;
+                if (held.Mode == AutomationMode.Locked)
+                {
+                    // Capture immediately before blackout, including hand edits
+                    // which do not raise the profile-applied event.
+                    if (_mode is not (AutomationMode.Locked or AutomationMode.ScheduleOff))
+                        _pauseLighting = _vm.CaptureState();
+                }
+                else if (_pauseLighting != null)
+                {
+                    _vm.NightLightsOff = false;
+                    _vm.LightsSuppressed = false;
+                    _selfApplying = true;
+                    try { _vm.RestoreState(_pauseLighting); }
+                    finally { _selfApplying = false; }
+                    _mode = held.Mode;
+                    _activeRuleProfile = held.Profile;
+                    return;
+                }
+                Transition(held.Mode, held.Profile, null);
+                return;
+            }
+
             var sched = EvaluateSchedules(s);
             string? proc = s.AppSwitchEnabled ? ForegroundProcessName() : null;
             var (sensor, unavailable) = StepSensorRules(s);
@@ -148,11 +270,59 @@ public sealed class AutomationService : IDisposable
                 SensorUnavailable = unavailable,
             });
 
-            _vm.AutomationStatus = decision.Status;
-            if (decision.Mode == _mode && decision.Profile == _activeRuleProfile) return;
-            Transition(decision.Mode, decision.Profile);
+            _vm.SetAutomationStatus(decision.Status, decision.Topic);
+            if (!_resumePending && decision.Mode == _mode && decision.Profile == _activeRuleProfile) return;
+            _resumePending = false;
+
+            // Only now, on an actual transition, is it worth asking what ELSE
+            // wanted the lights. Re-running the app match costs one substring
+            // sweep and buys the one thing the user cannot see today: which
+            // source outranked which. Doing it per tick would allocate nothing
+            // either, but it would say the same thing over and over.
+            if (s.AppSwitchEnabled)
+            {
+                string? alsoWanted = AutomationRule.Match(s.AutomationRules, proc);
+                if (alsoWanted != null && PrecedenceNote(decision.Mode, decision.Profile, alsoWanted, proc) is string note)
+                    ActivityLog.Note(ActivityKind.Precedence, note);
+            }
+
+            Transition(decision.Mode, decision.Profile, decision.Status);
         }
         catch (Exception ex) { Log.Occasional("automation", "auto", $"tick failed: {ex.Message}"); }
+    }
+
+    /// <summary>An app rule matched and lost. Precedence is completely
+    /// invisible in the UI today: the schedule simply wins and the app rule
+    /// looks broken, which is exactly the "complex setup is hard to
+    /// understand" complaint. Returns null when there is nothing worth saying
+    /// (the app rule won, or the session is locked, where the reason is not
+    /// exactly subtle).</summary>
+    static string? PrecedenceNote(AutomationMode mode, string? profile, string appProfile, string? proc)
+    {
+        string who = proc ?? "the foreground app";
+        return mode switch
+        {
+            AutomationMode.ScheduleOff =>
+                $"A scheduled lights off window won over your app rule for {who}, so profile '{appProfile}' is not being applied.",
+            AutomationMode.ScheduleProfile when profile != null && profile != appProfile =>
+                $"A schedule won over your app rule for {who}: profile '{profile}' is on instead of '{appProfile}'.",
+            AutomationMode.Sensor when profile != null && profile != appProfile =>
+                $"A sensor rule won over your app rule for {who}: profile '{profile}' is on instead of '{appProfile}'.",
+            _ => null,
+        };
+    }
+
+    /// <summary>Turn the fan failsafe flag into history the moment it changes.
+    /// Reading the flag touches nothing and never wakes the hub, so this is
+    /// free on the ticks where nothing has happened.</summary>
+    void NoteFailsafe()
+    {
+        bool tripped = SensorHub.FailsafeTripped;
+        if (tripped == _failsafeSeen) return;
+        _failsafeSeen = tripped;
+        ActivityLog.Note(ActivityKind.Failsafe, tripped
+            ? "The thermal failsafe fired: the CPU or GPU got too hot, so every fan went back to the board's own control. Your curves are kept."
+            : "The thermal failsafe was cleared by a new fan-control setting. Other fans may still be on automatic control.");
     }
 
     /// <summary>Which timed windows are open right now.
@@ -263,7 +433,16 @@ public sealed class AutomationService : IDisposable
         return (hit, hit == null ? unavailable : null);
     }
 
-    void Transition(AutomationMode next, string? profile)
+    /// <summary>Perform the switch, and say why in the activity history.
+    ///
+    /// <paramref name="status"/> is the line AutomationDecision.Resolve already
+    /// wrote for this decision. It is reused verbatim rather than re-worded,
+    /// because that copy is the one place the wording of "what the automation
+    /// is doing" is maintained, and a second set of nearly-identical sentences
+    /// would drift from it within a release. It is null when the transition did
+    /// not come from a decision (the pause holding a mode), and the fallbacks
+    /// below cover that.</summary>
+    void Transition(AutomationMode next, string? profile, string? status)
     {
         // Leaving Base: remember exactly what the user had, and SAY what that
         // was. "restored your lighting" on the way back could not be told apart
@@ -284,6 +463,11 @@ public sealed class AutomationService : IDisposable
             case AutomationMode.ScheduleOff:
                 _vm.LightsOff();
                 Log.Info("auto", next == AutomationMode.Locked ? "session locked, lights off" : "scheduled window, lights off");
+                ActivityLog.Note(ActivityKind.LightsOff, next == AutomationMode.Locked
+                    ? "Your session locked, so the lights went off. They come back when you sign in."
+                    // The scheduled case has a status that already names the
+                    // window's end time, which is the fact people actually want.
+                    : status ?? "A scheduled window turned the lights off.");
                 break;
             case AutomationMode.Sensor:
             case AutomationMode.ScheduleProfile:
@@ -291,16 +475,29 @@ public sealed class AutomationService : IDisposable
                 _vm.SetPumpLcdOn(true);   // unlocking straight into a rule must relight the LCD
                 if (profile == null) break;
                 if (_vm.ApplyProfileByName(profile))
+                {
                     Log.Info("auto", next switch
                     {
                         AutomationMode.Sensor => $"sensor rule fired, applied profile '{profile}'",
                         AutomationMode.ScheduleProfile => $"scheduled window, applied profile '{profile}'",
                         _ => $"foreground app rule matched, applied profile '{profile}'",
                     });
+                    // The status already says which rule and which profile, so
+                    // the entry's category ("Rule activated") is the only thing
+                    // this needs to add. The fallback is for the pause putting
+                    // a frozen rule back after an unlock, where there is no
+                    // fresh decision to quote.
+                    ActivityLog.Note(ActivityKind.RuleActivated,
+                        status ?? $"Back from the lock screen, profile '{profile}' is on again.");
+                }
                 // A rule naming a profile that no longer exists used to log
                 // nothing at all, so the lights not changing had no explanation.
                 else
+                {
                     Log.Warn("auto", $"a rule wanted profile '{profile}', which no longer exists");
+                    ActivityLog.Note(ActivityKind.RuleActivated,
+                        $"A rule asked for profile '{profile}', which no longer exists, so your lighting was left alone.");
+                }
                 break;
             case AutomationMode.Base:
                 // Relight the pump LCD FIRST, whichever branch below wins. Lock
@@ -316,14 +513,25 @@ public sealed class AutomationService : IDisposable
                 // the thing it was overriding with, and nothing appears to end.
                 string? startup = _vm.ReturnProfile;
 
+                // Why we are back at Base. Blaming the rules while automation
+                // is paused would send someone hunting through a rule list
+                // that was never involved.
+                string why = _paused ? "Automation is paused" : "No rule matches any more";
+
                 if (!string.IsNullOrWhiteSpace(startup) && _vm.ApplyProfileByName(startup))
                 {
                     Log.Info("auto", $"no rule matches, back to your startup profile '{startup}'");
+                    ActivityLog.Note(ActivityKind.BackToBase,
+                        $"{why}, so your startup profile '{startup}' is back on.");
                 }
                 else if (_returnPoint != null)
                 {
                     _vm.RestoreState(_returnPoint);
                     Log.Info("auto", $"no rule matches, restored {Describe(_returnPoint)}");
+                    // Naming what was restored is the whole point: "restored
+                    // your lighting" cannot be told apart from doing nothing.
+                    ActivityLog.Note(ActivityKind.BackToBase,
+                        $"{why}, so {Describe(_returnPoint)} is back on.");
                 }
                 // No return point (the user relit things mid-override): the LCD
                 // still has to come back - RestoreState was the only path that did it.
@@ -331,6 +539,8 @@ public sealed class AutomationService : IDisposable
                 {
                     _vm.SetPumpLcdOn(true);
                     Log.Info("auto", "no rule matches, keeping the lighting you set during it");
+                    ActivityLog.Note(ActivityKind.BackToBase,
+                        $"{why}, and you changed the lighting while a rule was running, so that is what you keep.");
                 }
                 break;
         }
@@ -410,6 +620,7 @@ public sealed class AutomationService : IDisposable
 
     public void Dispose()
     {
+        if (ReferenceEquals(Current, this)) Current = null;
         _timer.Stop();
         _vm.LightingApplied -= OnUserLighting;
         _vm.WakeLightsHook = null;   // was left dangling after dispose

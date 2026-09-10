@@ -83,6 +83,23 @@ public sealed class SceneStore
 
     public static SceneStore Load() => Normalize(ProfileStore.LoadJson<SceneStore>(Path, "scenes.json"));
 
+    /// <summary>Parse a store out of text that is NOT scenes.json - the copy
+    /// inside a setup bundle. Null when the text will not deserialize, so the
+    /// importer can refuse that bundle with a reason rather than quietly
+    /// report zero screens to import.
+    ///
+    /// Everything that comes back is Normalized, because the importer walks
+    /// the designs (rewriting background image paths onto this machine) and
+    /// must not be the first caller to meet a null Elements list.</summary>
+    public static SceneStore? TryParse(string json)
+    {
+        SceneStore? parsed;
+        try { parsed = JsonSerializer.Deserialize<SceneStore>(json); }
+        catch { return null; }
+        if (parsed is null) return null;   // the literal text `null` parses, and is just as useless
+        return Normalize(parsed);
+    }
+
     /// <summary>Make a deserialized store safe to walk.
     ///
     /// A property initializer only runs when the JSON leaves the property out.

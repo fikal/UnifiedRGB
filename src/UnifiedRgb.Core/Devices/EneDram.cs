@@ -20,15 +20,15 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
     const int CONFIG_LED_COUNT = 0x02;
     internal const ushort REG_DIRECT = 0x8020;
     // Onboard effect engine (OpenRGB's ENESMBusController, GPL-2.0 like this
-    // project): a mode register, and effect colours in a SEPARATE window from
-    // the direct-mode colours.
+    // project): a mode register, and effect colors in a SEPARATE window from
+    // the direct-mode colors.
     internal const ushort REG_MODE = 0x8021;
 
-    // The effect colour window is PAIRED with the direct one: a V1 controller
+    // The effect color window is PAIRED with the direct one: a V1 controller
     // has direct at 0x8000 and effects at 0x8010, 15 bytes each; a V2 has
     // direct at 0x8100 and effects at 0x8160, 30 bytes each. Writing V1's
-    // effect register on a V2 stick puts the colour in a bank the V2 effect
-    // engine does not read, so the mode switch works and the colour is
+    // effect register on a V2 stick puts the color in a bank the V2 effect
+    // engine does not read, so the mode switch works and the color is
     // whatever the firmware happened to have. DDR5 sticks are V2.
     internal const ushort REG_COLORS_EFFECT_V1 = 0x8010;
     internal const ushort REG_COLORS_EFFECT_V2 = 0x8160;
@@ -114,7 +114,7 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
     // Every ENE transaction is two bus operations: select the register, then
     // move the data. The select can fail on its own (mutex timeout, NAK), and
     // when it does the data operation still runs against WHATEVER REGISTER WAS
-    // SELECTED LAST - a colour block written after a failed select lands in a
+    // SELECTED LAST - a color block written after a failed select lands in a
     // mode or control register, and a read returns that register's stale
     // byte as if it were the one asked for. So every helper below
     // short-circuits on the select; only RegWrite used to.
@@ -251,11 +251,13 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
 
     /// <summary>Nothing to go back to: the stick has no saved profile, only
     /// whichever mode was last written to it.</summary>
-    public void ReturnToHardware() { }
+    // Nothing is sent, so nothing landed. ExitCaps does not offer it, so
+    // HardwareExit never asks.
+    public bool ReturnToHardware() => false;
 
-    public void SetHardwareStatic(Rgb color) => SetOnboardMode(MODE_STATIC, color);
+    public bool SetHardwareStatic(Rgb color) => SetOnboardMode(MODE_STATIC, color);
 
-    public void SetHardwareEffect(string name, Rgb? color) => SetOnboardMode(name switch
+    public bool SetHardwareEffect(string name, Rgb? color) => SetOnboardMode(name switch
     {
         "Breathing" => MODE_BREATHING,
         "Flashing" => MODE_FLASHING,
@@ -264,28 +266,36 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
         _ => MODE_STATIC,
     }, color ?? Rgb.White);
 
-    /// <summary>Hand the LEDs to the stick's own effect engine: colours first,
+    /// <summary>Hand the LEDs to the stick's own effect engine: colors first,
     /// then the mode, then direct mode OFF (which is what actually transfers
     /// control), then apply. Speed and direction are left at whatever the
     /// firmware has, rather than guessed at.</summary>
-    void SetOnboardMode(byte mode, Rgb color)
+    /// <summary>True only when every register of the handover landed. The
+    /// whole sequence is attempted even after a NAK - stopping half way would
+    /// leave the stick in direct mode with an effect color written and no
+    /// host driving it, which is darker than either end state - but the
+    /// verdict is the AND, so a must-land caller sends the sequence again
+    /// rather than believing a partial handover.</summary>
+    bool SetOnboardMode(byte mode, Rgb color)
     {
         lock (_writeLock)
         {
             Span<byte> triple = stackalloc byte[3];
             triple[0] = color.R; triple[1] = color.B; triple[2] = color.G;   // same order as direct
             int slots = Math.Min(_ledCount, EffectColorLeds(_effectReg));
+            bool ok = true;
             for (int i = 0; i < slots; i++)
-                RegWriteBlock((ushort)(_effectReg + i * 3), triple);
+                ok &= RegWriteBlock((ushort)(_effectReg + i * 3), triple);
 
-            RegWrite(_bus, _addr, REG_MODE, mode);
-            RegWrite(_bus, _addr, REG_DIRECT, 0x00);
-            RegWrite(_bus, _addr, REG_APPLY, 0x01);
+            ok &= RegWrite(_bus, _addr, REG_MODE, mode);
+            ok &= RegWrite(_bus, _addr, REG_DIRECT, 0x00);
+            ok &= RegWrite(_bus, _addr, REG_APPLY, 0x01);
 
             // The next launch has to re-enable direct mode and repaint: both of
             // these describe a stick state we have just replaced.
             _directOn = false;
             _last = null;
+            return ok;
         }
     }
 
@@ -324,21 +334,23 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
     \*-----------------------------------------------------*/
     readonly object _writeLock = new();
 
-    public void SetColors(IReadOnlyList<Rgb> colors)
+    /// <summary>Drop the cached frame so the next one is written even if it is
+    /// identical (the must-land path and any mode change).</summary>
+    public void InvalidateCache() { lock (_writeLock) _last = null; }
+
+    public bool SetColors(IReadOnlyList<Rgb> colors)
     {
         lock (_writeLock)
         {
-            if (_last != null && colors.Count == _last.Length)
-            {
-                bool same = true;
-                for (int i = 0; i < colors.Count; i++) if (_last[i] != colors[i]) { same = false; break; }
-                if (same) return;   // (index loop: SequenceEqual boxed two enumerators per frame)
-            }
+            // (index loop: SequenceEqual boxed two enumerators per frame). An
+            // identical frame is skipped and reported as a SUCCESS: the stick
+            // is already showing exactly what was asked for.
+            if (WritePolicy.Unchanged(_last, colors)) return true;
 
             if (!_directOn)
             {
                 // Latch only on success: a NAKed enable used to be recorded as
-                // done, leaving the stick on its onboard effect (colour writes
+                // done, leaving the stick on its onboard effect (color writes
                 // landing, nothing showing) until a rescan, with no log line.
                 bool w1 = RegWrite(_bus, _addr, REG_DIRECT, 0x01);
                 bool w2 = RegWrite(_bus, _addr, REG_APPLY, 0x01);
@@ -369,10 +381,10 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
             // `landed` is the verdict for the WHOLE frame, whichever path wrote
             // it: the frame is cached only when every chunk was accepted. The
             // fallback path used to discard its results, so a stick that NAKed
-            // the colour bytes still had the frame recorded in _last, and every
+            // the color bytes still had the frame recorded in _last, and every
             // identical frame after it - the engine's once-a-second keepalive
-            // included - was deduped away. The stick sat on stale colours until
-            // the colour changed or a rescan.
+            // included - was deduped away. The stick sat on stale colors until
+            // the color changed or a rescan.
             bool landed = false;
             if (_batchedBlocks)
             {
@@ -396,17 +408,18 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
                     if (!RegWriteBlock((ushort)(_directReg + off), buf.AsSpan(off, 3))) { landed = false; break; }
             }
             if (!landed)
-            {
-                Log.Occasional($"ene:{_addr:X2}:frame", "EneDram",
-                    $"colour write failed at 0x{_addr:X2} - the frame will be re-sent on the next call");
-                return;
-            }
+                return WritePolicy.Refused(ref _last, $"ene:{_addr:X2}:frame", "EneDram",
+                    $"color write failed at 0x{_addr:X2} - the frame will be re-sent on the next call");
 
-            // Don't dedup a frame written while direct mode is still off: the
-            // next call (engine keepalive or user apply) must repeat the enable.
-            if (!_directOn) return;
-            if (_last == null || _last.Length != colors.Count) _last = new Rgb[colors.Count];
-            for (int i = 0; i < colors.Count; i++) _last[i] = colors[i];
+            // Don't dedup a frame written while direct mode is still off, and
+            // do not call it delivered either: the color bytes were accepted
+            // but the stick is still running its onboard effect, so nothing of
+            // this frame is visible. The next call (engine keepalive or user
+            // apply) must repeat the enable, and a must-land caller must keep
+            // trying rather than stop at a write that changed nothing.
+            if (!_directOn) return false;
+            WritePolicy.Cache(ref _last, colors);
+            return true;
         }
     }
 

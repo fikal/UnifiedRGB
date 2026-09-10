@@ -654,11 +654,11 @@ round-trip with missing/unknown devices.
       shell cannot close it gracefully, so the exit path has never been watched
       on real hardware. Use Settings > When the app is closed > Apply now, then
       Exit from the tray, and check the rig before 1.1.0 ships.
-      Note on the ENE effect-colour register: BOTH the spec and my first
+      Note on the ENE effect-color register: BOTH the spec and my first
       correction were half right. It is PAIRED with the direct register per
       generation: V1 is 0x8010 (15 bytes, 5 LEDs, with REG_DIRECT/REG_MODE just
       past it) and V2 is 0x8160 (30 bytes, 10 LEDs). DDR5 sticks are V2, so
-      hardcoding the V1 value put the colour in a bank the V2 effect engine
+      hardcoding the V1 value put the color in a bank the V2 effect engine
       never reads. Caught by review, fixed, and both generations are pinned.
 - [x] 7. OpenRGB SDK server (+ control handoff)
       Verified against the live app: an external client listed all 7 devices with
@@ -695,5 +695,5 @@ round-trip with missing/unknown devices.
         - 6 hardware persistence: the app runs elevated, so an agent stopping
           it TERMINATES it and MainViewModel.Dispose never runs. The commands
           are checked against primary sources and the dispatch is tested, but
-          nobody has watched a rig hold a colour after the app closed. Settings
+          nobody has watched a rig hold a color after the app closed. Settings
           > When the app is closed > Apply now shows it without closing.

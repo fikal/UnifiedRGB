@@ -39,6 +39,163 @@ public sealed partial class MainViewModel
     }
 
     /*-----------------------------------------------------*\
+    | Device health: the UI-facing half of DeviceHealth.     |
+    |                                                        |
+    | Two sources, one list, because the user does not care  |
+    | which of them a problem came from. A device we HOLD     |
+    | reports through the write verdict (connected /          |
+    | retrying / not responding / controlled by another app); |
+    | hardware we could SEE but never open reports through    |
+    | DetectionNotes, whose reasons map onto exactly the same |
+    | words (BlockedDevice.Health).                           |
+    |                                                        |
+    | Rebuilt on a transition, never on a timer. A rig where  |
+    | everything works never rebuilds this at all, which is   |
+    | the point: the whole feature has to be free while it    |
+    | has nothing to say.                                     |
+    \*-----------------------------------------------------*/
+
+    /// <summary>One device and what the app can honestly say about it.</summary>
+    public sealed class DeviceHealthRow
+    {
+        public required string Name { get; init; }
+        public required UnifiedRgb.Core.DeviceHealthState State { get; init; }
+
+        /// <summary>"connected", "retrying", "not responding", "controlled by
+        /// another app" - the one place those words are produced is
+        /// DeviceHealth.Describe, so the badge, the log and a support bundle
+        /// cannot drift apart.</summary>
+        public required string StateText { get; init; }
+
+        /// <summary>The specific thing, when there is one.</summary>
+        public string? Detail { get; init; }
+
+        /// <summary>What would fix it, or null. A status with no next step is
+        /// just an accusation.</summary>
+        public string? Remedy { get; init; }
+
+        /// <summary>Worth a badge. Retrying is not: it clears itself on the
+        /// next frame, and a warning that vanishes before it can be read is
+        /// noise.</summary>
+        public bool IsProblem => UnifiedRgb.Core.DeviceHealth.IsWorthShowing(State);
+
+        public override string ToString()
+            => Detail == null ? $"{Name}: {StateText}" : $"{Name}: {StateText} ({Detail})";
+    }
+
+    /// <summary>Every device the app knows about, with its health. Rebuilt in
+    /// place on a real transition; bindable straight to an ItemsControl.</summary>
+    public ObservableCollection<DeviceHealthRow> DeviceHealthRows { get; } = new();
+
+    /// <summary>True when anything on the rig is not simply working. Drives a
+    /// single badge rather than a per-row one, because the common case is zero
+    /// problems and the second most common is exactly one.</summary>
+    public bool AnyDeviceUnhealthy => DeviceHealthRows.Any(r => r.IsProblem);
+
+    /// <summary>One line for the header, or empty when all is well.</summary>
+    public string DeviceHealthSummary
+    {
+        get
+        {
+            var bad = DeviceHealthRows.Where(r => r.IsProblem).ToList();
+            if (bad.Count == 0) return "";
+            if (bad.Count == 1) return $"{bad[0].Name}: {bad[0].StateText}";
+            return $"{bad.Count} devices need attention";
+        }
+    }
+
+    /// <summary>Health for one device, for a per-row badge in the device list.
+    /// Cheap: a dictionary probe and an uncontended lock.</summary>
+    public UnifiedRgb.Core.DeviceHealthState HealthOf(IRgbDevice d)
+        => UnifiedRgb.Core.DeviceHealth.Shared.StateOf(d);
+
+    /// <summary>The same, as the words the user reads.</summary>
+    public string HealthTextOf(IRgbDevice d)
+        => UnifiedRgb.Core.DeviceHealth.Describe(HealthOf(d));
+
+    /// <summary>Devices the SDK bridge has told us it took, as opposed to ones
+    /// it has actually painted yet.
+    ///
+    /// LightingController.IsClaimed only becomes true on a client's FIRST
+    /// frame, and BeginExternal calls StopEffectsOn before that frame arrives.
+    /// Asking IsClaimed alone would therefore raise the badge and drop it
+    /// again in the same breath, which is precisely the flapping the health
+    /// hysteresis exists to prevent - so the two are ORed. Cleared wholesale
+    /// in RestoreState, which is what the bridge calls when the last client
+    /// lets go and what a rescan calls when every claim dies at once.</summary>
+    readonly HashSet<IRgbDevice> _sdkHeld = new();
+
+    /// <summary>Set while a rebuild is already queued, so a burst of
+    /// transitions (a dongle pulled while six devices are streaming) costs one
+    /// dispatcher hop rather than six.</summary>
+    bool _healthRefreshQueued;
+
+    /// <summary>Subscribe once, at construction. The handler runs on whichever
+    /// thread wrote - an effect worker, an applier lane, an SDK socket - so
+    /// everything it touches has to get back to the UI first.</summary>
+    void HookDeviceHealth()
+    {
+        UnifiedRgb.Core.DeviceHealth.Shared.Changed += _ =>
+        {
+            if (_healthRefreshQueued) return;
+            _healthRefreshQueued = true;
+            _dispatcher.BeginInvoke(new Action(() =>
+            {
+                // Cleared AFTER the rebuild, not before: the rebuild itself
+                // re-asserts every device's claim state and can therefore
+                // raise transitions of its own, and clearing first would have
+                // each of those queue yet another rebuild.
+                try { RefreshDeviceHealth(); }
+                finally { _healthRefreshQueued = false; }
+            }));
+        };
+    }
+
+    /// <summary>Rebuild the rows from both sources. UI thread only.</summary>
+    void RefreshDeviceHealth()
+    {
+        // An SDK client holding a device IS "controlled by another app", and
+        // the bridge has no event to tell us: it tells us by calling
+        // StopEffectsOn and RestoreState, both of which land here. Re-asking
+        // every device whether it is still claimed is a handful of dictionary
+        // probes, and it means a stale claim cannot survive a rebuild.
+        foreach (var d in Devices)
+            UnifiedRgb.Core.DeviceHealth.Shared.SetHeldByOther(
+                d, _sdkHeld.Contains(d) || _lighting.IsClaimed(d), "an OpenRGB client");
+
+        DeviceHealthRows.Clear();
+        foreach (var d in Devices)
+        {
+            var state = UnifiedRgb.Core.DeviceHealth.Shared.StateOf(d);
+            DeviceHealthRows.Add(new DeviceHealthRow
+            {
+                Name = d.Name,
+                State = state,
+                StateText = UnifiedRgb.Core.DeviceHealth.Describe(state),
+                Detail = UnifiedRgb.Core.DeviceHealth.Shared.DetailOf(d),
+                Remedy = UnifiedRgb.Core.DeviceHealth.Remedy(state),
+            });
+        }
+
+        // Hardware the scan could see but never opened has no instance to key
+        // health by, so it comes from the detection channel instead - the same
+        // words, because BlockedDevice.Health maps those reasons onto this
+        // enum rather than a parallel one being invented beside it.
+        foreach (var b in BlockedDevices)
+            DeviceHealthRows.Add(new DeviceHealthRow
+            {
+                Name = b.What,
+                State = b.Health,
+                StateText = UnifiedRgb.Core.DeviceHealth.Describe(b.Health),
+                Detail = b.Detail,
+                Remedy = b.Remedy ?? UnifiedRgb.Core.DeviceHealth.Remedy(b.Health),
+            });
+
+        OnChanged(nameof(AnyDeviceUnhealthy));
+        OnChanged(nameof(DeviceHealthSummary));
+    }
+
+    /*-----------------------------------------------------*\
     | Automation primitives: capture the current lighting,   |
     | restore (frames + running effects) and lights-off.     |
     | Automation transitions ride these so ad-hoc unsaved    |
@@ -58,26 +215,45 @@ public sealed partial class MainViewModel
         public LcdDesignerViewModel.LcdSnapshot? Screen { get; init; }
     }
 
-    public LightState CaptureState() => new()
+    public LightState CaptureState()
     {
-        Frames = Devices.ToDictionary(d => d.Name, d => (Rgb[])FrameFor(d).Clone()),
-        Effects = CaptureEffects(),
-        ProfileName = SelectedProfile?.Name,
-        Dirty = _dirty,
-        Screen = Lcd.SnapshotDesign(),
-    };
+        _recoveryLighting.Remember(Devices, FrameFor, CaptureEffects(), replaceEffects: !LightsSuppressed);
+        return new()
+        {
+            Frames = _recoveryLighting.Frames.ToDictionary(p => p.Key, p => (Rgb[])p.Value.Clone()),
+            Effects = _recoveryLighting.Effects.ToList(),
+            ProfileName = SelectedProfile?.Name,
+            Dirty = _dirty,
+            Screen = Lcd.SnapshotDesign(),
+        };
+    }
 
     /// <summary>Stop our effects on one device, leaving every other device
     /// running. Used when an SDK client takes a device over: two writers on one
     /// lane would just fight.</summary>
-    public void StopEffectsOn(IRgbDevice device) => _engine.StopRange(device, 0, device.LedCount);
-
-    public void RestoreState(LightState s)
+    public void StopEffectsOn(IRgbDevice device)
     {
+        _engine.StopRange(device, 0, device.LedCount);
+        _sdkHeld.Add(device);
+        // The SDK bridge calls this and nothing else does, so it is the one
+        // hook the app has for "a client just took this device". Saying so
+        // here is what turns an invisible takeover into the "controlled by
+        // another app" badge, and it costs one dictionary probe.
+        UnifiedRgb.Core.DeviceHealth.Shared.SetHeldByOther(device, true, "an OpenRGB client");
+    }
+
+    public void RestoreState(LightState s, bool honorSuppression = false)
+    {
+        bool suppressed = honorSuppression && LightsSuppressed;
+        _recoveryLighting.Restore(s.Frames, s.Effects);
         _engine.StopAll();   // before the static writes (see LoadProfile)
         foreach (var d in Devices)
-            if (s.Frames.TryGetValue(d.Name, out var saved)) RestoreFrame(d, saved);
-        RestoreEffects(s.Effects);
+            if (s.Frames.TryGetValue(d.Name, out var saved))
+            {
+                if (suppressed) Array.Copy(saved, FrameFor(d), Math.Min(saved.Length, d.LedCount));
+                else RestoreFrame(d, saved);
+            }
+        if (!suppressed) RestoreEffects(s.Effects);
         // Restore the selection exactly - including "no profile selected" (an
         // app rule's profile used to stay selected over restored ad-hoc lighting).
         _selectedProfile = s.ProfileName is null ? null : Profiles.FirstOrDefault(p => p.Name == s.ProfileName);
@@ -86,9 +262,17 @@ public sealed partial class MainViewModel
         OnChanged(nameof(IsStartupProfile));   // direct field write bypasses the setter
         SyncWheelToSelection();
         // The screen goes back with the LEDs: the snapshot is the whole desk.
-        if (s.Screen != null) Lcd.RestoreDesign(s.Screen);
+        if (!suppressed && s.Screen != null) Lcd.RestoreDesign(s.Screen);
         // Wake the pump LCD back up (LightsOff blanked it during sleep/lock).
-        SetPumpLcdOn(true);
+        if (!suppressed) SetPumpLcdOn(true);
+        // A restore is what the SDK bridge does when the LAST client lets go
+        // (and what a rescan does when every claim dies at once), so it is
+        // also the moment a "controlled by another app" badge should clear.
+        // The automation calls this too, at the end of an override, and a
+        // client that is genuinely still attached will have painted a frame by
+        // then - so IsClaimed puts the badge straight back on the next rebuild.
+        _sdkHeld.Clear();
+        RefreshDeviceHealth();
     }
 
     /// <summary>Stop every effect and black every device — WITHOUT touching
@@ -457,9 +641,70 @@ public sealed partial class MainViewModel
         ? $"On. Effects render across all {Canvas.Items.Count} device(s) as one image."
         : "Off. Effects render per device, exactly as they always have.";
 
-    /// <summary>Give any newly detected device a place on the desk. Without
-    /// this, a device attached after the desk was arranged would have no
-    /// position, so a desk-wide effect would quietly leave it out.</summary>
+    /// <summary>Pick up a setup that was just imported over the top of us.
+    ///
+    /// This is not optional politeness. Everything the import wrote is also
+    /// held in memory here, and the next routine save (a slider, a profile, a
+    /// window move) would write the pre-import copy straight back over it. So
+    /// the rule is: reload immediately, in the same gesture as the import.
+    ///
+    /// Rebuild cached collections as well as settings pass-throughs, then refresh
+    /// the runtime output without taking over an SDK client or relighting a
+    /// suppressed setup.</summary>
+    public void ReloadAfterImport(UnifiedRgb.App.Services.ImportResult result)
+    {
+        if (!result.Ok) return;
+
+        if (result.ProfilesChanged || result.SettingsChanged)
+        {
+            _store.Reload();
+            Profiles.Clear();
+            foreach (var p in _store.Profiles) Profiles.Add(p);
+            // The selection is by reference, and every Profile object was just
+            // replaced, so re-find it by name or drop it rather than leaving a
+            // dangling one selected.
+            string? was = _selectedProfile?.Name;
+            _selectedProfile = was == null ? null
+                : Profiles.FirstOrDefault(p => p.Name.Equals(was, StringComparison.OrdinalIgnoreCase));
+            _dirty = false;
+            OnChanged(nameof(SelectedProfile));
+            OnChanged(nameof(ProfileNames));
+        }
+
+        if (result.CanvasChanged)
+        {
+            UnifiedRgb.Core.Effects.CanvasLayout.Reload();
+            SyncCanvas();
+            if (!LightsSuppressed) ReapplyEffects();
+        }
+
+        if (result.ScenesChanged) Lcd.ReloadScenes(result.CurrentScreenChanged);
+        if (result.ProfilesChanged) Lcd.NotifyProfilesChanged();
+        if (result.ProfilesChanged || result.SettingsChanged)
+        {
+            AutoRules.Clear();
+            foreach (var rule in _store.Settings.AutomationRules ?? new()) AutoRules.Add(rule);
+            Schedules.Clear();
+            foreach (var rule in _store.Settings.Schedules ?? new()) Schedules.Add(rule);
+            SensorRules.Clear();
+            foreach (var rule in _store.Settings.SensorRules ?? new()) SensorRules.Add(rule);
+            CustomColors.Clear();
+            foreach (var hex in _store.Settings.CustomColors ?? Array.Empty<string>())
+                if (Rgb.TryFromHex(hex, out var color)) CustomColors.Add(color);
+            _favorites = new HashSet<string>((IEnumerable<string>?)_store.Settings.FavoriteEffects ?? DefaultFavorites,
+                StringComparer.OrdinalIgnoreCase);
+            RefreshVisibleEffects();
+            UnifiedRgb.Core.Master.Brightness = _store.Settings.MasterBrightness;
+        }
+        if (result.CalibrationChanged) UnifiedRgb.Core.Calibration.Reload();
+        if (result.SettingsChanged || result.CalibrationChanged) RefreshCalibrationLighting();
+
+        // Null means "all of them" to WPF, which is exactly what a wholesale
+        // settings replacement needs.
+        OnChanged(null);
+        UnifiedRgb.Core.Log.Info("import", $"reloaded after import: {string.Join(", ", result.Applied)}");
+    }
+
     void SyncCanvas()
     {
         var layout = UnifiedRgb.Core.Effects.CanvasLayout.Current;
@@ -566,6 +811,40 @@ public sealed partial class MainViewModel
         get => _automationStatus;
         set { if (_automationStatus == value) return; _automationStatus = value; OnChanged(); }
     }
+
+    /*--- One status line, four screens, and only one of them wants any given
+          sentence. The app-rule sentences are the fallback in the decision's
+          priority chain, so they are what shows whenever no schedule and no
+          sensor rule is active: bound raw, the schedules window spent its life
+          explaining foreground apps, and "this window is focused, switch to
+          another program to test your rules" appeared while the user was
+          editing a temperature threshold. Each sentence now carries its topic
+          and each screen asks for its own. ---*/
+    AutomationTopic _automationTopic = AutomationTopic.None;
+
+    /// <summary>Set the line and what it is about, together: they are one fact
+    /// and updating them separately would let a screen match a stale topic
+    /// against a new sentence for one notification.</summary>
+    public void SetAutomationStatus(string status, AutomationTopic topic)
+    {
+        if (_automationStatus == status && _automationTopic == topic) return;
+        _automationStatus = status;
+        _automationTopic = topic;
+        OnChanged(nameof(AutomationStatus));
+        OnChanged(nameof(ScheduleStatus));
+        OnChanged(nameof(SensorStatus));
+        OnChanged(nameof(AppRuleStatus));
+    }
+
+    string StatusFor(AutomationTopic topic)
+        => _automationTopic == topic || _automationTopic == AutomationTopic.All ? _automationStatus : "";
+
+    /// <summary>The status line, but only when it is about schedules. Empty
+    /// otherwise, which collapses the row rather than showing another
+    /// feature's news.</summary>
+    public string ScheduleStatus => StatusFor(AutomationTopic.Schedule);
+    public string SensorStatus => StatusFor(AutomationTopic.Sensor);
+    public string AppRuleStatus => StatusFor(AutomationTopic.App);
 
     /*--- Night-off must never be invisible: it looked like "no effects are
           working". The automation drives this flag; a banner with a Wake

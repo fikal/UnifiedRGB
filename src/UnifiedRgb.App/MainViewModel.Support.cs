@@ -61,7 +61,7 @@ public sealed partial class MainViewModel
     /// note, bundled into one report (see SupportService).</summary>
     /// <summary>What the app is doing, for the diagnostic bundle. The report
     /// beside it is a hardware survey: it says a keyboard exists, never what
-    /// colour the keyboard was told to be. Every "my lighting is wrong" thread
+    /// color the keyboard was told to be. Every "my lighting is wrong" thread
     /// needs this half, and it did not exist.
     ///
     /// Runs on the UI thread, so it reads collections directly.</summary>

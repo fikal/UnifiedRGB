@@ -18,7 +18,7 @@ namespace UnifiedRgb.Tests;
 | That second half is why these sections sit together: the     |
 | refusal paths are the ones that have historically produced   |
 | the most field bugs. A refused packet cached as sent leaves  |
-| the device on its old colour with nothing in the log to say  |
+| the device on its old color with nothing in the log to say  |
 | so, and before this seam existed it could not be tested at   |
 | all.                                                         |
 \*-----------------------------------------------------------*/
@@ -117,7 +117,7 @@ static class DevicesSuite
                                          clusterEffect: new byte[] { 1, 1 }, name: "G403");
             var red = new Rgb(255, 0, 0);
 
-            // Write 1 is the software-control claim; write 2 is cluster 0's colour.
+            // Write 1 is the software-control claim; write 2 is cluster 0's color.
             hid.Accept = (n, _) => n != 2;
             mouse.SetColors(new[] { red, red });
             t.Equal(3, hid.Writes.Count, "frame 1: the claim and both cluster writes went out");
@@ -133,7 +133,7 @@ static class DevicesSuite
             int before = hid.Writes.Count;
             mouse.SetColors(new[] { red, red });
             // The old code had recorded cluster 0 as sent, so this frame was a no-op
-            // and the wheel stayed on its previous colour for good.
+            // and the wheel stayed on its previous color for good.
             t.Equal(before + 2, hid.Writes.Count,
                 "an identical frame re-sends the refused cluster (behind a fresh claim) and dedups the one that landed");
             t.Check(hid.Writes[^1][3] == (0x30 | 0x07) && hid.Writes[^1][4] == 0, "...and that re-send is cluster 0");
@@ -162,7 +162,7 @@ static class DevicesSuite
             hid.Accept = null;
             int before = hid.Writes.Count;
             mouse.SetColors(new[] { red, red }, persist: true);
-            t.Equal(before + 1, hid.Writes.Count, "colours unchanged: only the refused commit is retried");
+            t.Equal(before + 1, hid.Writes.Count, "colors unchanged: only the refused commit is retried");
             t.Check(hid.Writes[^1][4] == 0 && hid.Writes[^1][16] == 0x01, "...for cluster 0");
 
             before = hid.Writes.Count;
@@ -237,24 +237,24 @@ static class DevicesSuite
             var hid = new FakeHid();
             var pad = new SayoDevice(hid, outLen: 64, name: "Sayo");
             pad.SetColors(new[] { new Rgb(10, 20, 30) });
-            t.Equal(1, hid.Writes.Count, "one packet per colour change");
+            t.Equal(1, hid.Writes.Count, "one packet per color change");
             var pk = hid.Writes[0];
             t.Equal(64, pk.Length, "sized to the interface's output report");
             t.Check(pk[0] == 0x21 && pk[1] == 0x12, "report id 0x21, magic 0x12");
             t.Check(pk[2] == 0x8C && pk[3] == 0xA8,
                 "checksum: 16-bit little-endian word sum from 0x1221 over the payload (0xA88C for 10,20,30)");
             t.Check(pk[4] == 0x1C && pk[5] == 0x00 && pk[6] == 0x11 && pk[7] == 0x00, "payload header 1C 00 11 00");
-            t.Equal((byte)0xC0, pk[24], "mode byte: speed 3, static colour, static mode");
-            t.Check(pk[28] == 10 && pk[29] == 20 && pk[30] == 30, "the colour rides at payload offset 24 in R G B order");
+            t.Equal((byte)0xC0, pk[24], "mode byte: speed 3, static color, static mode");
+            t.Check(pk[28] == 10 && pk[29] == 20 && pk[30] == 30, "the color rides at payload offset 24 in R G B order");
 
             pad.SetColors(new[] { new Rgb(10, 20, 30) });
-            t.Equal(1, hid.Writes.Count, "an identical colour is deduped");
+            t.Equal(1, hid.Writes.Count, "an identical color is deduped");
             hid.Accept = (_, _) => false;
             pad.SetColors(new[] { new Rgb(1, 2, 3) });
-            t.Equal(2, hid.Writes.Count, "a new colour is sent");
+            t.Equal(2, hid.Writes.Count, "a new color is sent");
             hid.Accept = null;
             pad.SetColors(new[] { new Rgb(1, 2, 3) });
-            t.Equal(3, hid.Writes.Count, "a colour whose write was refused is sent again, not cached");
+            t.Equal(3, hid.Writes.Count, "a color whose write was refused is sent again, not cached");
         }
 
         t.Section("CorsairStrafeMk2: init sequence and frame framing");
@@ -314,7 +314,7 @@ static class DevicesSuite
             t.Equal(2, hid.Features.Count, "one feature report per changed frame");
             var f = hid.Features[1];
             t.Check(f[1] == 0x40 && f[2] == kb.LedCount, "direct packet 0x40 with the key count");
-            t.Check(f[3] == 0x04 && f[4] == 1 && f[5] == 2 && f[6] == 3, "key 0 is HID usage 0x04 (A) followed by its colour, R G B");
+            t.Check(f[3] == 0x04 && f[4] == 1 && f[5] == 2 && f[6] == 3, "key 0 is HID usage 0x04 (A) followed by its color, R G B");
             t.Check(f[7] == 0x05 && f[8] == 4 && f[9] == 5 && f[10] == 6, "key 1 follows four bytes later");
 
             kb.SetColors(frame);
@@ -426,7 +426,7 @@ static class DevicesSuite
             t.Check(f[0] == 0 && f[2] == 0x1F && f[6] == 5 + 3 * PadLeds, "report id 0, transaction 0x1F, data size 5 + 3n");
             t.Check(f[ARGS + 2] == 0 && f[ARGS + 3] == 0 && f[ARGS + 4] == PadLeds - 1, "row 0, columns 0..19");
             t.Check(f[ARGS + 5] == 0 && f[ARGS + 7] == 255 && f[ARGS + 5 + 3 * 19] == 19 && f[ARGS + 7 + 3 * 19] == 236,
-                "colours in R G B order, first and last LED where they should be");
+                "colors in R G B order, first and last LED where they should be");
             byte crc = 0; for (int i = 2; i < 88; i++) crc ^= f[1 + i];
             t.Equal(crc, f[89], "the report is sealed with the XOR of wire bytes 2..87");
             t.Check(hid.Writes.Count == 0, "nothing goes through output reports, so a feature-only handle is enough");

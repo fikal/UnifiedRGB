@@ -75,18 +75,24 @@ public sealed class MsiGpu : IRgbDevice
         return ok;
     }
 
-    public void SetColors(IReadOnlyList<Rgb> colors)
+    /// <summary>Drop the cached color so the next frame is written even if it
+    /// is the one already recorded (the must-land path and any mode change).</summary>
+    public void InvalidateCache() { lock (_writeLock) _last = null; }
+
+    public bool SetColors(IReadOnlyList<Rgb> colors)
     {
-        if (colors.Count == 0) return;
+        // An empty frame carries no color, so nothing reached the card: never
+        // report it as delivered (a must-land caller would believe it).
+        if (colors.Count == 0) return false;
         lock (_writeLock)
         {
             var c = colors[0];
-            if (_last == c) return;
+            if (_last == c) return true;   // already showing it: a skip is a success
 
             // Every register is written even after a failure (the sequence must
             // end in STATIC); the dedup commits only when all of them landed,
             // so the engine's 1 s keepalive or the next apply retries a frame
-            // the bus dropped instead of caching a colour the card never got.
+            // the bus dropped instead of caching a color the card never got.
             bool ok;
             if (_v2)
             {
@@ -109,7 +115,10 @@ public sealed class MsiGpu : IRgbDevice
                 ok &= Write(REG_MODE, MODE_STATIC, SettleMode);
             }
             _last = ok ? c : null;
-            if (!ok) Log.Occasional($"msigpu:{Name}", "MsiGpu", "I2C write failed - will retry on the next frame");
+            if (!ok)
+                return WritePolicy.Refused($"msigpu:{Name}", "MsiGpu",
+                    "I2C write failed - will retry on the next frame");
+            return true;
         }
     }
 

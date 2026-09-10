@@ -237,6 +237,42 @@ static class AutomationSuite
             t.Check(AutomationDecision.Resolve(withSensor).Status.Contains("87°C"), "sensor status shows the reading");
             t.Check(AutomationDecision.Resolve(withSensor).Status.Contains("'Alert'"), "sensor status names the profile");
 
+            /*--- Topics. One status line is shared by four screens, and the app
+                  sentences are the fallback in the priority chain, so without a
+                  topic the schedules window spent its life explaining foreground
+                  apps and the sensor window told you to switch programs to test
+                  your rules. Each sentence now says which feature it is about. ---*/
+            t.Equal(AutomationTopic.Schedule, AutomationDecision.Resolve(Sched(true)).Topic, "topic: a scheduled dark window is schedule news");
+            t.Equal(AutomationTopic.Schedule, AutomationDecision.Resolve(Sched(false, paused: true)).Topic, "topic: a woken schedule is schedule news");
+            t.Equal(AutomationTopic.Schedule, AutomationDecision.Resolve(Sched(false, waiting: true)).Topic, "topic: the idle wait is schedule news");
+            t.Equal(AutomationTopic.Sensor, AutomationDecision.Resolve(withSensor).Topic, "topic: a firing sensor rule is sensor news");
+            t.Equal(AutomationTopic.None, AutomationDecision.Resolve(Sched(false)).Topic, "topic: nothing to say carries no topic");
+
+            // The app lines: the ones that used to leak into every window.
+            AutomationInputs App(string? proc, bool self = false) => new()
+            {
+                Locked = false, LockLightsOff = true, ScheduleOff = null, ScheduleProfile = null,
+                SchedulePaused = false, ScheduleWaitingIdle = false, ScheduleEnd = "",
+                AppSwitchEnabled = true, ForegroundProcess = proc, ForegroundIsSelf = self,
+                AppRules = null, Sensor = null, SensorUnavailable = null,
+            };
+            t.Equal(AutomationTopic.App, AutomationDecision.Resolve(App(null)).Topic, "topic: watching for programs is app news");
+            t.Equal(AutomationTopic.App, AutomationDecision.Resolve(App("UnifiedRgb.App", self: true)).Topic, "topic: the focused-window hint is app news");
+            t.Equal(AutomationTopic.App, AutomationDecision.Resolve(App("notepad")).Topic, "topic: a foreground app is app news");
+
+            // StatusFor is the filter every screen binds through.
+            var appNews = AutomationDecision.Resolve(App("UnifiedRgb.App", self: true));
+            t.Check(appNews.StatusFor(AutomationTopic.App).Length > 0, "an app-rules screen sees app news");
+            t.Equal("", appNews.StatusFor(AutomationTopic.Schedule), "a schedules screen does not see app news");
+            t.Equal("", appNews.StatusFor(AutomationTopic.Sensor), "a sensor screen does not see app news");
+
+            // A pause stops every feature at once, so it is the one thing every
+            // screen has to show whatever that screen is about.
+            var pausedNews = AutomationPause.Resolve(AutomationMode.Base, null, locked: false, lockLightsOff: true);
+            t.Equal(AutomationTopic.All, pausedNews.Topic, "topic: a pause is everyone's news");
+            foreach (var topic in new[] { AutomationTopic.Schedule, AutomationTopic.Sensor, AutomationTopic.App })
+                t.Check(pausedNews.StatusFor(topic).Length > 0, $"a paused automation is visible on the {topic} screen");
+
             // No reading is explained rather than silently doing nothing.
             var missing = new AutomationInputs
             {

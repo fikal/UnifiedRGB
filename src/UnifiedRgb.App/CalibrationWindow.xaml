@@ -1,0 +1,245 @@
+<Window x:Class="UnifiedRgb.App.CalibrationWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:UnifiedRgb.App"
+        Title="Match your devices" WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ResizeMode="NoResize" SizeToContent="Height" Width="880"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Window.Resources>
+        <!-- BasedOn the app-level implicit TextBlock style, never a bare
+             TargetType="TextBlock": a local style without BasedOn DISPLACES the
+             app one, which is the only thing setting a foreground, and every
+             label in the window would render black on this dark card. -->
+        <Style x:Key="CalHint" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+            <Setter Property="Opacity" Value="0.6"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+        </Style>
+        <Style x:Key="CalSliderLabel" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Opacity" Value="0.85"/>
+            <Setter Property="Margin" Value="0,0,10,0"/>
+        </Style>
+    </Window.Resources>
+
+    <Border x:Name="RootPanel" Background="#FF1B1D24" CornerRadius="12" Padding="22"
+            BorderBrush="#FF2A2E38" BorderThickness="1">
+        <StackPanel>
+            <!-- Drag lives on the header only, not on the Window: this screen is
+                 mostly sliders, and a window-wide drag handler competes with
+                 every control that does not mark its mouse-down handled. -->
+            <Grid Margin="0,0,0,4" MouseLeftButtonDown="Drag_Down">
+                <TextBlock Text="Match your devices" FontSize="18" FontWeight="SemiBold"/>
+                <Button Content="&#x2715;" HorizontalAlignment="Right" Padding="8,3" Click="Close_Click"/>
+            </Grid>
+            <TextBlock Opacity="0.6" TextWrapping="Wrap" Margin="0,0,0,14"
+                       Text="The same color comes out warm on one device and cold on the next, because every vendor uses different LEDs behind different plastic: this trims each device on its own until they all show the same color as each other. One board can be several lights at once, so a device with more than one zone can be trimmed a zone at a time as well."/>
+
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="262"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- LEFT: the devices and, indented under any device that has
+                     more than one, its zones. Each row carries a live swatch
+                     of what that device or zone turns the current test patch
+                     into, which is what makes a mismatch BETWEEN two zones of
+                     one board visible in the list itself. -->
+                <StackPanel Grid.Column="0" Margin="0,0,16,0">
+                    <TextBlock Text="DEVICES AND ZONES" FontSize="11" FontWeight="SemiBold"
+                               Foreground="#FF9AA3B2" Opacity="0.8" Margin="2,0,0,6"/>
+                    <ListBox x:Name="DeviceList" Background="Transparent" BorderThickness="0"
+                             IsTextSearchEnabled="False" MaxHeight="430"
+                             HorizontalContentAlignment="Stretch"
+                             ItemContainerStyle="{StaticResource RowList}"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto"
+                             SelectionChanged="Device_Changed"
+                             PreviewKeyDown="List_Keys">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <!-- Indent comes from the row, not the template:
+                                     a zone row is the same row shifted right,
+                                     and the container style is shared with
+                                     every other list in the app. -->
+                                <Grid Margin="{Binding Indent}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Width="24" Height="24" CornerRadius="5"
+                                            VerticalAlignment="Center" Margin="0,0,10,0"
+                                            BorderBrush="#55FFFFFF" BorderThickness="1"
+                                            Background="{Binding Swatch, Converter={StaticResource RgbToBrush}}"
+                                            ToolTip="What this device or zone turns the current test patch into"/>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding Name}" FontWeight="{Binding NameWeight}" TextWrapping="Wrap"/>
+                                        <TextBlock Text="{Binding Detail}" Opacity="0.55" FontSize="11"
+                                                   Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+
+                    <TextBlock x:Name="NoDevicesText" Style="{StaticResource CalHint}" Margin="2,2,0,0"
+                               Text="No devices to calibrate." Visibility="Collapsed"/>
+
+                    <TextBlock Style="{StaticResource CalHint}" Margin="2,8,0,0"
+                               Text="An indented row is one zone of the device above it. Trim the device to move all of it at once, or a zone to move just that part."/>
+
+                    <Button Content="Reset every device" Style="{StaticResource Danger}"
+                            HorizontalAlignment="Left" Margin="0,12,0,0" Click="ResetAll_Click"
+                            ToolTip="Throw away every trim on this machine, zones included, and go back to sending each device exactly the color you picked"/>
+                </StackPanel>
+
+                <!-- RIGHT: the editor for the selected device or zone. -->
+                <Border Grid.Column="1" Style="{StaticResource Card}">
+                    <StackPanel x:Name="EditorPanel">
+                        <TextBlock x:Name="SelectedName" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap"
+                                   Text="No device selected"/>
+                        <TextBlock x:Name="SelectedDetail" Style="{StaticResource CalHint}" Margin="0,2,0,0"/>
+                        <!-- The override rule, in one line, about the row that
+                             is actually selected. A following zone shows
+                             sliders it did not set, and without this the first
+                             drag would look like it had failed to save. -->
+                        <TextBlock x:Name="ScopeNote" Style="{StaticResource CalHint}" Margin="0,6,0,0"/>
+
+                        <!-- The comparison aid. Sliders alone cannot do this job,
+                             so the patch controls sit above them, not below. -->
+                        <Border Background="#FF181A21" CornerRadius="8" Padding="12,10" Margin="0,14,0,0">
+                            <StackPanel>
+                                <CheckBox x:Name="AidCheck" Content="Light every device with the same test patch"
+                                          Click="Aid_Click"
+                                          ToolTip="Puts one flat color on everything at once so you can see which device is off. Your effects stop while this is on."/>
+                                <TextBlock Style="{StaticResource CalHint}" Margin="0,6,0,0"
+                                           Text="Your eye has no memory for white, so trimming one device at a time never works. Put the same patch on everything, then drag until they agree."/>
+
+                                <TextBlock Text="TEST PATCH" FontSize="11" FontWeight="SemiBold"
+                                           Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,12,0,6"/>
+                                <ListBox x:Name="RefList" Background="Transparent" BorderThickness="0"
+                                         IsTextSearchEnabled="False"
+                                         ItemContainerStyle="{StaticResource Pill}"
+                                         DisplayMemberPath="Label"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                         ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                                         SelectionChanged="Reference_Changed"
+                                         PreviewKeyDown="List_Keys">
+                                    <ListBox.ItemsPanel>
+                                        <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                                    </ListBox.ItemsPanel>
+                                </ListBox>
+                                <TextBlock Style="{StaticResource CalHint}" Margin="0,2,0,0"
+                                           Text="White shows a white-balance error. Mid grey shows a gamma error, which white cannot show at all. The primaries tell you which channel is at fault."/>
+                                <Button Content="Next patch" HorizontalAlignment="Left" Margin="0,10,0,0"
+                                        Click="NextPatch_Click"
+                                        ToolTip="Step through the patches in order"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- The trims themselves. -->
+                        <TextBlock Text="WHITE BALANCE" FontSize="11" FontWeight="SemiBold"
+                                   Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,16,0,2"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="124"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <TextBlock x:Name="GainRLabel" Grid.Row="0" Grid.Column="0" Text="Red" Style="{StaticResource CalSliderLabel}"/>
+                            <Slider x:Name="GainRSlider" Grid.Row="0" Grid.Column="1"
+                                    Minimum="0" Maximum="2" TickFrequency="0.1" IsSnapToTickEnabled="True"
+                                    local:Sl.Unit="x"
+                                    ValueChanged="Trim_Changed" Thumb.DragCompleted="Trim_DragCompleted"
+                                    ToolTip="Scale this device's red. Below 1 pulls a red-heavy white towards cold."/>
+
+                            <TextBlock x:Name="GainGLabel" Grid.Row="1" Grid.Column="0" Text="Green" Style="{StaticResource CalSliderLabel}"/>
+                            <Slider x:Name="GainGSlider" Grid.Row="1" Grid.Column="1"
+                                    Minimum="0" Maximum="2" TickFrequency="0.1" IsSnapToTickEnabled="True"
+                                    local:Sl.Unit="x"
+                                    ValueChanged="Trim_Changed" Thumb.DragCompleted="Trim_DragCompleted"
+                                    ToolTip="Scale this device's green."/>
+
+                            <TextBlock x:Name="GainBLabel" Grid.Row="2" Grid.Column="0" Text="Blue" Style="{StaticResource CalSliderLabel}"/>
+                            <Slider x:Name="GainBSlider" Grid.Row="2" Grid.Column="1"
+                                    Minimum="0" Maximum="2" TickFrequency="0.1" IsSnapToTickEnabled="True"
+                                    local:Sl.Unit="x"
+                                    ValueChanged="Trim_Changed" Thumb.DragCompleted="Trim_DragCompleted"
+                                    ToolTip="Scale this device's blue. Above 1 warms nothing up, it cools the white down."/>
+                        </Grid>
+
+                        <!-- Which of the sliders above can actually move anything
+                             for the patch that is up. A gain on a channel the
+                             patch does not contain is a control that does nothing
+                             while looking exactly like one that should, and that
+                             reads as a broken app rather than as arithmetic. -->
+                        <TextBlock x:Name="GainNote" Style="{StaticResource CalHint}" Margin="0,4,0,0"/>
+
+                        <TextBlock Text="CURVE AND CEILING" FontSize="11" FontWeight="SemiBold"
+                                   Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,12,0,2"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="124"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <TextBlock x:Name="GammaLabel" Grid.Row="0" Grid.Column="0" Text="Gamma" Style="{StaticResource CalSliderLabel}"/>
+                            <Slider x:Name="GammaSlider" Grid.Row="0" Grid.Column="1"
+                                    Minimum="0.3" Maximum="4" TickFrequency="0.1" IsSnapToTickEnabled="True"
+                                    local:Sl.Unit="x"
+                                    ValueChanged="Trim_Changed" Thumb.DragCompleted="Trim_DragCompleted"
+                                    ToolTip="Set this on the mid grey patch. Below 1 lifts a device whose mid tones read too dark, above 1 pushes down one that looks washed out."/>
+
+                            <TextBlock x:Name="CapLabel" Grid.Row="1" Grid.Column="0" Text="Max brightness" Style="{StaticResource CalSliderLabel}"/>
+                            <Slider x:Name="CapSlider" Grid.Row="1" Grid.Column="1"
+                                    Minimum="0.05" Maximum="1" TickFrequency="0.05" IsSnapToTickEnabled="True"
+                                    local:Sl.Unit="%"
+                                    ValueChanged="Trim_Changed" Thumb.DragCompleted="Trim_DragCompleted"
+                                    ToolTip="A hard ceiling for the one device that is simply louder than everything around it. The GPU logo, usually."/>
+                        </Grid>
+
+                        <TextBlock x:Name="CurveNote" Style="{StaticResource CalHint}" Margin="0,4,0,0"/>
+
+                        <!-- What the trim is actually doing, in one line. -->
+                        <Border Background="#FF181A21" CornerRadius="8" Padding="12,10" Margin="0,14,0,0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="Asked for" Style="{StaticResource CalHint}"
+                                           VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                <Border x:Name="PatchSwatch" Width="42" Height="26" CornerRadius="5"
+                                        BorderBrush="#55FFFFFF" BorderThickness="1" VerticalAlignment="Center"/>
+                                <TextBlock Text="&#x2192;" Opacity="0.5" VerticalAlignment="Center" Margin="10,0"/>
+                                <TextBlock Text="this sends" Style="{StaticResource CalHint}"
+                                           VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                <Border x:Name="TrimSwatch" Width="42" Height="26" CornerRadius="5"
+                                        BorderBrush="#55FFFFFF" BorderThickness="1" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="TrimHex" Style="{StaticResource CalHint}"
+                                           VerticalAlignment="Center" Margin="10,0,0,0"/>
+                            </StackPanel>
+                        </Border>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                            <!-- Content and tooltip are set in LoadSelected:
+                                 the same button resets a device or a zone,
+                                 and it has to say which. -->
+                            <Button x:Name="ResetOneButton" Content="Reset this device" Click="ResetOne_Click"
+                                    ToolTip="Back to untrimmed: this device is sent exactly the color you picked"/>
+                            <Button Content="Done" Style="{StaticResource Accent}" Margin="8,0,0,0"
+                                    Click="Close_Click"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <TextBlock x:Name="StatusText" Style="{StaticResource CalHint}" Margin="0,14,0,0"/>
+        </StackPanel>
+    </Border>
+</Window>

@@ -85,7 +85,7 @@ static class GigabyteDriverSuite
             t.Check(hid.Features.Any(p => p[1] == CMD_APPLY), "gigabyte(a): the apply packet goes out");
             t.Check(hid.Features.Any(IsStream), "gigabyte(a): the fan header is streamed");
 
-            // Setup accepted, colour + apply refused: the case the old code
+            // Setup accepted, color + apply refused: the case the old code
             // cached. Effect packets and apply must both re-send.
             hid.AcceptFeature = (_, p) => IsSetup(p);
             hid.Features.Clear();
@@ -204,7 +204,7 @@ static class GigabyteDriverSuite
             board.Dispose();
         }
 
-        t.Section("partial stream failure followed by the last successful colour");
+        t.Section("partial stream failure followed by the last successful color");
         var original = HardwareConfig.Load();
         try
         {

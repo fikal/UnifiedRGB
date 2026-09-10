@@ -153,17 +153,18 @@ public sealed class SteelSeriesApex : IRgbDevice, IKeyMappedDevice
         return pos;
     }
 
-    public void SetColors(IReadOnlyList<Rgb> colors)
+    /// <summary>Drop the cached frame so the next one is written even if it is
+    /// identical (the must-land path and any mode change).</summary>
+    public void InvalidateCache() { lock (_writeLock) _last = null; }
+
+    public bool SetColors(IReadOnlyList<Rgb> colors)
     {
         lock (_writeLock)
         {
             // Index-loop dedup (no boxed enumerators) - same shape as Strafe/EneDram.
-            if (_last != null && colors.Count == _last.Length)
-            {
-                bool same = true;
-                for (int i = 0; i < _last.Length; i++) if (_last[i] != colors[i]) { same = false; break; }
-                if (same) return;
-            }
+            // A skipped identical frame is a SUCCESS: the keyboard is already
+            // showing exactly what was asked for.
+            if (WritePolicy.Unchanged(_last, colors)) return true;
 
             int n = Math.Min(Keys.Length, colors.Count);
             var buf = _featureBuf ??= new byte[_featureLen];
@@ -179,16 +180,13 @@ public sealed class SteelSeriesApex : IRgbDevice, IKeyMappedDevice
                 buf[o + 3] = colors[i].B;
             }
             if (!_hid.SetFeature(buf))
-            {
                 // Not cached: the next identical frame (the engine keepalive
                 // included) must try again rather than match a frame the
-                // keyboard never took.
-                _last = null;
-                Log.Occasional($"apex:{Name}", "Apex", "feature report refused; the frame will be sent again");
-                return;
-            }
-            if (_last == null || _last.Length != colors.Count) _last = new Rgb[colors.Count];
-            for (int i = 0; i < colors.Count; i++) _last[i] = colors[i];
+                // keyboard never took. Refused drops the cache AND logs.
+                return WritePolicy.Refused(ref _last, $"apex:{Name}", "Apex",
+                    "feature report refused; the frame will be sent again");
+            WritePolicy.Cache(ref _last, colors);
+            return true;
         }
     }
 

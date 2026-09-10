@@ -54,11 +54,43 @@ public interface IRgbDevice : IDisposable
     IReadOnlyList<LedRect>? LedGeometry => null;
 
     /// <summary>Push a full frame of per-LED colors (length == LedCount).
-    /// Implementations should no-op if the frame is unchanged.</summary>
-    void SetColors(IReadOnlyList<Rgb> colors);
+    /// Implementations should no-op if the frame is unchanged.
+    ///
+    /// TRUE means the frame reached the device, OR was correctly skipped
+    /// because the device is already showing exactly it. FALSE means the
+    /// device REFUSED it and is still showing something else.
+    ///
+    /// This return is the whole reason anything above a driver can tell a
+    /// landed frame from a dropped one. It used to be void, so a refusal was
+    /// invisible outside the driver that saw it: the engine cached frames it
+    /// had not delivered, and a lights-off command that never went out looked
+    /// exactly like one that did. Drivers that genuinely cannot tell (a
+    /// one-way bus with no acknowledgement) say so in a comment and return
+    /// true rather than guessing.
+    ///
+    /// A refusal RETURNS. Throwing is reserved for a device that is gone for
+    /// good, because the engine's breaker counts throws and stops the channel
+    /// permanently after 300 of them. See Devices/WritePolicy.cs for the rest
+    /// of the contract - dedup after success, backoff, and the must-land path
+    /// for writes with no next frame behind them.</summary>
+    bool SetColors(IReadOnlyList<Rgb> colors);
 
-    /// <summary>Convenience: set every LED to one color.</summary>
-    void SetAll(Rgb color)
+    /// <summary>Forget what this device is believed to be showing, so the next
+    /// SetColors goes out even if it is identical to the last one.
+    ///
+    /// Two callers. A driver that changes the hardware's mode invalidates its
+    /// own cache, because the device no longer shows what the cache says. And
+    /// WritePolicy.MustLand calls this before every attempt at a terminal
+    /// write - a static apply, a lights-off, an exit behaviour - so a stale
+    /// cache can never turn "the device already has this" into a success for a
+    /// frame the hardware never received.
+    ///
+    /// The default is correct for a device that caches nothing.</summary>
+    void InvalidateCache() { }
+
+    /// <summary>Convenience: set every LED to one color. Returns what
+    /// SetColors returned, so a caller that cares can still tell.</summary>
+    bool SetAll(Rgb color)
         => SetColors(Enumerable.Repeat(color, LedCount).ToArray());
 }
 
@@ -69,8 +101,10 @@ public interface IRgbDevice : IDisposable
 public interface IZoneWritable
 {
     /// <summary>Update only LEDs [offset, offset+colors.Count); leave the rest
-    /// of the device exactly as it is.</summary>
-    void SetZone(int offset, IReadOnlyList<Rgb> colors);
+    /// of the device exactly as it is. Same verdict as SetColors: true when
+    /// the range reached the device or was correctly deduped, false when the
+    /// device refused it.</summary>
+    bool SetZone(int offset, IReadOnlyList<Rgb> colors);
 }
 
 public enum DeviceType

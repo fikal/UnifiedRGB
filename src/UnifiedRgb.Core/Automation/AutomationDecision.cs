@@ -61,7 +61,37 @@ public readonly struct AutomationInputs
 /// <summary>An open schedule: what it wants, and when it closes.</summary>
 public readonly record struct ScheduleHit(string End, string? Profile);
 
-public readonly record struct AutomationOutcome(AutomationMode Mode, string? Profile, string Status);
+/// <summary>What a status sentence is ABOUT, so a screen can show only the
+/// lines that belong to it.
+///
+/// There is one status line for the whole feature, and it used to be shown
+/// verbatim in four places. Because the app-rule sentences sit at the bottom
+/// of the priority chain, they are what shows whenever no schedule and no
+/// sensor rule is active, which is most of the time. The schedules window
+/// therefore spent its life explaining foreground apps, and "this window is
+/// focused, switch to another program to test your rules" turned up while the
+/// user was editing a temperature threshold. Every sentence now says which
+/// feature it belongs to, and each screen asks for its own.</summary>
+public enum AutomationTopic
+{
+    /// <summary>Nothing to say.</summary>
+    None,
+    /// <summary>True wherever automation is discussed: a pause stops schedules,
+    /// sensors and app rules alike, so every screen needs to hear about it.</summary>
+    All,
+    Schedule,
+    Sensor,
+    App,
+}
+
+public readonly record struct AutomationOutcome(
+    AutomationMode Mode, string? Profile, string Status, AutomationTopic Topic = AutomationTopic.None)
+{
+    /// <summary>The status line, or empty when it belongs to another screen.
+    /// `All` passes every filter by design.</summary>
+    public string StatusFor(AutomationTopic topic)
+        => Topic == topic || Topic == AutomationTopic.All ? Status : "";
+}
 
 /// <summary>The whole "it manages itself" decision, as one pure function.
 ///
@@ -90,26 +120,40 @@ public static class AutomationDecision
         else if (appProfile != null) { mode = AutomationMode.App; profile = appProfile; }
         else { mode = AutomationMode.Base; profile = null; }
 
-        return new AutomationOutcome(mode, profile, Status(in x, mode, appProfile));
+        var (status, topic) = Status(in x, mode, appProfile);
+        return new AutomationOutcome(mode, profile, status, topic);
     }
 
     /// <summary>Live feedback. Without it the whole feature is a black box the
-    /// user cannot tell from a bug.</summary>
-    static string Status(in AutomationInputs x, AutomationMode mode, string? appProfile)
+    /// user cannot tell from a bug.
+    ///
+    /// Every sentence carries the feature it is about, because one line is
+    /// shared by four screens and only one of them wants any given sentence.
+    /// The order here is the priority order, so the app lines are the fallback:
+    /// that is exactly why they used to leak into windows about schedules and
+    /// sensors, and why the topic exists.</summary>
+    static (string Text, AutomationTopic Topic) Status(in AutomationInputs x, AutomationMode mode, string? appProfile)
     {
-        if (mode == AutomationMode.ScheduleOff) return $"Scheduled: lights off until {x.ScheduleEnd}";
-        if (x.SchedulePaused) return "Schedule paused (you woke the lights). It runs again next time.";
-        if (x.ScheduleWaitingIdle) return "Schedule armed, lights turn off after 10 min idle";
+        if (mode == AutomationMode.ScheduleOff)
+            return ($"Scheduled: lights off until {x.ScheduleEnd}", AutomationTopic.Schedule);
+        if (x.SchedulePaused)
+            return ("Schedule paused (you woke the lights). It runs again next time.", AutomationTopic.Schedule);
+        if (x.ScheduleWaitingIdle)
+            return ("Schedule armed, lights turn off after 10 min idle", AutomationTopic.Schedule);
         if (mode == AutomationMode.ScheduleProfile && x.ScheduleProfile is ScheduleHit ps)
-            return $"Scheduled until {ps.End}: profile '{ps.Profile}'";
-        if (x.Sensor is SensorHit hit) return $"{hit.Describe()} → profile '{hit.Profile}'";
+            return ($"Scheduled until {ps.End}: profile '{ps.Profile}'", AutomationTopic.Schedule);
+        if (x.Sensor is SensorHit hit)
+            return ($"{hit.Describe()} → profile '{hit.Profile}'", AutomationTopic.Sensor);
         if (x.SensorUnavailable is string missing)
-            return $"Sensor rule paused: no reading for {SensorSources.Label(missing)}. PawnIO may not be installed.";
-        if (!x.AppSwitchEnabled) return "";
-        if (x.ForegroundProcess == null) return "Watching for your listed programs…";
-        if (x.ForegroundIsSelf) return "This window is focused. Switch to another program to test your rules.";
+            return ($"Sensor rule paused: no reading for {SensorSources.Label(missing)}. PawnIO may not be installed.",
+                    AutomationTopic.Sensor);
+        if (!x.AppSwitchEnabled) return ("", AutomationTopic.None);
+        if (x.ForegroundProcess == null)
+            return ("Watching for your listed programs…", AutomationTopic.App);
+        if (x.ForegroundIsSelf)
+            return ("This window is focused. Switch to another program to test your rules.", AutomationTopic.App);
         return appProfile != null
-            ? $"Foreground app: {x.ForegroundProcess} → applying profile '{appProfile}'"
-            : $"Foreground app: {x.ForegroundProcess} (no matching rule)";
+            ? ($"Foreground app: {x.ForegroundProcess} → applying profile '{appProfile}'", AutomationTopic.App)
+            : ($"Foreground app: {x.ForegroundProcess} (no matching rule)", AutomationTopic.App);
     }
 }

@@ -103,7 +103,7 @@ public sealed class KeyRipple : IEffect
         double aspect = Math.Max(1.0, device?.PreviewAspect ?? 2.0);
         var km = device as IKeyMappedDevice;
 
-        // Per-press invariants (origin key lookup, radius, life, colour) are
+        // Per-press invariants (origin key lookup, radius, life, color) are
         // resolved ONCE per frame here; the old loop redid them per LED per
         // press (an HsvToRgb + dictionary lookup + Pow per LED per press).
         Span<Ring> rings = stackalloc Ring[ev.Length];
@@ -152,7 +152,7 @@ public sealed class KeyRipple : IEffect
         if (Color == PatternColor.Solid) return baseColor;
         var pal = Palette;
         // Wrap BEFORE the int cast: pressTime is process uptime, and a
-        // saturated (int) of it picked the same colour for every ring after
+        // saturated (int) of it picked the same color for every ring after
         // ~25 days up.
         if (Color == PatternColor.Gradient && pal is { Count: > 0 })
             return pal[(int)((pressTime * 997.0) % pal.Count)];

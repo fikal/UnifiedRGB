@@ -43,7 +43,7 @@ public static class TestHelpers
     }
 
     /// <summary>Frame equality with a tolerance, in LSBs per channel: the
-    /// effects do floating-point colour maths, so two renders of the same
+    /// effects do floating-point color maths, so two renders of the same
     /// instant can differ by a bit without being different frames.</summary>
     public static bool SameWithin(Rgb[] a, Rgb[] b, int lsb)
     {

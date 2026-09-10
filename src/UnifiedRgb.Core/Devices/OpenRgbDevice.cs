@@ -110,20 +110,36 @@ public sealed class OpenRgbDevice : IRgbDevice, IZoneWritable
         return (pos, aspect);
     }
 
-    public void SetColors(IReadOnlyList<Rgb> colors)
+    /// <summary>Forget the last frame so the next one is written even if it is
+    /// identical (the must-land path and any mode change).</summary>
+    public void InvalidateCache() { lock (_writeLock) _last = null; }
+
+    /// <summary>The server's LED protocol is one-way: a frame is written to
+    /// the socket and there is no reply to say the remote device took it, or
+    /// even that the remote DRIVER exists. So the only refusal this bridge can
+    /// observe is a broken connection, which the client raises as an
+    /// exception rather than returning - and that is the right shape, because
+    /// a dead socket is a dead device, not a dropped packet. Everything that
+    /// reaches the end of this method has been handed to the server, so it
+    /// reports true rather than inventing a verdict it has no way to reach.</summary>
+    public bool SetColors(IReadOnlyList<Rgb> colors)
     {
         lock (_writeLock)
         {
             int n = Math.Min(colors.Count, LedCount);
             for (int i = 0; i < n; i++) _shadow[i] = colors[i];
-            if (_last != null && _last.AsSpan(0, n).SequenceEqual(_shadow.AsSpan(0, n))) return;
+            // Already sent exactly this: a skip is a success.
+            if (_last != null && _last.AsSpan(0, n).SequenceEqual(_shadow.AsSpan(0, n))) return true;
             _client.UpdateLeds(_index, _shadow);
             (_last ??= new Rgb[LedCount]).AsSpan().Clear();
             _shadow.CopyTo(_last, 0);
+            return true;
         }
     }
 
-    public void SetZone(int offset, IReadOnlyList<Rgb> colors)
+    /// <summary>Same one-way protocol, same verdict: true once the server has
+    /// been handed the range.</summary>
+    public bool SetZone(int offset, IReadOnlyList<Rgb> colors)
     {
         lock (_writeLock)
         {
@@ -136,11 +152,12 @@ public sealed class OpenRgbDevice : IRgbDevice, IZoneWritable
                 {
                     _client.UpdateZoneLeds(_index, zi, _shadow.AsSpan(offset, colors.Count));
                     _last = null;
-                    return;
+                    return true;
                 }
             }
             _client.UpdateLeds(_index, _shadow);            // arbitrary range: full frame
             _last = null;
+            return true;
         }
     }
 

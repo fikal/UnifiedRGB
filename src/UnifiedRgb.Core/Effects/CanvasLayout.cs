@@ -121,6 +121,37 @@ public sealed class CanvasLayout
         return loaded;
     }
 
+    /// <summary>Parse a layout out of text that is NOT canvas.json - the copy
+    /// inside a setup bundle. Null when the text is not a usable layout, so an
+    /// import can report "the bundle's desk layout is unreadable" and skip
+    /// that one section rather than write a broken canvas.json.
+    ///
+    /// Separate from Load() because the two disagree about failure on purpose:
+    /// Load must always hand the app SOMETHING to start with, while an import
+    /// would rather refuse a section than replace a good desk with defaults.
+    /// Both run the same Normalize, so anything accepted here is already in
+    /// the shape the engine and the editor assume.</summary>
+    public static CanvasLayout? TryParse(string json)
+    {
+        CanvasLayout? loaded;
+        try { loaded = JsonSerializer.Deserialize<CanvasLayout>(json); }
+        catch { return null; }
+        if (loaded is null) return null;   // the literal text `null` parses fine and is just as useless
+        loaded.Normalize();
+        return loaded;
+    }
+
+    /// <summary>Re-read canvas.json and publish it as the live layout. For a
+    /// caller that changed the file underneath the running app (the setup
+    /// importer): assigning Current from the in-memory layout it already had
+    /// would put the desk back the way it was a moment later.</summary>
+    public static CanvasLayout Reload()
+    {
+        var layout = Load();
+        Current = layout;
+        return layout;
+    }
+
     /// <summary>Copy the on-disk file beside itself before the defaults (or a
     /// repaired copy) take its place. The stamp keeps successive launches from
     /// overwriting each other's evidence; a copy that fails is only logged,

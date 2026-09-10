@@ -326,9 +326,20 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
     | Lighting                                              |
     \*-----------------------------------------------------*/
 
-    public void SetColors(IReadOnlyList<Rgb> colors)
+    /// <summary>Forget the last frame AND the backoff, so the next call really
+    /// writes (the must-land path and any mode change). A caller that has
+    /// decided this write must land is not served by a driver still waiting
+    /// out its two-second sulk, nor by a keepalive window that has not
+    /// elapsed.</summary>
+    public void InvalidateCache()
     {
-        if (colors.Count == 0) return;
+        lock (_writeLock) { _last = null; _lastSendTick = 0; _nextRetryTick = 0; }
+    }
+
+    public bool SetColors(IReadOnlyList<Rgb> colors)
+    {
+        // No color to send is not a delivery.
+        if (colors.Count == 0) return false;
         lock (_writeLock)
         {
             int n = LedCount;
@@ -343,11 +354,16 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
             // engine's keepalive reaches us every second, so re-send an
             // unchanged frame every 5 s (two feature reports) to take it back.
             long now = Environment.TickCount64;
-            if (!changed && now - _lastSendTick < 5000) return;
+            // Already showing it and not yet due a wake-up re-send: a skip is
+            // a success.
+            if (!changed && now - _lastSendTick < 5000) return true;
 
             // A sleeping wireless mouse fails every write; don't hammer the
-            // dongle at frame rate — retry every 2 s (the engine keepalive).
-            if (_failures >= 3 && now < _nextRetryTick) return;
+            // dongle at frame rate - retry every 2 s (the engine keepalive).
+            // Backing off is knowingly NOT delivering: say false, or a caller
+            // that must land this frame would stop at the one moment the mouse
+            // is definitely showing something else.
+            if (_failures >= 3 && now < _nextRetryTick) return false;
 
             bool ok = SendFrameOf(_frame, _model.Rows, wantReply: !_verified, out byte st);
             if (ok && !_verified)
@@ -355,20 +371,19 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
                 if (st != ST_OK) { Log.Warn("Razer", $"{Name}: frame answered status 0x{st:X2} ({StatusName(st)})"); ok = false; }
                 else { _verified = true; Log.Info("Razer", $"{Name}: custom frames accepted (transaction 0x{_tid:X2})"); }
             }
-            if (ok)
-            {
-                _failures = 0;
-                _lastSendTick = now;
-                _last ??= new Rgb[n];
-                Array.Copy(_frame, _last, n);
-            }
-            else
+            if (!ok)
             {
                 _last = null;
                 if (++_failures == 3)
                     Log.Occasional($"razer:{Name}", "Razer", "frames not accepted (mouse asleep or protocol mismatch) - retrying every 2 s");
                 _nextRetryTick = now + 2000;
+                return false;
             }
+            _failures = 0;
+            _lastSendTick = now;
+            _last ??= new Rgb[n];
+            Array.Copy(_frame, _last, n);
+            return true;
         }
     }
 
