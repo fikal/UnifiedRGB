@@ -752,7 +752,20 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     /// that profile is now allowed to name a show.</summary>
     public bool ShowSequence(string name)
     {
-        if (_sequencer == null) return false;
+        if (_sequencer == null)
+        {
+            // Asked before the scene list exists, which is the NORMAL order at
+            // launch: the startup profile applies first and InitScenes runs
+            // after it. That ordering used to be fine because the auto-start
+            // flag lived inside InitScenes; now that a profile owns the show,
+            // the request arrives too early and was simply lost - "show could
+            // not start" at every launch, with only the first profile playing.
+            //
+            // Remembered rather than refused, and true because it WILL happen.
+            _pendingShow = name;
+            Log.Info("scenes", $"show '{name}' asked for before the scenes were loaded; starting it when they are");
+            return true;
+        }
         var seq = Sequences.FirstOrDefault(x => x != null && x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
         if (seq == null)
         {
@@ -774,7 +787,14 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     /// to say so to a panel a show is driving, or the show's next step paints
     /// over that screen a second later - which is exactly what made a profile's
     /// pump screen meaningless for anyone who had a show going.</summary>
-    public void StopSequence() => _sequencer?.Stop();
+    public void StopSequence()
+    {
+        _pendingShow = null;   // a show asked for and then called off must not start late
+        _sequencer?.Stop();
+    }
+
+    /// <summary>A show asked for before InitScenes had built the sequencer.</summary>
+    string? _pendingShow;
 
     /// <summary>True while a show is running, for the profile apply to know
     /// whether "leave the pump alone" has anything to leave alone.</summary>
@@ -824,6 +844,14 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         // its own show now, and MainViewModel has already moved any surviving flag
         // onto the startup profile so nobody's show simply stops appearing.
         SelectedSequence = Sequences.FirstOrDefault();
+
+        // Anything asked for while we were not ready yet. The startup profile is
+        // applied before this runs, so this is where its show actually starts.
+        if (_pendingShow is string pending)
+        {
+            _pendingShow = null;
+            ShowSequence(pending);
+        }
     }
 
     /// <summary>The show that used to be marked "start with the app", or null.

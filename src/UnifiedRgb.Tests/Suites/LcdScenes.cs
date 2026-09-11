@@ -62,9 +62,20 @@ static class LcdScenesSuite
         t.Equal(2, applied, "a step naming no profile does nothing");
 
         // Guard 3 lives in ShowSequence: asking for the show already running is
-        // answered yes without restarting it. With no panel attached there is no
-        // sequencer, so the honest answer here is a refusal rather than a restart.
-        t.Check(!vm.ShowSequence("anything"), "with no panel, starting a show is refused rather than attempted");
+        // answered yes without restarting it.
+        //
+        // And the ordering trap underneath it. The startup profile applies BEFORE
+        // InitScenes builds the sequencer, so a show it names arrives too early.
+        // Refusing it there meant "show could not start" at every launch with
+        // only the first profile ever playing, so the request is remembered.
+        t.Check(vm.ShowSequence("later"), "a show asked for before the scenes load is remembered, not refused");
+        t.Equal("later", typeof(LcdDesignerViewModel)
+            .GetField("_pendingShow", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(vm),
+            "...and held until the scenes are ready");
+        vm.StopSequence();
+        t.Check(typeof(LcdDesignerViewModel)
+            .GetField("_pendingShow", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(vm) == null,
+            "a show called off before it starts does not start late");
     }
 
     static void CheckScenes(Harness t)
