@@ -110,12 +110,12 @@
                 <Border Style="{StaticResource SettingsCard}">
                     <StackPanel>
                         <TextBlock Text="Startup" Style="{StaticResource SectionTitle}"/>
-                        <!-- A login launch passes --autostart and goes to the tray
-                             whichever way the second box is set, which is what
-                             the old ", in the tray" was getting at. Two boxes
-                             that both end in "the tray" read as one setting
-                             said twice, so the qualifier goes and the tooltip
-                             carries it. -->
+                        <!-- A login launch carries the autostart switch and goes
+                             to the tray whichever way the second box is set,
+                             which is what the old ", in the tray" was getting
+                             at. Two boxes both ending in "the tray" read as one
+                             setting written twice, so the qualifier moves to
+                             the tooltip. -->
                         <CheckBox Content="Start with Windows" IsChecked="{Binding StartWithWindows}"
                                   ToolTip="A login launch always opens to the tray, not on screen"/>
                         <CheckBox Content="Start minimized to the tray" IsChecked="{Binding StartMinimized}" Margin="0,8,0,0"
