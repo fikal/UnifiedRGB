@@ -1009,7 +1009,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         set
         {
             _selectedProfile = value;
-            OnChanged(); OnChanged(nameof(IsStartupProfile));
+            OnChanged(); OnChanged(nameof(IsStartupProfile)); OnChanged(nameof(CanDeleteProfile));
             if (value != null) { _profileName = value.Name; OnChanged(nameof(ProfileName)); }
             // The wallpaper picker follows the selection the way the name box
             // does, so Save writes back what is on screen rather than whatever
@@ -1017,6 +1017,11 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             SyncWallpaperChoice(value);
         }
     }
+
+    /// <summary>Delete is a Click rather than a Command now, because it has to
+    /// ask before it acts and a view model is the wrong place to open a dialog.
+    /// This is the CanExecute that went with the command.</summary>
+    public bool CanDeleteProfile => _selectedProfile != null;
 
     public bool IsStartupProfile
     {

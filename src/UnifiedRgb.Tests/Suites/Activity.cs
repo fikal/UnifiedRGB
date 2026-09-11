@@ -32,6 +32,7 @@ static class ActivitySuite
         WhiteTheAppPicksForYou(t);
         TheReleasesLinkResolves(t);
         TheWallpaperPickerSurvivesADeselect(t);
+        WhatADeletedProfileWouldBreak(t);
         t.Section("Ring bounds itself (#f1)");
         {
             var log = new ActivityLog();
@@ -196,6 +197,82 @@ static class ActivitySuite
                 t.Check(!s.Contains('\u2014'), $"pause copy has no em dash: {s}");
         }
     }
+    /// <summary>What a profile is holding up, before it is deleted.
+    ///
+    /// The failure this prevents is silent by construction: a show step or a
+    /// rule naming a profile nobody has is refused and logged, and the lighting
+    /// is left alone - so the show keeps running with one step doing nothing.
+    /// A collector that MISSES a reference is just as silent, which is why each
+    /// kind is pinned separately rather than by one count.</summary>
+    static void WhatADeletedProfileWouldBreak(Harness t)
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            UnifiedRgb.App.MainViewModel? vm = null;
+            try
+            {
+                vm = new UnifiedRgb.App.MainViewModel(startServices: false);
+                vm.Profiles.Clear();
+
+                t.Section("what a deleted profile would break");
+
+                t.Equal(0, vm.WhatUsesProfile("Nobody Wants Me").Count, "a profile nothing names is free to go");
+                t.Equal(0, vm.WhatUsesProfile(null).Count, "no name asks nothing");
+                t.Equal(0, vm.WhatUsesProfile("   ").Count, "nor does a blank one");
+
+                // One of each kind that can hold a profile name.
+                vm.Lcd.Sequences.Add(new UnifiedRgb.App.SceneSequence
+                {
+                    Name = "Evening",
+                    Actions =
+                    {
+                        new UnifiedRgb.App.SceneAction { Scene = "Clock" },
+                        new UnifiedRgb.App.SceneAction { Profile = "Matrix" },
+                    },
+                });
+                vm.SettingsData.Schedules = new() { new UnifiedRgb.Core.Automation.ScheduleRule
+                    { Start = "22:00", End = "07:00", Profile = "Matrix" } };
+                vm.SettingsData.AutomationRules = new() { new UnifiedRgb.Core.Automation.AutomationRule
+                    { Process = "chrome.exe", Profile = "Matrix" } };
+                vm.SettingsData.SensorRules = new() { new UnifiedRgb.Core.Automation.SensorRule
+                    { Profile = "Matrix" } };
+                vm.SettingsData.StartupProfile = "Matrix";
+
+                var uses = vm.WhatUsesProfile("Matrix");
+                t.Equal(5, uses.Count, "every kind of reference is found");
+                t.Check(uses.Any(u => u.Contains("Evening") && u.Contains("step 2")),
+                    "a show is named down to the step, because a show can have twelve");
+                t.Check(uses.Any(u => u.Contains("22:00")), "the schedule is named by its window");
+                t.Check(uses.Any(u => u.Contains("chrome.exe")), "the app rule is named by its process");
+                t.Check(uses.Any(u => u.Contains("sensor rule")), "the sensor rule is listed");
+                t.Check(uses.Any(u => u.Contains("startup")), "so is being the startup profile");
+
+                // Step 1 holds a scene and no profile, so it must not be counted
+                // against a profile that happens to share the show.
+                t.Check(!uses.Any(u => u.Contains("step 1")), "a step with no profile is not a reference");
+
+                // Names are compared the way the rest of the app compares them.
+                t.Equal(5, vm.WhatUsesProfile("  matrix  ").Count, "case and surrounding space do not hide a reference");
+                t.Equal(0, vm.WhatUsesProfile("Matri").Count, "a prefix is not a match");
+            }
+            catch (Exception ex) { failure = ex; }
+            finally
+            {
+                if (vm != null)
+                {
+                    vm.Lighting.StopAndDrain(); vm.Lcd.Dispose();
+                    var bake = (UnifiedRgb.App.Services.LianBakeService)typeof(UnifiedRgb.App.MainViewModel)
+                        .GetField("_bake", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(vm)!;
+                    bake.Stop();
+                }
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start(); thread.Join();
+        if (failure != null) throw new Exception("Profile-reference regression", failure);
+    }
+
     /// <summary>Renaming a profile wiped the wallpaper choice off it.
     ///
     /// The rename path removes the old profile from the bound collection before

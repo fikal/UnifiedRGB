@@ -68,7 +68,8 @@
                                     ToolTip="Create a new profile with this name"/>
                             <Button Content="Load" Margin="8,0,0,0" Command="{Binding LoadProfileCommand}"/>
                             <Button Content="Delete" Style="{StaticResource Danger}" Margin="8,0,0,0"
-                                    Command="{Binding DeleteProfileCommand}"/>
+                                    Click="DeleteProfile_Click"
+                                    IsEnabled="{Binding CanDeleteProfile}"/>
                         </StackPanel>
                         <CheckBox Content="Apply the selected profile at startup" IsChecked="{Binding IsStartupProfile}"
                                   Margin="0,12,0,0"/>

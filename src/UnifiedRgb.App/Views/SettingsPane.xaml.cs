@@ -43,6 +43,34 @@ public partial class SettingsPane : UserControl
 
     void SaveProfileAsNew_Click(object sender, RoutedEventArgs e) => VM.SaveProfileAsNew();
 
+    /// <summary>Delete, but say what the name is still holding up first.
+    ///
+    /// Nothing breaks loudly when a profile goes: a show step or a rule asking
+    /// for a name nobody has is refused, logged, and the lighting is left as it
+    /// was. So the show keeps running with one step quietly doing nothing, and
+    /// the only record is a log line. Listing what points at it is the whole
+    /// difference between noticing now and noticing in a month.
+    ///
+    /// No prompt when nothing points at it - a confirmation on every delete
+    /// trains people to click through the one that mattered.</summary>
+    void DeleteProfile_Click(object sender, RoutedEventArgs e)
+    {
+        var profile = VM.SelectedProfile;
+        if (profile == null) return;
+
+        var uses = VM.WhatUsesProfile(profile.Name);
+        if (uses.Count > 0 && Owner is Window owner)
+        {
+            string list = string.Join("\n", uses.Select(u => "   • " + u));
+            if (!Dialogs.Confirm(owner, $"Delete “{profile.Name}”?",
+                    $"{uses.Count} thing{(uses.Count == 1 ? "" : "s")} still ask for it:\n\n{list}\n\n"
+                    + "They keep the name and do nothing until you point them somewhere else.",
+                    "Delete Anyway"))
+                return;
+        }
+        VM.DeleteProfile();
+    }
+
     async void InstallPawnIo_Click(object sender, RoutedEventArgs e)
     {
         // Awaited: a discarded Task swallowed install failures silently.

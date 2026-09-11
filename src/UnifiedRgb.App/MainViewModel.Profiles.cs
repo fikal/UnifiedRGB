@@ -360,7 +360,49 @@ public sealed partial class MainViewModel
                                : $", wallpaper '{p.Wallpaper}' could not be asked for"));
     }
 
-    void DeleteProfile()
+    /// <summary>Everything that names this profile, each as a sentence a person
+    /// can act on.
+    ///
+    /// A deleted profile does not break anything loudly: a show step or a rule
+    /// that asks for a name nobody has any more is refused and logged, and the
+    /// lighting is left alone. That is the problem. The show keeps running, one
+    /// of its steps quietly does nothing, and the log is the only place that
+    /// says why - which is no use to somebody who will notice weeks later that
+    /// the panel skips a beat.
+    ///
+    /// Shows are named down to the STEP, because "the show Evening" is not
+    /// enough to find it among twelve of them. Schedules and rules are listed
+    /// too: the question "what breaks if this goes" does not stop at the pump
+    /// panel, and answering half of it would send the reader away confident.</summary>
+    public IReadOnlyList<string> WhatUsesProfile(string? name)
+    {
+        var uses = new List<string>();
+        if (string.IsNullOrWhiteSpace(name)) return uses;
+        bool Is(string? s) => !string.IsNullOrWhiteSpace(s)
+                              && s!.Trim().Equals(name!.Trim(), StringComparison.OrdinalIgnoreCase);
+
+        foreach (var seq in Lcd.Sequences)
+        {
+            var steps = seq?.Actions;
+            if (steps == null) continue;
+            for (int i = 0; i < steps.Count; i++)
+                if (Is(steps[i]?.Profile))
+                    uses.Add($"the show “{seq!.Name}”, step {i + 1}");
+        }
+
+        var s = _store.Settings;
+        foreach (var r in s.Schedules ?? new())
+            if (Is(r?.Profile)) uses.Add($"the schedule {r!.Start}–{r.End}");
+        foreach (var r in s.AutomationRules ?? new())
+            if (Is(r?.Profile)) uses.Add($"the app rule for {r!.Process}");
+        foreach (var r in s.SensorRules ?? new())
+            if (Is(r?.Profile)) uses.Add($"the sensor rule on {r!.Source}");
+        if (Is(s.StartupProfile)) uses.Add("your startup profile");
+
+        return uses;
+    }
+
+    public void DeleteProfile()
     {
         if (SelectedProfile == null) return;
         _store.Delete(SelectedProfile.Name);
