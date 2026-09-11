@@ -152,9 +152,19 @@ public sealed partial class MainViewModel
         get => _wallpaperChoice;
         set
         {
-            string v = string.IsNullOrWhiteSpace(value) ? NoWallpaper : value;
-            if (_wallpaperChoice == v) return;
-            _wallpaperChoice = v;
+            // A null or blank arriving here is NOT a choice. It is the combo box
+            // saying its list changed underneath it: clearing a bound collection
+            // makes a selector drop its selection and push null back through the
+            // binding. Reading that as "leave the wallpaper alone" is the same
+            // mistake that let a rename wipe the choice, one layer down - and
+            // here it also left the box blank, because the source then held a
+            // value the target had already abandoned.
+            //
+            // Choosing the "leave the wallpaper alone" row sends that row's
+            // text. Nothing a person can do sends null.
+            if (string.IsNullOrWhiteSpace(value)) return;
+            if (_wallpaperChoice == value) return;
+            _wallpaperChoice = value;
             MarkDirty();          // an unsaved wallpaper change is an unsaved change
             OnChanged();
         }
@@ -176,17 +186,42 @@ public sealed partial class MainViewModel
     public void RefreshWallpaperProfiles()
     {
         var found = Services.WallpaperEngine.Profiles;
-        WallpaperProfiles.Clear();
-        WallpaperProfiles.Add(NoWallpaper);
-        foreach (string p in found) WallpaperProfiles.Add(p);
+
+        // Rebuilt only when the contents actually DIFFER. This runs every time
+        // the settings page is shown and the answer is nearly always the same
+        // list, so the usual cost should be nothing - but more than that,
+        // clearing a bound collection is not free: the combo box drops its
+        // selection, and its own reset is posted rather than immediate, so it
+        // can land after the notification that would have restored it and leave
+        // the control blank. The version with no race in it is the one that does
+        // not touch the collection.
+        if (!Matches(found))
+        {
+            WallpaperProfiles.Clear();
+            WallpaperProfiles.Add(NoWallpaper);
+            foreach (string p in found) WallpaperProfiles.Add(p);
+        }
+
         // A profile naming a wallpaper the user has since deleted would leave
         // the picker on a row that is no longer in the list, which a ComboBox
         // shows as blank. Fall back to saying so.
         if (_wallpaperChoice != NoWallpaper && !WallpaperProfiles.Contains(_wallpaperChoice))
             _wallpaperChoice = NoWallpaper;
+
         OnChanged(nameof(WallpaperAvailable));
         OnChanged(nameof(WallpaperNeedsProfiles));
         OnChanged(nameof(WallpaperChoice));
+    }
+
+    /// <summary>Whether the picker already lists exactly these profiles, in this
+    /// order, behind the "leave it alone" row.</summary>
+    bool Matches(IReadOnlyList<string> found)
+    {
+        if (WallpaperProfiles.Count != found.Count + 1) return false;
+        if (WallpaperProfiles[0] != NoWallpaper) return false;
+        for (int i = 0; i < found.Count; i++)
+            if (!string.Equals(WallpaperProfiles[i + 1], found[i], StringComparison.Ordinal)) return false;
+        return true;
     }
 
     void SyncWallpaperChoice(Profile? p)

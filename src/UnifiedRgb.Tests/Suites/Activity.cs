@@ -309,6 +309,30 @@ static class ActivitySuite
                 vm.SelectedProfile = null;
                 t.Equal("Matrix", vm.WallpaperChoice, "a deselect does not reset the picker");
 
+                // And the same null one layer down. Clearing the bound list
+                // makes the combo box drop its selection and push null back
+                // through the binding; reading that as a choice both changed the
+                // stored value and left the control blank, because the source
+                // then held something the target had already abandoned.
+                vm.WallpaperChoice = null!;
+                t.Equal("Matrix", vm.WallpaperChoice, "a null pushed back by the control is not a choice");
+                vm.WallpaperChoice = "   ";
+                t.Equal("Matrix", vm.WallpaperChoice, "nor is a blank one");
+
+                // Refreshing the list is what the settings page does every time
+                // it is shown, and it must leave a live choice alone.
+                vm.WallpaperChoice = UnifiedRgb.App.MainViewModel.NoWallpaper;
+                vm.RefreshWallpaperProfiles();
+                t.Equal(UnifiedRgb.App.MainViewModel.NoWallpaper, vm.WallpaperChoice,
+                    "refreshing the list keeps the picker on its row");
+
+                // A name Wallpaper Engine no longer has cannot stay selected:
+                // a ComboBox shows a missing item as blank, which reads as broken.
+                vm.WallpaperChoice = "Deleted In Wallpaper Engine";
+                vm.RefreshWallpaperProfiles();
+                t.Equal(UnifiedRgb.App.MainViewModel.NoWallpaper, vm.WallpaperChoice,
+                    "a name that is no longer offered falls back to saying so");
+
                 // And selecting a profile that HAS a wallpaper still adopts it,
                 // which is the behaviour the null guard must not cost.
                 var b = new UnifiedRgb.App.Profile { Name = "After", Wallpaper = "Night" };
