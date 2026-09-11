@@ -14,13 +14,57 @@ static class LcdScenesSuite
         Exception? failure = null;
         var thread = new Thread(() =>
         {
-            try { CheckScenes(t); }
+            try { CheckScenes(t); ShowThatContainsItsOwnStarter(t); }
             catch (Exception ex) { failure = ex; }
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
         thread.Join();
         if (failure != null) throw new Exception("LCD scene regression failed", failure);
+    }
+
+    /// <summary>A profile that starts a show, and is also a STEP of that show,
+    /// is the ordinary thing to build and looks like it should recurse: applying
+    /// it starts the show, whose step applies it, which starts the show...
+    ///
+    /// Three separate guards stop it, and this pins all three rather than
+    /// trusting that any one of them holds.</summary>
+    static void ShowThatContainsItsOwnStarter(Harness t)
+    {
+        t.Section("a show whose step is the profile that started it");
+
+        int applied = 0;
+        string current = "Matrix";
+        using var vm = new LcdDesignerViewModel(() => false, () => false,
+            name => { applied++; current = name; return true; },
+            () => new[] { "Matrix", "Diablo" }, () => current);
+
+        var action = typeof(LcdDesignerViewModel).GetMethod("ApplySceneAction",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+        // Guard 1: a step naming the profile that is ALREADY on does nothing at
+        // all. This is the one that breaks the cycle at its tightest point - the
+        // first step of a show started by that very profile.
+        action.Invoke(vm, new object[] { new SceneAction { Profile = "Matrix" } });
+        t.Equal(0, applied, "a step naming the profile already on does not re-apply it");
+
+        // It still works for a step that genuinely changes things.
+        action.Invoke(vm, new object[] { new SceneAction { Profile = "Diablo" } });
+        t.Equal(1, applied, "a step naming a different profile applies it");
+        t.Equal("Diablo", current, "...and that profile becomes the current one");
+
+        // And back round: now Matrix IS a change, so it applies once.
+        action.Invoke(vm, new object[] { new SceneAction { Profile = "Matrix" } });
+        t.Equal(2, applied, "coming back round applies it exactly once");
+
+        // Guard 2: a step with no profile is a no-op rather than a reset.
+        action.Invoke(vm, new object[] { new SceneAction { Profile = null } });
+        t.Equal(2, applied, "a step naming no profile does nothing");
+
+        // Guard 3 lives in ShowSequence: asking for the show already running is
+        // answered yes without restarting it. With no panel attached there is no
+        // sequencer, so the honest answer here is a refusal rather than a restart.
+        t.Check(!vm.ShowSequence("anything"), "with no panel, starting a show is refused rather than attempted");
     }
 
     static void CheckScenes(Harness t)

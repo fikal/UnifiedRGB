@@ -85,7 +85,22 @@
                                       ItemsSource="{Binding PumpRows}"
                                       SelectedItem="{Binding PumpChoice}"
                                       DisplayMemberPath="Label"
-                                      ToolTip="What the pump panel does when this profile is applied: hold one screen, or run a show"/>
+                                      ToolTip="The screen this profile puts on the pump panel"/>
+                        </StackPanel>
+
+                        <!-- Separate from the panel on purpose. A profile that
+                             starts a show is usually also a STEP of that show,
+                             and then it still has to say what the panel shows.
+                             One control could only answer one of those, so the
+                             step put nothing up and the previous step's screen
+                             stayed on. -->
+                        <StackPanel Margin="0,14,0,0"
+                                    Visibility="{Binding ShowAvailable, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="Show" Style="{StaticResource SectionTitle}" Margin="0,0,0,4"/>
+                            <ComboBox Width="240" HorizontalAlignment="Left"
+                                      ItemsSource="{Binding ShowRows}"
+                                      SelectedItem="{Binding ShowChoice}"
+                                      ToolTip="A show this profile starts. The show then steps through profiles of its own, so leave this alone on the profiles that are its steps."/>
                         </StackPanel>
 
                         <!-- The third panel. Only offered once Wallpaper Engine

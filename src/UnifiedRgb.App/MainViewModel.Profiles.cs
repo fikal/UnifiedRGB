@@ -231,16 +231,20 @@ public sealed partial class MainViewModel
     /// parsing a suffix back out of display text to tell them apart is how that
     /// becomes a bug. A record, so a rebuilt list still contains an item EQUAL
     /// to the selected one and the combo box keeps its selection.</summary>
-    public sealed record PumpRow(string Label, string? Screen, string? Show)
+    /// <summary>A row in the pump-panel picker. A record, so a rebuilt list still
+    /// contains an item EQUAL to the selected one and the combo box keeps its
+    /// selection.</summary>
+    public sealed record PumpRow(string Label, string? Screen)
     {
-        public PumpTarget Target => new(Screen, Show);
         public override string ToString() => Label;
     }
 
     public const string NoPump = "Leave the pump panel alone";
-    static readonly PumpRow PumpNone = new(NoPump, null, null);
+    public const string NoShow = "No show";
+    static readonly PumpRow PumpNone = new(NoPump, null);
 
     public ObservableCollection<PumpRow> PumpRows { get; } = new();
+    public ObservableCollection<string> ShowRows { get; } = new();
 
     PumpRow _pumpChoice = PumpNone;
     public PumpRow PumpChoice
@@ -248,62 +252,99 @@ public sealed partial class MainViewModel
         get => _pumpChoice;
         set
         {
-            // Null is the control saying its list moved, never a choice. Same
-            // rule as the wallpaper picker, and it is here for the same reason:
-            // reading it as data both wipes the selection and leaves the box
-            // blank. Picking the "leave it alone" row sends that row.
-            if (value == null) return;
-            if (_pumpChoice == value) return;
+            // Null is the control saying its list moved, never a choice. Picking
+            // the "leave it alone" row sends that row; nothing a person can do
+            // sends null.
+            if (value == null || _pumpChoice == value) return;
             _pumpChoice = value;
             MarkDirty();
             OnChanged();
         }
     }
 
-    /// <summary>Anything to pick beyond "leave it alone".</summary>
+    string _showChoice = NoShow;
+    public string ShowChoice
+    {
+        get => _showChoice;
+        set
+        {
+            if (string.IsNullOrWhiteSpace(value) || _showChoice == value) return;
+            _showChoice = value;
+            MarkDirty();
+            OnChanged();
+        }
+    }
+
     public bool PumpAvailable => PumpRows.Count > 1;
+    public bool ShowAvailable => ShowRows.Count > 1;
+
+    /*--- Two pickers, not one.
+          They were one exclusive control at first - a screen OR a show - on the
+          grounds that a panel can hold a picture or run a sequence but not both.
+          That is true of the panel and false of the PROFILE, and the difference
+          showed up the first time somebody built the obvious thing: a profile
+          that starts a show AND is a step inside it. Applied by hand it should
+          start the show; reached as a step it should say what the panel shows.
+          With one control it could only say one of those, so the step displayed
+          nothing and the previous step's screen stayed up.
+          They are two questions: what does this profile put on the panel, and
+          does this profile start a show. ---*/
 
     public void RefreshPumpRows()
     {
-        var screens = Lcd.SceneNames.ToList();
-        var shows = Lcd.Sequences.Where(s => s != null).Select(s => s.Name).ToList();
+        var wantScreens = new List<PumpRow> { PumpNone };
+        foreach (string name in Lcd.SceneNames) wantScreens.Add(new PumpRow(name, name));
 
-        var want = new List<PumpRow> { PumpNone };
-        foreach (string s in screens) want.Add(new PumpRow($"Screen: {s}", s, null));
-        foreach (string s in shows) want.Add(new PumpRow($"Show: {s}", null, s));
+        var wantShows = new List<string> { NoShow };
+        foreach (var seq in Lcd.Sequences) if (seq != null) wantShows.Add(seq.Name);
 
-        // Rebuilt only when it actually differs: clearing a bound collection
+        // Rebuilt only when the contents differ: clearing a bound collection
         // makes the combo box drop its selection, and its reset is posted rather
         // than immediate, so it can land after the notification meant to restore
         // it and leave the control blank.
-        if (!PumpRows.SequenceEqual(want))
+        if (!PumpRows.SequenceEqual(wantScreens))
         {
             PumpRows.Clear();
-            foreach (var r in want) PumpRows.Add(r);
+            foreach (var r in wantScreens) PumpRows.Add(r);
+        }
+        if (!ShowRows.SequenceEqual(wantShows, StringComparer.Ordinal))
+        {
+            ShowRows.Clear();
+            foreach (var r in wantShows) ShowRows.Add(r);
         }
 
-        // A profile naming a screen or show that has since been deleted would sit
-        // on a row that is no longer in the list, which a ComboBox shows as blank.
+        // A name that has since been deleted would leave the control on a row
+        // that is no longer in its list, which a ComboBox shows as blank.
         if (!PumpRows.Contains(_pumpChoice)) _pumpChoice = PumpNone;
+        if (!ShowRows.Contains(_showChoice)) _showChoice = NoShow;
 
         OnChanged(nameof(PumpAvailable));
+        OnChanged(nameof(ShowAvailable));
         OnChanged(nameof(PumpChoice));
+        OnChanged(nameof(ShowChoice));
     }
 
     void SyncPumpChoice(Profile? p)
     {
-        if (p == null) return;   // a deselect says nothing about the pump panel
+        if (p == null) return;   // a deselect says nothing about either
         _pumpChoice = PumpRows.FirstOrDefault(r =>
-                          string.Equals(r.Screen, p.Screen, StringComparison.OrdinalIgnoreCase)
-                       && string.Equals(r.Show, p.Show, StringComparison.OrdinalIgnoreCase))
+                          string.Equals(r.Screen, p.Screen, StringComparison.OrdinalIgnoreCase))
                       ?? PumpNone;
+        _showChoice = ShowRows.FirstOrDefault(r =>
+                          !string.Equals(r, NoShow, StringComparison.Ordinal)
+                          && string.Equals(r, p.Show, StringComparison.OrdinalIgnoreCase))
+                      ?? NoShow;
         OnChanged(nameof(PumpChoice));
+        OnChanged(nameof(ShowChoice));
     }
 
-    /// <summary>What a save records for the pump panel. Null when this machine
-    /// has nothing to offer - no screens and no shows - so a profile that came
-    /// from a machine that did keeps what it carries.</summary>
-    PumpTarget? PumpForSave => PumpRows.Count <= 1 ? null : _pumpChoice.Target;
+    /// <summary>What a save records for the panel and the show. Null when this
+    /// machine has neither to offer, so a profile that came from one that did
+    /// keeps what it carries.</summary>
+    PumpTarget? PumpForSave
+        => PumpRows.Count <= 1 && ShowRows.Count <= 1
+           ? null
+           : new PumpTarget(_pumpChoice.Screen, _showChoice == NoShow ? null : _showChoice);
 
     void SyncWallpaperChoice(Profile? p)
     {
@@ -465,22 +506,28 @@ public sealed partial class MainViewModel
         // The profile OWNS the pump panel: a screen, a show, or nothing. Nothing
         // else starts a show any more, which is what stops the panel having two
         // owners that overwrite each other a second apart.
+        // The panel and the show are INDEPENDENT. A profile that starts a show
+        // usually also wants to say what the panel shows while it is itself a
+        // step of that show - which is the ordinary thing to build, and which one
+        // exclusive control could not express: the step displayed nothing and the
+        // previous step's screen stayed up.
         bool screenShown = false, showStarted = false;
-        if (!string.IsNullOrWhiteSpace(p.Show))
+
+        if (!string.IsNullOrWhiteSpace(p.Screen))
         {
-            // Ignored when this apply IS a show step. A step's profile naming a
-            // different show would have the show swap itself out mid-run, and one
-            // naming its own show would restart it from step one every pass.
-            if (!fromShow) showStarted = Lcd.ShowSequence(p.Show!);
-        }
-        else if (!string.IsNullOrWhiteSpace(p.Screen))
-        {
-            // One fixed screen means no show. Without this the show's next step
-            // paints over the screen a second after it appears, which is exactly
-            // what made a profile's pump screen meaningless to anyone running one.
-            if (!fromShow) Lcd.StopSequence();
+            // A screen with no show of its own means NO show, or the running
+            // show's next step paints over it a second later. When this profile
+            // starts a show, leave that to ShowSequence, which stops whatever
+            // else was running anyway.
+            if (!fromShow && string.IsNullOrWhiteSpace(p.Show)) Lcd.StopSequence();
             screenShown = Lcd.ShowScreen(p.Screen!, fromShow);
         }
+
+        // Ignored when this apply IS a show step: a step's profile naming a
+        // different show would have the show swap itself out mid-run, and one
+        // naming its own show would restart it from step one on every pass.
+        if (!fromShow && !string.IsNullOrWhiteSpace(p.Show))
+            showStarted = Lcd.ShowSequence(p.Show!);
         // And the screen in the case. Same reasoning as the pump panel: this is
         // the one door every apply comes through - the button, a hotkey, an app
         // rule, a schedule, a show step - so it is the only place that can make
@@ -490,10 +537,10 @@ public sealed partial class MainViewModel
         UnifiedRgb.Core.Log.Info("lighting",
             $"applied profile '{p.Name}': {p.Effects?.Count ?? 0} effect(s) on "
             + $"{p.DeviceFrames?.Count ?? 0} device(s)"
-            + (p.Show != null
-               ? (showStarted ? $", show '{p.Show}'" : fromShow ? "" : $", show '{p.Show}' could not start")
-               : p.Screen == null ? ""
+            + (p.Screen == null ? ""
                : screenShown ? $", pump screen '{p.Screen}'" : $", pump screen '{p.Screen}' not shown")
+            + (p.Show == null || fromShow ? ""
+               : showStarted ? $", show '{p.Show}'" : $", show '{p.Show}' could not start")
             // "asked for", never "showing": the control channel tells us
             // nothing about what the wallpaper did after we sent the request.
             + (p.Wallpaper == null ? ""
