@@ -191,7 +191,15 @@ public sealed partial class MainViewModel
 
     void SyncWallpaperChoice(Profile? p)
     {
-        _wallpaperChoice = string.IsNullOrWhiteSpace(p?.Wallpaper) ? NoWallpaper : p!.Wallpaper!;
+        // A DESELECT says nothing about the wallpaper, so it must not reset the
+        // picker. This is not hypothetical tidiness: a rename removes the old
+        // profile from the bound collection before it reads what to save, and a
+        // WPF selector whose selected item leaves its list pushes null back
+        // through the binding. Treating that null as "this profile has no
+        // wallpaper" wiped the user's choice and then saved the wipe. The name
+        // box beside it already ignored null for the same reason.
+        if (p == null) return;
+        _wallpaperChoice = string.IsNullOrWhiteSpace(p.Wallpaper) ? NoWallpaper : p.Wallpaper!;
         OnChanged(nameof(WallpaperChoice));
     }
 
@@ -249,8 +257,15 @@ public sealed partial class MainViewModel
             return;
         }
 
+        // Everything this save depends on is read BEFORE the collections are
+        // touched, because touching them re-enters through the bindings. The
+        // name and the prior profile were already latched here for that reason;
+        // the wallpaper was read at the call site below, after the rename had
+        // removed the selected item, and a selector pushing null back over that
+        // removal was enough to change the answer.
         string newName = ProfileName.Trim();
         var prior = SelectedProfile;
+        string? wallpaper = WallpaperForSave;
 
         // Renaming the selected profile: replace it instead of duplicating,
         // and carry the startup-profile setting to the new name.
@@ -270,7 +285,7 @@ public sealed partial class MainViewModel
         // an unplugged or disabled device, and an unavailable screen, were lost
         // on every rename. The old profile object is handed over explicitly.
         var p = _store.Capture(newName, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), Lcd.CurrentScreen,
-                               carryFrom: renamedFrom, wallpaper: WallpaperForSave);
+                               carryFrom: renamedFrom, wallpaper: wallpaper);
         var existing = Profiles.FirstOrDefault(x => x.Name.Equals(p.Name, StringComparison.OrdinalIgnoreCase));
         if (existing != null) Profiles.Remove(existing);
         Profiles.Add(p);

@@ -26,6 +26,21 @@ public partial class SettingsPane : UserControl
 
     void SettingsBack_Click(object sender, RoutedEventArgs e) => VM.IsSettingsOpen = false;
 
+    /// <summary>Open a link in the user's browser. UseShellExecute, because a
+    /// bare Process.Start of a URL does not launch anything on .NET Core - and
+    /// caught, because a machine with no default browser must not take the app
+    /// down over a link somebody clicked out of curiosity.</summary>
+    void Link_RequestNavigate(object sender, System.Windows.Navigation.RequestNavigateEventArgs e)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(
+                new System.Diagnostics.ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
+        }
+        catch (Exception ex) { UnifiedRgb.Core.Log.Warn("ui", $"could not open {e.Uri}: {ex.Message}"); }
+        e.Handled = true;
+    }
+
     void SaveProfileAsNew_Click(object sender, RoutedEventArgs e) => VM.SaveProfileAsNew();
 
     async void InstallPawnIo_Click(object sender, RoutedEventArgs e)

@@ -48,6 +48,20 @@ public sealed partial class MainViewModel
     }
     public bool ShowGithubUpdateToggle => !Backend.Configured;
 
+    /// <summary>Where releases live, built from the repo constant the update
+    /// check itself uses. Typed into the XAML it would be a second copy of the
+    /// repo name, free to drift the day the repo moves, and wrong in the one
+    /// place somebody goes when the automatic check is off.
+    ///
+    /// An INSTANCE property although nothing about it varies per instance: a
+    /// plain {Binding} resolves its path against the DataContext object, so a
+    /// static would simply never be found - and a binding that finds nothing
+    /// fails silently, which here would be a link with no address on it.</summary>
+    public string ReleasesUrl => $"https://github.com/{UnifiedRgb.Core.UpdateClient.GitHubRepo}/releases";
+
+    /// <summary>The same without the scheme, which is how a link should read.</summary>
+    public string ReleasesLabel => $"github.com/{UnifiedRgb.Core.UpdateClient.GitHubRepo}/releases";
+
     public async void InstallUpdate()
     {
         try { await Updates.InstallAsync(); }

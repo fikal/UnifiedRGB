@@ -30,6 +30,8 @@ static class ActivitySuite
     {
         RuntimePauseAndCalibration(t);
         WhiteTheAppPicksForYou(t);
+        TheReleasesLinkResolves(t);
+        TheWallpaperPickerSurvivesADeselect(t);
         t.Section("Ring bounds itself (#f1)");
         {
             var log = new ActivityLog();
@@ -194,6 +196,110 @@ static class ActivitySuite
                 t.Check(!s.Contains('\u2014'), $"pause copy has no em dash: {s}");
         }
     }
+    /// <summary>Renaming a profile wiped the wallpaper choice off it.
+    ///
+    /// The rename path removes the old profile from the bound collection before
+    /// it reads what to save. A WPF selector whose selected item leaves its list
+    /// pushes NULL back through the SelectedItem binding, so SelectedProfile was
+    /// set to null mid-save - and the wallpaper sync took that as "this profile
+    /// has no wallpaper" and reset the picker, which the save then wrote out.
+    ///
+    /// A deselection is not a statement about the wallpaper. The name box next
+    /// to it already knew that and ignored null; this did not.</summary>
+    static void TheWallpaperPickerSurvivesADeselect(Harness t)
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            UnifiedRgb.App.MainViewModel? vm = null;
+            try
+            {
+                vm = new UnifiedRgb.App.MainViewModel(startServices: false);
+                var dev = new FakeDevice { Name = "Wallpaper picker", LedCount = 2 };
+                vm.Devices.Add(dev);
+                vm.Profiles.Clear();
+                var a = new UnifiedRgb.App.Profile { Name = "Before" };
+                vm.Profiles.Add(a);
+                vm.SelectedProfile = a;
+
+                t.Section("the wallpaper picker survives a deselect");
+
+                vm.WallpaperChoice = "Matrix";
+                t.Equal("Matrix", vm.WallpaperChoice, "the picker holds what was chosen");
+
+                // Exactly what the ComboBox does when the selected profile is
+                // removed from the list, which is the first thing a rename does.
+                vm.SelectedProfile = null;
+                t.Equal("Matrix", vm.WallpaperChoice, "a deselect does not reset the picker");
+
+                // And selecting a profile that HAS a wallpaper still adopts it,
+                // which is the behaviour the null guard must not cost.
+                var b = new UnifiedRgb.App.Profile { Name = "After", Wallpaper = "Night" };
+                vm.Profiles.Add(b);
+                vm.SelectedProfile = b;
+                t.Equal("Night", vm.WallpaperChoice, "selecting a profile adopts its wallpaper");
+
+                var plain = new UnifiedRgb.App.Profile { Name = "Plain" };
+                vm.Profiles.Add(plain);
+                vm.SelectedProfile = plain;
+                t.Equal(UnifiedRgb.App.MainViewModel.NoWallpaper, vm.WallpaperChoice,
+                    "...and a profile with none says so");
+            }
+            catch (Exception ex) { failure = ex; }
+            finally
+            {
+                if (vm != null)
+                {
+                    vm.Lighting.StopAndDrain(); vm.Lcd.Dispose();
+                    var bake = (UnifiedRgb.App.Services.LianBakeService)typeof(UnifiedRgb.App.MainViewModel)
+                        .GetField("_bake", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(vm)!;
+                    bake.Stop();
+                }
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start(); thread.Join();
+        if (failure != null) throw new Exception("Wallpaper picker regression", failure);
+    }
+
+    /// <summary>The releases link's address comes from a binding, and the first
+    /// version of these properties was STATIC - which a plain {Binding} cannot
+    /// resolve at all, because it walks the DataContext object. It would have
+    /// shipped as a link with no address on it, looking exactly like a link
+    /// with one, on a page whose own comment warns that a bad binding here
+    /// fails silently.
+    ///
+    /// Pinned by shape rather than by building the page. Loading the settings
+    /// pane needs the application's resource dictionaries, which means standing
+    /// up a WPF Application inside the test host: nothing else in this suite
+    /// does that, and an Application outlives the thread that made it, so it
+    /// would be a new source of flakiness across thirty other suites to catch
+    /// one mistake this check already catches.</summary>
+    static void TheReleasesLinkResolves(Harness t)
+    {
+        t.Section("the releases link");
+        foreach (string name in new[] { "ReleasesUrl", "ReleasesLabel" })
+        {
+            var p = typeof(UnifiedRgb.App.MainViewModel).GetProperty(name);
+            t.Check(p != null, $"MainViewModel.{name} exists for the XAML to bind to");
+            t.Check(p?.GetGetMethod()?.IsStatic == false,
+                $"...and is an INSTANCE property, because a plain binding cannot resolve a static one");
+        }
+
+        var vm = typeof(UnifiedRgb.App.MainViewModel);
+        string url = (string)vm.GetProperty("ReleasesUrl")!.GetValue(
+            System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(vm))!;
+        string label = (string)vm.GetProperty("ReleasesLabel")!.GetValue(
+            System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(vm))!;
+
+        t.Check(Uri.TryCreate(url, UriKind.Absolute, out var parsed) && parsed!.Scheme == "https",
+            "the address is an absolute https URL, which is what NavigateUri needs");
+        t.Check(url.Contains(UnifiedRgb.Core.UpdateClient.GitHubRepo),
+            "built from the repo constant the update check uses, not typed out a second time");
+        t.Check(url.EndsWith("/releases"), "and points at the releases page");
+        t.Check(!label.StartsWith("http"), "the label drops the scheme, the way a link reads");
+    }
+
     /// <summary>The white the app chooses ON YOUR BEHALF has to be the same
     /// white you get by choosing it yourself. The 60% guard covered only the
     /// paths a person clicks, so an effect started on a black target handed out

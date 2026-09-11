@@ -113,8 +113,20 @@
                         <CheckBox Content="Start minimized to the tray" IsChecked="{Binding StartMinimized}" Margin="0,8,0,0"/>
                         <StackPanel Visibility="{Binding ShowGithubUpdateToggle, Converter={StaticResource BoolToVis}}">
                             <CheckBox Content="Check GitHub for new releases at startup" IsChecked="{Binding GithubUpdateCheck}" Margin="0,8,0,0"/>
-                            <TextBlock Style="{StaticResource Hint}" Margin="24,4,0,0"
-                                       Text="The only network request this build makes. Off, updates are manual from github.com/fikal/UnifiedRGB/releases."/>
+                            <!-- The link rather than a sentence about the link.
+                                 Both halves of what this said are visible
+                                 without words: the checkbox says what it does,
+                                 and somewhere to get releases by hand is the
+                                 only thing left worth offering. -->
+                            <TextBlock Style="{StaticResource Hint}" Margin="24,4,0,0">
+                                <Hyperlink x:Name="ReleasesLink"
+                                           NavigateUri="{Binding ReleasesUrl}"
+                                           RequestNavigate="Link_RequestNavigate"
+                                           Foreground="#FF7C97FF"
+                                           ToolTip="Every release, to download by hand">
+                                    <Run Text="{Binding ReleasesLabel, Mode=OneWay}"/>
+                                </Hyperlink>
+                            </TextBlock>
                         </StackPanel>
                     </StackPanel>
                 </Border>
