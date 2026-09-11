@@ -115,6 +115,25 @@ static class ProfilesSuite
             Directory.CreateDirectory(dir);
             try
             {
+                // THE REAL SHAPE, copied from a live Wallpaper Engine config
+                // after making a profile called Matrix: general/profiles is a
+                // LIST OF OBJECTS, each carrying "name" alongside the layout and
+                // the per-monitor wallpapers. This fixture is the reason the
+                // reader is not a guess.
+                //
+                // Note what else each entry carries: a key called "profile",
+                // whose value is an OBJECT. The reader only accepts a string, so
+                // that key cannot be mistaken for the name however the candidate
+                // keys are ordered - which is worth a fixture rather than worth
+                // trusting, because the failure would be a picker full of blanks
+                // rather than an error.
+                string live = "{\"ryanb\":{\"general\":{\"profiles\":[{\"layout\":0,\"name\":\"Matrix\","
+                            + "\"profile\":{},\"selectedwallpapers\":{\"Monitor0\":{\"file\":\"C:/x/scene.pkg\"},"
+                            + "\"Monitor1\":{\"file\":\"C:/x/rain.mp4\"}}}]}}}";
+                var fromLive = Read(dir, live);
+                t.Equal(1, fromLive.Length, "the real config yields one profile");
+                t.Equal("Matrix", fromLive[0], "...named from its \"name\", not from its \"profile\" key");
+
                 t.Equal(2, Read(dir, "{\"ryanb\":{\"general\":{\"profiles\":{\"Night\":{},\"Day\":{}}}}}").Length,
                     "an object keyed by name");
                 t.Equal(2, Read(dir, "{\"u\":{\"profiles\":[\"Night\",\"Day\"]}}").Length,
