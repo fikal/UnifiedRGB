@@ -1011,6 +1011,33 @@ static class CalibrationSuite
                     .Contains("no red"),
             "...and still blames the patch, which is the thing the user can click away from");
 
+        /*--- the note the reader actually sees ---*/
+        // Pinned exactly as in the screenshot that prompted this. Three clauses
+        // differing in one word each is noise, so they collapse into one.
+        t.Equal("Dimmed: red, green and blue are pinned at the ceiling, so nothing changes until they come back under 1.3×.",
+            CalibrationReferences.InertNote(white, pinned,
+                CalibrationControl.GainR, CalibrationControl.GainG, CalibrationControl.GainB),
+            "three channels pinned for one reason are ONE clause naming three channels");
+
+        // One channel keeps the singular the whole way through.
+        var oneHot = new DeviceCalibration { GainR = 1, GainG = 1, GainB = 2, Gamma = 0.3 };
+        t.Equal("Dimmed: blue is pinned at the ceiling, so nothing changes until it comes back under 1.3×.",
+            CalibrationReferences.InertNote(white, oneHot,
+                CalibrationControl.GainR, CalibrationControl.GainG, CalibrationControl.GainB),
+            "one pinned channel reads in the singular");
+
+        // Absent channels join with "or": "no red and green" reads as a
+        // complaint about the pair rather than about each of them.
+        t.Equal("Dimmed: this patch has no red or green in it.",
+            CalibrationReferences.InertNote(CalibrationReference.Blue, fresh,
+                CalibrationControl.GainR, CalibrationControl.GainG, CalibrationControl.GainB),
+            "absent channels are listed once, joined with or");
+
+        // Nothing dimmed is no note at all, not a bare "Dimmed:".
+        t.Equal("", CalibrationReferences.InertNote(CalibrationReference.MidGrey, fresh,
+                CalibrationControl.GainR, CalibrationControl.GainG, CalibrationControl.GainB),
+            "a group with nothing to say says nothing");
+
         Calibration.ResetAll();
     }
 

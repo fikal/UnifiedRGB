@@ -1201,49 +1201,171 @@ public static class CalibrationReferences
         }
     }
 
-    /// <summary>Why a control is doing nothing right now, for the one-line
-    /// note beside a dimmed slider. Empty when it does apply.</summary>
+    /// <summary>Why ONE control is doing nothing right now: a lowercase clause,
+    /// empty when the control does apply. The caller supplies the sentence
+    /// around it. For a group of sliders use InertNote instead.</summary>
     public static string InertBecause(CalibrationReference r, CalibrationControl control, DeviceCalibration? cal = null)
     {
-        if (Affects(r, control, cal)) return "";
+        var kind = KindOf(r, control, cal);
+        return kind == InertKind.None ? "" : Clause(kind, new List<string> { Channel(control) }, r, cal);
+    }
 
-        // The patch is the simpler cause and the one the user can fix by
-        // clicking another patch, so it is named first.
+    /// <summary>The whole dimmed-slider note for a group of controls, in one
+    /// sentence, or empty when they all apply.
+    ///
+    /// Grouped by REASON, not emitted per control. Three gains pinned for the
+    /// same reason at the same threshold used to print three clauses differing
+    /// only in the word red, green or blue - four lines of near-identical text
+    /// under three sliders, which reads as noise rather than as help.</summary>
+    public static string InertNote(CalibrationReference r, DeviceCalibration? cal, params CalibrationControl[] controls)
+    {
+        // Keyed on the reason AND its number, so two channels that are both
+        // pinned but recover at different gains stay in separate clauses rather
+        // than merging under one figure that is wrong for one of them.
+        var order = new List<(InertKind Kind, string Detail)>();
+        var subjects = new Dictionary<(InertKind, string), List<string>>();
+
+        foreach (var control in controls ?? Array.Empty<CalibrationControl>())
+        {
+            var kind = KindOf(r, control, cal);
+            if (kind == InertKind.None) continue;
+            var key = (kind, Detail(kind, r, control, cal));
+            if (!subjects.TryGetValue(key, out var names))
+            {
+                subjects[key] = names = new List<string>();
+                order.Add(key);
+            }
+            names.Add(Channel(control));
+        }
+        if (order.Count == 0) return "";
+
+        return "Dimmed: " + string.Join("; ", order.Select(k => Clause(k.Kind, subjects[k], r, cal))) + ".";
+    }
+
+    enum InertKind { None, NoChannel, GammaNeedsMidtone, NothingLit, PinnedAtCeiling, ClippedCurve, BelowCeiling }
+
+    static InertKind KindOf(CalibrationReference r, CalibrationControl control, DeviceCalibration? cal)
+    {
+        if (Affects(r, control, cal)) return InertKind.None;
+        // The patch is the simpler cause, and the one the user can fix by
+        // clicking a different patch, so it wins when both are true.
         if (!Affects(r, control))
             return control switch
             {
-                CalibrationControl.Gamma => "gamma only bends the middle of the range, so try a grey patch",
-                CalibrationControl.Cap => "nothing is lit to cap",
-                _ => $"this patch has no {Channel(control)} in it",
+                CalibrationControl.Gamma => InertKind.GammaNeedsMidtone,
+                CalibrationControl.Cap => InertKind.NothingLit,
+                _ => InertKind.NoChannel,
             };
-
-        // Otherwise the patch is fine and this row's own trim has run out of
-        // room. Say which way out, because the fix is a different slider.
         return control switch
         {
-            // With the threshold, which is the whole answer: a ceiling above
-            // everything this row is showing does nothing until it comes down
-            // past the brightest channel, and guessing where that is by dragging
-            // is exactly the experience this note exists to prevent.
-            CalibrationControl.Cap => $"nothing here reaches the ceiling - on this patch it starts to bite below {Brightest(r, cal)}%",
-            CalibrationControl.Gamma => "this row is already clipped, so the curve has nothing left to bend",
-            _ => $"{Channel(control)} is already pinned at the ceiling here - lower the gain, the gamma or Max brightness to give it room",
-        };
-
-        static int Brightest(CalibrationReference r, DeviceCalibration? cal)
-        {
-            var sent = cal == null ? ColorOf(r) : cal.Map(ColorOf(r));
-            int top = Math.Max(sent.R, Math.Max(sent.G, sent.B));
-            return (int)Math.Round(top * 100.0 / 255.0);
-        }
-
-        static string Channel(CalibrationControl c) => c switch
-        {
-            CalibrationControl.GainR => "red",
-            CalibrationControl.GainG => "green",
-            _ => "blue",
+            CalibrationControl.Cap => InertKind.BelowCeiling,
+            CalibrationControl.Gamma => InertKind.ClippedCurve,
+            _ => InertKind.PinnedAtCeiling,
         };
     }
+
+    /// <summary>The number a clause quotes, where it has one. Also the second
+    /// half of the grouping key.</summary>
+    static string Detail(InertKind kind, CalibrationReference r, CalibrationControl control, DeviceCalibration? cal) => kind switch
+    {
+        InertKind.BelowCeiling => $"{Brightest(r, cal)}%",
+        InertKind.PinnedAtCeiling => Recovery(r, control, cal),
+        _ => "",
+    };
+
+    static string Clause(InertKind kind, List<string> names, CalibrationReference r, DeviceCalibration? cal)
+    {
+        string list = Join(names);
+        bool many = names.Count > 1;
+        return kind switch
+        {
+            // "no red or green", never "no red and green", which reads as a
+            // complaint about the pair rather than about each of them.
+            InertKind.NoChannel => $"this patch has no {Join(names, "or")} in it",
+            InertKind.GammaNeedsMidtone => "gamma only bends the middle of the range, so try a grey patch",
+            InertKind.NothingLit => "nothing is lit to cap",
+            // The threshold, rather than a list of remedies. "Lower the gain,
+            // the gamma or Max brightness" was true and useless: it never said
+            // how far, which is the only part the reader does not already know.
+            InertKind.PinnedAtCeiling =>
+                $"{list} {(many ? "are" : "is")} pinned at the ceiling, so nothing changes until "
+                + $"{(many ? "they come" : "it comes")} back under "
+                + Recovery(r, names.Count == 0 ? CalibrationControl.GainR : ControlOf(names[0]), cal),
+            InertKind.ClippedCurve => "gamma has nothing left to bend while this row is clipped at the ceiling",
+            InertKind.BelowCeiling => $"nothing here reaches the ceiling, which starts to bite below {Brightest(r, cal)}%",
+            _ => "",
+        };
+    }
+
+    /// <summary>How far a pinned gain must come down before it moves the output
+    /// again, walked in real slider ticks rather than solved, so the figure
+    /// quoted is one the user can actually land on.</summary>
+    static string Recovery(CalibrationReference r, CalibrationControl control, DeviceCalibration? cal)
+    {
+        // The multiplication sign the sliders themselves show, so the figure in
+        // the sentence and the figure above the thumb are the same notation.
+        if (cal == null) return "1×";
+        double step = StepOf(control);
+        var probe = cal.Clone();
+        double found = DeviceCalibration.MinGain;
+        for (double v = GainOf(cal, control); v >= DeviceCalibration.MinGain; v -= step)
+        {
+            SetGain(probe, control, v);
+            probe.Normalize();
+            if (Affects(r, control, probe)) { found = v; break; }
+        }
+        // One tick above the first value that moves: that is the boundary, and
+        // "under 1.2x" is a truer instruction than "at 1.1x".
+        return FormattableString.Invariant($"{found + step:0.#}×");
+
+        static double GainOf(DeviceCalibration c, CalibrationControl control) => control switch
+        {
+            CalibrationControl.GainR => c.GainR,
+            CalibrationControl.GainG => c.GainG,
+            _ => c.GainB,
+        };
+        static void SetGain(DeviceCalibration c, CalibrationControl control, double v)
+        {
+            switch (control)
+            {
+                case CalibrationControl.GainR: c.GainR = v; break;
+                case CalibrationControl.GainG: c.GainG = v; break;
+                default: c.GainB = v; break;
+            }
+        }
+    }
+
+    static int Brightest(CalibrationReference r, DeviceCalibration? cal)
+    {
+        var sent = cal == null ? ColorOf(r) : cal.Map(ColorOf(r));
+        int top = Math.Max(sent.R, Math.Max(sent.G, sent.B));
+        return (int)Math.Round(top * 100.0 / 255.0);
+    }
+
+    /// <summary>"red", "red and green", "red, green and blue".</summary>
+    static string Join(List<string> names, string conjunction = "and") => names.Count switch
+    {
+        0 => "",
+        1 => names[0],
+        2 => $"{names[0]} {conjunction} {names[1]}",
+        _ => string.Join(", ", names.Take(names.Count - 1)) + $" {conjunction} " + names[^1],
+    };
+
+    static string Channel(CalibrationControl c) => c switch
+    {
+        CalibrationControl.GainR => "red",
+        CalibrationControl.GainG => "green",
+        CalibrationControl.GainB => "blue",
+        CalibrationControl.Gamma => "gamma",
+        _ => "Max brightness",
+    };
+
+    static CalibrationControl ControlOf(string channel) => channel switch
+    {
+        "red" => CalibrationControl.GainR,
+        "green" => CalibrationControl.GainG,
+        _ => CalibrationControl.GainB,
+    };
 
     /// <summary>The next reference in the cycle, wrapping. The aid's "show me
     /// the next patch" button is one call.</summary>

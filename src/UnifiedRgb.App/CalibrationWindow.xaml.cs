@@ -281,26 +281,19 @@ public partial class CalibrationWindow : Window
         Dim(GammaLabel, GammaSlider, CalibrationControl.Gamma);
         Dim(CapLabel, CapSlider, CalibrationControl.Cap);
 
-        GainNote.Text = NoteFor(CalibrationControl.GainR, CalibrationControl.GainG, CalibrationControl.GainB);
-        CurveNote.Text = NoteFor(CalibrationControl.Gamma, CalibrationControl.Cap);
+        // One line per group, and the grouping happens in Core: three channels
+        // dimmed for the same reason are one clause naming three channels, not
+        // the same sentence three times over.
+        GainNote.Text = CalibrationReferences.InertNote(r, cal,
+            CalibrationControl.GainR, CalibrationControl.GainG, CalibrationControl.GainB);
+        CurveNote.Text = CalibrationReferences.InertNote(r, cal,
+            CalibrationControl.Gamma, CalibrationControl.Cap);
 
         void Dim(System.Windows.Controls.TextBlock label, System.Windows.Controls.Slider slider, CalibrationControl c)
         {
             double o = CalibrationReferences.Affects(r, c, cal) ? 1.0 : 0.4;
             label.Opacity = o;
             slider.Opacity = o;
-        }
-
-        // One line per group rather than one per row: three notes stacked under
-        // three sliders is more words than the controls they describe.
-        string NoteFor(params CalibrationControl[] controls)
-        {
-            var reasons = controls
-                .Select(c => CalibrationReferences.InertBecause(r, c, cal))
-                .Where(s => s.Length > 0)
-                .Distinct()
-                .ToList();
-            return reasons.Count == 0 ? "" : "Dimmed: " + string.Join("; ", reasons) + ".";
         }
     }
 
