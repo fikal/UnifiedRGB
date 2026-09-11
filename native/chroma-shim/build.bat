@@ -48,8 +48,15 @@ type exports-x64.txt
 endlocal
 
 setlocal
+REM x64_x86 needs the x86 TARGETING libraries, a separate install component from
+REM the x64 toolset vswhere was asked for above. When this fails that is almost
+REM always what is missing, rather than anything about this script.
 call "%VCVARSALL%" x64_x86
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+    echo *** could not enter the x86 build environment ***
+    echo *** install the "MSVC ... x64/x86 build tools" component in the Visual Studio Installer ***
+    exit /b 1
+)
 rc /nologo /D SHIM32 /fo version32.res version.rc
 if errorlevel 1 exit /b 1
 cl /nologo /LD /MT /EHsc /O2 /std:c++17 RzChromaSDK.cpp version32.res /Fo:RzChromaSDK32.obj /link /DEF:RzChromaSDK32.def /IMPLIB:RzChromaSDK32.lib /OUT:RzChromaSDK.dll

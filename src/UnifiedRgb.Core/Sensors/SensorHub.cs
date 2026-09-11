@@ -950,8 +950,8 @@ public static class SensorHub
     }
 
     /*-------------- wireless fans: slot keys follow a rescan --------------*\
-    | Lian entries are keyed by ARRANGED SLOT (LianFanBase + slot) against a  |
-    | particular LianLiWireless instance. The layout dialog saves a new       |
+    | Lian entries are keyed by ARRANGED SLOT (LianFanBase + slot) against a |
+    | particular LianLiWireless instance. The layout dialog saves a new      |
     | slot->chain order and triggers a Rescan, which REPLACES the instance   |
     | with one whose slots point at different physical fans - and every Lian |
     | entry here still said "slot 2", so the curve the user put on the top   |

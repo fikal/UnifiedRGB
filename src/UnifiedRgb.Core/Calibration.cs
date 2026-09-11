@@ -5,7 +5,7 @@ namespace UnifiedRgb.Core;
 
 /*-----------------------------------------------------------*\
 | Per-device and per-ZONE color calibration: making one picked |
-| color look like one color across the whole desk.            |
+| color look like one color across the whole desk.             |
 |                                                              |
 | The problem this exists for is physical, not aesthetic. The  |
 | keyboard, the fan rings, the strips and the GPU logo were    |
@@ -47,16 +47,16 @@ namespace UnifiedRgb.Core;
 | is not a ceiling.                                            |
 |                                                              |
 | Master.Brightness runs AFTER all of this (see Master.Finish).|
-| Same argument: calibration must see the picked color, not a |
+| Same argument: calibration must see the picked color, not a  |
 | dimmed one, or the white balance would shift every time the  |
 | master slider moved. The cap survives that ordering intact,  |
 | because master brightness only ever reduces.                 |
 |                                                              |
 | THE RULE THIS SHARES WITH Master.Scale: calibration is       |
 | applied to frames on their way to hardware and NEVER to      |
-| stored state. The color the user picked must round-trip out |
+| stored state. The color the user picked must round-trip out  |
 | of a saved profile exactly as they picked it, or trimming a  |
-| device would slowly eat their own colors.                   |
+| device would slowly eat their own colors.                    |
 |                                                              |
 | AND THE RULE THAT PROTECTS EVERY OTHER TEST IN THIS REPO: an |
 | untouched device is SHORT-CIRCUITED, not merely mathematical |
@@ -535,11 +535,14 @@ public static class Calibration
             // sits. A stored trim for a zone this device does not have (a
             // renamed zone, a board swapped for a different model) simply
             // finds no range and is skipped rather than trimming something
-            // arbitrary.
-            foreach (var z in declared)
+            // arbitrary. ZoneKeys is what makes that lookup hit ONE zone: two
+            // zones sharing a name would both match a single stored trim.
+            var keys = ZoneKeys(declared);
+            for (int i = 0; i < declared.Count; i++)
             {
+                var z = declared[i];
                 if (z == null || z.Count <= 0 || z.Offset < 0) continue;
-                if (zoneTables.TryGetValue(z.Name, out var t))
+                if (zoneTables.TryGetValue(keys[i], out var t))
                     list.Add(new ZoneSpan(z.Offset, z.Offset + z.Count, t));
             }
             // Whole-fan zones contain inner/outer-ring zones. Partition their
@@ -598,8 +601,22 @@ public static class Calibration
             // keeps the short circuit honest: a user who drags a slider and
             // drags it back is genuinely uncalibrated again, table lookup and
             // all, rather than paying for a table that does nothing.
-            if (copy.IsIdentity) _settings.Remove(device);
-            else _settings[device] = copy;
+            //
+            // And a Set that changes nothing rebuilds nothing. Every rebuild
+            // bumps Version, which stales every cached DevicePlan on the
+            // machine, so each no-op call made every effect worker re-enter
+            // BuildPlan and re-transform its whole device on the next frame.
+            // SetZone already had this guard through RemoveZone's bool; this
+            // side did not.
+            if (copy.IsIdentity)
+            {
+                if (!_settings.Remove(device)) return;
+            }
+            else
+            {
+                if (_settings.TryGetValue(device, out var had) && had.Fingerprint() == copy.Fingerprint()) return;
+                _settings[device] = copy;
+            }
             Rebuild();
         }
     }
@@ -721,6 +738,40 @@ public static class Calibration
         get { lock (_write) return _settings.Keys.ToList(); }
     }
 
+    /// <summary>The store key for each of a device's zones, in declaration
+    /// order and one per entry, so a caller can index straight into it.
+    ///
+    /// A trim is stored against a NAME, and a name is not something the app
+    /// controls: GigabyteIt5711 takes it from a hand-edited hardware.json and
+    /// OpenRgbDevice takes it from whatever the server says. Two headers called
+    /// the same thing used to produce two rows in the editor that wrote one
+    /// store entry, and one trim that was then applied to BOTH ranges - so
+    /// trimming the header you could see also trimmed the one you could not.
+    /// The second and later claimants of a name get a numbered suffix, which
+    /// keeps the file readable and leaves every device whose names were already
+    /// distinct (all of them, in every rig we have seen) storing exactly what
+    /// it stored before. No migration, because nothing that was working
+    /// changes.</summary>
+    public static string[] ZoneKeys(IReadOnlyList<RgbZone>? zones)
+    {
+        if (zones == null || zones.Count == 0) return Array.Empty<string>();
+        var keys = new string[zones.Count];
+        var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < zones.Count; i++)
+        {
+            // A nameless zone still needs a key, and its position is the only
+            // thing left to name it by.
+            string name = zones[i]?.Name is string s && !string.IsNullOrWhiteSpace(s) ? s : $"Zone {i + 1}";
+            // The loop rather than a count: a device declaring "Header",
+            // "Header (2)" and "Header" would otherwise hand the third zone the
+            // key the second one already holds.
+            string key = name;
+            for (int n = 2; !taken.Add(key); n++) key = $"{name} ({n})";
+            keys[i] = key;
+        }
+        return keys;
+    }
+
     /// <summary>The zones of one device that carry a trim of their own.</summary>
     public static IReadOnlyList<string> CalibratedZones(string device)
     {
@@ -752,6 +803,21 @@ public static class Calibration
         }
     }
 
+    /// <summary>The 768-byte table for one stored trim, built once per trim
+    /// OBJECT. A rebuild reruns every entry, and moving one slider on one
+    /// device rebuilt every table on the machine: 768 Math.Pow per table, per
+    /// tick of the drag. Keyed on the stored instance, which Set and SetZone
+    /// replace wholesale whenever the numbers change, so an entry that did not
+    /// change keeps its reference and therefore keeps its table. Weak, so a
+    /// removed trim is not held alive by its own cache.
+    ///
+    /// This is sound only because the stored objects are private clones that
+    /// nothing mutates after storing - For() and ForZone() hand out copies
+    /// precisely so no caller can reach them.</summary>
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<DeviceCalibration, byte[]> _tableCache = new();
+
+    static byte[] TableFor(DeviceCalibration c) => _tableCache.GetValue(c, static k => k.BuildTable());
+
     /// <summary>Rebuild the published tables from the settings. The caller
     /// holds _write.</summary>
     static void Rebuild()
@@ -763,13 +829,13 @@ public static class Calibration
         else
         {
             var devices = new Dictionary<string, byte[]>(_settings.Count, StringComparer.OrdinalIgnoreCase);
-            foreach (var pair in _settings) devices[pair.Key] = pair.Value.BuildTable();
+            foreach (var pair in _settings) devices[pair.Key] = TableFor(pair.Value);
 
             var zones = new Dictionary<string, Dictionary<string, byte[]>>(_zoneSettings.Count, StringComparer.OrdinalIgnoreCase);
             foreach (var pair in _zoneSettings)
             {
                 var inner = new Dictionary<string, byte[]>(pair.Value.Count, StringComparer.OrdinalIgnoreCase);
-                foreach (var z in pair.Value) inner[z.Key] = z.Value.BuildTable();
+                foreach (var z in pair.Value) inner[z.Key] = TableFor(z.Value);
                 zones[pair.Key] = inner;
             }
             _tables = new CalibrationTables { Devices = devices, Zones = zones };

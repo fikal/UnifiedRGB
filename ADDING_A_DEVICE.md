@@ -93,8 +93,9 @@ that one line, already written. Since `SetColors` returns a verdict a driver
 may instead refuse a short frame outright and return `false`, which is honest
 and visible. What is banned is dropping it **silently** and padding the tail
 with **black** - both have been done, and both looked like a dead device.
-`EneDram` and `CorsairStrafeMk2` still black-pad; that is a defect on the
-list, not a licence to copy.
+Every driver in the tree follows this now; `EneDram` and `CorsairStrafeMk2`
+were the last two black-padding, and `Suites/Devices.cs` pins the keyboard's
+behaviour so it cannot come back.
 
 ### The verdict: what `SetColors` returns
 

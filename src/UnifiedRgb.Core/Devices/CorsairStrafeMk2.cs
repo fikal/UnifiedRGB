@@ -363,11 +363,16 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
             // shows exactly what was asked for.
             if (WritePolicy.Unchanged(_last, colors)) return true;
             Array.Clear(_rCh); Array.Clear(_gCh); Array.Clear(_bCh);
-            for (int i = 0; i < Keys.Length && i < n; i++)
+            for (int i = 0; i < Keys.Length; i++)
             {
-                _rCh[Keys[i]] = colors[i].R;
-                _gCh[Keys[i]] = colors[i].G;
-                _bCh[Keys[i]] = colors[i].B;
+                // Past the end of a short frame the contract says repeat the
+                // last color. Stopping at n left the rest of the keyboard on
+                // the zeroes cleared above, i.e. black, which is the one thing
+                // the contract names as looking like a dead device.
+                var c = WritePolicy.ColorAt(colors, i);
+                _rCh[Keys[i]] = c.R;
+                _gCh[Keys[i]] = c.G;
+                _bCh[Keys[i]] = c.B;
             }
             // All three channels are always attempted: the frame is latched by
             // the blue commit, and stopping at the first refusal would leave

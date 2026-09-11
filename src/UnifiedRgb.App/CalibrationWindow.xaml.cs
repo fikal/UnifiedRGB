@@ -12,7 +12,7 @@ using UnifiedRgb.Core;
 namespace UnifiedRgb.App;
 
 /*-----------------------------------------------------------*\
-| Per-device and per-zone color calibration.                  |
+| Per-device and per-zone color calibration.                   |
 |                                                              |
 | The window is deliberately not "six sliders and good luck".  |
 | The thing that makes this job possible is the comparison     |
@@ -20,7 +20,7 @@ namespace UnifiedRgb.App;
 | every device at once, because the eye has no absolute memory |
 | for white and a user trimming one device at a time is        |
 | comparing what is in front of them against a remembered      |
-| color, which is always wrong.                               |
+| color, which is always wrong.                                |
 |                                                              |
 | THE LIST IS TWO LEVELS. A motherboard is one device object   |
 | and seven unrelated lights: a 30-LED ribbon strip on one     |
@@ -102,8 +102,14 @@ public partial class CalibrationWindow : Window
             // would have two places to set one thing.
             var zones = d.Zones;
             if (zones == null || zones.Count < 2) continue;
-            foreach (var z in zones)
-                if (z != null && z.Count > 0) Rows.Add(new CalDeviceRow(d, z));
+            // Keyed, not named. Two zones can be called the same thing, and a
+            // row that wrote the shared name would edit its twin as well as
+            // itself - see Calibration.ZoneKeys. The key is also what the row
+            // DISPLAYS, because two identically labelled rows that behave
+            // differently are worse than a suffix.
+            var keys = Calibration.ZoneKeys(zones);
+            for (int i = 0; i < zones.Count; i++)
+                if (zones[i] is RgbZone z && z.Count > 0) Rows.Add(new CalDeviceRow(d, z, keys[i]));
         }
 
         InitializeComponent();
@@ -522,18 +528,22 @@ public sealed class CalDeviceRow : INotifyPropertyChanged
 
     public bool IsZone => Zone != null;
 
-    /// <summary>The zone's name, or null for a device row. This is the exact
-    /// shape Calibration's zone-aware calls want, so the window never has to
-    /// branch to build an argument.</summary>
-    public string? ZoneName => Zone?.Name;
+    /// <summary>The zone's STORE KEY, or null for a device row. This is the
+    /// exact shape Calibration's zone-aware calls want, so the window never has
+    /// to branch to build an argument. It is the zone's name wherever that name
+    /// is unique on the device, which is the ordinary case; where it is not,
+    /// Calibration.ZoneKeys has numbered it, and that number is the only thing
+    /// separating this row's trim from its twin's.</summary>
+    public string? ZoneName { get; }
 
-    public string Name => Zone?.Name ?? Device.Name;
+    public string Name => ZoneName ?? Device.Name;
 
-    public CalDeviceRow(IRgbDevice device, RgbZone? zone)
+    public CalDeviceRow(IRgbDevice device, RgbZone? zone, string? zoneKey = null)
     {
         Device = device;
         Zone = zone;
-        _swatch = Calibration.Apply(device.Name, zone?.Name, Rgb.White);
+        ZoneName = zone == null ? null : zoneKey ?? zone.Name;
+        _swatch = Calibration.Apply(device.Name, ZoneName, Rgb.White);
     }
 
     Rgb _swatch;

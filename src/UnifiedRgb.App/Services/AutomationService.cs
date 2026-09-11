@@ -11,7 +11,7 @@ using ActivityKind = UnifiedRgb.Core.Automation.ActivityKind;
 namespace UnifiedRgb.App.Services;
 
 /*-----------------------------------------------------------*\
-| "It manages itself": a tiny state machine over the lights.  |
+| "It manages itself": a tiny state machine over the lights.   |
 |                                                              |
 |   Locked   session locked: lights off, restore on unlock.    |
 |   Schedule a timed window is open: lights off, or apply its  |
@@ -24,7 +24,7 @@ namespace UnifiedRgb.App.Services;
 |            we leave Base, restored, frames AND running       |
 |            effects, when we come back).                      |
 |                                                              |
-| Priority: Locked > Schedule(off) > Sensor > Schedule(profile) |
+| Priority: Locked > Schedule(off) > Sensor > Schedule(profile)|
 | > App > Base. Transitions                                    |
 | only on state CHANGE, steady states never re-apply. The      |
 | decision itself is pure and lives in Core                    |

@@ -271,8 +271,11 @@ public sealed class LogitechG403 : IRgbDevice
     /// five-second sulk from an earlier refusal.</summary>
     public void InvalidateCache()
     {
+        // The per-cluster "already said it" flag goes too. Without it a
+        // cluster that recovered through an invalidation never logged that it
+        // was answering again, and never logged the NEXT outage either.
         lock (_writeLock)
-            for (int i = 0; i < _clusterEffect.Length; i++) { _lastPer[i] = null; _retryAfter[i] = 0; }
+            for (int i = 0; i < _clusterEffect.Length; i++) { _lastPer[i] = null; _retryAfter[i] = 0; _silent[i] = false; }
     }
 
     /// <summary>Stream the colors; with <paramref name="persist"/> also commit

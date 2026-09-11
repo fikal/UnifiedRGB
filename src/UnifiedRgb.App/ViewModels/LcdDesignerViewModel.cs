@@ -291,8 +291,8 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     }
 
     /*-----------------------------------------------------*\
-    | Undo / redo.                                          |
-    |                                                       |
+    | Undo / redo.                                           |
+    |                                                        |
     | Whole-design snapshots (a few KB of JSON each). The    |
     | tricky part is that property changes arrive AFTER the  |
     | edit, so the pre-edit state has to be kept standing:   |

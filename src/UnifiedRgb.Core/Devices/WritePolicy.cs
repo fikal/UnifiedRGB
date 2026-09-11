@@ -11,7 +11,7 @@ namespace UnifiedRgb.Core.Devices;
 | a frame recorded as sent before it went out, so the engine's |
 | own keepalive re-send - which exists precisely to cover a    |
 | lost packet - was deduped away and the device sat on a stale |
-| color until something else changed it.                      |
+| color until something else changed it.                       |
 |                                                              |
 | The rules, in one place:                                     |
 |                                                              |
@@ -19,7 +19,7 @@ namespace UnifiedRgb.Core.Devices;
 |    reached the device OR was correctly skipped because the   |
 |    device is already showing it. They return false only when |
 |    the device REFUSED it. False is not an exception: the     |
-|    engine's breaker counts throws, and a refusal is a          |
+|    engine's breaker counts throws, and a refusal is a        |
 |    transient thing that the next frame should fix.           |
 |                                                              |
 | 2. DEDUP AFTER SUCCESS, NEVER BEFORE. A frame is recorded as |
@@ -122,7 +122,7 @@ public static class WritePolicy
     /// <summary>Gap between attempts. Long enough that a device busy with the
     /// previous packet has a moment to catch up, short enough that the budget
     /// buys a dozen or so tries.</summary>
-    public const int MustLandGapMs = 25;
+    internal const int MustLandGapMs = 25;
 
     /// <summary>Deliver something that has no next frame behind it, retrying
     /// until it lands or the budget runs out.

@@ -96,6 +96,9 @@ static class CalibrationSuite
 
     static void Body(Harness t)
     {
+        ZoneKeysAreUnique(t);
+        ThroughARealWriteBoundary(t);
+
         t.Section("nested fan zones and aid restoration");
         Calibration.ResetAll();
         Master.Brightness = 1;
@@ -187,13 +190,45 @@ static class CalibrationSuite
             Master.Brightness = 1.0;
             t.Check(allMatch, "Master.Finish == Master.Scale for an uncalibrated device at every brightness");
 
-            // And through the slice form, where the buffer starts part way
-            // into the device: a plan consulted at all here would be consulted
-            // with a non-zero offset, which is the shape most likely to be got
-            // wrong.
+            // And through the slice form, where the buffer starts part way into
+            // the device. Two different claims live here and only the second is
+            // about offsets at all.
+            //
+            // First with nothing trimmed anywhere. This re-tests the TOP short
+            // circuit: _tables is null, Apply returns before a plan is asked for
+            // and the offset is never read. Worth keeping, not worth mistaking
+            // for coverage of the arithmetic.
             var untouched = (Rgb[])probe.Clone();
             Master.Finish(plain, untouched, 0, untouched.Length, 37);
-            t.Check(Same(probe, untouched), "a slice at a device offset is untouched on an uncalibrated device");
+            t.Check(Same(probe, untouched), "a slice at a device offset is untouched while nothing at all is trimmed");
+
+            // Now the case that exercises the offset for real: another device is
+            // trimmed, so the tables exist and the plan path runs, but THIS
+            // device has no trim of its own and no trimmed zone. It must come
+            // back byte for byte, at an offset that is neither zero nor on one
+            // of its zone boundaries.
+            Calibration.Set("Someone Else Entirely", new DeviceCalibration { GainR = 0.25 });
+            try
+            {
+                t.Check(Calibration.AnyCalibrated, "...with the rig genuinely calibrated this time");
+                var inACalibratedRig = (Rgb[])probe.Clone();
+                Master.Finish(plain, inACalibratedRig, 0, inACalibratedRig.Length, 37);
+                t.Check(Same(probe, inACalibratedRig),
+                    "an untrimmed device is untouched at a non-zero device offset while the rig IS calibrated");
+
+                // And a slice that straddles a trimmed zone's boundary, which is
+                // the shape a wrong deviceOffset corrupts: LEDs 98..103 of a
+                // device whose Logo zone starts at 100.
+                Calibration.SetZone(plain.Name, "Logo", new DeviceCalibration { GainR = 0.5 });
+                var straddle = Enumerable.Repeat(new Rgb(255, 255, 255), 6).ToArray();
+                Master.Finish(plain, straddle, 0, straddle.Length, 98);
+                t.Equal((byte)255, straddle[0].R, "the part of a slice before the trimmed zone is untouched");
+                t.Equal((byte)255, straddle[1].R, "...right up to the boundary");
+                t.Equal((byte)128, straddle[2].R, "the trim starts exactly where the zone does");
+                t.Equal((byte)128, straddle[5].R, "...and runs to the end of the slice");
+                Calibration.ResetZone(plain.Name, "Logo");
+            }
+            finally { Calibration.Reset("Someone Else Entirely"); }
 
             // And the identity TABLE itself, in case a future change ever
             // stores one: byte in, same byte out, for all 256 levels.
@@ -402,7 +437,17 @@ static class CalibrationSuite
             var other = new[] { new Rgb(255, 255, 255) };
             Calibration.Apply("Never Calibrated", other);
             t.Equal(new Rgb(255, 255, 255), other[0], "an unknown device gets defaults while another device is trimmed");
-            t.Check(Calibration.For("Never Calibrated").IsIdentity, "For() on an unknown device returns defaults, not null");
+            var unknown = Calibration.For("Never Calibrated");
+            t.Check(unknown.IsIdentity, "For() on an unknown device returns defaults, not null");
+            // A COPY of the defaults, which is the part worth asserting: the
+            // editor binds sliders straight onto whatever this hands back, so a
+            // shared instance would let one pane rewrite the defaults every
+            // other device reads.
+            unknown.GainR = 0.5;
+            t.Check(Calibration.For("Never Calibrated").IsIdentity, "...and a fresh copy each time");
+            var stillUntouched = new[] { new Rgb(255, 255, 255) };
+            Calibration.Apply("Never Calibrated", stillUntouched);
+            t.Equal(new Rgb(255, 255, 255), stillUntouched[0], "...so scribbling on it cannot trim the device");
 
             // Black is a fixed point of the whole transform, which is what lets
             // the lights-off path skip it entirely.
@@ -893,11 +938,147 @@ static class CalibrationSuite
         public string Vendor => "Test";
         public DeviceType Type => DeviceType.Fan;
         public int LedCount => 20;
-        public IReadOnlyList<RgbZone> Zones => new[] {
+        // One instance, for the lifetime of the object. See FakeZonedDevice.
+        public IReadOnlyList<RgbZone> Zones { get; } = new[] {
             new RgbZone { Name = "Fan 1", Offset = 0, Count = 20 },
             new RgbZone { Name = "Inner", Offset = 0, Count = 8 },
             new RgbZone { Name = "Outer", Offset = 8, Count = 12 } };
         public bool SetColors(IReadOnlyList<Rgb> colors) => true;
+        public void Dispose() { }
+    }
+
+    /*---------------- two zones, one name ----------------*/
+
+    /// <summary>A zone name is not something this app controls: the Gigabyte
+    /// driver reads it out of a hand-edited hardware.json and the OpenRGB
+    /// driver takes whatever the server says. Trims are stored against that
+    /// name, so a collision used to mean one stored entry governing two
+    /// separate ranges - trimming the header you could see also trimmed the
+    /// one you could not, with two editor rows fighting over one value.</summary>
+    static void ZoneKeysAreUnique(Harness t)
+    {
+        t.Section("two zones with one name do not share a trim");
+        Calibration.ResetAll();
+        Master.Brightness = 1;
+
+        var board = new TwinHeaderBoard();
+        var keys = Calibration.ZoneKeys(board.Zones);
+        t.Equal(3, keys.Length, "one key per declared zone");
+        t.Equal("Header", keys[0], "the first claimant of a name keeps it unchanged");
+        t.Equal("Header (2)", keys[1], "the second is numbered rather than merged");
+        t.Equal(keys.Length, keys.Distinct(StringComparer.OrdinalIgnoreCase).Count(), "every key is distinct");
+
+        // A third zone already CALLED "Header (2)" must not be handed the key
+        // the second one is using. Counting occurrences is not enough; the
+        // suffix has to be searched for a free one.
+        t.Equal("Header (2) (2)", keys[2], "a name that collides with a generated key is moved on again");
+
+        Calibration.SetZone(board.Name, keys[0], new DeviceCalibration { GainR = 0.5 });
+        var frame = Enumerable.Repeat(Rgb.White, board.LedCount).ToArray();
+        Master.Finish(board, frame);
+        t.Equal((byte)128, frame[0].R, "the trimmed zone is trimmed");
+        t.Equal((byte)255, frame[4].R, "the zone that merely shares its name is NOT");
+        t.Equal((byte)255, frame[8].R, "and neither is the one whose name collides with the generated key");
+        Calibration.ResetAll();
+    }
+
+    /*---------------- the real write boundary ----------------*/
+
+    /// <summary>Every other offset assertion in this suite calls Master.Finish
+    /// with a hand-picked number, which proves the arithmetic and nothing about
+    /// the callers. The likeliest way to get this wrong is a call site passing
+    /// the wrong deviceOffset, so this one drives a real one: the static zone
+    /// apply, through the applier lane, onto a device that records what it was
+    /// actually asked to show.</summary>
+    static void ThroughARealWriteBoundary(Harness t)
+    {
+        t.Section("a zone trim through the real static-zone write");
+        Calibration.ResetAll();
+        Master.Brightness = 1;
+
+        var board = new RecordingBoard();
+        var lighting = new UnifiedRgb.App.Services.LightingController();
+        try
+        {
+            var frame = lighting.FrameFor(board);
+            for (int i = 0; i < frame.Length; i++) frame[i] = Rgb.White;
+
+            // The middle header only. Its range does not start at zero, which
+            // is the case a plan consulted with the wrong offset gets wrong.
+            Calibration.SetZone(board.Name, "Header 2", new DeviceCalibration { GainR = 0.5 });
+
+            lighting.PushZone(board, board, 4, 4);
+            lighting.Applier.Drain(2000);
+            t.Equal(4, board.LastOffset, "the write reached the device at the zone's own offset");
+            t.Equal((byte)128, board.Shown[4].R, "the middle header's trim was applied to the middle header");
+            t.Equal((byte)255, board.Shown[4].G, "...on the channel it names and no other");
+
+            // The neighbours, written the same way, must come through clean:
+            // a plan consulted at offset 0 for every zone would trim these too.
+            lighting.PushZone(board, board, 0, 4);
+            lighting.PushZone(board, board, 8, 4);
+            lighting.Applier.Drain(2000);
+            t.Equal((byte)255, board.Shown[0].R, "the header before the trimmed one is untouched");
+            t.Equal((byte)255, board.Shown[8].R, "the header after it is untouched");
+
+            // And the stored frame is still white: a trim is what the hardware
+            // is sent, never what the app believes it is showing.
+            t.Equal(Rgb.White, lighting.FrameFor(board)[4], "the stored color is not rewritten by the trim");
+        }
+        finally
+        {
+            lighting.Applier.Drain(2000);
+            Calibration.ResetAll();
+        }
+    }
+
+    /// <summary>Three headers, two of which the board calls the same thing and
+    /// a third named exactly what the de-duplicator would generate.</summary>
+    sealed class TwinHeaderBoard : IRgbDevice
+    {
+        public string Name => "Twin header board";
+        public string Vendor => "Test";
+        public DeviceType Type => DeviceType.Motherboard;
+        public int LedCount => 12;
+        public IReadOnlyList<RgbZone> Zones { get; } = new[] {
+            new RgbZone { Name = "Header", Offset = 0, Count = 4 },
+            new RgbZone { Name = "Header", Offset = 4, Count = 4 },
+            new RgbZone { Name = "Header (2)", Offset = 8, Count = 4 } };
+        public bool SetColors(IReadOnlyList<Rgb> colors) => true;
+        public void Dispose() { }
+    }
+
+    /// <summary>A zone-addressable board that keeps what it was shown, so a
+    /// test can ask what really reached the hardware rather than what the
+    /// buffer looked like on the way.</summary>
+    sealed class RecordingBoard : IRgbDevice, IZoneWritable
+    {
+        public string Name => "Recording board";
+        public string Vendor => "Test";
+        public DeviceType Type => DeviceType.Motherboard;
+        public int LedCount => 12;
+        public IReadOnlyList<RgbZone> Zones { get; } = new[] {
+            new RgbZone { Name = "Header 1", Offset = 0, Count = 4 },
+            new RgbZone { Name = "Header 2", Offset = 4, Count = 4 },
+            new RgbZone { Name = "Header 3", Offset = 8, Count = 4 } };
+
+        public readonly Rgb[] Shown = new Rgb[12];
+        public int LastOffset = -1;
+
+        public bool SetColors(IReadOnlyList<Rgb> colors)
+        {
+            for (int i = 0; i < colors.Count && i < Shown.Length; i++) Shown[i] = colors[i];
+            LastOffset = 0;
+            return true;
+        }
+
+        public bool SetZone(int offset, IReadOnlyList<Rgb> colors)
+        {
+            LastOffset = offset;
+            for (int i = 0; i < colors.Count && offset + i < Shown.Length; i++) Shown[offset + i] = colors[i];
+            return true;
+        }
+
         public void Dispose() { }
     }
 }

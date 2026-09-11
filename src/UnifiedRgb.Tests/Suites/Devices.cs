@@ -299,6 +299,20 @@ static class DevicesSuite
             hid.Accept = null;
             kb.SetColors(allBlue);
             t.Check(hid.Writes.Count > after, "a frame whose packets were refused is sent again, not cached");
+
+            // A SHORT frame repeats its last color, per the contract. This
+            // driver used to leave the tail on the zeroes it had just cleared,
+            // so a caller that sent fewer colors than the keyboard has keys got
+            // a keyboard that was mostly black - which the contract names as
+            // the exact thing that looks like a dead device.
+            hid.Accept = null;
+            kb.InvalidateCache();
+            hid.Writes.Clear();
+            kb.SetColors(new[] { new Rgb(255, 0, 0) });
+            int litKeys = hid.Writes.Take(3).Sum(w => w.Skip(5).Count(b => b == 0xFF));
+            t.Check(litKeys > 100, $"a one-color frame lights the whole keyboard, not one key ({litKeys} bytes at full)");
+            bool tailDark = hid.Writes.Skip(4).Take(3).Concat(hid.Writes.Skip(8).Take(3)).All(w => w.Skip(5).All(b => b == 0));
+            t.Check(tailDark, "...and repeats the color rather than padding the tail with black");
         }
 
         t.Section("SteelSeriesApex: init, direct-lighting packet, hand-back");

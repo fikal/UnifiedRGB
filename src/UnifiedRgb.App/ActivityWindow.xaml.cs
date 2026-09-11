@@ -14,7 +14,7 @@ namespace UnifiedRgb.App;
 | Two things live here rather than in the log, because both    |
 | are presentation decisions:                                  |
 |                                                              |
-| 1. The pause is at the TOP, above the list. The list is why   |
+| 1. The pause is at the TOP, above the list. The list is why  |
 |    someone opens this window, but the pause is what they     |
 |    actually want when a rule is fighting them, and burying   |
 |    it under a scrolling list means they never find it.       |

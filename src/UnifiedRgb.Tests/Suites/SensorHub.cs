@@ -3,9 +3,9 @@ using UnifiedRgb.Core.Sensors;
 namespace UnifiedRgb.Tests;
 
 /*-----------------------------------------------------------*\
-| SensorHub is a static class over real hardware (LHM ring0,  |
-| NvAPI, PawnIO, the Lian Li receiver), so the control loop   |
-| itself has no seam a harness can drive. What IS pure is the |
+| SensorHub is a static class over real hardware (LHM ring0,   |
+| NvAPI, PawnIO, the Lian Li receiver), so the control loop    |
+| itself has no seam a harness can drive. What IS pure is the  |
 | wireless-fan re-key that runs when a rescan replaces the     |
 | LianLiWireless instance: "old arranged slot -> new arranged  |
 | slot with the same chain", applied to the mode dictionaries. |

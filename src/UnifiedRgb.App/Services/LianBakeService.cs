@@ -11,7 +11,7 @@ namespace UnifiedRgb.App.Services;
 | multi-frame animation in HARDWARE. Streaming single    |
 | frames over RF is capped at ~8 fps (the lag). Instead  |
 | we bake one loop of all the device's bakeable effects  |
-| into N frames and upload ONCE; the receiver plays it    |
+| into N frames and upload ONCE; the receiver plays it   |
 | smoothly. Live effects (audio/temp/wallpaper) can't be |
 | baked, so those fall back to streaming.                |
 |                                                        |

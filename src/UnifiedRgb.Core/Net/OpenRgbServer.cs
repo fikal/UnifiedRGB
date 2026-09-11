@@ -77,9 +77,9 @@ public sealed class OpenRgbServer : IDisposable
     /*-----------------------------------------------------------*\
     | Which ports THIS process's servers hold right now. Exists so  |
     | the rest of the app can tell our own SDK server apart from an |
-    | OpenRGB backend on the same port: both answer a TCP probe on   |
+    | OpenRGB backend on the same port: both answer a TCP probe on  |
     | 6742 and both speak the protocol, so a probe alone cannot.    |
-    | Without this, the bridge saw "6742 is open", declared OpenRGB  |
+    | Without this, the bridge saw "6742 is open", declared OpenRGB |
     | running without launching it, and then proxied our own device |
     | list back to ourselves.                                       |
     \*-----------------------------------------------------------*/

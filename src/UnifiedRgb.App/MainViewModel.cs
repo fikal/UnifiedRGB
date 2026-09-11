@@ -1628,7 +1628,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     | watchdog decides it is time.                           |
     |                                                        |
     | Recovery is Rescan and nothing more, on purpose.       |
-    | Rescan already disposes every device, redetects, puts   |
+    | Rescan already disposes every device, redetects, puts  |
     | the static frames back by name and restarts the        |
     | running effects from the same snapshot profiles use.   |
     | A second restore path written next to it would be a    |
@@ -1659,7 +1659,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     |    that needs code rather than luck: LightsOff blacks  |
     |    the hardware WITHOUT touching the stored frames, so |
     |    Rescan's restore would faithfully repaint the       |
-    |    user's colors at 3 AM. The suppression is          |
+    |    user's colors at 3 AM. The suppression is           |
     |    therefore re-asserted immediately afterwards.       |
     \*-----------------------------------------------------*/
     void RecoverDevices(UnifiedRgb.Core.RecoveryPlan plan)
@@ -1694,8 +1694,13 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // Carry the current lighting across the rescan: static frames by device
         // name, and effect assignments via the same snapshot profiles use.
         _recoveryLighting.Remember(Devices, FrameFor, CaptureEffects(), replaceEffects: !LightsSuppressed);
-        var savedEffects = _recoveryLighting.Effects;
-        var savedFrames = _recoveryLighting.Frames;
+        // Copies. The restore below runs the whole effect-start path, which
+        // pumps the dispatcher, and CaptureState writes to these same objects -
+        // so an automation tick arriving mid-restore would mutate the collection
+        // being enumerated and throw on the UI thread. Two shallow copies at
+        // rescan time is not a cost worth thinking about.
+        var savedEffects = new List<EffectAssignment>(_recoveryLighting.Effects);
+        var savedFrames = new Dictionary<string, Rgb[]>(_recoveryLighting.Frames, StringComparer.Ordinal);
 
         // The SDK server goes first. StopAndDrain below is the guard against
         // writing to a handle that is about to close, and a socket thread posts

@@ -373,7 +373,9 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
             var buf = _wireBuf ??= new byte[_ledCount * 3];
             for (int i = 0; i < _ledCount; i++)
             {
-                var c = i < colors.Count ? colors[i] : Rgb.Black;
+                // The contract's answer to a short frame, not black: a stick
+                // going dark past LED 4 looks exactly like a stick that died.
+                var c = WritePolicy.ColorAt(colors, i);
                 buf[i * 3 + 0] = c.R;
                 buf[i * 3 + 1] = c.B;
                 buf[i * 3 + 2] = c.G;

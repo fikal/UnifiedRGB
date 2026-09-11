@@ -321,25 +321,13 @@ public sealed class DeviceHealth
          : e.RefusalStreak >= RetryingAfterRefusals ? DeviceHealthState.Retrying
          : DeviceHealthState.Connected;
 
-    /// <summary>Force a state, for the one signal that does not come from a
-    /// write: a device the app is holding a handle to that detection has just
-    /// discovered is no longer on the bus. Nothing else should call this -
-    /// health is meant to be inferred, not asserted.</summary>
-    public void Declare(IRgbDevice device, DeviceHealthState state, string? detail = null)
-    {
-        if (device == null) return;
-        var e = _entries.GetOrAdd(device, NewEntry);
-        DeviceHealthState from;
-        lock (e.Gate)
-        {
-            from = e.State;
-            e.State = state;
-            e.Detail = detail;
-            e.Held = state == DeviceHealthState.ControlledElsewhere;
-            if (state == DeviceHealthState.Connected) { e.RefusalStreak = 0; e.OkStreak = ConnectedAfterWrites; }
-        }
-        if (from != state) Changed?.Invoke(new DeviceHealthChange(device, from, state, detail));
-    }
+    // There is deliberately no Declare(state) here. One existed, documented for
+    // "a device the app holds a handle to that detection has found is no longer
+    // on the bus" - a caller that cannot exist: by the time a scan notices a
+    // device is gone, its instance has already been disposed and replaced, so
+    // there is nothing left to declare anything about. That signal travels by
+    // NAME, through DetectionNotes.WentAway, and shows up in the blocked-device
+    // rows. Health stays inferred from writes rather than asserted.
 
     /*-----------------------------------------------------*\
     | The read path. UI thread.                              |
@@ -365,14 +353,19 @@ public sealed class DeviceHealth
         lock (e.Gate) return e.Detail;
     }
 
-    /// <summary>Consecutive refused frames, for the diagnostics report.</summary>
+    /// <summary>Consecutive refused frames. The support bundle prints this
+    /// beside each device: "connected" with a refusal streak behind it is a
+    /// different problem from "connected" with none.</summary>
     public int RefusalsOf(IRgbDevice device)
     {
         if (!_entries.TryGetValue(device, out var e)) return 0;
         lock (e.Gate) return e.RefusalStreak;
     }
 
-    /// <summary>Everything known, as a copy, for rebuilding a UI list.</summary>
+    /// <summary>Everything known, as a copy. The support bundle uses it to
+    /// catch the devices health has an opinion about that are no longer in the
+    /// device list at all, which is the interesting half of a "it vanished"
+    /// report.</summary>
     public DeviceHealthReading[] Snapshot()
     {
         var pairs = _entries.ToArray();

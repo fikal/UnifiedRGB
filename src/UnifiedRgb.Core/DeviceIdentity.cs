@@ -68,7 +68,10 @@ public static class DeviceIdentity
     /// machine, must still resolve to the same identity. Everything that is in
     /// here is a property of the hardware, so it reproduces on any machine
     /// that sees the same device through the same driver.</summary>
-    public static string Signature(IRgbDevice device)
+    // internal: Survey is the only production caller, and the suite reaches
+    // it through InternalsVisibleTo. A public surface nothing outside the
+    // assembly uses is a promise this app never made.
+    internal static string Signature(IRgbDevice device)
     {
         if (device == null) return "v=|t=|n=0|z=";
         var sb = new StringBuilder();
@@ -98,7 +101,7 @@ public static class DeviceIdentity
     /// Readable prefix so a log line or a preview row means something to a
     /// human, hash so the whole shape is compared in one string comparison,
     /// ordinal so two identical devices are two identities rather than one.</summary>
-    public static string For(IRgbDevice device, int ordinal)
+    internal static string For(IRgbDevice device, int ordinal)
     {
         string type = device?.Type.ToString() ?? "Other";
         int leds = device?.LedCount ?? 0;
@@ -140,17 +143,6 @@ public static class DeviceIdentity
             };
         }
         return result.ToList();
-    }
-
-    /// <summary>name -> identity for the devices attached right now. First
-    /// entry wins on a duplicate name, because a duplicate name is exactly
-    /// the case where the name cannot decide anything anyway.</summary>
-    public static Dictionary<string, string> ByName(IEnumerable<IRgbDevice>? devices)
-    {
-        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var f in Survey(devices))
-            if (!map.ContainsKey(f.Name)) map[f.Name] = f.Identity;
-        return map;
     }
 
     /// <summary>FNV-1a, 64-bit. NOT string.GetHashCode: that is randomized per

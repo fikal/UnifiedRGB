@@ -13,7 +13,7 @@ namespace UnifiedRgb.Tests;
 | tests pin that (IsOwnListener), the Logitech "covered only  |
 | if we actually opened it" rule, and Stop waiting for client |
 | threads to leave host callbacks.                            |
-|                                                              |
+|                                                             |
 | Listed in Suites.cs as "OpenRgbBridge" and run by name.     |
 \*-----------------------------------------------------------*/
 static class OpenRgbBridgeSuite

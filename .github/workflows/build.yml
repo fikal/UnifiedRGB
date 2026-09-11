@@ -44,10 +44,30 @@ jobs:
       - name: Verify Chroma shim exports
         shell: pwsh
         run: |
-          $expected = @(
-            'Init', 'InitSDK', 'UnInit', 'CreateEffect', 'CreateKeyboardEffect', 'CreateMouseEffect',
-            'CreateHeadsetEffect', 'CreateMousepadEffect', 'CreateKeypadEffect', 'CreateChromaLinkEffect',
-            'SetEffect', 'DeleteEffect', 'RegisterEventNotification', 'UnregisterEventNotification', 'QueryDevice')
+          # Read from the .def files rather than restated here. A list typed out
+          # in two places is a list that drifts: adding an export to the .def
+          # used to leave CI quietly not checking it, which is the exact failure
+          # this step exists to catch.
+          function Get-Exports($defPath) {
+            if (-not (Test-Path $defPath)) { throw "missing export definition file: $defPath" }
+            $names = @()
+            $inExports = $false
+            foreach ($line in Get-Content $defPath) {
+              $trimmed = $line.Trim()
+              if ($trimmed -eq 'EXPORTS') { $inExports = $true; continue }
+              if (-not $inExports -or $trimmed -eq '' -or $trimmed.StartsWith(';')) { continue }
+              $names += ($trimmed -split '\s+')[0]
+            }
+            if ($names.Count -eq 0) { throw "no exports listed in $defPath" }
+            return $names
+          }
+          $expected = Get-Exports 'native/chroma-shim/RzChromaSDK.def'
+          $expected32 = Get-Exports 'native/chroma-shim/RzChromaSDK32.def'
+          # Both architectures must offer the same names: a game that works in
+          # 64-bit and not in 32-bit is the least debuggable outcome available.
+          $namesDiffer = Compare-Object $expected $expected32
+          if ($namesDiffer) { throw "the 64-bit and 32-bit .def files export different names" }
+          Write-Host "checking $($expected.Count) export names taken from the .def files"
           $targets = @(
             @{ Name = '64-bit'; Dll = 'native/chroma-shim/RzChromaSDK64.dll'; Dump = 'native/chroma-shim/exports-x64.txt'; Machine = 0x8664 },
             @{ Name = '32-bit'; Dll = 'native/chroma-shim/RzChromaSDK.dll';   Dump = 'native/chroma-shim/exports-x86.txt'; Machine = 0x014C })
@@ -105,12 +125,23 @@ jobs:
       # The same publish release.ps1 performs. It is the only build shape users
       # ever receive, and it is the one that breaks on its own: single file
       # bundling, self extraction of the WPF native DLLs and ReadyToRun all sit
-      # outside the ordinary build. Keep these arguments identical to the ones
-      # in release.ps1.
+      # outside the ordinary build. The arguments are TAKEN FROM release.ps1
+      # rather than restated here, because "keep these identical" is a comment,
+      # and comments do not fail builds.
       - name: Publish the shipped executable
         shell: pwsh
         run: |
-          dotnet publish src/UnifiedRgb.App -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          $release = Get-Content release.ps1 -Raw
+          if ($release -notmatch '(?ms)^\s*dotnet publish (?<args>.*?)(?=\r?\n\s*if \(\$LASTEXITCODE)') {
+            throw 'could not find the dotnet publish command in release.ps1 - if its shape changed, fix this step rather than restating the arguments'
+          }
+          # Backtick continuations folded back into one line.
+          $publishArgs = ($Matches['args'] -replace '`\r?\n\s*', ' ' -replace '\s+', ' ').Trim()
+          foreach ($flag in @('-c Release', '-r win-x64', '--self-contained', 'PublishSingleFile', 'IncludeNativeLibrariesForSelfExtract')) {
+            if ($publishArgs -notlike "*$flag*") { throw "release.ps1 no longer passes $flag - this step would be testing the wrong build shape" }
+          }
+          Write-Host "publishing exactly as release.ps1 does: dotnet publish $publishArgs"
+          Invoke-Expression "dotnet publish $publishArgs"
           if ($LASTEXITCODE -ne 0) { throw 'Publish failed' }
           $exe = Get-ChildItem 'src/UnifiedRgb.App/bin/Release' -Recurse -Filter 'UnifiedRgb.App.exe' |
               Where-Object { $_.FullName -match '\\win-x64\\publish\\' } |

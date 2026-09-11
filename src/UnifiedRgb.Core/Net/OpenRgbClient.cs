@@ -153,7 +153,7 @@ public sealed class OpenRgbClient : IDisposable
     }
 
     /*-----------------------------------------------------*\
-    | Wire helpers. One reusable send buffer holds header + |
+    | Wire helpers. One reusable send buffer holds header +  |
     | payload so every packet is a SINGLE socket write: on a |
     | NoDelay socket the old header/payload pair went out as |
     | two TCP segments per LED update. Guarded by _io (the   |

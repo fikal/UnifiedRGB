@@ -93,6 +93,31 @@ public sealed partial class MainViewModel
         }
         Say();
 
+        // How each device is ANSWERING, which the list above does not say: a
+        // device can be enumerated, be assigned an effect, and be refusing every
+        // frame we send it. That is the exact shape of most "my lighting is
+        // wrong" reports and the bundle carried nothing about it.
+        Say("how devices are answering:");
+        var health = UnifiedRgb.Core.DeviceHealth.Shared;
+        foreach (var d in Devices)
+        {
+            int refusals = health.RefusalsOf(d);
+            Say($"  {d.Name}: {UnifiedRgb.Core.DeviceHealth.Describe(health.StateOf(d))}"
+                + (health.DetailOf(d) is string why ? $" ({why})" : "")
+                + (refusals > 0 ? $"; {refusals} refused frame(s) in a row" : ""));
+        }
+        // And anything health knows about that is not in the list any more. A
+        // device that went away mid-session leaves its last state behind, and
+        // that state is usually the answer.
+        var known = new HashSet<IRgbDevice>(Devices);
+        foreach (var r in health.Snapshot())
+        {
+            if (known.Contains(r.Device)) continue;
+            Say($"  {r.Device.Name} (no longer listed): {UnifiedRgb.Core.DeviceHealth.Describe(r.State)}"
+                + (r.Detail is string d2 ? $" ({d2})" : ""));
+        }
+        Say();
+
         // The devices we could see and could NOT use. This is the half of the
         // picture a bundle never carried: "not detected" was indistinguishable
         // from "held by Synapse" and from "needs administrator", and answering

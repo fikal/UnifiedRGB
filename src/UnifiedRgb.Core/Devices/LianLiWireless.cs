@@ -462,8 +462,8 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
     }
 
     /*-----------------------------------------------------*\
-    | Multi-frame animation upload (the L-Connect model):    |
-    | the whole animation is compressed and sent ONCE, then  |
+    | Multi-frame animation upload (the L-Connect model):     |
+    | the whole animation is compressed and sent ONCE, then   |
     | the receiver loops it in hardware at `interval` per     |
     | frame. This replaces streaming single frames for smooth |
     | motion - streaming is capped by RF airtime (~8 fps),    |

@@ -333,7 +333,11 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
     /// elapsed.</summary>
     public void InvalidateCache()
     {
-        lock (_writeLock) { _last = null; _lastSendTick = 0; _nextRetryTick = 0; }
+        // _failures with it, not just the clock it drives: leaving the count
+        // at or above the threshold meant the "frames not accepted" and
+        // "answering again" lines fired once per process and never again,
+        // so a second outage on the same device was silent in the log.
+        lock (_writeLock) { _last = null; _lastSendTick = 0; _nextRetryTick = 0; _failures = 0; }
     }
 
     public bool SetColors(IReadOnlyList<Rgb> colors)

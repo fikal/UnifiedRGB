@@ -7,9 +7,9 @@ using UnifiedRgb.Core.Effects;
 namespace UnifiedRgb.Tests;
 
 /*-----------------------------------------------------------*\
-| Regressions for the 2026-09-10 fixes: a canvas.json that     |
-| deserialises but is not usable (null list, null entries,     |
-| zero sizes) used to reach startup and throw; GIF backgrounds |
+| Regressions for the 2026-09-10 fixes: a canvas.json that      |
+| deserialises but is not usable (null list, null entries,      |
+| zero sizes) used to reach startup and throw; GIF backgrounds  |
 | ignored frame disposal. Listed in Suites.cs as "CanvasLoad"   |
 | and run by name.                                              |
 | The self-update fix (hash required before download) is        |

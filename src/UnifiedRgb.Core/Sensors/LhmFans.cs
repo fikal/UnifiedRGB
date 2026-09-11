@@ -5,7 +5,7 @@ namespace UnifiedRgb.Core.Sensors;
 /*-----------------------------------------------------------*\
 | Motherboard fan reading + control via LibreHardwareMonitor.  |
 | Scoped HARD to the motherboard: CPU/GPU/RAM/storage/network/ |
-| controller subsystems stay disabled so none of LHM's other  |
+| controller subsystems stay disabled so none of LHM's other   |
 | dependencies (RAM SPD, disk SMART, HID) ever initialize, and |
 | it never fights our native CPU/GPU sensors or our SMBus RGB. |
 | LHM owns the Super-I/O chip end to end here — reading the    |

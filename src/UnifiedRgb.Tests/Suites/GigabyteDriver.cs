@@ -4,7 +4,7 @@ using UnifiedRgb.Core.Devices;
 namespace UnifiedRgb.Tests;
 
 /*-----------------------------------------------------------*\
-| GigabyteIt5711 over a FakeHid: the refused-frame and         |
+| GigabyteIt5711 over a FakeHid: the refused-frame and        |
 | partial-zone paths. Every packet the board would see is a   |
 | 64-byte feature report with byte 1 naming the command:      |
 |   0x34 LED counts, 0x32 effect-disable mask (direct-mode    |

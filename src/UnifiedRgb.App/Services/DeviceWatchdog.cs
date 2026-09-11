@@ -11,14 +11,14 @@ namespace UnifiedRgb.App.Services;
 | else.                                                        |
 |                                                              |
 | Before this class, a device that was unplugged and plugged   |
-| back in stayed dark until the user noticed and pressed        |
+| back in stayed dark until the user noticed and pressed       |
 | Rescan, and so did every device on the rig after a sleep and |
 | a wake. Not because either event is hard to hear - one is a  |
 | window message and the other is a SystemEvents callback -    |
 | but because nothing was listening.                           |
 |                                                              |
 | Everything here is deliberately thin. It turns an OS event   |
-| into RecoveryPolicy.Note and a timer tick into                |
+| into RecoveryPolicy.Note and a timer tick into               |
 | RecoveryPolicy.Claim, and it owns no decisions of its own:   |
 | the debouncing, the settle times and the "is this a good     |
 | moment" rules all live in Core where they can be tested at   |

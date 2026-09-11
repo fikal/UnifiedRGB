@@ -39,16 +39,16 @@ public sealed partial class MainViewModel
     }
 
     /*-----------------------------------------------------*\
-    | Device health: the UI-facing half of DeviceHealth.     |
-    |                                                        |
-    | Two sources, one list, because the user does not care  |
+    | Device health: the UI-facing half of DeviceHealth.      |
+    |                                                         |
+    | Two sources, one list, because the user does not care   |
     | which of them a problem came from. A device we HOLD     |
     | reports through the write verdict (connected /          |
     | retrying / not responding / controlled by another app); |
     | hardware we could SEE but never open reports through    |
     | DetectionNotes, whose reasons map onto exactly the same |
     | words (BlockedDevice.Health).                           |
-    |                                                        |
+    |                                                         |
     | Rebuilt on a transition, never on a timer. A rig where  |
     | everything works never rebuilds this at all, which is   |
     | the point: the whole feature has to be free while it    |

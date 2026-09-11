@@ -53,15 +53,21 @@ sealed class FakeZonedDevice : IRgbDevice
     public (string Name, int Count)[] Zones2 { get; init; } = Array.Empty<(string, int)>();
     public int? Leds { get; init; }
     public int LedCount => Leds ?? Zones2.Sum(z => z.Count);
-    public IReadOnlyList<RgbZone> Zones
+    /// <summary>Built ONCE and handed back as the same instance every time, as
+    /// ADDING_A_DEVICE requires of a real driver. A fake that rebuilds the list
+    /// on every access is a fake that no plan cache, no reference comparison and
+    /// no "did the layout move" check can ever catch out - which is exactly how
+    /// a driver that really did move its zones under the cache got shipped.</summary>
+    public IReadOnlyList<RgbZone> Zones => _zones ??= Build();
+
+    RgbZone[]? _zones;
+
+    RgbZone[] Build()
     {
-        get
-        {
-            var list = new List<RgbZone>();
-            int off = 0;
-            foreach (var (n, c) in Zones2) { list.Add(new RgbZone { Name = n, Offset = off, Count = c }); off += c; }
-            return list;
-        }
+        var list = new List<RgbZone>();
+        int off = 0;
+        foreach (var (n, c) in Zones2) { list.Add(new RgbZone { Name = n, Offset = off, Count = c }); off += c; }
+        return list.ToArray();
     }
     public bool SetColors(IReadOnlyList<Rgb> colors) => true;   // canned success
     public void Dispose() { }

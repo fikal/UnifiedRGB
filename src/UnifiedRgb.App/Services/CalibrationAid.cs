@@ -6,7 +6,7 @@ namespace UnifiedRgb.App.Services;
 | The thing that makes per-device calibration usable.          |
 |                                                              |
 | Sliders on their own are useless here, and that is not a UI  |
-| nicety - it is the whole reason a "color calibration" pane  |
+| nicety - it is the whole reason a "color calibration" pane   |
 | either works or does not. Nobody can trim a keyboard to      |
 | match fans they cannot see at the same moment: the eye has   |
 | no absolute memory for white point, so a user adjusting one  |
@@ -25,7 +25,7 @@ namespace UnifiedRgb.App.Services;
 |                                                              |
 | Why white AND grey. White finds the balance error: every     |
 | channel is at maximum, so what you see is the emitter's own  |
-| color and nothing else. But white cannot show a gamma error |
+| color and nothing else. But white cannot show a gamma error  |
 | at all, because every device is pinned at its ceiling there  |
 | - two devices can agree perfectly on white and still         |
 | disagree completely at 40%, which is where most lighting     |
