@@ -99,6 +99,7 @@ static class CalibrationSuite
         ZoneKeysAreUnique(t);
         ThroughARealWriteBoundary(t);
         TheSwatchPairInWords(t);
+        ControlsThatCannotMoveAnything(t);
 
         t.Section("nested fan zones and aid restoration");
         Calibration.ResetAll();
@@ -946,6 +947,71 @@ static class CalibrationSuite
             new RgbZone { Name = "Outer", Offset = 8, Count = 12 } };
         public bool SetColors(IReadOnlyList<Rgb> colors) => true;
         public void Dispose() { }
+    }
+
+    /*---------------- controls that cannot move anything ----------------*/
+
+    /// <summary>"The slider moves and nothing happens" is the single most
+    /// reliable way to convince someone an app is broken, and the patch alone
+    /// cannot predict it: the transform CLIPS, so a channel already pinned at
+    /// the ceiling absorbs every further move of its own gain.</summary>
+    static void ControlsThatCannotMoveAnything(Harness t)
+    {
+        t.Section("a control that cannot move anything says so");
+        Calibration.ResetAll();
+        Master.Brightness = 1;
+
+        const CalibrationReference white = CalibrationReference.White;
+
+        // Untrimmed, on white: the gains and the curve all have somewhere to go.
+        var fresh = new DeviceCalibration();
+        foreach (var c in new[] { CalibrationControl.GainR, CalibrationControl.GainG,
+                                  CalibrationControl.GainB, CalibrationControl.Gamma })
+            t.Check(CalibrationReferences.Affects(white, c, fresh), $"{c} is live on an untrimmed row");
+
+        // The ceiling is the exception, and honestly so: a 60% patch through an
+        // untrimmed row comes out at 60%, so a ceiling at 100% has nothing to
+        // clip and one tick down still has nothing to clip. The note carries the
+        // threshold rather than leaving the user to find it by dragging.
+        t.Check(!CalibrationReferences.Affects(white, CalibrationControl.Cap, fresh),
+            "a ceiling above everything the row is showing is inert, and says so");
+        t.Check(CalibrationReferences.InertBecause(white, CalibrationControl.Cap, fresh).Contains("60%"),
+            "...naming the level it would start to bite below");
+
+        // The rig that prompted this. Gain 2.0 with gamma 0.3 pins the 60%
+        // patch at the ceiling, so the gains have nothing left to do.
+        var pinned = new DeviceCalibration { GainR = 2, GainG = 2, GainB = 2, Gamma = 0.3 };
+        t.Check(!CalibrationReferences.Affects(white, CalibrationControl.GainB, pinned),
+            "a blue gain whose channel is already pinned at the ceiling is inert");
+        t.Check(!CalibrationReferences.Affects(white, CalibrationControl.Gamma, pinned),
+            "...and so is gamma, with nothing left to bend");
+        t.Check(CalibrationReferences.Affects(white, CalibrationControl.Cap, pinned),
+            "...but the ceiling still bites, because it is what the value is pinned AGAINST");
+
+        string why = CalibrationReferences.InertBecause(white, CalibrationControl.GainB, pinned);
+        t.Check(why.Contains("blue"), "the note names the channel");
+        t.Check(why.Contains("pinned") || why.Contains("ceiling"), "...and says it is pinned rather than blaming the patch");
+
+        // Walk the gain down: it must come back to life at the point the value
+        // stops clipping, not at zero. 0.6^0.3 is about 0.858, so the ceiling
+        // is reached at a gain of about 1.17.
+        var walk = new DeviceCalibration { GainR = 2, GainG = 2, GainB = 2, Gamma = 0.3 };
+        double liveAt = -1;
+        for (double g = 2.0; g >= 0; g -= 0.1)
+        {
+            walk.GainB = Math.Round(g, 2);
+            if (CalibrationReferences.Affects(white, CalibrationControl.GainB, walk)) { liveAt = walk.GainB; break; }
+        }
+        t.Check(liveAt > 1.0 && liveAt < 1.3, $"the blue gain comes back to life around 1.17, not at zero (got {liveAt})");
+
+        // And the patch-only rule is unchanged for the case it was written for.
+        t.Check(!CalibrationReferences.Affects(CalibrationReference.Blue, CalibrationControl.GainR, fresh),
+            "red gain is still inert on a blue patch");
+        t.Check(CalibrationReferences.InertBecause(CalibrationReference.Blue, CalibrationControl.GainR, fresh)
+                    .Contains("no red"),
+            "...and still blames the patch, which is the thing the user can click away from");
+
+        Calibration.ResetAll();
     }
 
     /*---------------- the swatch pair in words ----------------*/

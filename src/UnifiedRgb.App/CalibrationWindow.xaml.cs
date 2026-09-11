@@ -121,6 +121,13 @@ public partial class CalibrationWindow : Window
         DeviceList.ItemsSource = Rows;
         RefList.ItemsSource = References;
 
+        // From Core, so that "one tick" means the same thing under the mouse as
+        // it does in the arithmetic that decides whether a control is inert.
+        GainRSlider.TickFrequency = GainGSlider.TickFrequency = GainBSlider.TickFrequency
+            = CalibrationReferences.StepOf(CalibrationControl.GainR);
+        GammaSlider.TickFrequency = CalibrationReferences.StepOf(CalibrationControl.Gamma);
+        CapSlider.TickFrequency = CalibrationReferences.StepOf(CalibrationControl.Cap);
+
         // Escape has to be caught at the WINDOW, tunnelling, because the
         // themed Slider and ListBox styles enforce a mouse-first policy and
         // mark every key handled once they have focus. PreviewKeyDown reaches
@@ -261,6 +268,12 @@ public partial class CalibrationWindow : Window
     void UpdateRelevance()
     {
         var r = CurrentReference;
+        // The row's ACTUAL trim, not just the patch. A gain whose channel is
+        // already pinned at the ceiling absorbs every further move, and the
+        // patch alone cannot know that - so this used to present a dead control
+        // as a live one, which is the fastest way to look broken.
+        var row = Current;
+        var cal = row == null ? null : Calibration.Effective(row.Device.Name, row.ZoneName);
 
         Dim(GainRLabel, GainRSlider, CalibrationControl.GainR);
         Dim(GainGLabel, GainGSlider, CalibrationControl.GainG);
@@ -273,7 +286,7 @@ public partial class CalibrationWindow : Window
 
         void Dim(System.Windows.Controls.TextBlock label, System.Windows.Controls.Slider slider, CalibrationControl c)
         {
-            double o = CalibrationReferences.Affects(r, c) ? 1.0 : 0.4;
+            double o = CalibrationReferences.Affects(r, c, cal) ? 1.0 : 0.4;
             label.Opacity = o;
             slider.Opacity = o;
         }
@@ -283,7 +296,7 @@ public partial class CalibrationWindow : Window
         string NoteFor(params CalibrationControl[] controls)
         {
             var reasons = controls
-                .Select(c => CalibrationReferences.InertBecause(r, c))
+                .Select(c => CalibrationReferences.InertBecause(r, c, cal))
                 .Where(s => s.Length > 0)
                 .Distinct()
                 .ToList();
@@ -388,6 +401,11 @@ public partial class CalibrationWindow : Window
 
         _aid.Refresh();
         UpdateScopeNote();
+        // On every tick, not just on selection: whether a control is inert now
+        // depends on this row's own numbers, so dragging a gain down past the
+        // point where it stops clipping has to bring the neighbouring sliders
+        // back to life as it happens. Ten Map calls, once per tick.
+        UpdateRelevance();
         RefreshSwatches();
         if (save) SaveIfDirty();
     }

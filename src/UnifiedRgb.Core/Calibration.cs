@@ -1145,17 +1145,97 @@ public static class CalibrationReferences
         static bool Midtone(byte v) => v > 0 && v < 255;
     }
 
-    /// <summary>Why a control is doing nothing right now, for the one-line
-    /// note beside a disabled slider. Empty when it does apply.</summary>
-    public static string InertBecause(CalibrationReference r, CalibrationControl control)
+    /// <summary>One tick of each control's slider - the smallest move a user
+    /// can actually make, since the sliders snap. The window sets its tick
+    /// frequencies from these, so "one tick" means the same thing in the
+    /// arithmetic below as it does under the mouse.</summary>
+    public static double StepOf(CalibrationControl control) => control switch
     {
-        if (Affects(r, control)) return "";
+        CalibrationControl.Cap => 0.05,
+        _ => 0.1,
+    };
+
+    /// <summary>The same question, but asked of the trim the row ACTUALLY has
+    /// rather than of the patch alone.
+    ///
+    /// The patch-only answer above is necessary and not sufficient. The
+    /// transform clips at the ceiling, so a channel that is already pinned
+    /// there absorbs every further move of its gain: with a gamma of 0.3 and a
+    /// gain of 2.0, a 60% white patch leaves the top FORTY PER CENT of the blue
+    /// slider doing nothing whatsoever, and the screen used to present it as a
+    /// live control. "The slider moves and nothing happens" is the single most
+    /// reliable way to convince someone an app is broken.
+    ///
+    /// Answered numerically rather than by rule: nudge the control one tick
+    /// each way and see whether any output BYTE moves. That covers clipping,
+    /// a dead channel and a pinned gamma with one test, and it cannot drift
+    /// away from the transform because it calls it.</summary>
+    public static bool Affects(CalibrationReference r, CalibrationControl control, DeviceCalibration? cal)
+    {
+        if (!Affects(r, control)) return false;
+        if (cal == null) return true;
+
+        var asked = ColorOf(r);
+        var baseline = cal.Map(asked);
+        double step = StepOf(control);
+        for (int dir = -1; dir <= 1; dir += 2)
+        {
+            var probe = cal.Clone();
+            Nudge(probe, control, dir * step);
+            probe.Normalize();          // a nudge past the end is not a move
+            var got = probe.Map(asked);
+            if (got.R != baseline.R || got.G != baseline.G || got.B != baseline.B) return true;
+        }
+        return false;
+    }
+
+    static void Nudge(DeviceCalibration cal, CalibrationControl control, double by)
+    {
+        switch (control)
+        {
+            case CalibrationControl.GainR: cal.GainR += by; break;
+            case CalibrationControl.GainG: cal.GainG += by; break;
+            case CalibrationControl.GainB: cal.GainB += by; break;
+            case CalibrationControl.Gamma: cal.Gamma += by; break;
+            case CalibrationControl.Cap:   cal.MaxBrightness += by; break;
+        }
+    }
+
+    /// <summary>Why a control is doing nothing right now, for the one-line
+    /// note beside a dimmed slider. Empty when it does apply.</summary>
+    public static string InertBecause(CalibrationReference r, CalibrationControl control, DeviceCalibration? cal = null)
+    {
+        if (Affects(r, control, cal)) return "";
+
+        // The patch is the simpler cause and the one the user can fix by
+        // clicking another patch, so it is named first.
+        if (!Affects(r, control))
+            return control switch
+            {
+                CalibrationControl.Gamma => "gamma only bends the middle of the range, so try a grey patch",
+                CalibrationControl.Cap => "nothing is lit to cap",
+                _ => $"this patch has no {Channel(control)} in it",
+            };
+
+        // Otherwise the patch is fine and this row's own trim has run out of
+        // room. Say which way out, because the fix is a different slider.
         return control switch
         {
-            CalibrationControl.Gamma => "gamma only bends the middle of the range, so try a grey patch",
-            CalibrationControl.Cap => "nothing is lit to cap",
-            _ => $"this patch has no {Channel(control)} in it",
+            // With the threshold, which is the whole answer: a ceiling above
+            // everything this row is showing does nothing until it comes down
+            // past the brightest channel, and guessing where that is by dragging
+            // is exactly the experience this note exists to prevent.
+            CalibrationControl.Cap => $"nothing here reaches the ceiling - on this patch it starts to bite below {Brightest(r, cal)}%",
+            CalibrationControl.Gamma => "this row is already clipped, so the curve has nothing left to bend",
+            _ => $"{Channel(control)} is already pinned at the ceiling here - lower the gain, the gamma or Max brightness to give it room",
         };
+
+        static int Brightest(CalibrationReference r, DeviceCalibration? cal)
+        {
+            var sent = cal == null ? ColorOf(r) : cal.Map(ColorOf(r));
+            int top = Math.Max(sent.R, Math.Max(sent.G, sent.B));
+            return (int)Math.Round(top * 100.0 / 255.0);
+        }
 
         static string Channel(CalibrationControl c) => c switch
         {
