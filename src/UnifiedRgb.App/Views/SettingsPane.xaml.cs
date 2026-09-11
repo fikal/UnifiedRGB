@@ -37,6 +37,8 @@ public partial class SettingsPane : UserControl
 
     void SaveProfileAsNew_Click(object sender, RoutedEventArgs e) => VM.SaveProfileAsNew();
 
+    void PauseShow_Click(object sender, RoutedEventArgs e) => VM.Lcd.ToggleSequencePaused();
+
     /// <summary>Delete, but say what the name is still holding up first.
     ///
     /// Nothing breaks loudly when a profile goes: a show step or a rule asking

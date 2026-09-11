@@ -14,7 +14,7 @@ static class LcdScenesSuite
         Exception? failure = null;
         var thread = new Thread(() =>
         {
-            try { CheckScenes(t); ShowThatContainsItsOwnStarter(t); }
+            try { CheckScenes(t); ShowThatContainsItsOwnStarter(t); PausingAShow(t); }
             catch (Exception ex) { failure = ex; }
         });
         thread.SetApartmentState(ApartmentState.STA);
@@ -76,6 +76,55 @@ static class LcdScenesSuite
         t.Check(typeof(LcdDesignerViewModel)
             .GetField("_pendingShow", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(vm) == null,
             "a show called off before it starts does not start late");
+    }
+
+    /// <summary>Pausing a show, as distinct from stopping one. A show moves the
+    /// whole desk every few seconds, which is exactly what you do not want while
+    /// changing the settings that decide where it moves to.</summary>
+    static void PausingAShow(Harness t)
+    {
+        t.Section("pausing a show");
+
+        int applied = 0;
+        var seq = new SceneSequence
+        {
+            Name = "Evening",
+            Actions = { new SceneAction { Profile = "A", DelaySeconds = 30 },
+                        new SceneAction { Profile = "B", DelaySeconds = 30 } },
+        };
+        var sequencer = new SceneSequencer(_ => applied++);
+
+        // Nothing to pause before anything runs, and asking must not invent a
+        // state that Start would then have to undo.
+        sequencer.Paused = true;
+        t.Check(!sequencer.Paused, "pausing when no show is running does nothing");
+
+        sequencer.Start(seq);
+        t.Check(sequencer.Running, "the show is running");
+        t.Check(!sequencer.Paused, "a show starts running, not paused");
+
+        sequencer.Paused = true;
+        t.Check(sequencer.Paused, "it pauses");
+        t.Check(sequencer.Running, "...and is still the running show rather than forgotten");
+        t.Equal("Evening", sequencer.RunningName, "...under its own name");
+
+        sequencer.Paused = false;
+        t.Check(!sequencer.Paused, "it resumes");
+        t.Check(sequencer.Running, "...still on the same show");
+
+        // Stop is the other thing, and it forgets.
+        sequencer.Stop();
+        t.Check(!sequencer.Running, "stop forgets the show");
+        t.Check(!sequencer.Paused, "...and leaves nothing paused behind it");
+
+        // A new show always starts running, whatever the last one was doing.
+        sequencer.Start(seq);
+        sequencer.Paused = true;
+        sequencer.Start(seq);
+        t.Check(!sequencer.Paused, "starting a show clears a pause left from before");
+        sequencer.Stop();
+
+        t.Equal(0, applied, "no step ran: every wait here is 30 seconds and nothing waited that long");
     }
 
     static void CheckScenes(Harness t)

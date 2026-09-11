@@ -836,6 +836,10 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
             OnChanged(nameof(SequenceRunning));
             OnChanged(nameof(RunButtonText));
             OnChanged(nameof(SequenceStatus));
+            OnChanged(nameof(SequencePaused));
+            OnChanged(nameof(CanPauseSequence));
+            OnChanged(nameof(PauseButtonText));
+            OnChanged(nameof(RunningShowLine));
         };
         // Nothing auto-starts here any more. The flag that did made a second
         // owner of the panel: the startup profile put its screen up and then this
@@ -1154,8 +1158,35 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
 
     public bool SequenceRunning => _sequencer?.Running == true;
     public string RunButtonText => SequenceRunning ? "Stop" : "Run";
-    public string SequenceStatus => SequenceRunning
-        ? $"running '{_sequencer!.RunningName}' - loops until stopped" : "";
+    public string SequenceStatus => !SequenceRunning ? ""
+        : SequencePaused ? $"'{_sequencer!.RunningName}' is paused where it is"
+        : $"running '{_sequencer!.RunningName}' - loops until stopped";
+
+    /*--- Pausing a show, as distinct from stopping one.
+          A show moves the whole desk every few seconds, which is exactly what
+          you do not want while changing the settings that decide what it moves
+          to. Stop would do it, but stopping forgets the show and leaves the
+          desk wherever the last step put it; a pause holds its place, keeps
+          the time already served on the current step, and carries on. ---*/
+
+    public bool SequencePaused => _sequencer?.Paused == true;
+
+    /// <summary>True when there is a running show to pause, which is what the
+    /// settings page hangs its banner on.</summary>
+    public bool CanPauseSequence => SequenceRunning;
+
+    public string PauseButtonText => SequencePaused ? "Resume show" : "Pause show";
+
+    public string RunningShowLine => !SequenceRunning ? ""
+        : SequencePaused
+            ? $"Show “{_sequencer!.RunningName}” is paused."
+            : $"Show “{_sequencer!.RunningName}” is running and changes your desk every few seconds.";
+
+    public void ToggleSequencePaused()
+    {
+        if (_sequencer is not { Running: true }) return;
+        _sequencer.Paused = !_sequencer.Paused;
+    }
 
     public void ToggleSequence()
     {

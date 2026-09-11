@@ -414,6 +414,11 @@
                                     <Button Content="+ Add step" Padding="14,0" Height="28" VerticalAlignment="Center" Click="AddAction_Click"/>
                                     <Button Content="{Binding RunButtonText}" Style="{StaticResource Accent}"
                                             Padding="18,0" Height="28" VerticalAlignment="Center" Margin="10,0,0,0" Click="RunSequence_Click"/>
+                                    <Button Content="{Binding PauseButtonText}"
+                                            Padding="14,0" Height="28" VerticalAlignment="Center" Margin="10,0,0,0"
+                                            Click="PauseSequence_Click"
+                                            Visibility="{Binding CanPauseSequence, Converter={StaticResource BoolToVis}}"
+                                            ToolTip="Hold the show where it is and carry on from the same step"/>
                                     <TextBlock Text="Starts when a profile asks for it" Opacity="0.6" FontSize="11"
                                                VerticalAlignment="Center" Margin="14,0,0,0"
                                                ToolTip="Bind this show to a profile under Settings, Profiles. A profile is the one switch for the lights, the pump panel and the screen in the case."/>

@@ -231,6 +231,43 @@ public sealed class SceneSequencer
     public string? RunningName => _seq?.Name;
     public event Action? StateChanged;
 
+    bool _paused;
+    long _remainingMs;
+
+    /// <summary>Hold the show where it is without forgetting it, so somebody can
+    /// change their settings without the desk moving underneath them, then carry
+    /// on from the same step.
+    ///
+    /// Distinct from Stop, which forgets the show entirely. The time already
+    /// served on the current step is kept too: pausing four seconds into a five
+    /// second wait and resuming should leave one second, not five, or a pause
+    /// taken to look at something would silently restart the wait every time.</summary>
+    public bool Paused
+    {
+        get => _paused;
+        set
+        {
+            if (_paused == value || _seq == null) return;
+            _paused = value;
+            if (value)
+            {
+                _remainingMs = Math.Max(0, _dueAt - Environment.TickCount64);
+                _timer.Stop();
+                Log.Info("scenes", $"show '{_seq.Name}' paused");
+            }
+            else
+            {
+                // Never zero: a DispatcherTimer with a zero interval fires on
+                // every dispatcher pass, which is a busy loop dressed as a timer.
+                _timer.Interval = TimeSpan.FromMilliseconds(Math.Max(50, _remainingMs));
+                _dueAt = Environment.TickCount64 + Math.Max(50, _remainingMs);
+                _timer.Start();
+                Log.Info("scenes", $"show '{_seq.Name}' resumed");
+            }
+            StateChanged?.Invoke();
+        }
+    }
+
     public SceneSequencer(Action<SceneAction> apply)
     {
         _apply = apply;
@@ -240,6 +277,7 @@ public sealed class SceneSequencer
     public void Start(SceneSequence seq)
     {
         Stop();
+        _paused = false;   // a new show starts running, whatever the last one was doing
         if (seq.Actions.Count == 0) return;
         _seq = seq;
         _index = -1;
@@ -251,6 +289,7 @@ public sealed class SceneSequencer
     public void Stop()
     {
         if (_seq == null) return;
+        _paused = false;
         _timer.Stop();
         Log.Info("scenes", $"sequence '{_seq.Name}' stopped");
         _seq = null;

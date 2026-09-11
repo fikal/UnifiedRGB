@@ -231,6 +231,8 @@ public partial class LcdDesignerPane : UserControl
     void AddAction_Click(object sender, RoutedEventArgs e) => VM.AddSequenceAction();
     void RunSequence_Click(object sender, RoutedEventArgs e) => VM.ToggleSequence();
 
+    void PauseSequence_Click(object sender, RoutedEventArgs e) => VM.ToggleSequencePaused();
+
     void ActionRemove_Click(object sender, RoutedEventArgs e)
     {
         if ((sender as FrameworkElement)?.DataContext is SceneAction a) VM.RemoveSequenceAction(a);
