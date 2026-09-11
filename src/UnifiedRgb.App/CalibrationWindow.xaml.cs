@@ -295,6 +295,29 @@ public partial class CalibrationWindow : Window
     /// change at all, because a trim on the selected device changes its row in
     /// the list as well as the big preview, and a Reset all changes every row
     /// at once.</summary>
+    /// <summary>The swatch pair in words. It exists because the pair alone is
+    /// ambiguous in the one case that matters: a reader looking at a 60% patch
+    /// going in and full white coming out has no way to tell WHICH control did
+    /// that, and the nearest percentage on screen is the ceiling slider, which
+    /// is innocent. A gain above 1 lifts; the ceiling only ever limits.</summary>
+    internal static string DescribeSend(Rgb asked, Rgb sent)
+    {
+        if (sent.R == asked.R && sent.G == asked.G && sent.B == asked.B)
+            return "This row is untrimmed, so the patch reaches it unchanged.";
+
+        int inLevel = Math.Max(asked.R, Math.Max(asked.G, asked.B));
+        int outLevel = Math.Max(sent.R, Math.Max(sent.G, sent.B));
+        int inPct = (int)Math.Round(inLevel * 100.0 / 255.0);
+        int outPct = (int)Math.Round(outLevel * 100.0 / 255.0);
+
+        if (outLevel > inLevel)
+            return $"This row's trim LIFTS the patch: {inPct}% goes in and {outPct}% comes out. "
+                 + "A gain above 1 does that. Max brightness is a ceiling on the result, never the level itself.";
+        if (outLevel < inLevel)
+            return $"This row's trim pulls the patch down: {inPct}% goes in and {outPct}% comes out.";
+        return "This row's trim changes the patch's balance without changing how bright it is.";
+    }
+
     void RefreshSwatches()
     {
         foreach (var row in Rows) row.Update(_aid.SwatchFor(row.Device, row.ZoneName));
@@ -307,6 +330,7 @@ public partial class CalibrationWindow : Window
         {
             TrimSwatch.Background = Brushes.Transparent;
             TrimHex.Text = "";
+            SendNote.Text = "";
         }
         else
         {
@@ -319,6 +343,7 @@ public partial class CalibrationWindow : Window
             // inside a closed case - where the swatch on screen is the only
             // feedback there is.
             TrimHex.Text = sent.ToHex();
+            SendNote.Text = DescribeSend(asked, sent);
         }
 
         StatusText.Text = _aid.Active

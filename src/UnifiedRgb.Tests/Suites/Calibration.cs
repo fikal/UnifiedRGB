@@ -98,6 +98,7 @@ static class CalibrationSuite
     {
         ZoneKeysAreUnique(t);
         ThroughARealWriteBoundary(t);
+        TheSwatchPairInWords(t);
 
         t.Section("nested fan zones and aid restoration");
         Calibration.ResetAll();
@@ -945,6 +946,45 @@ static class CalibrationSuite
             new RgbZone { Name = "Outer", Offset = 8, Count = 12 } };
         public bool SetColors(IReadOnlyList<Rgb> colors) => true;
         public void Dispose() { }
+    }
+
+    /*---------------- the swatch pair in words ----------------*/
+
+    /// <summary>A 60% patch going in and full white coming out is the state
+    /// that reads as a broken ceiling slider, because the ceiling is the
+    /// nearest percentage on screen and it is the one control that did not do
+    /// it. The sentence has to name the gain.</summary>
+    static void TheSwatchPairInWords(Harness t)
+    {
+        t.Section("what the trim did, in words");
+        Calibration.ResetAll();
+        Master.Brightness = 1;
+
+        var white60 = CalibrationReferences.ColorOf(CalibrationReference.White);
+        t.Equal((byte)153, white60.R, "the white patch is 60%, so there is headroom above it");
+
+        string untouched = UnifiedRgb.App.CalibrationWindow.DescribeSend(white60, white60);
+        t.Check(untouched.Contains("unchanged"), "an untrimmed row says the patch arrives unchanged");
+
+        // The real rig that prompted this: gains at 2.0 turn the 60% patch into
+        // full white however high the ceiling is set.
+        var lifted = new DeviceCalibration { GainR = 2, GainG = 2, GainB = 2, Gamma = 0.3 };
+        Calibration.Set("Loud Keyboard", lifted);
+        var sent = Calibration.Apply("Loud Keyboard", null, white60);
+        t.Equal(new Rgb(255, 255, 255), sent, "gains of 2 push the 60% patch all the way to white");
+
+        string note = UnifiedRgb.App.CalibrationWindow.DescribeSend(white60, sent);
+        t.Check(note.Contains("60%") && note.Contains("100%"), "the note names both levels");
+        t.Check(note.Contains("gain") || note.Contains("Gain"), "...and names the gain as the cause");
+        t.Check(note.Contains("ceiling"), "...and says the ceiling only limits the result");
+
+        // The other direction still reads correctly.
+        Calibration.Set("Quiet Board", new DeviceCalibration { MaxBrightness = 0.25 });
+        var dimmed = Calibration.Apply("Quiet Board", null, white60);
+        string down = UnifiedRgb.App.CalibrationWindow.DescribeSend(white60, dimmed);
+        t.Check(down.Contains("down"), "a ceiling below the patch reads as pulling it down");
+
+        Calibration.ResetAll();
     }
 
     /*---------------- two zones, one name ----------------*/

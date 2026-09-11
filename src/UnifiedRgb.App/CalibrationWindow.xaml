@@ -222,8 +222,15 @@
 
                         <TextBlock x:Name="CurveNote" Style="{StaticResource CalHint}" Margin="0,4,0,0"/>
 
-                        <!-- What the trim is actually doing, in one line. -->
+                        <!-- What the trim is actually doing, in one line. Two
+                             swatches and a hex code turn out not to be enough on
+                             their own: a reader who sees a 60% patch go in and
+                             full white come out reasonably concludes the ceiling
+                             slider above is broken, when what they are looking at
+                             is a gain above 1 doing exactly what it says. The
+                             sentence underneath names which control did it. -->
                         <Border Background="#FF181A21" CornerRadius="8" Padding="12,10" Margin="0,14,0,0">
+                          <StackPanel>
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock Text="Asked for" Style="{StaticResource CalHint}"
                                            VerticalAlignment="Center" Margin="0,0,8,0"/>
@@ -237,6 +244,9 @@
                                 <TextBlock x:Name="TrimHex" Style="{StaticResource CalHint}"
                                            VerticalAlignment="Center" Margin="10,0,0,0"/>
                             </StackPanel>
+                            <TextBlock x:Name="SendNote" Style="{StaticResource CalHint}"
+                                       Margin="0,8,0,0" TextWrapping="Wrap"/>
+                          </StackPanel>
                         </Border>
 
                         <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
