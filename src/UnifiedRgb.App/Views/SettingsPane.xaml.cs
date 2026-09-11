@@ -17,7 +17,11 @@ public partial class SettingsPane : UserControl
         // usual answer costs one file stat.
         IsVisibleChanged += (_, e) =>
         {
-            if (e.NewValue is true && DataContext is MainViewModel vm) vm.RefreshWallpaperProfiles();
+            if (e.NewValue is not true || DataContext is not MainViewModel vm) return;
+            vm.RefreshWallpaperProfiles();
+            // Screens and shows are made on another page, so this list can be
+            // stale by the time somebody comes back here to bind one.
+            vm.RefreshPumpRows();
         };
     }
 

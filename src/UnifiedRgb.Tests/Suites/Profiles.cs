@@ -21,6 +21,7 @@ static class ProfilesSuite
     public static void Run(Harness t)
     {
         TheScreenInTheCase(t);
+        ShowStepsBecomeProfiles(t);
         var store = new ProfileStore();
         var dev = new FakeDevice { Name = "Absent-Later", LedCount = 2 };
         var frame = new[] { Rgb.Red, Rgb.Blue };
@@ -62,6 +63,64 @@ static class ProfilesSuite
             store.Delete("Old");
             store.Delete("New");
         }
+    }
+
+    /*---------------- a show is a timeline of profiles ----------------*/
+
+    /// <summary>A step used to name a pump scene of its own. It names a profile
+    /// now, because a profile already carries the lights, the pump screen and
+    /// the screen in the case - and a second way to set one of the three only
+    /// created an argument about which won.
+    ///
+    /// The migration has to be honest rather than clever: an existing file must
+    /// not quietly lose steps, and must not gain a profile nobody made.</summary>
+    static void ShowStepsBecomeProfiles(Harness t)
+    {
+        t.Section("show steps become profiles");
+
+        var profiles = new List<Profile>
+        {
+            new() { Name = "Night",  Screen = "Signal Path" },
+            new() { Name = "Day",    Screen = "Clock" },
+            new() { Name = "Also Day", Screen = "Clock" },      // two claim one screen
+            new() { Name = "No screen" },
+        };
+
+        var store = new SceneStore
+        {
+            Sequences =
+            {
+                new SceneSequence
+                {
+                    Name = "Evening",
+                    Actions =
+                    {
+                        new SceneAction { Scene = "Signal Path" },               // one owner -> adopted
+                        new SceneAction { Scene = "Clock" },                     // two owners -> stranded
+                        new SceneAction { Scene = "Gone" },                      // no owner  -> stranded
+                        new SceneAction { Scene = "Signal Path", Profile = "Day" }, // already said what it wanted
+                        new SceneAction { Profile = "Night" },                    // nothing to do
+                    },
+                },
+            },
+        };
+
+        int stranded = store.MigrateSceneSteps(profiles);
+        var steps = store.Sequences[0].Actions;
+
+        t.Equal(2, stranded, "the two steps with no single answer are reported, not guessed at");
+        t.Equal("Night", steps[0].Profile, "a screen exactly one profile carries becomes that profile");
+        t.Check(steps[1].Profile == null, "a screen two profiles carry is left for the user to decide");
+        t.Check(steps[2].Profile == null, "a screen no profile carries is left alone too");
+        t.Equal("Day", steps[3].Profile, "a step that already named a profile keeps it");
+        t.Equal("Night", steps[4].Profile, "a step with no screen is untouched");
+
+        foreach (var a in steps)
+            t.Check(a.Scene == null, "the retired scene field is cleared on every step, migrated or not");
+
+        // Running it again must not undo anything or re-report.
+        t.Equal(0, store.MigrateSceneSteps(profiles), "a second run has nothing left to do");
+        t.Equal("Night", steps[0].Profile, "...and does not disturb what the first run decided");
     }
 
     /*---------------- the third panel ----------------*/

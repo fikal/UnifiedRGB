@@ -708,7 +708,17 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     /// already applied by then, so this is reported, not thrown. A screen that
     /// is already up is left alone, edits and all: switching profiles must not
     /// stomp on a design someone is in the middle of.</summary>
-    public bool ShowScreen(string name)
+    /// <param name="fromShow">A running show is asking, rather than a profile
+    /// applied by hand. That flips which "already up" counts as nothing to do,
+    /// and the two cases genuinely differ:
+    ///
+    /// By hand, a screen already up is LEFT ALONE, edits and all - switching
+    /// profiles must not stomp a design somebody is in the middle of. From a
+    /// show, an edited canvas must be RELOADED from the saved scene, because the
+    /// show is replaying a screen and the edit is not part of it. The skip used
+    /// to live in the step handler; with a step now being a profile it has to
+    /// live here, which is the one place both callers pass through.</param>
+    public bool ShowScreen(string name, bool fromShow = false)
     {
         if (_lcd == null) return false;
         var sc = _scenes.Scenes.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
@@ -717,7 +727,8 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
             Log.Warn("scenes", $"a profile asked for pump screen '{name}', which does not exist");
             return false;
         }
-        if (_lcd.Design.SceneName == sc.Name && !_liveIsShowScene) return true;
+        // Nothing to do only when the CURRENT owner is the one asking again.
+        if (_lcd.Design.SceneName == sc.Name && _liveIsShowScene == fromShow) return true;
         // Not through the SelectedSceneName setter: that is the user's dropdown
         // and counts as their edit. And while a show has the panel, the profile's
         // screen is shown with the same show-only status - loading it as the
@@ -725,7 +736,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         // on the show's very next step.
         _selectedSceneName = sc.Name;
         OnChanged(nameof(SelectedSceneName));
-        LoadDesignIntoEditor(FromScene(sc), fromShow: _liveIsShowScene);
+        LoadDesignIntoEditor(FromScene(sc), fromShow: fromShow || _liveIsShowScene);
         return true;
     }
 
@@ -779,7 +790,6 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
             OnChanged();
             SequenceActions.Clear();
             foreach (var a in value?.Actions ?? new()) { SequenceActions.Add(a); HookAction(a); }
-            OnChanged(nameof(SequenceActiveAtStartup));
         }
     }
 
@@ -807,33 +817,35 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
             OnChanged(nameof(RunButtonText));
             OnChanged(nameof(SequenceStatus));
         };
-        // The active-show flag is on its way OUT: it makes a second owner of the
-        // panel, so the startup profile puts its screen up and then this starts a
-        // show whose first step paints over it. The replacement is a profile naming
-        // its own show. Until that exists this stays as it was: removing it early
-        // would delete the only way to auto-start a show and put nothing in its
-        // place.
-        var active = _scenes.Sequences.FirstOrDefault(x => x.Name == _scenes.ActiveSequence);
-        if (active != null && Available)
-        {
-            SelectedSequence = active;
-            _sequencer.Start(active);
-        }
+        // Nothing auto-starts here any more. The flag that did made a second
+        // owner of the panel: the startup profile put its screen up and then this
+        // started a show whose first step painted over it, and every later profile
+        // switch lost the same argument a second after winning it. A profile names
+        // its own show now, and MainViewModel has already moved any surviving flag
+        // onto the startup profile so nobody's show simply stops appearing.
+        SelectedSequence = Sequences.FirstOrDefault();
     }
 
     /// <summary>The show that used to be marked "start with the app", or null.
-    /// Read once at startup by the migration that moves it onto a profile, and
-    /// meaningless afterwards.</summary>
+    /// Read once by the migration that moves it onto a profile.</summary>
     public string? LegacyActiveSequence => _scenes.ActiveSequence;
 
     /// <summary>Forget the retired flag once it has been moved somewhere real, so
-    /// the migration runs once rather than every launch.</summary>
+    /// the migration runs once rather than on every launch.</summary>
     public void ClearLegacyActiveSequence()
     {
         if (_scenes.ActiveSequence == null) return;
         _scenes.ActiveSequence = null;
         _scenes.Save();
     }
+
+    /// <summary>Move show steps that named a pump scene onto the profile that
+    /// carries it. Called once at startup, after the profile list exists.</summary>
+    public void MigrateSceneSteps(IEnumerable<Profile> profiles)
+    {
+        if (_scenes.MigrateSceneSteps(profiles) >= 0) _scenes.Save();
+    }
+
 
     /// <summary>Replace imported stores without leaving old timers or save handlers alive.</summary>
     public void ReloadScenes(bool currentScreenChanged)
@@ -876,32 +888,21 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         // the step's explicit choice was overwritten by the profile's implicit
         // one. The explicitly selected screen must have the last word.
         //
-        // A step that names a scene is show territory from here on: flag it
-        // BEFORE the profile applies, so the profile's own screen (if any) is
-        // put up show-only like the scene that follows it. Loaded as the
-        // user's canvas instead, it started the debounced save, and the scene
-        // load right after flushed it - the profile's screen replaced the
-        // user's real canvas in lcd.json on the show's first step.
-        // Resolved first: a step naming a scene that was since deleted must not
-        // flag the user's live canvas as show-only (that would let a profile's
-        // screen reload over an edit in progress, and skip the save at exit).
-        var sc = string.IsNullOrEmpty(a.Scene) ? null : _scenes.Scenes.FirstOrDefault(x => x.Name == a.Scene);
-        // Keep the old ownership for the skip check: marking this step as
-        // show-only must not make an edited canvas look like a saved scene.
-        bool wasShowScene = _liveIsShowScene;
-        if (sc != null) _liveIsShowScene = true;
-        if (!string.IsNullOrEmpty(a.Profile) &&
-            !string.Equals(_currentProfile(), a.Profile, StringComparison.OrdinalIgnoreCase))
-            _applyProfile(a.Profile);
-        if (sc != null &&
-            // Only safe to skip when the show itself put this screen up. If the
-            // user has been editing, the live design is no longer that scene.
-            !(wasShowScene && _selectedSceneName == sc.Name))
-        {
-            _selectedSceneName = sc.Name;   // reflect without re-loading twice
-            OnChanged(nameof(SelectedSceneName));
-            LoadDesignIntoEditor(FromScene(sc), fromShow: true);
-        }
+        // A step IS a profile now. Everything a step used to set separately - the
+        // lights, the pump screen - travels on the profile, and the screen in the
+        // case travels with it for free. That removes the rule this method used to
+        // need about which of two ways of choosing a screen won, and with it the
+        // whole class of argument between a step and the profile it applies.
+        if (string.IsNullOrWhiteSpace(a.Profile)) return;
+        if (string.Equals(_currentProfile(), a.Profile, StringComparison.OrdinalIgnoreCase))
+            return;   // already on it; re-applying restarts every effect channel
+
+        // Show territory, flagged BEFORE the profile applies. The profile's screen
+        // is the show's screen now, so it must go up show-only: loaded as the
+        // user's canvas it starts the debounced save, and the next step's screen
+        // then flushes it into lcd.json over their real design.
+        _liveIsShowScene = true;
+        _applyProfile(a.Profile);
     }
 
     /// <summary>What the pump is showing right now, detached: the live design
@@ -1096,7 +1097,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     public void AddSequenceAction()
     {
         if (_selectedSequence == null) return;
-        var a = new SceneAction { Scene = _selectedSceneName ?? SceneNames.FirstOrDefault(), DelaySeconds = 5 };
+        var a = new SceneAction { Profile = _currentProfile() ?? _profileNames().FirstOrDefault(), DelaySeconds = 5 };
         _selectedSequence.Actions.Add(a);
         SequenceActions.Add(a);
         HookAction(a);
@@ -1135,18 +1136,10 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         else if (_selectedSequence is { Actions.Count: > 0 }) _sequencer.Start(_selectedSequence);
     }
 
-    /// <summary>This sequence starts (and loops) whenever the app launches.</summary>
-    public bool SequenceActiveAtStartup
-    {
-        get => _selectedSequence != null && _scenes.ActiveSequence == _selectedSequence.Name;
-        set
-        {
-            if (_selectedSequence == null) return;
-            _scenes.ActiveSequence = value ? _selectedSequence.Name : null;
-            _scenes.Save();
-            OnChanged();
-        }
-    }
+    // No "start this show with the app" any more. A show starts because a
+    // profile named it, which is the same switch that already decides the
+    // lights, the pump screen and the screen in the case. Two switches that
+    // could disagree about one panel is the fault this replaced.
 
     public void Dispose()
     {

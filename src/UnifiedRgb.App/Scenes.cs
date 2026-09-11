@@ -47,7 +47,15 @@ public sealed class SceneAction : INotifyPropertyChanged
     }
 
     string? _scene;
-    /// <summary>Scene to show; null/empty = leave the panel as is.</summary>
+    /// <summary>LEGACY. A step used to be able to name a pump scene of its own,
+    /// alongside or instead of a profile. A show is a timeline of PROFILES now:
+    /// a profile already carries the lights, the pump screen and the screen in
+    /// the case, so a second way to set one of the three only created an argument
+    /// about which won.
+    ///
+    /// Still deserialized so an existing scenes.json can be MIGRATED rather than
+    /// silently emptied - see SceneStore.MigrateSceneSteps - and written back out
+    /// as null once it has been. Nothing applies it.</summary>
     public string? Scene
     {
         get => _scene;
@@ -55,7 +63,10 @@ public sealed class SceneAction : INotifyPropertyChanged
     }
 
     string? _profile;
-    /// <summary>Lighting profile to apply; null/empty = leave lighting alone.</summary>
+    /// <summary>The profile this step goes to: the whole desk state, lights and
+    /// pump screen and case screen together. Null or empty means the step does
+    /// nothing, which is what a half-migrated file looks like and why the
+    /// migration reports rather than guesses.</summary>
     public string? Profile
     {
         get => _profile;
@@ -77,7 +88,69 @@ public sealed class SceneStore
 {
     public List<LcdScene> Scenes { get; set; } = new();
     public List<SceneSequence> Sequences { get; set; } = new();
+    /// <summary>LEGACY. One show could mark itself "start with the app", which
+    /// made a second owner of the pump panel: the startup profile put its screen
+    /// up and this show's first step painted over it a moment later. A profile
+    /// names its own show now. Kept only so the setting can be moved onto the
+    /// startup profile instead of vanishing.</summary>
     public string? ActiveSequence { get; set; }
+
+    /// <summary>Move steps that named a pump SCENE onto the profile that carries
+    /// that scene, now that a step is a profile.
+    ///
+    /// Reported rather than guessed at. Where exactly one profile pins a scene,
+    /// that profile is unambiguously what the step meant and is adopted. Where
+    /// none does, or several do, there is no honest answer: inventing a profile
+    /// would put a thing in the user's list they never made, and picking one of
+    /// several would be a coin toss that changes their lighting. Those steps are
+    /// left empty and named in the log so they can be pointed somewhere on
+    /// purpose.
+    ///
+    /// Returns the number of steps that could not be resolved.</summary>
+    public int MigrateSceneSteps(IEnumerable<Profile> profiles)
+    {
+        var byScene = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in profiles)
+        {
+            if (p == null || string.IsNullOrWhiteSpace(p.Screen)) continue;
+            if (!byScene.TryGetValue(p.Screen!, out var list)) byScene[p.Screen!] = list = new();
+            list.Add(p.Name);
+        }
+
+        int moved = 0, stranded = 0;
+        foreach (var seq in Sequences)
+        {
+            var steps = seq?.Actions;
+            if (steps == null) continue;
+            for (int i = 0; i < steps.Count; i++)
+            {
+                var a = steps[i];
+                if (a == null || string.IsNullOrWhiteSpace(a.Scene)) continue;
+                string scene = a.Scene!;
+                a.Scene = null;                                   // the field is retired either way
+                if (!string.IsNullOrWhiteSpace(a.Profile)) continue;   // the step already said what it wanted
+
+                if (byScene.TryGetValue(scene, out var owners) && owners.Count == 1)
+                {
+                    a.Profile = owners[0];
+                    moved++;
+                    Log.Info("scenes", $"show '{seq!.Name}' step {i + 1}: screen '{scene}' is now profile '{owners[0]}'");
+                }
+                else
+                {
+                    stranded++;
+                    Log.Warn("scenes", $"show '{seq!.Name}' step {i + 1} showed screen '{scene}', and "
+                        + (owners == null
+                           ? "no profile carries that screen"
+                           : $"{owners.Count} profiles do ({string.Join(", ", owners)})")
+                        + " - the step does nothing until you point it at a profile");
+                }
+            }
+        }
+        if (moved > 0 || stranded > 0)
+            Log.Info("scenes", $"show steps migrated to profiles: {moved} moved, {stranded} need a profile chosen");
+        return stranded;
+    }
 
     static string Path => AppPaths.Config("scenes.json");
 

@@ -73,10 +73,20 @@
                         </StackPanel>
                         <CheckBox Content="Apply the selected profile at startup" IsChecked="{Binding IsStartupProfile}"
                                   Margin="0,12,0,0"/>
-                        <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
-                                   Text="{Binding SelectedProfile.Screen, StringFormat='Also shows pump screen: {0}',
-                                                  TargetNullValue='Pump screen: none. Save the profile while a saved screen is loaded to bind one.',
-                                                  FallbackValue=''}"/>
+                        <!-- The pump panel, as a pick rather than a ritual. It
+                             used to be bound only by loading a screen on another
+                             page and then coming back here to save, which is a
+                             lot of clicks to express one choice - and it could
+                             not express a show at all. -->
+                        <StackPanel Margin="0,14,0,0"
+                                    Visibility="{Binding PumpAvailable, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="Pump panel" Style="{StaticResource SectionTitle}" Margin="0,0,0,4"/>
+                            <ComboBox Width="240" HorizontalAlignment="Left"
+                                      ItemsSource="{Binding PumpRows}"
+                                      SelectedItem="{Binding PumpChoice}"
+                                      DisplayMemberPath="Label"
+                                      ToolTip="What the pump panel does when this profile is applied: hold one screen, or run a show"/>
+                        </StackPanel>
 
                         <!-- The third panel. Only offered once Wallpaper Engine
                              has profiles of its own: binding a lighting profile

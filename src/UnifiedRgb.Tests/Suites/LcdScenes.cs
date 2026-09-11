@@ -30,29 +30,40 @@ static class LcdScenesSuite
             _ => false, () => Array.Empty<string>(), () => null);
         var lcd = (LcdController)RuntimeHelpers.GetUninitializedObject(typeof(LcdController));
         var lcdField = typeof(LcdDesignerViewModel).GetField("_lcd", flags)!;
-        var action = typeof(LcdDesignerViewModel).GetMethod("ApplySceneAction", flags)!;
         var scenes = (SceneStore)typeof(LcdDesignerViewModel).GetField("_scenes", flags)!.GetValue(vm)!;
         const string name = "Review regression screen";
         scenes.Scenes.Add(new LcdScene { Name = name, Design = LcdDesign.Default() });
         lcdField.SetValue(vm, lcd);
         try
         {
+            // A show step is a PROFILE now, and the profile's screen goes up
+            // through ShowScreen(fromShow: true). The ownership guarantees did
+            // not change, so they are checked where they now live rather than
+            // through a step field that no longer exists.
             vm.SelectedSceneName = name;
             var edited = lcd.Design;
             // A real edit keeps the selected scene's name but returns ownership
             // to the canvas. The next show step must reload the saved design.
             edited.Elements.Clear();
             vm.TouchLcd();
-            action.Invoke(vm, new object[] { new SceneAction { Scene = name } });
+            vm.ShowScreen(name, fromShow: true);
             t.Check(!ReferenceEquals(edited, lcd.Design), "show reloads an edited selected screen");
             t.Check(lcd.Design.Elements.Count > 0, "show restores the saved screen elements");
 
             var showing = lcd.Design;
-            action.Invoke(vm, new object[] { new SceneAction { Scene = name } });
+            vm.ShowScreen(name, fromShow: true);
             t.Check(ReferenceEquals(showing, lcd.Design), "unchanged show step keeps the current design");
 
+            // And the other half of that rule, which is why the flag exists: by
+            // hand, a screen already up is left alone EDITS AND ALL, because
+            // switching profiles must not stomp a design in progress.
             vm.TouchLcd();
-            action.Invoke(vm, new object[] { new SceneAction { Scene = "Deleted screen" } });
+            var userEdited = lcd.Design;
+            vm.ShowScreen(name);
+            t.Check(ReferenceEquals(userEdited, lcd.Design), "a profile does not reload a screen the user is editing");
+
+            vm.TouchLcd();
+            t.Check(!vm.ShowScreen("Deleted screen", fromShow: true), "a missing screen is refused");
             t.Check(vm.SnapshotDesign() is { FromShow: false }, "missing scene leaves canvas ownership intact");
         }
         finally

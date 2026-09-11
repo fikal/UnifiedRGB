@@ -224,13 +224,86 @@ public sealed partial class MainViewModel
         return true;
     }
 
-    /// <summary>What a save records for the pump panel. INTERIM: still the
-    /// screen the designer happens to have loaded, exactly as before, so this
-    /// change is signature-deep only and nothing observable moved. The picker
-    /// that replaces it is waiting on the larger question of what a show is.</summary>
-    PumpTarget? PumpForSave
-        => Lcd.CurrentScreen is string s && !string.IsNullOrWhiteSpace(s)
-           ? PumpTarget.OfScreen(s) : null;
+    /*--- the pump panel, as a picker rather than a ritual ---*/
+
+    /// <summary>A row in the pump picker. A typed item rather than a decorated
+    /// string because a screen and a show are allowed to share a name, and
+    /// parsing a suffix back out of display text to tell them apart is how that
+    /// becomes a bug. A record, so a rebuilt list still contains an item EQUAL
+    /// to the selected one and the combo box keeps its selection.</summary>
+    public sealed record PumpRow(string Label, string? Screen, string? Show)
+    {
+        public PumpTarget Target => new(Screen, Show);
+        public override string ToString() => Label;
+    }
+
+    public const string NoPump = "Leave the pump panel alone";
+    static readonly PumpRow PumpNone = new(NoPump, null, null);
+
+    public ObservableCollection<PumpRow> PumpRows { get; } = new();
+
+    PumpRow _pumpChoice = PumpNone;
+    public PumpRow PumpChoice
+    {
+        get => _pumpChoice;
+        set
+        {
+            // Null is the control saying its list moved, never a choice. Same
+            // rule as the wallpaper picker, and it is here for the same reason:
+            // reading it as data both wipes the selection and leaves the box
+            // blank. Picking the "leave it alone" row sends that row.
+            if (value == null) return;
+            if (_pumpChoice == value) return;
+            _pumpChoice = value;
+            MarkDirty();
+            OnChanged();
+        }
+    }
+
+    /// <summary>Anything to pick beyond "leave it alone".</summary>
+    public bool PumpAvailable => PumpRows.Count > 1;
+
+    public void RefreshPumpRows()
+    {
+        var screens = Lcd.SceneNames.ToList();
+        var shows = Lcd.Sequences.Where(s => s != null).Select(s => s.Name).ToList();
+
+        var want = new List<PumpRow> { PumpNone };
+        foreach (string s in screens) want.Add(new PumpRow($"Screen: {s}", s, null));
+        foreach (string s in shows) want.Add(new PumpRow($"Show: {s}", null, s));
+
+        // Rebuilt only when it actually differs: clearing a bound collection
+        // makes the combo box drop its selection, and its reset is posted rather
+        // than immediate, so it can land after the notification meant to restore
+        // it and leave the control blank.
+        if (!PumpRows.SequenceEqual(want))
+        {
+            PumpRows.Clear();
+            foreach (var r in want) PumpRows.Add(r);
+        }
+
+        // A profile naming a screen or show that has since been deleted would sit
+        // on a row that is no longer in the list, which a ComboBox shows as blank.
+        if (!PumpRows.Contains(_pumpChoice)) _pumpChoice = PumpNone;
+
+        OnChanged(nameof(PumpAvailable));
+        OnChanged(nameof(PumpChoice));
+    }
+
+    void SyncPumpChoice(Profile? p)
+    {
+        if (p == null) return;   // a deselect says nothing about the pump panel
+        _pumpChoice = PumpRows.FirstOrDefault(r =>
+                          string.Equals(r.Screen, p.Screen, StringComparison.OrdinalIgnoreCase)
+                       && string.Equals(r.Show, p.Show, StringComparison.OrdinalIgnoreCase))
+                      ?? PumpNone;
+        OnChanged(nameof(PumpChoice));
+    }
+
+    /// <summary>What a save records for the pump panel. Null when this machine
+    /// has nothing to offer - no screens and no shows - so a profile that came
+    /// from a machine that did keeps what it carries.</summary>
+    PumpTarget? PumpForSave => PumpRows.Count <= 1 ? null : _pumpChoice.Target;
 
     void SyncWallpaperChoice(Profile? p)
     {
@@ -361,7 +434,11 @@ public sealed partial class MainViewModel
     /// hotkey, an automation rule, a scene step. It used to log nothing at all,
     /// so a bundle could not answer "which profile was on" for any moment in a
     /// three week log.</summary>
-    void LoadProfile(Profile? p)
+    /// <param name="fromShow">This apply is a step of a running show. The
+    /// profile's own SHOW binding is ignored then, and a running show is not
+    /// stopped by the profile's screen: the show is the thing driving, and a
+    /// step must not be able to swap the show out from under itself.</param>
+    void LoadProfile(Profile? p, bool fromShow = false)
     {
         if (p == null) return;
         _recoveryLighting.ApplyProfile(p);
@@ -385,7 +462,25 @@ public sealed partial class MainViewModel
         // The pump screen too. Every profile apply comes through here - the
         // button, a hotkey, an app rule, a schedule, a show step - so this is
         // the one place that makes a profile mean the whole desk.
-        bool screenShown = !string.IsNullOrWhiteSpace(p.Screen) && Lcd.ShowScreen(p.Screen!);
+        // The profile OWNS the pump panel: a screen, a show, or nothing. Nothing
+        // else starts a show any more, which is what stops the panel having two
+        // owners that overwrite each other a second apart.
+        bool screenShown = false, showStarted = false;
+        if (!string.IsNullOrWhiteSpace(p.Show))
+        {
+            // Ignored when this apply IS a show step. A step's profile naming a
+            // different show would have the show swap itself out mid-run, and one
+            // naming its own show would restart it from step one every pass.
+            if (!fromShow) showStarted = Lcd.ShowSequence(p.Show!);
+        }
+        else if (!string.IsNullOrWhiteSpace(p.Screen))
+        {
+            // One fixed screen means no show. Without this the show's next step
+            // paints over the screen a second after it appears, which is exactly
+            // what made a profile's pump screen meaningless to anyone running one.
+            if (!fromShow) Lcd.StopSequence();
+            screenShown = Lcd.ShowScreen(p.Screen!, fromShow);
+        }
         // And the screen in the case. Same reasoning as the pump panel: this is
         // the one door every apply comes through - the button, a hotkey, an app
         // rule, a schedule, a show step - so it is the only place that can make
@@ -395,7 +490,10 @@ public sealed partial class MainViewModel
         UnifiedRgb.Core.Log.Info("lighting",
             $"applied profile '{p.Name}': {p.Effects?.Count ?? 0} effect(s) on "
             + $"{p.DeviceFrames?.Count ?? 0} device(s)"
-            + (p.Screen == null ? "" : screenShown ? $", pump screen '{p.Screen}'" : $", pump screen '{p.Screen}' not shown")
+            + (p.Show != null
+               ? (showStarted ? $", show '{p.Show}'" : fromShow ? "" : $", show '{p.Show}' could not start")
+               : p.Screen == null ? ""
+               : screenShown ? $", pump screen '{p.Screen}'" : $", pump screen '{p.Screen}' not shown")
             // "asked for", never "showing": the control channel tells us
             // nothing about what the wallpaper did after we sent the request.
             + (p.Wallpaper == null ? ""

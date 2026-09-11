@@ -874,10 +874,15 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     public event Action? LightingApplied;
 
     /// <summary>Select + load a profile (the hotkey/automation entry point).</summary>
-    public void ApplyProfile(Profile p)
+    public void ApplyProfile(Profile p) => ApplyProfile(p, fromShow: false);
+
+    /// <param name="fromShow">This apply is a step of a running show, which
+    /// changes what the profile is allowed to do to the pump panel. See
+    /// LoadProfile.</param>
+    public void ApplyProfile(Profile p, bool fromShow)
     {
         SelectedProfile = p;
-        LoadProfile(p);
+        LoadProfile(p, fromShow);
         LightingApplied?.Invoke();
     }
 
@@ -887,11 +892,13 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         System.Windows.Application.Current.Dispatcher.Invoke(() => ApplyProfile(Profiles[i]));
     }
 
-    public bool ApplyProfileByName(string name)
+    public bool ApplyProfileByName(string name) => ApplyProfileByName(name, fromShow: false);
+
+    public bool ApplyProfileByName(string name, bool fromShow)
     {
         var p = Profiles.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
         if (p == null) return false;
-        ApplyProfile(p);
+        ApplyProfile(p, fromShow);
         return true;
     }
 
@@ -1015,6 +1022,53 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             // does, so Save writes back what is on screen rather than whatever
             // the previously selected profile was set to.
             SyncWallpaperChoice(value);
+            SyncPumpChoice(value);
+        }
+    }
+
+    /// <summary>One-time moves for the two things a show used to own itself.
+    ///
+    /// A step that named a pump SCENE becomes the profile that carries that
+    /// scene. A show marked "start with the app" becomes the startup profile's
+    /// show. Neither setting is dropped silently: where the answer is ambiguous
+    /// the log says so and names what needs pointing somewhere.</summary>
+    void MigrateShowsToProfiles()
+    {
+        try
+        {
+            Lcd.MigrateSceneSteps(Profiles);
+
+            string? legacy = Lcd.LegacyActiveSequence;
+            if (string.IsNullOrWhiteSpace(legacy)) return;
+
+            var startup = Profiles.FirstOrDefault(p =>
+                string.Equals(p.Name, _store.Settings.StartupProfile, StringComparison.OrdinalIgnoreCase));
+            if (startup == null)
+            {
+                UnifiedRgb.Core.Log.Warn("scenes",
+                    $"show '{legacy}' used to start with the app, but there is no startup profile to move it onto - "
+                    + "bind it to a profile under Settings, Profiles");
+                return;
+            }
+            if (!string.IsNullOrWhiteSpace(startup.Show) || !string.IsNullOrWhiteSpace(startup.Screen))
+            {
+                UnifiedRgb.Core.Log.Warn("scenes",
+                    $"show '{legacy}' used to start with the app, but startup profile '{startup.Name}' already "
+                    + "names a pump target - leaving both alone rather than choosing for you");
+                return;
+            }
+
+            startup.Show = legacy;
+            startup.Screen = null;
+            _store.SaveProfiles();
+            Lcd.ClearLegacyActiveSequence();
+            UnifiedRgb.Core.Log.Info("scenes",
+                $"show '{legacy}' now starts because profile '{startup.Name}' asks for it");
+        }
+        catch (Exception ex)
+        {
+            // A migration is never worth failing a launch over.
+            UnifiedRgb.Core.Log.Warn("scenes", $"could not migrate shows onto profiles: {ex.Message}");
         }
     }
 
@@ -1173,7 +1227,9 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         Lcd = new LcdDesignerViewModel(
             isOnScreen: () => ShowLcdPanel,   // visibility, not selection: Settings covers the pane
             lightsSuppressed: () => LightsSuppressed,
-            applyProfile: ApplyProfileByName,
+            // From a show, so the profile's own show binding is ignored and a
+            // running show is not stopped by the profile's screen.
+            applyProfile: n => ApplyProfileByName(n, fromShow: true),
             profileNames: () => Profiles.Select(p => p.Name),
             currentProfile: () => SelectedProfile?.Name);
         ApplyToTargetCommand = new RelayCommand(_ => ApplyToTarget(), _ => HasSelection);
@@ -1339,10 +1395,13 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             LightsSuppressed: LightsSuppressed));
         _watchdog.Start();
         Lcd.InitScenes();
+        MigrateShowsToProfiles();
         // The picker's contents, once at startup. Re-read on demand after that
         // (the settings pane asks again when it opens), so a Wallpaper Engine
         // profile made while this app is running does not need a restart.
         RefreshWallpaperProfiles();
+        RefreshPumpRows();
+        SyncPumpChoice(SelectedProfile);
         // Every profile-name list in the UI is computed from Profiles (Show tab
         // lights dropdowns, app-rule pickers); without this they stay frozen at
         // whatever existed at launch.
