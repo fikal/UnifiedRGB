@@ -190,7 +190,6 @@
                         <TextBlock Text="Why the lighting changed" Style="{StaticResource SectionTitle}"/>
                         <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,8"
                                    Text="A running history of what took over and why, plus a temporary pause that stops rules changing anything until you resume."/>
-                        <TextBlock Text="{Binding AutomationStatus}" Opacity="0.75" FontSize="12" Margin="0,0,0,6"/>
                         <Button Content="Activity…" Padding="12,5" HorizontalAlignment="Left"
                                 Click="Activity_Click"/>
                     </StackPanel>

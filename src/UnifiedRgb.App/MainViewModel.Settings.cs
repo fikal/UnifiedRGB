@@ -820,14 +820,18 @@ public sealed partial class MainViewModel
         _store.SaveSettings();
     }
 
+    /// <summary>The live line from the automation watcher. Deliberately NOT
+    /// exposed raw any more: every screen asks for its own topic below.
+    ///
+    /// The "Why the lighting changed" card used to bind this unfiltered, which
+    /// made it the one surface that never got the topic treatment. Because
+    /// app-rule sentences sit at the bottom of the decision chain - they are what
+    /// shows whenever no schedule and no sensor rule is active - that card spent
+    /// almost all of its life displaying "this window is focused, switch to
+    /// another program to test your rules": testing advice for another feature,
+    /// on a card whose job is the history and the pause. The history window is
+    /// where "what took over and why" belongs, with timestamps.</summary>
     string _automationStatus = "";
-    /// <summary>Live line from the automation watcher (what app it sees and
-    /// what it decided) — the feature is a black box without it.</summary>
-    public string AutomationStatus
-    {
-        get => _automationStatus;
-        set { if (_automationStatus == value) return; _automationStatus = value; OnChanged(); }
-    }
 
     /*--- One status line, four screens, and only one of them wants any given
           sentence. The app-rule sentences are the fallback in the decision's
@@ -847,7 +851,6 @@ public sealed partial class MainViewModel
         if (_automationStatus == status && _automationTopic == topic) return;
         _automationStatus = status;
         _automationTopic = topic;
-        OnChanged(nameof(AutomationStatus));
         OnChanged(nameof(ScheduleStatus));
         OnChanged(nameof(SensorStatus));
         OnChanged(nameof(AppRuleStatus));
