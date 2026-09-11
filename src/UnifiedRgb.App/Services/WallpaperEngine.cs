@@ -140,6 +140,7 @@ public static class WallpaperEngine
 
     static readonly object _profileGate = new();
     static string[] _profiles = Array.Empty<string>();
+    static string? _active;
     static DateTime _configStamp = DateTime.MinValue;
     static string? _configPath;
 
@@ -164,8 +165,30 @@ public static class WallpaperEngine
                 if (stamp == _configStamp) return _profiles;
                 _configStamp = stamp;
                 _profiles = ReadProfiles(cfg);
+                _active = ReadActiveProfile(cfg);
             }
             return _profiles;
+        }
+    }
+
+    /// <summary>The profile whose wallpapers are the ones actually on screen, or
+    /// null when the current arrangement matches none of them.
+    ///
+    /// Worked out by COMPARING, because Wallpaper Engine does not record it.
+    /// Its config has a "profile" slot next to the live wallpapers, and on this
+    /// machine that slot holds an empty object whichever profile was last
+    /// applied - so the only honest answer is which saved profile's per-monitor
+    /// wallpapers equal the per-monitor wallpapers currently up.
+    ///
+    /// A person who has changed one monitor by hand since applying a profile
+    /// matches nothing, which is right: their arrangement is no longer that
+    /// profile, and asking for it again should restore it.</summary>
+    public static string? ActiveProfile
+    {
+        get
+        {
+            _ = Profiles;   // shares the timestamp-guarded read
+            lock (_profileGate) return _active;
         }
     }
 
@@ -215,6 +238,82 @@ public static class WallpaperEngine
             Log.Warn("wallpaper", $"could not read Wallpaper Engine's config: {ex.Message}");
             return Array.Empty<string>();
         }
+    }
+
+    /// <summary>Which saved profile the live wallpapers correspond to.
+    /// Null when none of them match, including when there is nothing to
+    /// compare - a config with no live wallpapers listed answers "unknown"
+    /// rather than "the first profile".</summary>
+    internal static string? ReadActiveProfile(string path)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(path));
+            string? live = null;
+            var saved = new List<(string Name, string Sig)>();
+            Scan(doc.RootElement, ref live, saved, 0);
+
+            if (string.IsNullOrEmpty(live)) return null;
+            // First match wins. Two profiles with identical wallpapers are
+            // indistinguishable from here, and it does not matter: switching
+            // between them would change nothing on screen either.
+            foreach (var (name, sig) in saved)
+                if (string.Equals(sig, live, StringComparison.OrdinalIgnoreCase)) return name;
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("wallpaper", $"could not read what Wallpaper Engine is showing: {ex.Message}");
+            return null;
+        }
+    }
+
+    static void Scan(JsonElement e, ref string? live, List<(string, string)> saved, int depth)
+    {
+        if (depth > 8 || e.ValueKind != JsonValueKind.Object) return;
+        foreach (var prop in e.EnumerateObject())
+        {
+            // The live arrangement sits under "wallpaperconfig"; the saved ones
+            // sit inside each entry of "profiles". Both carry the same
+            // "selectedwallpapers" map, which is what makes them comparable.
+            if (prop.NameEquals("wallpaperconfig") && prop.Value.ValueKind == JsonValueKind.Object
+                && prop.Value.TryGetProperty("selectedwallpapers", out var cur))
+                live ??= Signature(cur);
+
+            if (prop.NameEquals("profiles") && prop.Value.ValueKind == JsonValueKind.Array)
+                foreach (var item in prop.Value.EnumerateArray())
+                {
+                    if (item.ValueKind != JsonValueKind.Object) continue;
+                    if (!item.TryGetProperty("name", out var n) || n.ValueKind != JsonValueKind.String) continue;
+                    string sig = item.TryGetProperty("selectedwallpapers", out var w) ? Signature(w) : "";
+                    if (sig.Length > 0) saved.Add((n.GetString() ?? "", sig));
+                }
+
+            Scan(prop.Value, ref live, saved, depth + 1);
+        }
+    }
+
+    /// <summary>One comparable string for a per-monitor wallpaper map. Sorted by
+    /// monitor, because a dictionary's order is not a promise and a signature
+    /// that reshuffles itself would report a profile as changed every time.</summary>
+    const char SepBack = (char)92;   // a backslash, spelled out to keep this file free of escape games
+    const char SepFwd = '/';
+
+    static string Signature(JsonElement selectedWallpapers)
+    {
+        if (selectedWallpapers.ValueKind != JsonValueKind.Object) return "";
+        var parts = new List<string>();
+        foreach (var mon in selectedWallpapers.EnumerateObject())
+        {
+            string file = mon.Value.ValueKind == JsonValueKind.Object
+                       && mon.Value.TryGetProperty("file", out var f) && f.ValueKind == JsonValueKind.String
+                ? f.GetString() ?? "" : "";
+            // Slashes normalised: the same wallpaper written two ways is the
+            // same wallpaper, and a false mismatch here means a needless reload.
+            parts.Add(mon.Name + "=" + file.Replace(SepBack, SepFwd));
+        }
+        parts.Sort(StringComparer.OrdinalIgnoreCase);
+        return string.Join("|", parts);
     }
 
     static void Walk(JsonElement e, List<string> into, int depth)
@@ -289,6 +388,16 @@ public static class WallpaperEngine
             Log.Warn("wallpaper", $"a profile asked for wallpaper '{profile}', which Wallpaper Engine no longer has");
             return false;
         }
+        // Already showing it: asking again would reload every wallpaper on every
+        // monitor for no change. This runs on every profile apply - a schedule
+        // tick, an app rule, each step of a show - so re-asking is not a one-off
+        // stutter, it is a reload each time. True, because the request is
+        // satisfied: the same answer a show already running gives.
+        if (string.Equals(ActiveProfile, profile, StringComparison.OrdinalIgnoreCase))
+        {
+            Log.Info("wallpaper", $"wallpaper profile '{profile}' is already up, leaving it alone");
+            return true;
+        }
 
         try
         {
@@ -322,6 +431,6 @@ public static class WallpaperEngine
     internal static void Forget()
     {
         lock (_gate) { _searched = false; _exe = null; }
-        lock (_profileGate) { _profiles = Array.Empty<string>(); _configStamp = DateTime.MinValue; _configPath = null; }
+        lock (_profileGate) { _profiles = Array.Empty<string>(); _active = null; _configStamp = DateTime.MinValue; _configPath = null; }
     }
 }

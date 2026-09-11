@@ -335,7 +335,7 @@
                           <ScrollViewer VerticalScrollBarVisibility="Auto">
                             <StackPanel Margin="0,2,14,0" MaxWidth="700" HorizontalAlignment="Left">
                                 <TextBlock Opacity="0.6" TextWrapping="Wrap" Margin="0,0,0,14"
-                                           Text="A show changes your screen and lights on a timer. It loops until you stop it."/>
+                                           Text="A show steps through your profiles on a timer, taking the lights, the pump panel and the screen in the case with it. It loops until you stop it."/>
 
                                 <TextBlock Text="SHOW" FontSize="11" FontWeight="SemiBold"
                                            Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,0,0,8"/>
@@ -357,7 +357,7 @@
                                 <TextBlock Text="STEPS" FontSize="11" FontWeight="SemiBold"
                                            Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,16,0,4"/>
                                 <TextBlock Opacity="0.5" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,8"
-                                           Text="Each step waits, then changes the screen, the lights, or both. Pick (no change) to leave that part alone."/>
+                                           Text="Each step waits, then goes to a profile."/>
 
                                 <ItemsControl ItemsSource="{Binding SequenceActions}">
                                     <ItemsControl.ItemTemplate>
@@ -422,7 +422,7 @@
 
                                 <Border Background="#FF1E212A" CornerRadius="8" Padding="12,10" Margin="0,14,0,0">
                                     <TextBlock Opacity="0.65" FontSize="12" TextWrapping="Wrap"
-                                               Text="Try it: save two profiles with different colors. Add a step for each one (wait 1 sec, lights = that profile). Hit Run and your lights flash back and forth."/>
+                                               Text="Try it: save two profiles with different colors, add a step for each, set both waits to 1 second and hit Run. Your lights flash back and forth."/>
                                 </Border>
                             </StackPanel>
                           </ScrollViewer>

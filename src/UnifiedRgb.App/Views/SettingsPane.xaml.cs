@@ -7,23 +7,13 @@ namespace UnifiedRgb.App.Views;
 /// brightness, automation and support.</summary>
 public partial class SettingsPane : UserControl
 {
-    public SettingsPane()
-    {
-        InitializeComponent();
-        // Ask Wallpaper Engine again whenever this page appears. Someone who
-        // reads the hint, alt-tabs over there and makes a profile should find it
-        // in the picker when they come back, not after restarting this app. The
-        // read underneath is guarded by the config file's timestamp, so the
-        // usual answer costs one file stat.
-        IsVisibleChanged += (_, e) =>
-        {
-            if (e.NewValue is not true || DataContext is not MainViewModel vm) return;
-            vm.RefreshWallpaperProfiles();
-            // Screens and shows are made on another page, so this list can be
-            // stale by the time somebody comes back here to bind one.
-            vm.RefreshPumpRows();
-        };
-    }
+    // No IsVisibleChanged hook here, though it looks like the obvious place for
+    // one. This control's own Visibility is never bound - only the ScrollViewer
+    // inside it is - so the control is permanently visible and that event never
+    // fires for opening or closing settings. It was dead the day it was written.
+    // The refreshes it was meant to drive now hang off IsSettingsOpen and off the
+    // collections themselves, both of which actually happen.
+    public SettingsPane() => InitializeComponent();
 
     MainViewModel VM => (MainViewModel)DataContext;
     Window? Owner => Window.GetWindow(this);

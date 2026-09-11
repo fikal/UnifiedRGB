@@ -211,6 +211,39 @@ static class ProfilesSuite
                 t.Equal(0, UnifiedRgb.App.Services.WallpaperEngine
                         .ReadProfiles(Path.Combine(dir, "does-not-exist.json")).Length,
                     "a missing config is no profiles, not a crash");
+
+                t.Section("which wallpaper profile is already up");
+                // Wallpaper Engine does not record this. Its config has a
+                // "profile" slot beside the live wallpapers and it holds an
+                // empty object whichever profile was applied, so the only honest
+                // answer is which saved profile's per-monitor wallpapers equal
+                // the ones currently showing. Shape copied from the live file.
+                static string Cfg(string liveA, string liveB, string matrixA, string matrixB) =>
+                    "{\"u\":{\"general\":{"
+                    + "\"wallpaperconfig\":{\"profile\":{},\"selectedwallpapers\":{"
+                    + "\"Monitor0\":{\"file\":\"" + liveA + "\"},\"Monitor1\":{\"file\":\"" + liveB + "\"}}},"
+                    + "\"profiles\":["
+                    + "{\"name\":\"Matrix\",\"selectedwallpapers\":{"
+                    + "\"Monitor0\":{\"file\":\"" + matrixA + "\"},\"Monitor1\":{\"file\":\"" + matrixB + "\"}}},"
+                    + "{\"name\":\"Diablo\",\"selectedwallpapers\":{"
+                    + "\"Monitor0\":{\"file\":\"d0.mp4\"},\"Monitor1\":{\"file\":\"d1.mp4\"}}}]}}}";
+
+                static string? Active(string dir, string json)
+                {
+                    string path = Path.Combine(dir, "active.json");
+                    File.WriteAllText(path, json);
+                    return UnifiedRgb.App.Services.WallpaperEngine.ReadActiveProfile(path);
+                }
+
+                t.Equal("Matrix", Active(dir, Cfg("m0.pkg", "m1.mp4", "m0.pkg", "m1.mp4")),
+                    "the profile whose wallpapers are on screen is the active one");
+                t.Check(Active(dir, Cfg("something-else.pkg", "m1.mp4", "m0.pkg", "m1.mp4")) == null,
+                    "one monitor changed by hand matches nothing, so asking again restores it");
+                t.Equal("Matrix", Active(dir, Cfg("M0.PKG", "m1.mp4", "m0.pkg", "m1.mp4")),
+                    "case is not a difference worth reloading every monitor over");
+                t.Check(Active(dir, "{\"u\":{\"general\":{\"profiles\":[{\"name\":\"X\"}]}}}") == null,
+                    "nothing to compare answers unknown rather than naming the first profile");
+                t.Check(Active(dir, "{ not json") == null, "an unreadable config answers unknown, not a crash");
             }
             finally { try { Directory.Delete(dir, recursive: true); } catch { } }
 

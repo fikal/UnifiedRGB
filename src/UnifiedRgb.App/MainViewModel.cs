@@ -370,7 +370,15 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         get => _isSettingsOpen;
         set
         {
+            bool opening = value && !_isSettingsOpen;
             _isSettingsOpen = value;
+            // Wallpaper Engine's profile list lives in ANOTHER app's config file,
+            // so the only moment to re-read it is when this page appears. Hooked
+            // here rather than on the pane's IsVisibleChanged, which never fires:
+            // the pane's own Visibility is not bound, only its inner scroll
+            // viewer's, so the control is permanently visible and the event that
+            // was supposed to drive this could not happen.
+            if (opening) RefreshWallpaperProfiles();
             OnChanged(); OnChanged(nameof(ShowLighting)); OnChanged(nameof(ShowLcdPanel));
             OnChanged(nameof(ShowDisabledPane));
             // Field bug: Cooling stayed visible under Settings — this
@@ -1402,6 +1410,12 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         RefreshWallpaperProfiles();
         RefreshPumpRows();
         SyncPumpChoice(SelectedProfile);
+        // Screens and shows are made on another page, and the pump picker has to
+        // list them the moment they exist rather than whenever somebody happens
+        // to navigate in a way that refreshes it. These are the collections the
+        // designer edits, so this fires exactly when the answer changes.
+        Lcd.Sequences.CollectionChanged += (_, _) => RefreshPumpRows();
+        Lcd.SceneNames.CollectionChanged += (_, _) => RefreshPumpRows();
         // Every profile-name list in the UI is computed from Profiles (Show tab
         // lights dropdowns, app-rule pickers); without this they stay frozen at
         // whatever existed at launch.
