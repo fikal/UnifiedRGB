@@ -110,8 +110,16 @@
                 <Border Style="{StaticResource SettingsCard}">
                     <StackPanel>
                         <TextBlock Text="Startup" Style="{StaticResource SectionTitle}"/>
-                        <CheckBox Content="Start with Windows, in the tray" IsChecked="{Binding StartWithWindows}"/>
-                        <CheckBox Content="Start minimized to the tray" IsChecked="{Binding StartMinimized}" Margin="0,8,0,0"/>
+                        <!-- A login launch passes --autostart and goes to the tray
+                             whichever way the second box is set, which is what
+                             the old ", in the tray" was getting at. Two boxes
+                             that both end in "the tray" read as one setting
+                             said twice, so the qualifier goes and the tooltip
+                             carries it. -->
+                        <CheckBox Content="Start with Windows" IsChecked="{Binding StartWithWindows}"
+                                  ToolTip="A login launch always opens to the tray, not on screen"/>
+                        <CheckBox Content="Start minimized to the tray" IsChecked="{Binding StartMinimized}" Margin="0,8,0,0"
+                                  ToolTip="Opens to the tray when you launch it yourself too"/>
                         <StackPanel Visibility="{Binding ShowGithubUpdateToggle, Converter={StaticResource BoolToVis}}">
                             <CheckBox Content="Check GitHub for new releases at startup" IsChecked="{Binding GithubUpdateCheck}" Margin="0,8,0,0"/>
                             <!-- The link rather than a sentence about the link.
