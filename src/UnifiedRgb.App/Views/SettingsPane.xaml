@@ -85,17 +85,21 @@
                         <StackPanel Margin="0,14,0,0"
                                     Visibility="{Binding WallpaperAvailable, Converter={StaticResource BoolToVis}}">
                             <TextBlock Text="Screen in the case" Style="{StaticResource SectionTitle}" Margin="0,0,0,4"/>
+                            <!-- The caveat that used to be a paragraph here lives
+                                 in the tooltip. Wallpaper Engine reports nothing
+                                 back, which is worth being straight about, but
+                                 not worth three lines on a settings page for a
+                                 thing that will simply work. The log says which
+                                 way it went when it does not. -->
                             <ComboBox Width="240" HorizontalAlignment="Left"
                                       ItemsSource="{Binding WallpaperProfiles}"
                                       SelectedItem="{Binding WallpaperChoice}"
-                                      ToolTip="Wallpaper Engine switches to this profile whenever this lighting profile is applied"/>
-                            <TextBlock Style="{StaticResource Hint}" Margin="0,6,0,0" TextWrapping="Wrap"
-                                       Text="Applied by every route a profile is: the button, a hotkey, a schedule, an app rule, a show step. Wallpaper Engine is asked rather than confirmed - it reports nothing back - so this is the one part of a profile the app cannot promise landed."/>
+                                      ToolTip="Wallpaper Engine switches to this profile whenever this one is applied, however you apply it. It does not report back, so this part cannot be confirmed."/>
                         </StackPanel>
 
                         <TextBlock Style="{StaticResource Hint}" Margin="0,14,0,0" TextWrapping="Wrap"
                                    Visibility="{Binding WallpaperNeedsProfiles, Converter={StaticResource BoolToVis}}"
-                                   Text="Wallpaper Engine is installed but has no profiles saved. Make one there - a profile is its own arrangement of wallpapers across your monitors - and it will appear here as something a lighting profile can switch to."/>
+                                   Text="Wallpaper Engine has no profiles saved. Make one there and it will show up here."/>
 
                         <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
                                    Text="Ctrl+Alt+1…9 applies profile 1…9, even in games."/>
