@@ -889,10 +889,24 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     /// LoadProfile.</param>
     public void ApplyProfile(Profile p, bool fromShow)
     {
-        SelectedProfile = p;
+        // What is LIT and what is being EDITED are different things, and a
+        // running show made that obvious: it applies a profile every few seconds,
+        // and moving the selection with it dragged the settings page along -
+        // the Profiles card jumped to another profile mid-edit and took the pump
+        // and wallpaper pickers with it, so a choice made there was wiped before
+        // it could be saved. The selection is the user's place in the app; a show
+        // may change the lighting without taking it from them.
+        _appliedProfile = p.Name;
+        if (!fromShow) SelectedProfile = p;
         LoadProfile(p, fromShow);
         LightingApplied?.Invoke();
     }
+
+    /// <summary>The profile the lighting currently IS, which is not always the
+    /// one selected on screen. A show steps through profiles without moving the
+    /// selection, and its "do not re-apply what is already on" check has to ask
+    /// about the lighting rather than about the editor.</summary>
+    string? _appliedProfile;
 
     public void ApplyProfileByIndex(int i)
     {
@@ -1239,7 +1253,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             // running show is not stopped by the profile's screen.
             applyProfile: n => ApplyProfileByName(n, fromShow: true),
             profileNames: () => Profiles.Select(p => p.Name),
-            currentProfile: () => SelectedProfile?.Name);
+            currentProfile: () => _appliedProfile);
         ApplyToTargetCommand = new RelayCommand(_ => ApplyToTarget(), _ => HasSelection);
         ApplyToAllCommand    = new RelayCommand(_ => ApplyModeToAll(), _ => Devices.Count > 0);
         ApplyToDeskCommand   = new RelayCommand(_ => ApplyModeToDesk(), _ => Devices.Count > 0);

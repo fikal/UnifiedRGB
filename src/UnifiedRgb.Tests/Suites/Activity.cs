@@ -33,6 +33,7 @@ static class ActivitySuite
         TheReleasesLinkResolves(t);
         TheWallpaperPickerSurvivesADeselect(t);
         WhatADeletedProfileWouldBreak(t);
+        AShowDoesNotTakeTheSelection(t);
         t.Section("Ring bounds itself (#f1)");
         {
             var log = new ActivityLog();
@@ -197,6 +198,62 @@ static class ActivitySuite
                 t.Check(!s.Contains('\u2014'), $"pause copy has no em dash: {s}");
         }
     }
+    /// <summary>A running show applies a profile every few seconds. Moving the
+    /// SELECTION with it dragged the settings page along: the Profiles card
+    /// jumped to another profile mid-edit, taking the pump and wallpaper pickers
+    /// with it, so a choice made there was wiped seconds later - which is exactly
+    /// what stopped a pump screen from ever being saved.
+    ///
+    /// What is lit and what is being edited are different things.</summary>
+    static void AShowDoesNotTakeTheSelection(Harness t)
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            UnifiedRgb.App.MainViewModel? vm = null;
+            try
+            {
+                vm = new UnifiedRgb.App.MainViewModel(startServices: false);
+                vm.Profiles.Clear();
+                var a = new UnifiedRgb.App.Profile { Name = "Being edited" };
+                var b = new UnifiedRgb.App.Profile { Name = "A show step" };
+                vm.Profiles.Add(a); vm.Profiles.Add(b);
+
+                t.Section("a show does not steal the selection");
+
+                vm.ApplyProfile(a);
+                t.Equal(a, vm.SelectedProfile, "applying by hand selects the profile, as before");
+
+                vm.ApplyProfile(b, fromShow: true);
+                t.Equal(a, vm.SelectedProfile, "a show step changes the lighting without moving the selection");
+
+                // And the step handler's "already on it" check must follow the
+                // LIGHTING, or a show would re-apply its own steps forever.
+                string? applied = (string?)typeof(UnifiedRgb.App.MainViewModel)
+                    .GetField("_appliedProfile", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                    .GetValue(vm);
+                t.Equal("A show step", applied, "the applied profile follows the show, not the selection");
+
+                vm.ApplyProfile(b);
+                t.Equal(b, vm.SelectedProfile, "a by-hand apply still moves the selection");
+            }
+            catch (Exception ex) { failure = ex; }
+            finally
+            {
+                if (vm != null)
+                {
+                    vm.Lighting.StopAndDrain(); vm.Lcd.Dispose();
+                    var bake = (UnifiedRgb.App.Services.LianBakeService)typeof(UnifiedRgb.App.MainViewModel)
+                        .GetField("_bake", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(vm)!;
+                    bake.Stop();
+                }
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start(); thread.Join();
+        if (failure != null) throw new Exception("Show/selection regression", failure);
+    }
+
     /// <summary>What a profile is holding up, before it is deleted.
     ///
     /// The failure this prevents is silent by construction: a show step or a
