@@ -1011,6 +1011,10 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             _selectedProfile = value;
             OnChanged(); OnChanged(nameof(IsStartupProfile));
             if (value != null) { _profileName = value.Name; OnChanged(nameof(ProfileName)); }
+            // The wallpaper picker follows the selection the way the name box
+            // does, so Save writes back what is on screen rather than whatever
+            // the previously selected profile was set to.
+            SyncWallpaperChoice(value);
         }
     }
 
@@ -1330,6 +1334,10 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             LightsSuppressed: LightsSuppressed));
         _watchdog.Start();
         Lcd.InitScenes();
+        // The picker's contents, once at startup. Re-read on demand after that
+        // (the settings pane asks again when it opens), so a Wallpaper Engine
+        // profile made while this app is running does not need a restart.
+        RefreshWallpaperProfiles();
         // Every profile-name list in the UI is computed from Profiles (Show tab
         // lights dropdowns, app-rule pickers); without this they stay frozen at
         // whatever existed at launch.

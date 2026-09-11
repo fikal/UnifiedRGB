@@ -131,6 +131,85 @@ public sealed partial class MainViewModel
         RequestLianRebake();
     }
 
+    /*-----------------------------------------------------*\
+    | The screen in the case.                                |
+    |                                                        |
+    | A profile already carried the lights and the pump LCD.  |
+    | This is the third panel, and it rides on the same       |
+    | switch so "go to Night" means the whole desk.           |
+    \*-----------------------------------------------------*/
+
+    /// <summary>The picker's "do not touch it" row. A string rather than a null
+    /// item because a WPF ComboBox of strings cannot show a null usefully, and
+    /// because the row deserves to say what it does.</summary>
+    public const string NoWallpaper = "Leave the wallpaper alone";
+
+    public ObservableCollection<string> WallpaperProfiles { get; } = new();
+
+    string _wallpaperChoice = NoWallpaper;
+    public string WallpaperChoice
+    {
+        get => _wallpaperChoice;
+        set
+        {
+            string v = string.IsNullOrWhiteSpace(value) ? NoWallpaper : value;
+            if (_wallpaperChoice == v) return;
+            _wallpaperChoice = v;
+            MarkDirty();          // an unsaved wallpaper change is an unsaved change
+            OnChanged();
+        }
+    }
+
+    /// <summary>Both halves matter. Wallpaper Engine installed but with no
+    /// profiles saved is the messy case: we would be offering to bind something
+    /// the user has not made yet, and the only honest thing the picker could
+    /// list is nothing. The card says what to do instead.</summary>
+    public bool WallpaperAvailable
+        => Services.WallpaperEngine.Installed && Services.WallpaperEngine.Profiles.Count > 0;
+
+    public bool WallpaperNeedsProfiles
+        => Services.WallpaperEngine.Installed && Services.WallpaperEngine.Profiles.Count == 0;
+
+    /// <summary>Re-read what Wallpaper Engine has and rebuild the picker. Cheap
+    /// and timestamp-guarded underneath, so calling it when the settings pane is
+    /// opened costs a file stat on the common path.</summary>
+    public void RefreshWallpaperProfiles()
+    {
+        var found = Services.WallpaperEngine.Profiles;
+        WallpaperProfiles.Clear();
+        WallpaperProfiles.Add(NoWallpaper);
+        foreach (string p in found) WallpaperProfiles.Add(p);
+        // A profile naming a wallpaper the user has since deleted would leave
+        // the picker on a row that is no longer in the list, which a ComboBox
+        // shows as blank. Fall back to saying so.
+        if (_wallpaperChoice != NoWallpaper && !WallpaperProfiles.Contains(_wallpaperChoice))
+            _wallpaperChoice = NoWallpaper;
+        OnChanged(nameof(WallpaperAvailable));
+        OnChanged(nameof(WallpaperNeedsProfiles));
+        OnChanged(nameof(WallpaperChoice));
+    }
+
+    void SyncWallpaperChoice(Profile? p)
+    {
+        _wallpaperChoice = string.IsNullOrWhiteSpace(p?.Wallpaper) ? NoWallpaper : p!.Wallpaper!;
+        OnChanged(nameof(WallpaperChoice));
+    }
+
+    /// <summary>What a Save should store. Three answers, not two:
+    ///
+    /// NULL when Wallpaper Engine is not installed here - this machine has no
+    /// opinion, so a profile that came from a machine that DID must keep its
+    /// wallpaper rather than have it quietly stripped by a save on a laptop.
+    ///
+    /// EMPTY when the user picked "leave the wallpaper alone" on purpose, which
+    /// has to be able to clear a name they set earlier.
+    ///
+    /// The name otherwise.</summary>
+    string? WallpaperForSave
+        => !Services.WallpaperEngine.Installed ? null
+         : _wallpaperChoice == NoWallpaper ? ""
+         : _wallpaperChoice;
+
     /// <summary>Prompt-on-close is warranted only when a profile is active and
     /// the colors have drifted from it.</summary>
     public bool NeedsSavePrompt => SelectedProfile != null && _dirty;
@@ -153,7 +232,8 @@ public sealed partial class MainViewModel
     {
         var active = SelectedProfile;
         if (active == null) return;
-        var p = _store.Capture(active.Name, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), Lcd.CurrentScreen);
+        var p = _store.Capture(active.Name, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), Lcd.CurrentScreen,
+                                   wallpaper: WallpaperForSave);
         int idx = Profiles.IndexOf(active);
         if (idx >= 0) Profiles[idx] = p; else Profiles.Add(p);
         _selectedProfile = p; OnChanged(nameof(SelectedProfile));
@@ -190,7 +270,7 @@ public sealed partial class MainViewModel
         // an unplugged or disabled device, and an unavailable screen, were lost
         // on every rename. The old profile object is handed over explicitly.
         var p = _store.Capture(newName, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), Lcd.CurrentScreen,
-                               carryFrom: renamedFrom);
+                               carryFrom: renamedFrom, wallpaper: WallpaperForSave);
         var existing = Profiles.FirstOrDefault(x => x.Name.Equals(p.Name, StringComparison.OrdinalIgnoreCase));
         if (existing != null) Profiles.Remove(existing);
         Profiles.Add(p);
@@ -210,7 +290,8 @@ public sealed partial class MainViewModel
         for (int n = 2; Profiles.Any(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase)); n++)
             name = $"{baseName} {n}";
 
-        var p = _store.Capture(name, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), Lcd.CurrentScreen);
+        var p = _store.Capture(name, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), Lcd.CurrentScreen,
+                               wallpaper: WallpaperForSave);
         Profiles.Add(p);
         SelectedProfile = p;
         ProfileName = "";
@@ -247,11 +328,21 @@ public sealed partial class MainViewModel
         // button, a hotkey, an app rule, a schedule, a show step - so this is
         // the one place that makes a profile mean the whole desk.
         bool screenShown = !string.IsNullOrWhiteSpace(p.Screen) && Lcd.ShowScreen(p.Screen!);
+        // And the screen in the case. Same reasoning as the pump panel: this is
+        // the one door every apply comes through - the button, a hotkey, an app
+        // rule, a schedule, a show step - so it is the only place that can make
+        // a profile mean the whole desk rather than just the LEDs.
+        bool wallpaperSent = Services.WallpaperEngine.Apply(p.Wallpaper);
         _dirty = false;
         UnifiedRgb.Core.Log.Info("lighting",
             $"applied profile '{p.Name}': {p.Effects?.Count ?? 0} effect(s) on "
             + $"{p.DeviceFrames?.Count ?? 0} device(s)"
-            + (p.Screen == null ? "" : screenShown ? $", pump screen '{p.Screen}'" : $", pump screen '{p.Screen}' not shown"));
+            + (p.Screen == null ? "" : screenShown ? $", pump screen '{p.Screen}'" : $", pump screen '{p.Screen}' not shown")
+            // "asked for", never "showing": the control channel tells us
+            // nothing about what the wallpaper did after we sent the request.
+            + (p.Wallpaper == null ? ""
+               : wallpaperSent ? $", asked for wallpaper '{p.Wallpaper}'"
+                               : $", wallpaper '{p.Wallpaper}' could not be asked for"));
     }
 
     void DeleteProfile()

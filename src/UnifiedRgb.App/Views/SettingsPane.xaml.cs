@@ -7,7 +7,19 @@ namespace UnifiedRgb.App.Views;
 /// brightness, automation and support.</summary>
 public partial class SettingsPane : UserControl
 {
-    public SettingsPane() => InitializeComponent();
+    public SettingsPane()
+    {
+        InitializeComponent();
+        // Ask Wallpaper Engine again whenever this page appears. Someone who
+        // reads the hint, alt-tabs over there and makes a profile should find it
+        // in the picker when they come back, not after restarting this app. The
+        // read underneath is guarded by the config file's timestamp, so the
+        // usual answer costs one file stat.
+        IsVisibleChanged += (_, e) =>
+        {
+            if (e.NewValue is true && DataContext is MainViewModel vm) vm.RefreshWallpaperProfiles();
+        };
+    }
 
     MainViewModel VM => (MainViewModel)DataContext;
     Window? Owner => Window.GetWindow(this);

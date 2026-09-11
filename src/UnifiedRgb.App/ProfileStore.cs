@@ -56,6 +56,13 @@ public sealed class Profile
     /// profile switch sets the lights and the pump together. Null = leave the
     /// pump as it is. Additive: an older build ignores it.</summary>
     public string? Screen { get; set; }
+    /// <summary>The Wallpaper Engine profile this profile was saved with, so one
+    /// switch sets the lights, the pump LCD and the screen in the case. Null =
+    /// leave the wallpaper alone, which is what every profile saved before this
+    /// existed means. A NAME rather than wallpaper files per monitor: the name
+    /// is the user's own arrangement, and it survives a display being unplugged
+    /// or renumbered. Additive: an older build ignores it.</summary>
+    public string? Wallpaper { get; set; }
     public override string ToString() => Name;
 }
 
@@ -318,7 +325,7 @@ public sealed class ProfileStore
     /// name; its absent-device data and screen carry over from here.</param>
     public Profile Capture(string name, IEnumerable<(IRgbDevice Device, Rgb[] Frame)> frames,
                            string[]? customColors = null, List<EffectAssignment>? effects = null,
-                           string? screen = null, Profile? carryFrom = null)
+                           string? screen = null, Profile? carryFrom = null, string? wallpaper = null)
     {
         // A rename carries the RENAMED profile's data, even onto a name that
         // already exists: "rename A to B" means A's remembered devices, not the
@@ -327,7 +334,21 @@ public sealed class ProfileStore
         // The screen follows the same rule as an absent device: nothing known
         // right now (no panel, or a canvas that is not a saved screen) keeps
         // what the profile already had rather than silently dropping it.
-        var p = new Profile { Name = name, CustomColors = customColors, Effects = effects, Screen = screen ?? old?.Screen };
+        // The wallpaper needs one distinction the screen does not, so it takes
+        // three states rather than two. NULL means "nothing known here" - most
+        // often Wallpaper Engine is not installed on THIS machine - and keeps
+        // whatever the profile already had, so opening a bundle from the desktop
+        // on a laptop does not quietly strip the wallpaper out of every profile.
+        // EMPTY means the user chose "leave the wallpaper alone" on purpose, and
+        // that has to be able to clear a name they set earlier.
+        var p = new Profile
+        {
+            Name = name, CustomColors = customColors, Effects = effects,
+            Screen = screen ?? old?.Screen,
+            Wallpaper = wallpaper == null ? old?.Wallpaper
+                      : wallpaper.Length == 0 ? null
+                      : wallpaper,
+        };
         var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var (dev, frame) in frames)
         {

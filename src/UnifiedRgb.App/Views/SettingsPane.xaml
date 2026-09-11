@@ -76,6 +76,27 @@
                                    Text="{Binding SelectedProfile.Screen, StringFormat='Also shows pump screen: {0}',
                                                   TargetNullValue='Pump screen: none. Save the profile while a saved screen is loaded to bind one.',
                                                   FallbackValue=''}"/>
+
+                        <!-- The third panel. Only offered once Wallpaper Engine
+                             has profiles of its own: binding a lighting profile
+                             to a wallpaper arrangement that does not exist yet
+                             is the messy half of this, so it stays off screen
+                             until there is something real to pick. -->
+                        <StackPanel Margin="0,14,0,0"
+                                    Visibility="{Binding WallpaperAvailable, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="Screen in the case" Style="{StaticResource SectionTitle}" Margin="0,0,0,4"/>
+                            <ComboBox Width="240" HorizontalAlignment="Left"
+                                      ItemsSource="{Binding WallpaperProfiles}"
+                                      SelectedItem="{Binding WallpaperChoice}"
+                                      ToolTip="Wallpaper Engine switches to this profile whenever this lighting profile is applied"/>
+                            <TextBlock Style="{StaticResource Hint}" Margin="0,6,0,0" TextWrapping="Wrap"
+                                       Text="Applied by every route a profile is: the button, a hotkey, a schedule, an app rule, a show step. Wallpaper Engine is asked rather than confirmed - it reports nothing back - so this is the one part of a profile the app cannot promise landed."/>
+                        </StackPanel>
+
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,14,0,0" TextWrapping="Wrap"
+                                   Visibility="{Binding WallpaperNeedsProfiles, Converter={StaticResource BoolToVis}}"
+                                   Text="Wallpaper Engine is installed but has no profiles saved. Make one there - a profile is its own arrangement of wallpapers across your monitors - and it will appear here as something a lighting profile can switch to."/>
+
                         <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
                                    Text="Ctrl+Alt+1…9 applies profile 1…9, even in games."/>
                     </StackPanel>

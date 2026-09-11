@@ -1,3 +1,4 @@
+using System.IO;
 using UnifiedRgb.App;
 using UnifiedRgb.Core;
 
@@ -19,6 +20,7 @@ static class ProfilesSuite
 {
     public static void Run(Harness t)
     {
+        TheScreenInTheCase(t);
         var store = new ProfileStore();
         var dev = new FakeDevice { Name = "Absent-Later", LedCount = 2 };
         var frame = new[] { Rgb.Red, Rgb.Blue };
@@ -59,6 +61,97 @@ static class ProfilesSuite
         {
             store.Delete("Old");
             store.Delete("New");
+        }
+    }
+
+    /*---------------- the third panel ----------------*/
+
+    /// <summary>A profile already carried the lights and the pump LCD; this is
+    /// the screen in the case. Wallpaper Engine is driven by NAME, and the name
+    /// has to survive the same journeys the rest of a profile does.</summary>
+    static void TheScreenInTheCase(Harness t)
+    {
+        var store = new ProfileStore();
+        var dev = new FakeDevice { Name = "Wallpaper-Test", LedCount = 2 };
+        var frame = new[] { Rgb.Red, Rgb.Blue };
+        var one = new[] { ((IRgbDevice)dev, frame) };
+
+        try
+        {
+            t.Section("a wallpaper rides on a profile");
+
+            var p = store.Capture("Wp", one, wallpaper: "Night");
+            t.Equal("Night", p.Wallpaper, "a profile remembers the wallpaper it was saved with");
+
+            // Null is "this machine has no opinion", which is what a save on a
+            // box without Wallpaper Engine passes. It must not strip a name a
+            // different machine set, or opening a bundle on a laptop would quietly
+            // empty every profile.
+            var kept = store.Capture("Wp", one);
+            t.Equal("Night", kept.Wallpaper, "saving with nothing known keeps the name the profile already had");
+
+            // Empty is the user choosing "leave the wallpaper alone" on purpose,
+            // and that has to be able to clear a name set earlier - otherwise the
+            // picker is a one-way door.
+            var cleared = store.Capture("Wp", one, wallpaper: "");
+            t.Check(cleared.Wallpaper == null, "choosing 'leave it alone' clears a name the profile had");
+
+            var reset = store.Capture("Wp", one, wallpaper: "Day");
+            t.Equal("Day", reset.Wallpaper, "...and a later choice sets it again");
+
+            // A rename is the journey that has lost things before: the old
+            // profile is deleted before the new one is captured, so the carry
+            // has to be explicit.
+            var renamed = store.Capture("Wp Renamed", one, carryFrom: reset);
+            t.Equal("Day", renamed.Wallpaper, "a rename carries the wallpaper across");
+
+            t.Section("reading Wallpaper Engine's profile list");
+            // Its config is its own business and it is keyed by Windows user
+            // name, so the section is found by NAME anywhere in the tree rather
+            // than at a fixed path. Both shapes it could reasonably take are
+            // accepted, and anything unreadable means "no profiles" rather than
+            // an exception on the way to showing a picker.
+            string dir = Path.Combine(Path.GetTempPath(), "urgb-we-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            try
+            {
+                t.Equal(2, Read(dir, "{\"ryanb\":{\"general\":{\"profiles\":{\"Night\":{},\"Day\":{}}}}}").Length,
+                    "an object keyed by name");
+                t.Equal(2, Read(dir, "{\"u\":{\"profiles\":[\"Night\",\"Day\"]}}").Length,
+                    "a list of names");
+                t.Equal(2, Read(dir, "{\"u\":{\"profiles\":[{\"name\":\"Night\"},{\"name\":\"Day\"}]}}").Length,
+                    "a list of objects carrying a name");
+                t.Equal("Day", Read(dir, "{\"u\":{\"profiles\":[\"Night\",\"Day\"]}}")[0],
+                    "sorted, so the picker does not reshuffle itself between reads");
+                t.Equal(1, Read(dir, "{\"u\":{\"profiles\":[\"Night\",\"night\",\"  \"]}}").Length,
+                    "duplicates and blanks are dropped");
+                t.Equal(0, Read(dir, "{\"u\":{\"general\":{}}}").Length,
+                    "a config with no profiles section is no profiles");
+                t.Equal(0, Read(dir, "{ not json at all").Length,
+                    "a config we cannot parse is no profiles, not a crash");
+
+                t.Equal(0, UnifiedRgb.App.Services.WallpaperEngine
+                        .ReadProfiles(Path.Combine(dir, "does-not-exist.json")).Length,
+                    "a missing config is no profiles, not a crash");
+            }
+            finally { try { Directory.Delete(dir, recursive: true); } catch { } }
+
+            // Nothing is asked of Wallpaper Engine for a name it does not have.
+            // The control channel would take it, do nothing and say nothing.
+            t.Check(!UnifiedRgb.App.Services.WallpaperEngine.Apply(null), "no wallpaper asked for is not a request");
+            t.Check(!UnifiedRgb.App.Services.WallpaperEngine.Apply("   "), "nor is a blank one");
+        }
+        finally
+        {
+            store.Delete("Wp");
+            store.Delete("Wp Renamed");
+        }
+
+        static string[] Read(string dir, string json)
+        {
+            string path = Path.Combine(dir, "config.json");
+            File.WriteAllText(path, json);
+            return UnifiedRgb.App.Services.WallpaperEngine.ReadProfiles(path);
         }
     }
 }
