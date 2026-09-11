@@ -729,6 +729,46 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         return true;
     }
 
+    /// <summary>Start a saved show because a profile asked for it: the
+    /// counterpart to ShowScreen, and reported rather than thrown for the same
+    /// reason - the profile's lighting has already applied by the time we get
+    /// here.
+    ///
+    /// A show that is ALREADY the one running is left alone rather than
+    /// restarted, so re-applying a profile does not jump the panel back to step
+    /// one of something somebody is watching. That also breaks the loop a show
+    /// can otherwise make of itself: a step is allowed to apply a profile, and
+    /// that profile is now allowed to name a show.</summary>
+    public bool ShowSequence(string name)
+    {
+        if (_sequencer == null) return false;
+        var seq = Sequences.FirstOrDefault(x => x != null && x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (seq == null)
+        {
+            Log.Warn("scenes", $"a profile asked for show '{name}', which does not exist");
+            return false;
+        }
+        if (seq.Actions == null || seq.Actions.Count == 0)
+        {
+            Log.Warn("scenes", $"a profile asked for show '{name}', which has no steps");
+            return false;
+        }
+        if (_sequencer.RunningName == seq.Name) return true;
+        SelectedSequence = seq;
+        _sequencer.Start(seq);
+        return true;
+    }
+
+    /// <summary>Stop whatever show is running. A profile that pins ONE screen has
+    /// to say so to a panel a show is driving, or the show's next step paints
+    /// over that screen a second later - which is exactly what made a profile's
+    /// pump screen meaningless for anyone who had a show going.</summary>
+    public void StopSequence() => _sequencer?.Stop();
+
+    /// <summary>True while a show is running, for the profile apply to know
+    /// whether "leave the pump alone" has anything to leave alone.</summary>
+    public bool AnyShowRunning => _sequencer?.Running == true;
+
     SceneSequence? _selectedSequence;
     public SceneSequence? SelectedSequence
     {
@@ -767,13 +807,32 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
             OnChanged(nameof(RunButtonText));
             OnChanged(nameof(SequenceStatus));
         };
-        // Auto-run the active sequence with the app.
+        // The active-show flag is on its way OUT: it makes a second owner of the
+        // panel, so the startup profile puts its screen up and then this starts a
+        // show whose first step paints over it. The replacement is a profile naming
+        // its own show. Until that exists this stays as it was: removing it early
+        // would delete the only way to auto-start a show and put nothing in its
+        // place.
         var active = _scenes.Sequences.FirstOrDefault(x => x.Name == _scenes.ActiveSequence);
         if (active != null && Available)
         {
             SelectedSequence = active;
             _sequencer.Start(active);
         }
+    }
+
+    /// <summary>The show that used to be marked "start with the app", or null.
+    /// Read once at startup by the migration that moves it onto a profile, and
+    /// meaningless afterwards.</summary>
+    public string? LegacyActiveSequence => _scenes.ActiveSequence;
+
+    /// <summary>Forget the retired flag once it has been moved somewhere real, so
+    /// the migration runs once rather than every launch.</summary>
+    public void ClearLegacyActiveSequence()
+    {
+        if (_scenes.ActiveSequence == null) return;
+        _scenes.ActiveSequence = null;
+        _scenes.Save();
     }
 
     /// <summary>Replace imported stores without leaving old timers or save handlers alive.</summary>

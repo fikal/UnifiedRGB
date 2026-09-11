@@ -103,7 +103,7 @@
                                    Text="Wallpaper Engine has no profiles saved. Make one there and it will show up here."/>
 
                         <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
-                                   Text="Ctrl+Alt+1…9 applies profile 1…9, even in games."/>
+                                   Text="Ctrl+Alt+1…9 applies profile 1…9"/>
                     </StackPanel>
                 </Border>
 
@@ -150,7 +150,7 @@
                                     Value="{Binding MasterBrightness, UpdateSourceTrigger=PropertyChanged}"/>
                         </StackPanel>
                         <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
-                                   Text="Ctrl+Alt+↑/↓ nudges it, even in games."/>
+                                   Text="Ctrl+Alt+↑/↓ nudges it"/>
                     </StackPanel>
                 </Border>
 

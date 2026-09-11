@@ -28,7 +28,7 @@ static class ProfilesSuite
         {
             t.Section("capture while the device is present");
             // Saved while the device was present, with a pump screen.
-            var old = store.Capture("Old", new[] { ((IRgbDevice)dev, frame) }, screen: "Screen B");
+            var old = store.Capture("Old", new[] { ((IRgbDevice)dev, frame) }, pump: PumpTarget.OfScreen("Screen B"));
             t.Check(old.DeviceFrames.Count == 1 && old.Screen == "Screen B", "fixture profile captured with one device and a screen");
 
             t.Section("rename carries the absent device's frame");

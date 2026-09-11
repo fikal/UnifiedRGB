@@ -224,6 +224,14 @@ public sealed partial class MainViewModel
         return true;
     }
 
+    /// <summary>What a save records for the pump panel. INTERIM: still the
+    /// screen the designer happens to have loaded, exactly as before, so this
+    /// change is signature-deep only and nothing observable moved. The picker
+    /// that replaces it is waiting on the larger question of what a show is.</summary>
+    PumpTarget? PumpForSave
+        => Lcd.CurrentScreen is string s && !string.IsNullOrWhiteSpace(s)
+           ? PumpTarget.OfScreen(s) : null;
+
     void SyncWallpaperChoice(Profile? p)
     {
         // A DESELECT says nothing about the wallpaper, so it must not reset the
@@ -275,7 +283,7 @@ public sealed partial class MainViewModel
     {
         var active = SelectedProfile;
         if (active == null) return;
-        var p = _store.Capture(active.Name, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), Lcd.CurrentScreen,
+        var p = _store.Capture(active.Name, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), PumpForSave,
                                    wallpaper: WallpaperForSave);
         int idx = Profiles.IndexOf(active);
         if (idx >= 0) Profiles[idx] = p; else Profiles.Add(p);
@@ -319,7 +327,7 @@ public sealed partial class MainViewModel
         // found nothing under the new name: the remembered frames and effects of
         // an unplugged or disabled device, and an unavailable screen, were lost
         // on every rename. The old profile object is handed over explicitly.
-        var p = _store.Capture(newName, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), Lcd.CurrentScreen,
+        var p = _store.Capture(newName, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), PumpForSave,
                                carryFrom: renamedFrom, wallpaper: wallpaper);
         var existing = Profiles.FirstOrDefault(x => x.Name.Equals(p.Name, StringComparison.OrdinalIgnoreCase));
         if (existing != null) Profiles.Remove(existing);
@@ -340,7 +348,7 @@ public sealed partial class MainViewModel
         for (int n = 2; Profiles.Any(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase)); n++)
             name = $"{baseName} {n}";
 
-        var p = _store.Capture(name, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), Lcd.CurrentScreen,
+        var p = _store.Capture(name, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), PumpForSave,
                                wallpaper: WallpaperForSave);
         Profiles.Add(p);
         SelectedProfile = p;

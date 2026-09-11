@@ -40,6 +40,23 @@ public sealed class EffectAssignment
 /// The move is where a name stops being enough, so that is where identity is
 /// added: a setup bundle records Core's DeviceIdentity next to each name and
 /// remaps the keys on import. See Services/SetupBundle.cs.</summary>
+/// <summary>What a profile does to the pump panel: put up one screen, run one
+/// show, or leave it alone.
+///
+/// One type rather than two loose strings because they are one decision with
+/// three answers, and callers were already fumbling the third. A null PumpTarget
+/// means "this machine has nothing to say" - no screens and no shows exist - and
+/// a target with both fields null means the user chose to leave the panel alone.
+/// Those are genuinely different: the first must not overwrite what a profile
+/// already carries, and the second must be able to clear it.</summary>
+public readonly record struct PumpTarget(string? Screen, string? Show)
+{
+    public static readonly PumpTarget None = new(null, null);
+    public bool IsNone => string.IsNullOrWhiteSpace(Screen) && string.IsNullOrWhiteSpace(Show);
+    public static PumpTarget OfScreen(string name) => new(name, null);
+    public static PumpTarget OfShow(string name) => new(null, name);
+}
+
 public sealed class Profile
 {
     // Not `required`: System.Text.Json throws for a missing required member, so
@@ -56,6 +73,11 @@ public sealed class Profile
     /// profile switch sets the lights and the pump together. Null = leave the
     /// pump as it is. Additive: an older build ignores it.</summary>
     public string? Screen { get; set; }
+    /// <summary>A saved SHOW for the pump panel, as the alternative to one fixed
+    /// screen. At most one of the two is set: the panel can display a picture or
+    /// run a sequence, not both, and a profile that tried to say both would be
+    /// asking for the fight this pair exists to settle. Additive, like Screen.</summary>
+    public string? Show { get; set; }
     /// <summary>The Wallpaper Engine profile this profile was saved with, so one
     /// switch sets the lights, the pump LCD and the screen in the case. Null =
     /// leave the wallpaper alone, which is what every profile saved before this
@@ -323,9 +345,13 @@ public sealed class ProfileStore
     /// <param name="carryFrom">The profile this one replaces under a DIFFERENT
     /// name (a rename). It has already been deleted, so it cannot be found by
     /// name; its absent-device data and screen carry over from here.</param>
+    /// <summary>Empty and whitespace are stored as null, so "nothing bound" has
+    /// exactly one representation in the file.</summary>
+    static string? Blank(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;
+
     public Profile Capture(string name, IEnumerable<(IRgbDevice Device, Rgb[] Frame)> frames,
                            string[]? customColors = null, List<EffectAssignment>? effects = null,
-                           string? screen = null, Profile? carryFrom = null, string? wallpaper = null)
+                           PumpTarget? pump = null, Profile? carryFrom = null, string? wallpaper = null)
     {
         // A rename carries the RENAMED profile's data, even onto a name that
         // already exists: "rename A to B" means A's remembered devices, not the
@@ -344,7 +370,11 @@ public sealed class ProfileStore
         var p = new Profile
         {
             Name = name, CustomColors = customColors, Effects = effects,
-            Screen = screen ?? old?.Screen,
+            // No pump target known on this machine keeps whatever the profile
+            // already carried; a target that says "leave it alone" clears both,
+            // which is how a binding gets removed.
+            Screen = pump == null ? old?.Screen : Blank(pump.Value.Screen),
+            Show   = pump == null ? old?.Show   : Blank(pump.Value.Show),
             Wallpaper = wallpaper == null ? old?.Wallpaper
                       : wallpaper.Length == 0 ? null
                       : wallpaper,
