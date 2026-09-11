@@ -29,6 +29,7 @@ static class ActivitySuite
     public static void Run(Harness t)
     {
         RuntimePauseAndCalibration(t);
+        WhiteTheAppPicksForYou(t);
         t.Section("Ring bounds itself (#f1)");
         {
             var log = new ActivityLog();
@@ -193,6 +194,60 @@ static class ActivitySuite
                 t.Check(!s.Contains('\u2014'), $"pause copy has no em dash: {s}");
         }
     }
+    /// <summary>The white the app chooses ON YOUR BEHALF has to be the same
+    /// white you get by choosing it yourself. The 60% guard covered only the
+    /// paths a person clicks, so an effect started on a black target handed out
+    /// full white and put 100% on the brightness slider - the hazard the guard
+    /// exists for, and a different answer from the one the same white gives
+    /// when you pick it, which is how it was spotted.</summary>
+    static void WhiteTheAppPicksForYou(Harness t)
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            UnifiedRgb.App.MainViewModel? vm = null;
+            try
+            {
+                vm = new UnifiedRgb.App.MainViewModel(startServices: false);
+                var dev = new FakeDevice { Name = "White guard", LedCount = 4 };
+                vm.Devices.Add(dev);
+                vm.Profiles.Clear();
+                vm.SelectedDevice = dev;
+
+                t.Section("the white the app picks for you");
+
+                // The path that always had the guard, as the control.
+                vm.Hex = "FFFFFF";
+                t.Equal("999999", vm.Hex, "clicking full white lands at 60%");
+                t.Equal(153, vm.Brightness, "...and the brightness slider says 60% too");
+
+                // The path that did not. A black target, then an effect that
+                // needs a base color: the app picks the white itself.
+                vm.Hex = "000000";
+                t.Equal(0, vm.Brightness, "the target starts black");
+                var mixing = vm.Effects.FirstOrDefault(e => e.Name == "Mixing");
+                t.Check(mixing != null, "the Mixing effect is in the library");
+                vm.SelectedEffectChoice = mixing;
+                t.Equal("999999", vm.Hex, "an effect started on black gets the SAFE white, not full white");
+                t.Equal(153, vm.Brightness, "...and reads the same as the white a click would have given");
+            }
+            catch (Exception ex) { failure = ex; }
+            finally
+            {
+                if (vm != null)
+                {
+                    vm.Lighting.StopAndDrain(); vm.Lcd.Dispose();
+                    var bake = (UnifiedRgb.App.Services.LianBakeService)typeof(UnifiedRgb.App.MainViewModel)
+                        .GetField("_bake", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(vm)!;
+                    bake.Stop();
+                }
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start(); thread.Join();
+        if (failure != null) throw new Exception("White guard regression", failure);
+    }
+
     static void RuntimePauseAndCalibration(Harness t)
     {
         Exception? failure = null;

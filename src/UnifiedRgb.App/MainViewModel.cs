@@ -452,7 +452,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         if (hex is not { Length: > 0 }) return;
         fx.Palette.Clear();
         foreach (var h in hex) { try { fx.Palette.Add(Rgb.FromHex(h)); } catch { } }
-        if (fx.Palette.Count == 0) fx.Palette.Add(new Rgb(255, 255, 255));
+        if (fx.Palette.Count == 0) fx.Palette.Add(SafeWhite);
     }
 
     /*-----------------------------------------------------*\
@@ -539,7 +539,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         var pal = CurrentFx().Palette;
         pal.Clear();
         foreach (var c in colors) pal.Add(c);
-        if (pal.Count == 0) pal.Add(new Rgb(255, 255, 255));
+        if (pal.Count == 0) pal.Add(SafeWhite);
         // The running effect holds a reference to this same collection, so it
         // repaints on the next frame; baked fans need an explicit rebake.
         OnChanged(nameof(HasPalette));
@@ -1094,7 +1094,11 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         var choice = kind == "rainbow"
             ? (Effects.FirstOrDefault(e => e.Name == "Rainbow Wave") ?? Effects[0])
             : Effects[0];                                   // Static (white/off via base color)
-        var color = kind == "white" ? new Rgb(255, 255, 255) : new Rgb(0, 0, 0);
+        // The safe white, not full white. This paints EVERY device at once from
+        // the wizard's last step, which is precisely the "one swatch followed by
+        // All devices" case the guard was written for - and the one place where
+        // the person clicking has no idea yet what their rig does at full load.
+        var color = kind == "white" ? SafeWhite : new Rgb(0, 0, 0);
 
         foreach (var d in Devices)
         {
@@ -1352,6 +1356,19 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             ? c
             : new Rgb((byte)(c.R * WhiteSafeScale), (byte)(c.G * WhiteSafeScale), (byte)(c.B * WhiteSafeScale));
 
+    /// <summary>The white this app reaches for when IT needs one rather than
+    /// the user: a palette that came back empty, an effect whose base color
+    /// would otherwise be invisible black, the wizard's "solid white" starter.
+    ///
+    /// The guard above only ever covered colors a PERSON picked, so each of
+    /// those paths handed out full white - the app doing by itself the exact
+    /// thing the guard exists to stop somebody doing by accident, and in the
+    /// wizard's case doing it to every device at once. It also read differently
+    /// on screen: white chosen for you sat at 100% on the brightness slider
+    /// while the same white chosen by clicking sat at 60%, which is how this
+    /// was noticed.</summary>
+    static Rgb SafeWhite => SoftenWhite(new Rgb(255, 255, 255));
+
     /// <param name="fromBrightness">The brightness slider is an explicit choice
     /// about level, so it is never capped. Every other path (wheel, hex, R/G/B,
     /// swatches) is picking a color, and gets the white guard.</param>
@@ -1481,11 +1498,15 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // use this target's own instances so their settings are independent.
         var effect = ResolveEffect(fx, choice);
         // A base-color effect started on black is invisible (Twinkle on
-        // 000000 = nothing): swap in white and show it on the wheel.
+        // 000000 = nothing): swap in white and show it on the wheel. The SAFE
+        // white, the one a click on the white swatch would have given - this
+        // handed out full white and then put 100% on the brightness slider,
+        // which is both the hazard the guard exists for and a different answer
+        // from the one the user gets by picking the same color themselves.
         var bc = Current;
         if (effect.UsesBaseColor && bc.R < 16 && bc.G < 16 && bc.B < 16)
         {
-            bc = new Rgb(255, 255, 255);
+            bc = SafeWhite;
             UpdateColorViews(bc);
         }
         // The desk is a mode: with it on, every effect renders across it. The
