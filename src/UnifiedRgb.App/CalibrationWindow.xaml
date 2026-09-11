@@ -130,16 +130,29 @@
                                     </ListBox.ItemsPanel>
                                 </ListBox>
                                 <TextBlock Style="{StaticResource CalHint}" Margin="0,2,0,0"
-                                           Text="White shows a white-balance error. Mid grey shows a gamma error, which white cannot show at all. The primaries tell you which channel is at fault."/>
+                                           Text="White shows a white-balance error. Mid grey shows a gamma error, which white cannot show at all. The primaries tell you which channel is at fault. Switching patches changes the color on your lights, never the settings below."/>
                                 <Button Content="Next patch" HorizontalAlignment="Left" Margin="0,10,0,0"
                                         Click="NextPatch_Click"
                                         ToolTip="Step through the patches in order"/>
                             </StackPanel>
                         </Border>
 
-                        <!-- The trims themselves. -->
+                        <!-- The trims themselves.
+
+                             The line above them exists because this screen has
+                             now misled the same reader twice. A patch list
+                             sitting directly on top of five sliders reads as a
+                             hierarchy: pick a patch, set its numbers. It is not
+                             one. There is ONE trim per device, because the
+                             device can only be sent one, and the patches are
+                             six ways of looking at it. Without saying so, a
+                             user who sets a value on white, sets another on mid
+                             grey and comes back to white concludes the screen
+                             has forgotten the first one. -->
+                        <TextBlock x:Name="TrimScopeNote" Style="{StaticResource CalHint}"
+                                   Margin="0,14,0,0" FontWeight="SemiBold" Opacity="0.9"/>
                         <TextBlock Text="WHITE BALANCE" FontSize="11" FontWeight="SemiBold"
-                                   Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,16,0,2"/>
+                                   Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,10,0,2"/>
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="124"/>

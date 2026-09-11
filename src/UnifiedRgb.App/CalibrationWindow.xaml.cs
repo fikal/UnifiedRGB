@@ -183,6 +183,7 @@ public partial class CalibrationWindow : Window
             SelectedName.Text = Rows.Count == 0 ? "Nothing to calibrate" : "Pick a device or one of its zones";
             SelectedDetail.Text = "";
             ScopeNote.Text = "";
+            TrimScopeNote.Text = "";
             RefreshSwatches();
             return;
         }
@@ -193,6 +194,13 @@ public partial class CalibrationWindow : Window
         ResetOneButton.ToolTip = row.IsZone
             ? "Drop this zone's own trim so it follows the whole-device trim again"
             : "Back to untrimmed: every LED on this device, zones included, is sent exactly the color you picked";
+
+        // Said on the sliders themselves, not only in the patch hint above
+        // them: the reader who gets this wrong is looking at the sliders when
+        // they do it. Naming the row makes it concrete - "these belong to the
+        // strimmer" answers the question the layout raises.
+        TrimScopeNote.Text = $"These five settings belong to {row.Name}, and there is only one set of them. "
+            + "The test patch changes which color your lights show while you judge them; it never changes these numbers.";
 
         var cal = Calibration.Effective(row.Device.Name, row.ZoneName);
         _loading = true;
