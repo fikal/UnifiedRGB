@@ -654,6 +654,42 @@ public static class Calibration
         return For(device);
     }
 
+    /// <summary>The trim a zone inherits in the physical layout. Smaller
+    /// containing zones win; equal ranges keep declaration order, matching
+    /// BuildPlan. A parent editor still edits its own scope rather than one of
+    /// its smaller, independently overridden children.</summary>
+    public static DeviceCalibration Effective(IRgbDevice device, string? zone)
+    {
+        if (string.IsNullOrWhiteSpace(zone)) return For(device.Name);
+        var declared = device.Zones;
+        if (declared == null || declared.Count == 0) return Effective(device.Name, zone);
+        var keys = ZoneKeys(declared);
+        int targetIndex = Array.FindIndex(keys, key => string.Equals(key, zone, StringComparison.OrdinalIgnoreCase));
+        if (targetIndex < 0) return Effective(device.Name, zone);
+        var target = declared[targetIndex];
+        if (target == null || target.Offset < 0 || target.Count <= 0) return For(device.Name);
+        lock (_write)
+        {
+            DeviceCalibration? selected = null;
+            int smallest = int.MaxValue;
+            if (_zoneSettings.TryGetValue(device.Name, out var settings))
+                for (int i = 0; i < declared.Count; i++)
+                {
+                    var candidate = declared[i];
+                    if (candidate == null || candidate.Offset < 0 || candidate.Count <= 0
+                        || candidate.Offset > target.Offset
+                        || (long)candidate.Offset + candidate.Count < (long)target.Offset + target.Count
+                        || candidate.Count >= smallest || !settings.TryGetValue(keys[i], out var trim)) continue;
+                    selected = trim;
+                    smallest = candidate.Count;
+                }
+            return selected?.Clone() ?? For(device.Name);
+        }
+    }
+
+    /// <summary>UI reference swatch using the same inherited scope as its sliders.</summary>
+    public static Rgb Apply(IRgbDevice device, string? zone, Rgb color) => Effective(device, zone).Map(color);
+
     /// <summary>Install a trim for one zone of a device, overriding whatever
     /// the device-level trim says for that zone's LEDs. Same contract as Set:
     /// normalizes, rebuilds the tables, does not touch the file.</summary>

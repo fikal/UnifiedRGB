@@ -98,19 +98,19 @@ public sealed class SceneStore
     /// <summary>Move steps that named a pump SCENE onto the profile that carries
     /// that scene, now that a step is a profile.
     ///
-    /// Reported rather than guessed at. Where exactly one profile pins a scene,
-    /// that profile is unambiguously what the step meant and is adopted. Where
-    /// none does, or several do, there is no honest answer: inventing a profile
-    /// would put a thing in the user's list they never made, and picking one of
-    /// several would be a coin toss that changes their lighting. Those steps are
-    /// left empty and named in the log so they can be pointed somewhere on
-    /// purpose.
+    /// A combined profile + scene step meant that profile's lighting with the
+    /// explicit scene applied last. Preserve that combination in a separate
+    /// profile when necessary, and persist it before changing the step. A
+    /// scene-only step can adopt its single owning profile. Ambiguous or failed
+    /// migrations keep their original fields so a later attempt can recover.
     ///
     /// Returns the number of steps that could not be resolved.</summary>
-    public int MigrateSceneSteps(IEnumerable<Profile> profiles)
+    public int MigrateSceneSteps(IEnumerable<Profile> profiles, Func<Profile, bool>? addProfile = null)
     {
+        var available = profiles.Where(p => p != null).ToList();
+        var variants = new List<(string Profile, string Scene, Profile Variant)>();
         var byScene = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var p in profiles)
+        foreach (var p in available)
         {
             if (p == null || string.IsNullOrWhiteSpace(p.Screen)) continue;
             if (!byScene.TryGetValue(p.Screen!, out var list)) byScene[p.Screen!] = list = new();
@@ -127,12 +127,65 @@ public sealed class SceneStore
                 var a = steps[i];
                 if (a == null || string.IsNullOrWhiteSpace(a.Scene)) continue;
                 string scene = a.Scene!;
-                a.Scene = null;                                   // the field is retired either way
-                if (!string.IsNullOrWhiteSpace(a.Profile)) continue;   // the step already said what it wanted
+                if (!string.IsNullOrWhiteSpace(a.Profile))
+                {
+                    var source = available.FirstOrDefault(p => p.Name.Equals(a.Profile, StringComparison.OrdinalIgnoreCase));
+                    if (source != null && string.Equals(source.Screen, scene, StringComparison.OrdinalIgnoreCase))
+                    {
+                        a.Scene = null;
+                        moved++;
+                        continue;
+                    }
+
+                    if (source != null && addProfile != null)
+                    {
+                        var variant = variants.FirstOrDefault(v =>
+                            v.Profile.Equals(source.Name, StringComparison.OrdinalIgnoreCase) &&
+                            v.Scene.Equals(scene, StringComparison.OrdinalIgnoreCase)).Variant;
+                        if (variant == null)
+                        {
+                            // Clone every saved field, including unavailable devices and
+                            // effect settings. The user's original profile stays intact.
+                            variant = JsonSerializer.Deserialize<Profile>(JsonSerializer.Serialize(source))!;
+                            variant.Screen = scene;
+                            // A previous launch may have saved the new profile but been
+                            // unable to save scenes.json. Reuse an exact persisted match.
+                            var persisted = available.FirstOrDefault(p =>
+                            {
+                                if (!string.Equals(p.Screen, scene, StringComparison.OrdinalIgnoreCase)) return false;
+                                variant.Name = p.Name;
+                                return JsonSerializer.Serialize(variant) == JsonSerializer.Serialize(p);
+                            });
+                            string baseName = $"{source.Name} ({scene})";
+                            variant.Name = baseName;
+                            for (int suffix = 2; available.Any(p => p.Name.Equals(variant.Name, StringComparison.OrdinalIgnoreCase)); suffix++)
+                                variant.Name = $"{baseName} {suffix}";
+                            if (persisted != null) variant = persisted;
+                            else if (!addProfile(variant)) variant = null;
+                            else
+                                available.Add(variant);
+                            if (variant != null)
+                                variants.Add((source.Name, scene, variant));
+                        }
+                        if (variant != null)
+                        {
+                            a.Profile = variant.Name;
+                            a.Scene = null;
+                            moved++;
+                            Log.Info("scenes", $"show '{seq!.Name}' step {i + 1}: saved profile '{variant.Name}' to preserve profile '{source.Name}' with screen '{scene}'");
+                            continue;
+                        }
+                    }
+
+                    stranded++;
+                    Log.Warn("scenes", $"show '{seq!.Name}' step {i + 1}: could not preserve profile '{a.Profile}' with screen '{scene}'; original step kept for migration");
+                    continue;
+                }
 
                 if (byScene.TryGetValue(scene, out var owners) && owners.Count == 1)
                 {
                     a.Profile = owners[0];
+                    a.Scene = null;
                     moved++;
                     Log.Info("scenes", $"show '{seq!.Name}' step {i + 1}: screen '{scene}' is now profile '{owners[0]}'");
                 }
@@ -233,6 +286,26 @@ public sealed class SceneSequencer
 
     bool _paused;
     long _remainingMs;
+
+    public sealed record Playback(string Name, int Index, long RemainingMs, bool Paused);
+
+    public Playback? Capture() => _seq == null ? null : new Playback(_seq.Name, _index,
+        _paused ? _remainingMs : Math.Max(0, _dueAt - Environment.TickCount64), _paused);
+
+    /// <summary>Resume the saved wait without applying a step during restoration.</summary>
+    public void Restore(SceneSequence seq, Playback state)
+    {
+        Stop();
+        if (seq.Actions.Count == 0) return;
+        _seq = seq;
+        _index = Math.Clamp(state.Index, -1, seq.Actions.Count - 1);
+        _paused = state.Paused;
+        _remainingMs = Math.Clamp(state.RemainingMs, 50, 24L * 3600 * 1000);
+        _timer.Interval = TimeSpan.FromMilliseconds(_remainingMs);
+        _dueAt = Environment.TickCount64 + _remainingMs;
+        if (!_paused) _timer.Start();
+        StateChanged?.Invoke();
+    }
 
     /// <summary>Hold the show where it is without forgetting it, so somebody can
     /// change their settings without the desk moving underneath them, then carry

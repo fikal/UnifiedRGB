@@ -133,6 +133,7 @@ public sealed partial class MainViewModel
     /// that device's transition entirely - the badge for a device that had just
     /// died simply never appeared.</summary>
     int _healthRefreshQueued;
+    int _healthRefreshRevision;
 
     /// <summary>Subscribe once, at construction. The handler runs on whichever
     /// thread wrote - an effect worker, an applier lane, an SDK socket - so
@@ -141,17 +142,26 @@ public sealed partial class MainViewModel
     {
         UnifiedRgb.Core.DeviceHealth.Shared.Changed += _ =>
         {
-            if (Interlocked.Exchange(ref _healthRefreshQueued, 1) == 1) return;
-            _dispatcher.BeginInvoke(new Action(() =>
-            {
-                // Cleared AFTER the rebuild, not before: the rebuild itself
-                // re-asserts every device's claim state and can therefore
-                // raise transitions of its own, and clearing first would have
-                // each of those queue yet another rebuild.
-                try { RefreshDeviceHealth(); }
-                finally { Interlocked.Exchange(ref _healthRefreshQueued, 0); }
-            }));
+            Interlocked.Increment(ref _healthRefreshRevision);
+            QueueDeviceHealthRefresh();
         };
+    }
+
+    void QueueDeviceHealthRefresh()
+    {
+        if (Interlocked.Exchange(ref _healthRefreshQueued, 1) == 1) return;
+        _dispatcher.BeginInvoke(new Action(() =>
+        {
+            int revision = Volatile.Read(ref _healthRefreshRevision);
+            try { RefreshDeviceHealth(); }
+            finally
+            {
+                Interlocked.Exchange(ref _healthRefreshQueued, 0);
+                // A worker may transition after its row was read. Keep that
+                // change instead of dropping it with the in-progress refresh.
+                if (Volatile.Read(ref _healthRefreshRevision) != revision) QueueDeviceHealthRefresh();
+            }
+        }));
     }
 
     /// <summary>Rebuild the rows from both sources. UI thread only.</summary>
@@ -209,6 +219,13 @@ public sealed partial class MainViewModel
         public required Dictionary<string, Rgb[]> Frames { get; init; }
         public required List<EffectAssignment> Effects { get; init; }
         public string? ProfileName { get; init; }
+        public string? AppliedProfileName { get; init; }
+        public SceneSequencer.Playback? ShowPlayback { get; init; }
+        public string WallpaperChoice { get; init; } = NoWallpaper;
+        public PumpRow PumpChoice { get; init; } = PumpNone;
+        public string ShowChoice { get; init; } = NoShow;
+        // Actual external state is separate from an unsaved picker choice.
+        public string? ActiveWallpaper { get; init; }
         /// <summary>Unsaved-changes flag at capture time, so an override round
         /// trip doesn't quietly drop the close-time save prompt.</summary>
         public bool Dirty { get; init; }
@@ -218,6 +235,9 @@ public sealed partial class MainViewModel
         public LcdDesignerViewModel.LcdSnapshot? Screen { get; init; }
     }
 
+    internal Func<string?> ReadWallpaperProfile = () => Services.WallpaperEngine.ActiveProfile;
+    internal Func<string?, bool> ApplyWallpaperProfile = Services.WallpaperEngine.Apply;
+
     public LightState CaptureState()
     {
         _recoveryLighting.Remember(Devices, FrameFor, CaptureEffects(), replaceEffects: !LightsSuppressed);
@@ -226,6 +246,12 @@ public sealed partial class MainViewModel
             Frames = _recoveryLighting.Frames.ToDictionary(p => p.Key, p => (Rgb[])p.Value.Clone()),
             Effects = _recoveryLighting.Effects.ToList(),
             ProfileName = SelectedProfile?.Name,
+            AppliedProfileName = _appliedProfile,
+            ShowPlayback = Shows.CapturePlayback(),
+            WallpaperChoice = _wallpaperChoice,
+            PumpChoice = _pumpChoice,
+            ShowChoice = _showChoice,
+            ActiveWallpaper = ReadWallpaperProfile(),
             Dirty = _dirty,
             Screen = Lcd.SnapshotDesign(),
         };
@@ -267,28 +293,33 @@ public sealed partial class MainViewModel
         foreach (var d in Devices)
             if (s.Frames.TryGetValue(d.Name, out var saved))
             {
-                if (suppressed) Array.Copy(saved, FrameFor(d), Math.Min(saved.Length, d.LedCount));
+                if (suppressed || _sdkHeld.Contains(d) || _lighting.IsClaimed(d))
+                    Array.Copy(saved, FrameFor(d), Math.Min(saved.Length, d.LedCount));
                 else RestoreFrame(d, saved);
             }
         if (!suppressed) RestoreEffects(s.Effects);
         // Restore the selection exactly - including "no profile selected" (an
         // app rule's profile used to stay selected over restored ad-hoc lighting).
         _selectedProfile = s.ProfileName is null ? null : Profiles.FirstOrDefault(p => p.Name == s.ProfileName);
+        _wallpaperChoice = s.WallpaperChoice;
+        _pumpChoice = s.PumpChoice;
+        _showChoice = s.ShowChoice;
+        _appliedProfile = s.AppliedProfileName;
+        Shows.RestorePlayback(s.ShowPlayback);
         _dirty = s.Dirty;
+        OnChanged(nameof(WallpaperChoice));
+        OnChanged(nameof(PumpChoice));
+        OnChanged(nameof(ShowChoice));
         OnChanged(nameof(SelectedProfile));
         OnChanged(nameof(IsStartupProfile));   // direct field write bypasses the setter
         SyncWheelToSelection();
         // The screen goes back with the LEDs: the snapshot is the whole desk.
         if (!suppressed && s.Screen != null) Lcd.RestoreDesign(s.Screen);
+        if (!suppressed && s.ActiveWallpaper != null) ApplyWallpaperProfile(s.ActiveWallpaper);
         // Wake the pump LCD back up (LightsOff blanked it during sleep/lock).
         if (!suppressed) SetPumpLcdOn(true);
-        // A restore is what the SDK bridge does when the LAST client lets go
-        // (and what a rescan does when every claim dies at once), so it is
-        // also the moment a "controlled by another app" badge should clear.
-        // The automation calls this too, at the end of an override, and a
-        // client that is genuinely still attached will have painted a frame by
-        // then - so IsClaimed puts the badge straight back on the next rebuild.
-        _sdkHeld.Clear();
+        // ReleaseHold and rescan own claim removal. A restore can also happen
+        // during an active claim, even before its first painted frame.
         RefreshDeviceHealth();
     }
 
@@ -296,6 +327,7 @@ public sealed partial class MainViewModel
     /// the stored frames, so RestoreState/reapply brings it all back.</summary>
     public void LightsOff()
     {
+        LightsSuppressed = true;
         _engine.StopAll();
         foreach (var d in Devices) _lighting.PushBlack(d);
         // The pump LCD isn't an RGB device, so blank it separately - otherwise
@@ -671,19 +703,23 @@ public sealed partial class MainViewModel
     public void ReloadAfterImport(UnifiedRgb.App.Services.ImportResult result)
     {
         if (!result.Ok) return;
+        if (result.ProfilesChanged) _appliedProfile = null;
 
         if (result.ProfilesChanged || result.SettingsChanged)
         {
+            string? was = _selectedProfile?.Name;
             _store.Reload();
             Profiles.Clear();
             foreach (var p in _store.Profiles) Profiles.Add(p);
             // The selection is by reference, and every Profile object was just
             // replaced, so re-find it by name or drop it rather than leaving a
             // dangling one selected.
-            string? was = _selectedProfile?.Name;
             _selectedProfile = was == null ? null
                 : Profiles.FirstOrDefault(p => p.Name.Equals(was, StringComparison.OrdinalIgnoreCase));
             _dirty = false;
+            RefreshPumpRows();
+            SyncPumpChoice(_selectedProfile);
+            SyncWallpaperChoice(_selectedProfile);
             OnChanged(nameof(SelectedProfile));
             OnChanged(nameof(ProfileNames));
         }
@@ -890,7 +926,11 @@ public sealed partial class MainViewModel
     /// <summary>Set by the automation while the lights are deliberately off
     /// (locked session / night window). Scene sequences hold their steps so a
     /// timed profile can't relight the case at 3 AM.</summary>
-    public bool LightsSuppressed { get; set; }
+    public bool LightsSuppressed
+    {
+        get => _lighting.ExternalSuppressed;
+        set => _lighting.ExternalSuppressed = value;
+    }
     public void WakeLights() => WakeLightsHook?.Invoke();
 
     /*--- PawnIO driver presence (a field machine lacked it: no CPU temp, no

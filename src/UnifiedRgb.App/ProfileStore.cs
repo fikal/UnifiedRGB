@@ -318,24 +318,38 @@ public sealed class ProfileStore
     /// session; Save skips them (see LoadJson).</summary>
     static readonly HashSet<string> Unreadable = new(StringComparer.OrdinalIgnoreCase);
 
-    public void SaveProfiles() => Save(ProfilesPath, Profiles, "profiles.json");
+    public void SaveProfiles() => TrySaveProfiles();
+    internal bool TrySaveProfiles() => TrySave(ProfilesPath, Profiles, "profiles.json");
     public void SaveSettings() => Save(SettingsPath, Settings, "settings.json");
+
+    /// <summary>A migration must not replace a legacy step with a reference
+    /// to a profile that failed to reach disk.</summary>
+    internal bool AddMigratedProfile(Profile profile)
+    {
+        Profiles.Add(profile);
+        if (TrySaveProfiles()) return true;
+        Profiles.Remove(profile);
+        return false;
+    }
 
     /// <summary>Saves are called from property setters, timers and Dispose; a
     /// locked file (AV scan, sync client) must log, not surface as an error
     /// dialog or abort the shutdown sequence. Shared by the other JSON stores
     /// (scenes.json) so the unreadable-file guard covers them too.</summary>
     internal static void Save<T>(string path, T data, string what)
+        => TrySave(path, data, what);
+
+    internal static bool TrySave<T>(string path, T data, string what)
     {
         bool unreadable;
         lock (Unreadable) unreadable = Unreadable.Contains(path);
         if (unreadable)
         {
             Log.Occasional($"store-skip:{what}", "store", $"{what} save skipped: the file could not be read at startup (see above)");
-            return;
+            return false;
         }
-        try { SafeFile.WriteAllText(path, JsonSerializer.Serialize(data, JsonOpts)); }
-        catch (Exception ex) { Log.Warn("store", $"{what} save failed: {ex.Message}"); }
+        try { SafeFile.WriteAllText(path, JsonSerializer.Serialize(data, JsonOpts)); return true; }
+        catch (Exception ex) { Log.Warn("store", $"{what} save failed: {ex.Message}"); return false; }
     }
 
     /// <summary>Capture the given frames into a named profile (replacing any
@@ -349,7 +363,7 @@ public sealed class ProfileStore
     /// exactly one representation in the file.</summary>
     static string? Blank(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;
 
-    public Profile Capture(string name, IEnumerable<(IRgbDevice Device, Rgb[] Frame)> frames,
+    Profile BuildCapture(string name, IEnumerable<(IRgbDevice Device, Rgb[] Frame)> frames,
                            string[]? customColors = null, List<EffectAssignment>? effects = null,
                            PumpTarget? pump = null, Profile? carryFrom = null, string? wallpaper = null)
     {
@@ -399,10 +413,37 @@ public sealed class ProfileStore
             }
         }
 
+        return p;
+    }
+
+    public Profile Capture(string name, IEnumerable<(IRgbDevice Device, Rgb[] Frame)> frames,
+                           string[]? customColors = null, List<EffectAssignment>? effects = null,
+                           PumpTarget? pump = null, Profile? carryFrom = null, string? wallpaper = null)
+    {
+        var p = BuildCapture(name, frames, customColors, effects, pump, carryFrom, wallpaper);
         Profiles.RemoveAll(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
         Profiles.Add(p);
         SaveProfiles();
         return p;
+    }
+
+    internal Profile? TryCapture(string name, IEnumerable<(IRgbDevice Device, Rgb[] Frame)> frames,
+                           string[]? customColors = null, List<EffectAssignment>? effects = null,
+                           PumpTarget? pump = null, Profile? carryFrom = null, string? wallpaper = null)
+    {
+        var p = BuildCapture(name, frames, customColors, effects, pump, carryFrom, wallpaper);
+        var next = Profiles.Where(x => !x.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).Append(p).ToList();
+        if (!TrySave(ProfilesPath, next, "profiles.json")) return null;
+        Profiles.Clear(); Profiles.AddRange(next);
+        return p;
+    }
+
+    internal bool TryRemoveRenamedProfile(string name)
+    {
+        var next = Profiles.Where(x => !x.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (!TrySave(ProfilesPath, next, "profiles.json")) return false;
+        Profiles.Clear(); Profiles.AddRange(next);
+        return true;
     }
 
     public void Delete(string name)

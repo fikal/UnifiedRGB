@@ -726,7 +726,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         // on the show's very next step.
         _selectedSceneName = sc.Name;
         OnChanged(nameof(SelectedSceneName));
-        LoadDesignIntoEditor(FromScene(sc), fromShow: fromShow || _liveIsShowScene);
+        LoadDesignIntoEditor(FromScene(sc), fromShow: fromShow);
         return true;
     }
 
@@ -744,12 +744,6 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     /// to ShowViewModel through a function rather than as a value, because an
     /// import replaces the whole thing.</summary>
     internal SceneStore Scenes => _scenes;
-
-    /// <summary>A show has taken the panel. The screens it puts up must not be
-    /// saved as the user's own canvas, or the next step flushes one over their
-    /// real design.</summary>
-    internal void MarkShowOwnsPanel() => _liveIsShowScene = true;
-
 
     /// <summary>Replace imported stores without leaving old timers or save handlers alive.</summary>
     public void ReloadScenes(bool currentScreenChanged)

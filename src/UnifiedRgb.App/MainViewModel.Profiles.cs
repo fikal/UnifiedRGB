@@ -24,7 +24,12 @@ public sealed partial class MainViewModel
     \*-----------------------------------------------------*/
     // True once colors changed since the selected profile was loaded/saved.
     bool _dirty;
-    void MarkDirty() { if (!_initializing) _dirty = true; }
+    void MarkDirty(bool lightingChanged = true)
+    {
+        if (_initializing) return;
+        _dirty = true;
+        if (lightingChanged) _appliedProfile = null;
+    }
 
     /// <summary>Snapshot every running effect assignment for saving.</summary>
     List<EffectAssignment> CaptureEffects()
@@ -165,7 +170,7 @@ public sealed partial class MainViewModel
             if (string.IsNullOrWhiteSpace(value)) return;
             if (_wallpaperChoice == value) return;
             _wallpaperChoice = value;
-            MarkDirty();          // an unsaved wallpaper change is an unsaved change
+            MarkDirty(lightingChanged: false);
             OnChanged();
         }
     }
@@ -175,7 +180,8 @@ public sealed partial class MainViewModel
     /// the user has not made yet, and the only honest thing the picker could
     /// list is nothing. The card says what to do instead.</summary>
     public bool WallpaperAvailable
-        => Services.WallpaperEngine.Installed && Services.WallpaperEngine.Profiles.Count > 0;
+        => Services.WallpaperEngine.Installed &&
+           (Services.WallpaperEngine.Profiles.Count > 0 || _wallpaperChoice != NoWallpaper);
 
     public bool WallpaperNeedsProfiles
         => Services.WallpaperEngine.Installed && Services.WallpaperEngine.Profiles.Count == 0;
@@ -185,7 +191,11 @@ public sealed partial class MainViewModel
     /// opened costs a file stat on the common path.</summary>
     public void RefreshWallpaperProfiles()
     {
-        var found = Services.WallpaperEngine.Profiles;
+        var found = Services.WallpaperEngine.Profiles.ToList();
+        // A setup moved from another machine can name a wallpaper that is not
+        // installed here. Keep that choice until the user explicitly clears it.
+        if (_wallpaperChoice != NoWallpaper && !found.Contains(_wallpaperChoice, StringComparer.Ordinal))
+            found.Add(_wallpaperChoice);
 
         // Rebuilt only when the contents actually DIFFER. This runs every time
         // the settings page is shown and the answer is nearly always the same
@@ -201,12 +211,6 @@ public sealed partial class MainViewModel
             WallpaperProfiles.Add(NoWallpaper);
             foreach (string p in found) WallpaperProfiles.Add(p);
         }
-
-        // A profile naming a wallpaper the user has since deleted would leave
-        // the picker on a row that is no longer in the list, which a ComboBox
-        // shows as blank. Fall back to saying so.
-        if (_wallpaperChoice != NoWallpaper && !WallpaperProfiles.Contains(_wallpaperChoice))
-            _wallpaperChoice = NoWallpaper;
 
         OnChanged(nameof(WallpaperAvailable));
         OnChanged(nameof(WallpaperNeedsProfiles));
@@ -257,7 +261,7 @@ public sealed partial class MainViewModel
             // sends null.
             if (value == null || _pumpChoice == value) return;
             _pumpChoice = value;
-            MarkDirty();
+            MarkDirty(lightingChanged: false);
             OnChanged();
         }
     }
@@ -270,7 +274,7 @@ public sealed partial class MainViewModel
         {
             if (string.IsNullOrWhiteSpace(value) || _showChoice == value) return;
             _showChoice = value;
-            MarkDirty();
+            MarkDirty(lightingChanged: false);
             OnChanged();
         }
     }
@@ -298,6 +302,12 @@ public sealed partial class MainViewModel
         var wantShows = new List<string> { NoShow };
         foreach (var seq in Shows.Shows) if (seq != null) wantShows.Add(seq.Name);
 
+        if (_pumpChoice.Screen is string missingScreen && !wantScreens.Any(r =>
+            string.Equals(r.Screen, missingScreen, StringComparison.OrdinalIgnoreCase)))
+            wantScreens.Add(new PumpRow(missingScreen + " (unavailable)", missingScreen));
+        if (_showChoice != NoShow && !wantShows.Contains(_showChoice, StringComparer.OrdinalIgnoreCase))
+            wantShows.Add(_showChoice);
+
         // Rebuilt only when the contents differ: clearing a bound collection
         // makes the combo box drop its selection, and its reset is posted rather
         // than immediate, so it can land after the notification meant to restore
@@ -315,7 +325,8 @@ public sealed partial class MainViewModel
 
         // A name that has since been deleted would leave the control on a row
         // that is no longer in its list, which a ComboBox shows as blank.
-        if (!PumpRows.Contains(_pumpChoice)) _pumpChoice = PumpNone;
+        if (!PumpRows.Contains(_pumpChoice))
+            _pumpChoice = PumpRows.FirstOrDefault(r => string.Equals(r.Screen, _pumpChoice.Screen, StringComparison.OrdinalIgnoreCase)) ?? PumpNone;
         if (!ShowRows.Contains(_showChoice)) _showChoice = NoShow;
 
         OnChanged(nameof(PumpAvailable));
@@ -327,6 +338,12 @@ public sealed partial class MainViewModel
     void SyncPumpChoice(Profile? p)
     {
         if (p == null) return;   // a deselect says nothing about either
+        // Preserve unavailable bindings until the user explicitly clears them.
+        if (!string.IsNullOrWhiteSpace(p.Screen) && !PumpRows.Any(r =>
+            string.Equals(r.Screen, p.Screen, StringComparison.OrdinalIgnoreCase)))
+            PumpRows.Add(new PumpRow(p.Screen + " (unavailable)", p.Screen));
+        if (!string.IsNullOrWhiteSpace(p.Show) && !ShowRows.Contains(p.Show, StringComparer.OrdinalIgnoreCase))
+            ShowRows.Add(p.Show);
         _pumpChoice = PumpRows.FirstOrDefault(r =>
                           string.Equals(r.Screen, p.Screen, StringComparison.OrdinalIgnoreCase))
                       ?? PumpNone;
@@ -357,6 +374,9 @@ public sealed partial class MainViewModel
         // box beside it already ignored null for the same reason.
         if (p == null) return;
         _wallpaperChoice = string.IsNullOrWhiteSpace(p.Wallpaper) ? NoWallpaper : p.Wallpaper!;
+        if (!WallpaperProfiles.Contains(NoWallpaper)) WallpaperProfiles.Insert(0, NoWallpaper);
+        if (!WallpaperProfiles.Contains(_wallpaperChoice)) WallpaperProfiles.Add(_wallpaperChoice);
+        OnChanged(nameof(WallpaperAvailable));
         OnChanged(nameof(WallpaperChoice));
     }
 
@@ -397,12 +417,14 @@ public sealed partial class MainViewModel
     {
         var active = SelectedProfile;
         if (active == null) return;
-        var p = _store.Capture(active.Name, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), PumpForSave,
+        var p = _store.TryCapture(active.Name, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), PumpForSave,
                                    wallpaper: WallpaperForSave);
+        if (p == null) return;
         int idx = Profiles.IndexOf(active);
         if (idx >= 0) Profiles[idx] = p; else Profiles.Add(p);
         _selectedProfile = p; OnChanged(nameof(SelectedProfile));
         _dirty = false;
+        _appliedProfile = null;
     }
 
     void SaveProfile()
@@ -424,31 +446,23 @@ public sealed partial class MainViewModel
         var prior = SelectedProfile;
         string? wallpaper = WallpaperForSave;
 
-        // Renaming the selected profile: replace it instead of duplicating,
-        // and carry the startup-profile setting to the new name.
-        Profile? renamedFrom = null;
-        if (prior != null && !newName.Equals(prior.Name, StringComparison.OrdinalIgnoreCase))
-        {
-            bool wasStartup = string.Equals(_store.Settings.StartupProfile, prior.Name, StringComparison.OrdinalIgnoreCase);
-            _store.Delete(prior.Name);
-            Profiles.Remove(prior);
-            if (wasStartup) { _store.Settings.StartupProfile = newName; _store.SaveSettings(); }
-            renamedFrom = prior;
-        }
-
-        // A rename deletes the old profile before the new one is captured, so
-        // Capture's "keep what the profile already had for absent devices" rule
-        // found nothing under the new name: the remembered frames and effects of
-        // an unplugged or disabled device, and an unavailable screen, were lost
-        // on every rename. The old profile object is handed over explicitly.
-        var p = _store.Capture(newName, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), PumpForSave,
+        var renamedFrom = prior != null && !newName.Equals(prior.Name, StringComparison.OrdinalIgnoreCase) ? prior : null;
+        // Persist the new profile while the old name is still valid. No view or
+        // saved reference changes when writing the replacement fails.
+        var p = _store.TryCapture(newName, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), PumpForSave,
                                carryFrom: renamedFrom, wallpaper: wallpaper);
+        if (p == null) return;
         var existing = Profiles.FirstOrDefault(x => x.Name.Equals(p.Name, StringComparison.OrdinalIgnoreCase));
-        if (existing != null) Profiles.Remove(existing);
-        Profiles.Add(p);
+        if (existing != null) Profiles[Profiles.IndexOf(existing)] = p;
+        else Profiles.Add(p);
+        // Both names are available while bound step/rule dropdowns move to the
+        // replacement. Removing the old item first clears TwoWay selections.
+        if (renamedFrom != null && RenameProfileReferences(renamedFrom.Name, p.Name)
+            && _store.TryRemoveRenamedProfile(renamedFrom.Name)) Profiles.Remove(renamedFrom);
         SelectedProfile = p;
         ProfileName = "";                       // saved: clear the name box
         _dirty = false;
+        _appliedProfile = null;
         OnChanged(nameof(IsStartupProfile));
     }
 
@@ -462,12 +476,14 @@ public sealed partial class MainViewModel
         for (int n = 2; Profiles.Any(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase)); n++)
             name = $"{baseName} {n}";
 
-        var p = _store.Capture(name, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), PumpForSave,
+        var p = _store.TryCapture(name, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), PumpForSave,
                                wallpaper: WallpaperForSave);
+        if (p == null) return;
         Profiles.Add(p);
         SelectedProfile = p;
         ProfileName = "";
         _dirty = false;
+        _appliedProfile = null;
         OnChanged(nameof(IsStartupProfile));
     }
 
@@ -495,7 +511,12 @@ public sealed partial class MainViewModel
             var saved = new Rgb[Math.Min(frame.Length, hex.Length)];
             for (int i = 0; i < saved.Length; i++)
                 saved[i] = Rgb.TryFromHex(hex[i], out var c) ? c : frame[i];
-            RestoreFrame(d, saved);
+            if (_sdkHeld.Contains(d) || _lighting.IsClaimed(d))
+            {
+                Array.Copy(saved, frame, saved.Length);
+                _engine.InvalidateBase(d);
+            }
+            else RestoreFrame(d, saved);
         }
         ApplyCustomColors(p.CustomColors);
         RestoreEffects(p.Effects);
@@ -513,13 +534,13 @@ public sealed partial class MainViewModel
         // previous step's screen stayed up.
         bool screenShown = false, showStarted = false;
 
+        if (!fromShow && string.IsNullOrWhiteSpace(p.Show)) Shows.Stop();
         if (!string.IsNullOrWhiteSpace(p.Screen))
         {
             // A screen with no show of its own means NO show, or the running
             // show's next step paints over it a second later. When this profile
             // starts a show, leave that to ShowSequence, which stops whatever
             // else was running anyway.
-            if (!fromShow && string.IsNullOrWhiteSpace(p.Show)) Shows.Stop();
             screenShown = Lcd.ShowScreen(p.Screen!, fromShow);
         }
 
@@ -532,8 +553,11 @@ public sealed partial class MainViewModel
         // the one door every apply comes through - the button, a hotkey, an app
         // rule, a schedule, a show step - so it is the only place that can make
         // a profile mean the whole desk rather than just the LEDs.
-        bool wallpaperSent = Services.WallpaperEngine.Apply(p.Wallpaper);
-        _dirty = false;
+        bool wallpaperSent = ApplyWallpaperProfile(p.Wallpaper);
+        // Shows change output while the editor remains on the user's selected
+        // profile. Its unsaved choices must survive timed steps too.
+        if (!fromShow) _dirty = false;
+        _appliedProfile = p.Name;
         UnifiedRgb.Core.Log.Info("lighting",
             $"applied profile '{p.Name}': {p.Effects?.Count ?? 0} effect(s) on "
             + $"{p.DeviceFrames?.Count ?? 0} device(s)"
@@ -588,6 +612,30 @@ public sealed partial class MainViewModel
         if (Is(s.StartupProfile)) uses.Add("your startup profile");
 
         return uses;
+    }
+
+    bool RenameProfileReferences(string oldName, string newName)
+    {
+        bool Matches(string? name) => string.Equals(name?.Trim(), oldName, StringComparison.OrdinalIgnoreCase);
+        foreach (var show in Lcd.Scenes.Sequences.Concat(Shows.Shows).Distinct())
+            foreach (var action in show.Actions)
+                if (Matches(action.Profile)) action.Profile = newName;
+        bool scenesSaved = ProfileStore.TrySave(UnifiedRgb.Core.AppPaths.Config("scenes.json"), Lcd.Scenes, "scenes.json");
+
+        // The UI normally shares these objects with Settings, but include both
+        // collections so an open editor cannot keep an obsolete reference.
+        var settings = _store.Settings;
+        foreach (var rule in (settings.AutomationRules ?? new()).Concat(AutoRules).Distinct())
+            if (Matches(rule.Profile)) rule.Profile = newName;
+        foreach (var rule in (settings.SensorRules ?? new()).Concat(SensorRules).Distinct())
+            if (Matches(rule.Profile)) rule.Profile = newName;
+        foreach (var rule in (settings.Schedules ?? new()).Concat(Schedules).Distinct())
+            if (Matches(rule.Profile)) rule.Profile = newName;
+        if (Matches(settings.StartupProfile)) settings.StartupProfile = newName;
+        if (Matches(_appliedProfile)) _appliedProfile = newName;
+        bool settingsSaved = ProfileStore.TrySave(UnifiedRgb.Core.AppPaths.Config("settings.json"), settings, "settings.json");
+        Shows.NotifyProfilesChanged();
+        return scenesSaved && settingsSaved;
     }
 
     public void DeleteProfile()

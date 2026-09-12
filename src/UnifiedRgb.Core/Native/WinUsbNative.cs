@@ -3,11 +3,19 @@ using Microsoft.Win32.SafeHandles;
 
 namespace UnifiedRgb.Core.Native;
 
+/// <summary>The transmitter operations needed by wireless lighting. A fake
+/// implementation lets delivery and retry tests use the real driver.</summary>
+internal interface IUsbWriter : IDisposable
+{
+    byte BulkOutPipe { get; }
+    bool Write(byte pipe, byte[] buffer);
+}
+
 /// <summary>Minimal WinUSB transport: enumerate a vendor device interface by
 /// GUID (SetupAPI), open it, and write bulk pipes. Used by devices that ship
 /// with winusb.sys + a vendor interface GUID instead of HID (Lian Li SLV3
 /// wireless transmitter). One open handle at a time — WinUSB is exclusive.</summary>
-public sealed class WinUsbDevice : IDisposable
+public sealed class WinUsbDevice : IUsbWriter
 {
     readonly SafeFileHandle _file;
     readonly IntPtr _iface;

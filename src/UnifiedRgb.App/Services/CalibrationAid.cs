@@ -166,7 +166,7 @@ public sealed class CalibrationAid
     /// difference the user opened this screen to fix. <paramref name="zone"/>
     /// null asks about the whole device.</summary>
     public Rgb SwatchFor(IRgbDevice dev, string? zone)
-        => Calibration.Apply(dev.Name, zone, CalibrationReferences.ColorOf(Reference));
+        => Calibration.Apply(dev, zone, CalibrationReferences.ColorOf(Reference));
 
     void Push()
     {

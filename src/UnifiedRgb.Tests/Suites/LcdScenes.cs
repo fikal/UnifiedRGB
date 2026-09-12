@@ -14,7 +14,7 @@ static class LcdScenesSuite
         Exception? failure = null;
         var thread = new Thread(() =>
         {
-            try { CheckScenes(t); ShowThatContainsItsOwnStarter(t); PausingAShow(t); }
+            try { CheckScenes(t); ShowThatContainsItsOwnStarter(t); PausingAShow(t); ProfileShowIntegration(t); SnapshotPlayback(t); }
             catch (Exception ex) { failure = ex; }
         });
         thread.SetApartmentState(ApartmentState.STA);
@@ -39,8 +39,7 @@ static class LcdScenesSuite
             store: SceneStore.Load, lightsSuppressed: () => false,
             applyProfile: name => { applied++; current = name; return true; },
             profileNames: () => new[] { "Matrix", "Diablo" },
-            currentProfile: () => current,
-            showTookThePanel: () => { });
+            currentProfile: () => current);
 
         var action = typeof(ShowViewModel).GetMethod("ApplyStep",
             BindingFlags.Instance | BindingFlags.NonPublic)!;
@@ -128,6 +127,129 @@ static class LcdScenesSuite
         sequencer.Stop();
 
         t.Equal(0, applied, "no step ran: every wait here is 30 seconds and nothing waited that long");
+    }
+
+    static void ProfileShowIntegration(Harness t)
+    {
+        t.Section("show and profile integration");
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var vm = new MainViewModel(startServices: false);
+        var lcd = (LcdController)RuntimeHelpers.GetUninitializedObject(typeof(LcdController));
+        var lcdField = typeof(LcdDesignerViewModel).GetField("_lcd", flags)!;
+        lcd.Design = LcdDesign.Default();
+        lcdField.SetValue(vm.Lcd, lcd);
+        try
+        {
+            vm.Profiles.Clear();
+            var store = vm.Lcd.Scenes;
+            store.Scenes.Clear(); store.Sequences.Clear();
+            store.Scenes.Add(new LcdScene { Name = "Screen", Design = LcdDesign.Default() });
+            store.Sequences.Add(new SceneSequence { Name = "Loop", Actions = new() { new SceneAction { Profile = "A", DelaySeconds = 30 } } });
+            vm.Lcd.InitScenes(); vm.Shows.Init(); vm.RefreshPumpRows();
+            var a = new Profile { Name = "A", Screen = "Screen", Show = "Loop" };
+            var b = new Profile { Name = "B" };
+            vm.Profiles.Add(a); vm.Profiles.Add(b);
+            vm.ApplyProfile(b);
+            vm.Lcd.SelectedSceneName = "Screen";
+            lcd.Design.Elements.Clear(); vm.Lcd.TouchLcd();
+            typeof(ShowViewModel).GetMethod("ApplyStep", flags)!.Invoke(vm.Shows, new object[] { new SceneAction { Profile = "A" } });
+            t.Check(lcd.Design.Elements.Count > 0, "actual show callback restores the edited same-name scene");
+            t.Check(vm.Lcd.SnapshotDesign()!.FromShow, "show screen does not become the saved canvas");
+            vm.Lcd.ShowScreen("Screen", fromShow: false);
+            t.Check(!vm.Lcd.SnapshotDesign()!.FromShow, "manual screen takes canvas ownership back");
+            vm.Shows.Start("Loop");
+            vm.ApplyProfile(b);
+            t.Check(!vm.Shows.Running, "no-show profile stops playback even without a pump screen");
+            vm.Shows.Start("Loop");
+            vm.ApplyProfile(b, fromShow: true);
+            t.Check(vm.Shows.Running, "step profile with no show does not stop its owning show");
+            vm.Shows.Stop();
+
+            var absent = new Profile { Name = "Portable", Screen = "Missing screen", Show = "Missing show" };
+            vm.Profiles.Add(absent); vm.SelectedProfile = absent;
+            vm.RefreshPumpRows();
+            var pump = (PumpTarget)typeof(MainViewModel).GetProperty("PumpForSave", flags)!.GetValue(vm)!;
+            t.Equal("Missing screen", pump.Screen, "save preserves an unavailable screen beside available shows");
+            t.Equal("Missing show", pump.Show, "save preserves an unavailable show beside available screens");
+            vm.PumpChoice = vm.PumpRows.First(r => r.Screen == null);
+            vm.ShowChoice = MainViewModel.NoShow;
+            pump = (PumpTarget)typeof(MainViewModel).GetProperty("PumpForSave", flags)!.GetValue(vm)!;
+            t.Check(pump.Screen == null && pump.Show == null, "explicit none choices still clear unavailable bindings");
+
+            var profiles = (ProfileStore)typeof(MainViewModel).GetField("_store", flags)!.GetValue(vm)!;
+            profiles.Settings.StartupProfile = "B";
+            b.Screen = "Screen";
+            store.ActiveSequence = "Loop";
+            typeof(MainViewModel).GetMethod("MigrateShowsToProfiles", flags)!.Invoke(vm, null);
+            t.Check(vm.Shows.Running, "legacy startup show runs during its migration launch");
+            t.Equal("Screen", b.Screen, "legacy migration preserves the independent startup screen");
+        }
+        finally { lcdField.SetValue(vm.Lcd, null); vm.Dispose(); }
+    }
+
+    static void SnapshotPlayback(Harness t)
+    {
+        t.Section("snapshot playback and applied identity");
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        using var vm = new MainViewModel(startServices: false);
+        vm.Profiles.Clear();
+        var a = new Profile { Name = "Snapshot A" };
+        var b = new Profile { Name = "Snapshot B" };
+        vm.Profiles.Add(a); vm.Profiles.Add(b);
+        vm.Lcd.Scenes.Sequences.Clear();
+        vm.Lcd.Scenes.Sequences.Add(new SceneSequence { Name = "Snapshot Loop", Actions = new()
+        {
+            new SceneAction { Profile = a.Name, DelaySeconds = 30 },
+            new SceneAction { Profile = b.Name, DelaySeconds = 30 }
+        } });
+        vm.Shows.Init();
+        vm.ApplyProfile(a);
+        var snapshot = vm.CaptureState();
+        vm.ApplyProfile(b);
+        vm.RestoreState(snapshot);
+        t.Equal(a.Name, typeof(MainViewModel).GetField("_appliedProfile", flags)!.GetValue(vm), "restore records the profile actually restored");
+        int applies = 0;
+        vm.ApplyWallpaperProfile = _ => { applies++; return true; };
+        typeof(ShowViewModel).GetMethod("ApplyStep", flags)!.Invoke(vm.Shows, new object[] { new SceneAction { Profile = b.Name } });
+        t.Equal(1, applies, "show does not skip a profile left only in the old cache");
+
+        vm.Shows.Start("Snapshot Loop");
+        var sequencer = (SceneSequencer)typeof(ShowViewModel).GetField("_sequencer", flags)!.GetValue(vm.Shows)!;
+        typeof(SceneSequencer).GetMethod("Step", flags)!.Invoke(sequencer, null);
+        typeof(SceneSequencer).GetField("_dueAt", flags)!.SetValue(sequencer, Environment.TickCount64 + 12000);
+        vm.Shows.TogglePaused();
+        snapshot = vm.CaptureState();
+        var playback = snapshot.ShowPlayback!;
+        t.Equal(0, playback.Index, "snapshot retains the last applied step");
+        t.Check(playback.RemainingMs > 11000 && playback.RemainingMs <= 12000, "snapshot retains partially elapsed delay");
+        vm.ApplyProfile(b);
+        t.Check(!vm.Shows.Running, "override stopped the original show");
+        applies = 0;
+        vm.RestoreState(snapshot);
+        var restored = vm.Shows.CapturePlayback()!;
+        t.Check(vm.Shows.Running && vm.Shows.Paused, "restore resumes the paused show as paused");
+        t.Equal(playback, restored, "paused restore retains position and remaining delay exactly");
+        t.Equal(0, applies, "restoring playback never applies a step immediately");
+        vm.Shows.TogglePaused();
+        var running = vm.CaptureState();
+        vm.ApplyProfile(b); vm.RestoreState(running);
+        restored = vm.Shows.CapturePlayback()!;
+        t.Check(vm.Shows.Running && !vm.Shows.Paused, "running snapshot resumes running");
+        t.Equal(running.ShowPlayback!.Index, restored.Index, "running restore retains position");
+        t.Check(restored.RemainingMs <= running.ShowPlayback.RemainingMs && restored.RemainingMs > running.ShowPlayback.RemainingMs - 1000,
+            "running restore continues the remaining wait");
+        vm.Shows.Stop();
+        var stopped = vm.CaptureState();
+        vm.Shows.Start("Snapshot Loop"); vm.RestoreState(stopped);
+        t.Check(!vm.Shows.Running, "stopped snapshot stops an override show");
+
+        vm.LightsSuppressed = true;
+        applies = 0;
+        vm.RestoreState(running, honorSuppression: true);
+        typeof(SceneSequencer).GetMethod("Step", flags)!.Invoke(sequencer, null);
+        t.Equal(0, applies, "restored show steps remain suppressed while lights are off");
+        vm.LightsSuppressed = false;
+        vm.Shows.Stop();
     }
 
     static void CheckScenes(Harness t)

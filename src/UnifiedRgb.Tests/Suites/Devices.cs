@@ -24,8 +24,70 @@ namespace UnifiedRgb.Tests;
 \*-----------------------------------------------------------*/
 static class DevicesSuite
 {
+    static void WirelessFrameRecovery(Harness t)
+    {
+        t.Section("Lian Li wireless: clear delivery cache after uncertain sends");
+        var usb = new WirelessUsb();
+        using var fans = new LianLiWireless(usb, "Test", new byte[6], new byte[6], 8, 1, 1);
+        var a = Enumerable.Repeat(Rgb.Red, fans.LedCount).ToArray();
+        var b = Enumerable.Repeat(Rgb.Blue, fans.LedCount).ToArray();
+        t.Check(fans.SetColors(a), "initial frame is accepted");
+
+        // Force a standalone apply so the refused first send is followed by
+        // an accepted insurance copy, as happens when the USB link recovers.
+        void Standalone() => typeof(LianLiWireless).GetField("_lastSendMs",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(fans, Environment.TickCount64 - 1000);
+        Standalone();
+        int before = usb.Attempts;
+        usb.RefuseAt = before + 1;
+        t.Check(!fans.SetColors(b), "a refused first packet reports failure even if the insurance copy lands");
+        t.Check(usb.Attempts - before == 40 && usb.Refusals == 1,
+            "both complete copies were attempted, with only one fragment refused");
+        before = usb.Attempts;
+        t.Check(fans.SetColors(a), "the previous color can be restored after uncertain delivery");
+        t.Check(usb.Attempts > before, "restoring the previous color really sends it again");
+        before = usb.Attempts;
+        t.Check(fans.SetColors(a) && usb.Attempts == before, "a successfully restored color can be deduplicated");
+
+        // A throw in the insurance copy comes AFTER the complete first B copy
+        // reached the fake transmitter. A must-land caller may catch it and
+        // request A next, which must not match an old cache entry either.
+        Standalone();
+        before = usb.Attempts;
+        usb.ThrowAt = before + 21;
+        bool threw = false;
+        try { fans.SetColors(b); } catch (IOException) { threw = true; }
+        t.Check(threw && usb.Attempts - before == 21, "transport throws after the first full new frame was accepted");
+        usb.ThrowAt = -1;
+        before = usb.Attempts;
+        t.Check(fans.SetColors(a) && usb.Attempts > before, "a thrown send also invalidates the previous color");
+
+        Standalone();
+        usb.RefuseAt = usb.Attempts + 1;
+        t.Check(!fans.SetColors(b), "fixture refuses another changed frame");
+        before = usb.Attempts;
+        t.Check(fans.SetColors(b) && usb.Attempts > before, "an identical failed frame is retried too");
+    }
+
+    sealed class WirelessUsb : UnifiedRgb.Core.Native.IUsbWriter
+    {
+        public byte BulkOutPipe => 1;
+        public int Attempts, Refusals;
+        public int RefuseAt = -1, ThrowAt = -1;
+        public bool Write(byte pipe, byte[] buffer)
+        {
+            int attempt = ++Attempts;
+            if (attempt == ThrowAt) throw new IOException("fake USB transfer failed");
+            if (attempt == RefuseAt) { Refusals++; return false; }
+            return true;
+        }
+        public void Dispose() { }
+    }
+
     public static void Run(Harness t)
     {
+        WirelessFrameRecovery(t);
         t.Section("HID usage -> VK map");
         {
             t.Equal((int)'A', HidUsageVk.ToVk(0x04), "usage A");
@@ -344,6 +406,46 @@ static class DevicesSuite
             kb.Dispose();
             t.Check(hid.Writes.Count == 1 && hid.Writes[0][1] == 0x41, "Dispose hands the keyboard back to its onboard profile (0x41)");
             t.Check(hid.IsDisposed, "...and closes the handle");
+        }
+
+        t.Section("keyboard mode-init refusal cannot be cached as delivered colors");
+        {
+            // Refuse ONLY the init, accepting RGB reports. Refusing everything
+            // masks the bug because the frame fails independently of the init.
+            var hid = new FakeHid { AcceptFeature = (_, p) => p[1] != 0x4B };
+            using var kb = new SteelSeriesApex(hid, 643, 65, "Apex selective init");
+            var frame = Enumerable.Repeat(Rgb.Red, kb.LedCount).ToArray();
+            t.Check(!DeviceHealth.WriteFrame(kb, frame), "Apex refuses delivery when only its mode init fails");
+            t.Check(!DeviceHealth.WriteFrame(kb, frame), "an identical Apex request still retries the refused init");
+            t.Equal(DeviceHealthState.Retrying, DeviceHealth.Shared.StateOf(kb), "Apex init failures reach device health");
+            t.Check(hid.Features.All(p => p[1] == 0x4B), "Apex does not send colors before initialization succeeds");
+            hid.AcceptFeature = null;
+            int before = hid.Features.Count;
+            t.Check(kb.SetColors(frame), "Apex recovers with the same requested frame");
+            t.Check(hid.Features.Skip(before).Select(p => p[1]).SequenceEqual(new byte[] { 0x4B, 0x40 }),
+                "Apex recovery sends init and then the color frame");
+            before = hid.Features.Count;
+            t.Check(kb.SetColors(frame) && hid.Features.Count == before, "Apex dedups only after initialization and frame land");
+            DeviceHealth.Shared.Forget(kb);
+        }
+        {
+            var hid = new FakeHid { Accept = (_, p) => !(p[1] == 0x07 && p[2] == 0x04 && p[3] == 0x02) };
+            using var kb = new CorsairStrafeMk2(hid);
+            var frame = Enumerable.Repeat(Rgb.Red, kb.LedCount).ToArray();
+            t.Check(!DeviceHealth.WriteFrame(kb, frame), "Corsair refuses delivery when only its mode init fails");
+            t.Check(!DeviceHealth.WriteFrame(kb, frame), "an identical Corsair request still retries the refused init");
+            t.Equal(DeviceHealthState.Retrying, DeviceHealth.Shared.StateOf(kb), "Corsair init failures reach device health");
+            t.Check(!hid.Writes.Any(p => p[1] == 0x07 && p[2] == 0x28), "Corsair does not commit colors before initialization succeeds");
+            hid.Accept = null;
+            int before = hid.Writes.Count;
+            t.Check(kb.SetColors(frame), "Corsair recovers with the same requested frame");
+            var recovered = hid.Writes.Skip(before).ToArray();
+            t.Check(recovered.Any(p => p[1] == 0x07 && p[2] == 0x04 && p[3] == 0x02)
+                && recovered.Count(p => p[1] == 0x07 && p[2] == 0x28) == 3,
+                "Corsair recovery sends initialization and all three color commits");
+            before = hid.Writes.Count;
+            t.Check(kb.SetColors(frame) && hid.Writes.Count == before, "Corsair dedups only after initialization and frame land");
+            DeviceHealth.Shared.Forget(kb);
         }
 
         t.Section("RazerHid: the report layout, byte for byte");

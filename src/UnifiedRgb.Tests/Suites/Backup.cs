@@ -58,6 +58,7 @@ static class BackupSuite
             Refusals(t, temp);
             Destinations(t);
             ImportRegressions(t, temp);
+            ProfileTargetConflicts(t, temp);
         }
         finally
         {
@@ -398,6 +399,29 @@ static class BackupSuite
             "a file this build does not understand is never written");
     }
 
+    static void ProfileTargetConflicts(Harness t, string temp)
+    {
+        CleanConfig();
+        var original = new Profile { Name = "Desk", Show = "Day", Wallpaper = "Beach" };
+        string path = AppPaths.Config("profiles.json");
+        ProfileStore.Save(path, new[] { original }, "profiles.json");
+        string bundle = Path.Combine(temp, "profile-targets.urgb");
+        t.Check(SetupBundle.Export(bundle).Ok, "profile target fixture exports");
+        foreach (var changed in new[] {
+            new Profile { Name = "Desk", Show = "Night", Wallpaper = "Beach" },
+            new Profile { Name = "Desk", Show = "Day", Wallpaper = "City" } })
+        {
+            ProfileStore.Save(path, new[] { changed }, "profiles.json");
+            var preview = SetupBundle.Preview(bundle);
+            t.Equal(ImportStatus.Differs, preview.Profiles.Single().Status,
+                "show or wallpaper change is an import conflict");
+            t.Check(!preview.DefaultChoices().Profiles.Contains("Desk"), "safe import leaves changed profile alone");
+        }
+        ProfileStore.Save(path, new[] { original }, "profiles.json");
+        t.Equal(ImportStatus.Same, SetupBundle.Preview(bundle).Profiles.Single().Status,
+            "identical show and wallpaper remain unchanged in preview");
+    }
+
     /*--- fixtures and helpers ---*/
 
     /// <summary>A complete little setup on disk: one profile, one screen with
@@ -516,7 +540,7 @@ static class BackupSuite
                 using var shows = new ShowViewModel(
                     store: () => vm.Scenes, lightsSuppressed: () => false,
                     applyProfile: _ => false, profileNames: Array.Empty<string>,
-                    currentProfile: () => null, showTookThePanel: () => { });
+                    currentProfile: () => null);
                 shows.Init();
                 var sequencerField = typeof(ShowViewModel).GetField("_sequencer", flags)!;
                 var oldSequencer = (SceneSequencer)sequencerField.GetValue(shows)!;
@@ -550,12 +574,18 @@ static class BackupSuite
                 void Field(string name, object value) => typeof(MainViewModel).GetField(name, flags)!.SetValue(main, value);
                 var store = new ProfileStore();
                 Field("_store", store);
-                foreach (string property in new[] { "Profiles", "AutoRules", "Schedules", "SensorRules", "CustomColors", "Devices" })
+                var lighting = new LightingController();
+                Field("_lighting", lighting);
+                foreach (string property in new[] { "Profiles", "AutoRules", "Schedules", "SensorRules", "CustomColors", "Devices", "PumpRows", "ShowRows", "WallpaperProfiles" })
                 {
                     var field = typeof(MainViewModel).GetField($"<{property}>k__BackingField", flags)!;
                     field.SetValue(main, Activator.CreateInstance(field.FieldType));
                 }
                 Field("<Lcd>k__BackingField", vm);
+                Field("<Shows>k__BackingField", shows);
+                Field("_pumpChoice", typeof(MainViewModel).GetField("PumpNone", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.GetValue(null)!);
+                Field("_showChoice", MainViewModel.NoShow);
+                Field("_wallpaperChoice", MainViewModel.NoWallpaper);
                 var bake = new LianBakeService(null!, () => Array.Empty<UnifiedRgb.Core.Devices.LianLiWireless>());
                 Field("_bake", bake);
                 main.AutoRules.Add(new UnifiedRgb.Core.Automation.AutomationRule { Process = "old", Profile = "old" });
@@ -585,12 +615,12 @@ static class BackupSuite
                     var saved = JsonSerializer.Deserialize<SettingsData>(File.ReadAllText(AppPaths.Config("settings.json")))!;
                     t.Equal("edited", saved.AutomationRules!.Single().Process, "editor objects update the imported settings store");
                 }
-                finally { bake.Stop(); Master.Brightness = brightness; }
+                finally { bake.Stop(); lighting.StopAndDrain(); Master.Brightness = brightness; }
             }
             catch (Exception ex) { failure = ex; }
         });
         thread.SetApartmentState(ApartmentState.STA); thread.Start(); thread.Join();
-        if (failure != null) throw failure;
+        if (failure != null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
     }
 
     /// <summary>Leave the isolated config root as this suite found it. Other

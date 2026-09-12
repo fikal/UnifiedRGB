@@ -48,6 +48,71 @@ static class DeviceHealthSuite
         MinimumGap(t);
         DefersToSdkClient(t);
         NeverRelightsADarkWindow(t);
+        TransitionDuringRowRefresh(t);
+    }
+
+    static void TransitionDuringRowRefresh(Harness t)
+    {
+        t.Section("health: a transition during row refresh receives a follow-up pass");
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+            UnifiedRgb.App.MainViewModel? vm = null;
+            Action<DeviceHealthChange>? subscription = null;
+            try
+            {
+                vm = new UnifiedRgb.App.MainViewModel(startServices: false);
+                var dev = new FakeDevice { Name = "Health refresh race" };
+                vm.Devices.Add(dev);
+                // Capture only this VM's subscription so a stopped test dispatcher
+                // cannot remain subscribed to the process-wide health service.
+                var changed = typeof(DeviceHealth).GetField("Changed",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+                var before = ((Delegate?)changed.GetValue(DeviceHealth.Shared))?.GetInvocationList() ?? [];
+                typeof(UnifiedRgb.App.MainViewModel).GetMethod("HookDeviceHealth",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(vm, null);
+                var after = ((Delegate)changed.GetValue(DeviceHealth.Shared)!).GetInvocationList();
+                subscription = (Action<DeviceHealthChange>)after.Except(before).Single();
+                bool transitioned = false;
+                int passes = 0;
+                vm.DeviceHealthRows.CollectionChanged += (_, e) =>
+                {
+                    if (e.Action != System.Collections.Specialized.NotifyCollectionChangedAction.Add) return;
+                    passes++;
+                    if (transitioned) return;
+                    transitioned = true;
+                    // The row now contains Retrying. Complete recovery on a real
+                    // worker before the UI exits its in-progress refresh.
+                    Task.Run(() =>
+                    {
+                        for (int i = 0; i < 3; i++) DeviceHealth.Shared.Report(dev, landed: true);
+                    }).GetAwaiter().GetResult();
+                };
+                DeviceHealth.Shared.Report(dev, landed: false);
+                DeviceHealth.Shared.Report(dev, landed: false);
+                var frame = new System.Windows.Threading.DispatcherFrame();
+                dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background,
+                    new Action(() => frame.Continue = false));
+                System.Windows.Threading.Dispatcher.PushFrame(frame);
+                t.Equal(DeviceHealthState.Connected, DeviceHealth.Shared.StateOf(dev), "worker has completed recovery");
+                t.Equal(DeviceHealthState.Connected, vm.DeviceHealthRows.Single().State, "UI receives the recovery that occurred after its first row read");
+                t.Equal(2, passes, "in-progress transition schedules exactly one follow-up refresh");
+            }
+            catch (Exception ex) { failure = ex; }
+            finally
+            {
+                if (subscription != null) DeviceHealth.Shared.Changed -= subscription;
+                vm?.Shows.Dispose();
+                vm?.Lcd.Dispose();
+                vm?.Lighting.StopAndDrain();
+                dispatcher.InvokeShutdown();
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+        if (failure != null) throw new InvalidOperationException("Health refresh regression failed", failure);
     }
 
     /*==================== the state machine ====================*/

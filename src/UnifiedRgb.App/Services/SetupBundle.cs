@@ -310,6 +310,8 @@ public sealed class ImportResult
 {
     public bool Ok { get; set; }
     public string? Problem { get; set; }
+    /// <summary>Some files could not be restored after an import failed.</summary>
+    public bool RollbackIncomplete { get; set; }
 
     /// <summary>One line per thing that changed, for the confirmation and the
     /// log.</summary>
@@ -969,6 +971,8 @@ public static class SetupBundle
     static bool SameProfile(Profile a, Profile b)
     {
         if (!string.Equals(a.Screen ?? "", b.Screen ?? "", StringComparison.Ordinal)) return false;
+        if (!string.Equals(a.Show ?? "", b.Show ?? "", StringComparison.Ordinal)) return false;
+        if (!string.Equals(a.Wallpaper ?? "", b.Wallpaper ?? "", StringComparison.Ordinal)) return false;
         if (!SameSequence(a.CustomColors, b.CustomColors)) return false;
         if (a.DeviceFrames.Count != b.DeviceFrames.Count) return false;
         foreach (var kv in a.DeviceFrames)
@@ -1411,6 +1415,7 @@ public static class SetupBundle
             }
             else
             {
+                result.RollbackIncomplete = true;
                 result.BackupDirectory = Directory.Exists(backupDir) ? backupDir : null;
                 result.Problem = $"the import failed partway ({ex.Message}) and could NOT be fully undone: "
                     + string.Join(", ", stranded) + " was left as the bundle wrote it"

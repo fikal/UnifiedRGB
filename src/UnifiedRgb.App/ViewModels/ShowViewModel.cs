@@ -16,10 +16,9 @@ namespace UnifiedRgb.App;
 | three things it drives.                                       |
 |                                                               |
 | It still borrows the pump LCD's store, because scenes and     |
-| shows share one file, and it tells the panel when a show has  |
-| taken it so the show's screens are never flushed over the     |
-| user's own canvas. Those two are the whole of the coupling    |
-| that is left, and both are passed in rather than reached for. |
+| shows share one file. Profile application carries show       |
+| ownership through to the panel's screen loader, which keeps  |
+| show screens separate from the user's saved canvas.          |
 \*-------------------------------------------------------------*/
 
 /// <summary>The saved shows, the one that is running, and the timer that walks
@@ -31,7 +30,6 @@ public sealed class ShowViewModel : INotifyPropertyChanged, IDisposable
     readonly Func<string, bool> _applyProfile;
     readonly Func<IEnumerable<string>> _profileNames;
     readonly Func<string?> _currentProfile;
-    readonly Action _showTookThePanel;
 
     SceneSequencer? _sequencer;
     SceneSequence? _selectedShow;
@@ -42,19 +40,15 @@ public sealed class ShowViewModel : INotifyPropertyChanged, IDisposable
     /// <param name="store">Read through a function, not captured: an import
     /// replaces the whole store, and a snapshot taken here would leave this
     /// editing a file nobody saves any more.</param>
-    /// <param name="showTookThePanel">Tell the pump LCD that what is on it now
-    /// belongs to a show. Without it the show's screens are saved as the user's
-    /// own canvas, and the next step overwrites their real design.</param>
     public ShowViewModel(Func<SceneStore> store, Func<bool> lightsSuppressed,
                          Func<string, bool> applyProfile, Func<IEnumerable<string>> profileNames,
-                         Func<string?> currentProfile, Action showTookThePanel)
+                         Func<string?> currentProfile)
     {
         _store = store;
         _lightsSuppressed = lightsSuppressed;
         _applyProfile = applyProfile;
         _profileNames = profileNames;
         _currentProfile = currentProfile;
-        _showTookThePanel = showTookThePanel;
     }
 
     /*--- the lists ---*/
@@ -196,6 +190,22 @@ public sealed class ShowViewModel : INotifyPropertyChanged, IDisposable
         _sequencer?.Stop();
     }
 
+    public SceneSequencer.Playback? CapturePlayback() => _sequencer?.Capture();
+
+    public void RestorePlayback(SceneSequencer.Playback? state)
+    {
+        Stop();
+        if (state == null) return;
+        if (_sequencer == null) Init();
+        var seq = Shows.FirstOrDefault(s => s.Name.Equals(state.Name, StringComparison.OrdinalIgnoreCase));
+        if (seq == null)
+        {
+            Log.Warn("scenes", $"cannot restore deleted show '{state.Name}'");
+            return;
+        }
+        _sequencer!.Restore(seq, state);
+    }
+
     public bool Running => _sequencer?.Running == true;
     public bool Paused => _sequencer?.Paused == true;
     public bool CanPause => Running;
@@ -248,11 +258,8 @@ public sealed class ShowViewModel : INotifyPropertyChanged, IDisposable
         // the tightest point of the loop a self-referencing show would make.
         if (string.Equals(_currentProfile(), a.Profile, StringComparison.OrdinalIgnoreCase)) return;
 
-        // Show territory, flagged BEFORE the profile applies: the profile's
-        // screen is the show's screen now, and loaded as the user's canvas it
-        // starts the debounced save, which the next step then flushes over their
-        // real design.
-        _showTookThePanel();
+        // The profile loader passes fromShow to the screen loader, which
+        // evaluates the old ownership before replacing the design.
         _applyProfile(a.Profile);
     }
 
@@ -331,10 +338,10 @@ public sealed class ShowViewModel : INotifyPropertyChanged, IDisposable
 
     /// <summary>Move steps that named a pump scene onto the profile that carries
     /// it, now that a step is a profile.</summary>
-    public void MigrateSceneSteps(IEnumerable<Profile> profiles)
+    public void MigrateSceneSteps(IEnumerable<Profile> profiles, Func<Profile, bool>? addProfile = null)
     {
         var scenes = _store();
-        scenes.MigrateSceneSteps(profiles);
+        scenes.MigrateSceneSteps(profiles, addProfile);
         scenes.Save();
     }
 

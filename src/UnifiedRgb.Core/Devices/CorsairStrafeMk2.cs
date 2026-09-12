@@ -357,7 +357,16 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
             // a handback) left the keyboard in hardware mode permanently while
             // every later color packet was accepted and the driver reported
             // connected.
-            if (_needInit) _needInit = !RunInit();
+            if (_needInit)
+            {
+                // Mode setup is part of delivery. Color packets can be accepted
+                // while the keyboard still displays its onboard profile.
+                _last = null;
+                _needInit = !RunInit();
+                if (_needInit)
+                    return WritePolicy.Refused(ref _last, "strafe-init", "StrafeMk2",
+                        "software-mode setup refused; initialization and the frame will be retried");
+            }
             int n = colors.Count;
             // A skipped identical frame is a SUCCESS: the keyboard already
             // shows exactly what was asked for.

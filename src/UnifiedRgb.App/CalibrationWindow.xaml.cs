@@ -168,7 +168,7 @@ public partial class CalibrationWindow : Window
     \*-----------------------------------------------------*/
 
     /// <summary>Pull the selected row's trim into the sliders. For a zone with
-    /// no trim of its own that is the DEVICE's trim, because that is what the
+    /// no trim of its own that is its enclosing zone's or device's trim, because that is what the
     /// zone is really doing right now: opening a following zone on a row of
     /// 1.0s would state, wrongly, that nothing is happening to it.
     ///
@@ -209,7 +209,7 @@ public partial class CalibrationWindow : Window
         TrimScopeNote.Text = $"These five settings belong to {row.Name}, and there is only one set of them. "
             + "The test patch changes which color your lights show while you judge them; it never changes these numbers.";
 
-        var cal = Calibration.Effective(row.Device.Name, row.ZoneName);
+        var cal = Calibration.Effective(row.Device, row.ZoneName);
         _loading = true;
         GainRSlider.Value = cal.GainR;
         GainGSlider.Value = cal.GainG;
@@ -242,7 +242,7 @@ public partial class CalibrationWindow : Window
             int leds = row.Zone!.Count;
             ScopeNote.Text = row.HasOwnTrim
                 ? $"This zone has its own trim. It REPLACES the whole-device trim for these {leds} LED(s) rather than stacking on top of it."
-                : $"These {leds} LED(s) are following the whole-device trim. Move any slider to give this zone a trim of its own, which then replaces the device trim here.";
+                : $"These {leds} LED(s) inherit the enclosing zone's trim, or the device trim when no enclosing zone is trimmed. Move any slider to give this zone a trim of its own.";
             return;
         }
 
@@ -273,7 +273,7 @@ public partial class CalibrationWindow : Window
         // patch alone cannot know that - so this used to present a dead control
         // as a live one, which is the fastest way to look broken.
         var row = Current;
-        var cal = row == null ? null : Calibration.Effective(row.Device.Name, row.ZoneName);
+        var cal = row == null ? null : Calibration.Effective(row.Device, row.ZoneName);
 
         Dim(GainRLabel, GainRSlider, CalibrationControl.GainR);
         Dim(GainGLabel, GainGSlider, CalibrationControl.GainG);
@@ -318,7 +318,7 @@ public partial class CalibrationWindow : Window
 
         if (outLevel > inLevel)
             return $"This row's trim LIFTS the patch: {inPct}% goes in and {outPct}% comes out. "
-                 + "A gain above 1 does that. Max brightness is a ceiling on the result, never the level itself.";
+                 + "A gain above 1 or gamma below 1 can do that. Max brightness is a ceiling on the result, never the level itself.";
         if (outLevel < inLevel)
             return $"This row's trim pulls the patch down: {inPct}% goes in and {outPct}% comes out.";
         return "This row's trim changes the patch's balance without changing how bright it is.";
@@ -343,7 +343,7 @@ public partial class CalibrationWindow : Window
             // Through the ROW's trim, which for a zone is its own where it has
             // one and its device's where it does not: row2.Name is the zone's
             // name, not a device key, so the device has to be named explicitly.
-            var sent = Calibration.Apply(row2.Device.Name, row2.ZoneName, asked);
+            var sent = Calibration.Apply(row2.Device, row2.ZoneName, asked);
             TrimSwatch.Background = BrushFor(sent);
             // The hex is here for the device nobody can actually see - a logo
             // inside a closed case - where the swatch on screen is the only
@@ -587,7 +587,7 @@ public sealed class CalDeviceRow : INotifyPropertyChanged
         Device = device;
         Zone = zone;
         ZoneName = zone == null ? null : zoneKey ?? zone.Name;
-        _swatch = Calibration.Apply(device.Name, ZoneName, Rgb.White);
+        _swatch = Calibration.Apply(device, ZoneName, Rgb.White);
     }
 
     Rgb _swatch;
@@ -605,7 +605,7 @@ public sealed class CalDeviceRow : INotifyPropertyChanged
     /// right, as opposed to inheriting one. On a zone row that is the
     /// difference between "its own" and "following the device".</summary>
     public bool HasOwnTrim => IsZone
-        ? Calibration.HasZoneTrim(Device.Name, Zone!.Name)
+        ? Calibration.HasZoneTrim(Device.Name, ZoneName!)
         : !Calibration.For(Device.Name).IsIdentity;
 
     /// <summary>The second line of the row. For a device: the vendor, plus a
@@ -626,7 +626,7 @@ public sealed class CalDeviceRow : INotifyPropertyChanged
                 return zones == 0 ? self : $"{self} · {zones} zone(s) trimmed";
             }
             string size = Zone!.Count == 1 ? "1 LED" : $"{Zone.Count} LEDs";
-            return HasOwnTrim ? $"{size} · own trim" : $"{size} · following the device";
+            return HasOwnTrim ? $"{size} · own trim" : $"{size} · inherited trim";
         }
     }
 

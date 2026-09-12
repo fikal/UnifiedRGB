@@ -927,10 +927,11 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // and wallpaper pickers with it, so a choice made there was wiped before
         // it could be saved. The selection is the user's place in the app; a show
         // may change the lighting without taking it from them.
-        _appliedProfile = p.Name;
         if (!fromShow) SelectedProfile = p;
         LoadProfile(p, fromShow);
-        LightingApplied?.Invoke();
+        // A timed step is part of the running show, not a new user override.
+        // Automation must retain the baseline captured before it started it.
+        if (!fromShow) LightingApplied?.Invoke();
     }
 
     /// <summary>The profile the lighting currently IS, which is not always the
@@ -1089,7 +1090,12 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         try
         {
-            Shows.MigrateSceneSteps(Profiles);
+            Shows.MigrateSceneSteps(Profiles, migrated =>
+            {
+                if (!_store.AddMigratedProfile(migrated)) return false;
+                Profiles.Add(migrated);
+                return true;
+            });
 
             string? legacy = Shows.LegacyActiveShow;
             if (string.IsNullOrWhiteSpace(legacy)) return;
@@ -1103,18 +1109,24 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
                     + "bind it to a profile under Settings, Profiles");
                 return;
             }
-            if (!string.IsNullOrWhiteSpace(startup.Show) || !string.IsNullOrWhiteSpace(startup.Screen))
+            if (!string.IsNullOrWhiteSpace(startup.Show))
             {
                 UnifiedRgb.Core.Log.Warn("scenes",
                     $"show '{legacy}' used to start with the app, but startup profile '{startup.Name}' already "
-                    + "names a pump target - leaving both alone rather than choosing for you");
+                    + "names a show - leaving both alone rather than choosing for you");
                 return;
             }
 
+            string? previousShow = startup.Show;
             startup.Show = legacy;
-            startup.Screen = null;
-            _store.SaveProfiles();
+            if (!_store.TrySaveProfiles())
+            {
+                startup.Show = previousShow;
+                UnifiedRgb.Core.Log.Warn("scenes", "startup show migration could not be saved; keeping the legacy startup setting for a later attempt");
+                return;
+            }
             Shows.ClearLegacyActiveShow();
+            Shows.Start(legacy);
             UnifiedRgb.Core.Log.Info("scenes",
                 $"show '{legacy}' now starts because profile '{startup.Name}' asks for it");
         }
@@ -1268,6 +1280,11 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     // hardware, starting servers, or launching recovery and update workers.
     internal MainViewModel(bool startServices)
     {
+        if (!startServices)
+        {
+            ReadWallpaperProfile = () => null;
+            ApplyWallpaperProfile = _ => false;
+        }
         _bake = new Services.LianBakeService(_lighting, () => Devices.OfType<LianLiWireless>());
         _battery = new Services.BatteryMonitor(_lighting.Applier, () => Devices, RefreshBatterySubtitles);
         // Before anything renders: the layout decides what coordinates every
@@ -1283,7 +1300,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // Shows are their own thing now: a timeline of PROFILES, which is the
         // whole desk rather than the pump panel they used to be filed under.
         // They still borrow the panel's store, because scenes and shows share
-        // one file, and they tell the panel when a show has taken it.
+        // one file. Profile application tells the screen loader it is a step.
         Shows = new ShowViewModel(
             store: () => Lcd.Scenes,
             lightsSuppressed: () => LightsSuppressed,
@@ -1291,8 +1308,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             // running show is not stopped by the profile's screen.
             applyProfile: n => ApplyProfileByName(n, fromShow: true),
             profileNames: () => Profiles.Select(p => p.Name),
-            currentProfile: () => _appliedProfile,
-            showTookThePanel: () => Lcd.MarkShowOwnsPanel());
+            currentProfile: () => _appliedProfile);
         ApplyToTargetCommand = new RelayCommand(_ => ApplyToTarget(), _ => HasSelection);
         ApplyToAllCommand    = new RelayCommand(_ => ApplyModeToAll(), _ => Devices.Count > 0);
         ApplyToDeskCommand   = new RelayCommand(_ => ApplyModeToDesk(), _ => Devices.Count > 0);
@@ -1671,7 +1687,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     /// picking the effect before the client arrived.</summary>
     bool EffectBlockedByClient(IRgbDevice dev)
     {
-        if (!_lighting.IsClaimed(dev)) return false;
+        if (!_sdkHeld.Contains(dev) && !_lighting.IsClaimed(dev)) return false;
         UnifiedRgb.Core.Log.Occasional($"claimed:{dev.Name}", "lighting",
             $"{dev.Name}: an SDK client has this device - not starting an effect on it until it lets go");
         return true;

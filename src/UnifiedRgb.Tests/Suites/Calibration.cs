@@ -111,6 +111,22 @@ static class CalibrationSuite
         Master.Finish(nested, nestedFrame);
         t.Equal((byte)128, nestedFrame[0].R, "whole fan trim covers the unoverridden inner ring");
         t.Equal((byte)26, nestedFrame[8].R, "outer-ring trim overrides its containing fan trim");
+        t.Equal(0.5, Calibration.Effective(nested, "Inner").GainR, "inner sliders inherit the enclosing fan trim");
+        t.Equal(nestedFrame[0], Calibration.Apply(nested, "Inner", Rgb.White), "inherited inner swatch matches the hardware frame");
+        t.Equal(nestedFrame[8], Calibration.Apply(nested, "Outer", Rgb.White), "own child swatch matches the hardware frame");
+        t.Equal(0.5, Calibration.Effective(nested, "Fan 1").GainR, "parent sliders do not adopt a child's narrower trim");
+        t.Equal(1.0, Calibration.Effective(nested, null).GainR, "device sliders remain independent of zone overrides");
+        var innerRow = new UnifiedRgb.App.CalDeviceRow(nested, nested.Zones[1], "Inner");
+        t.Equal(nestedFrame[0], innerRow.Swatch, "new inner row initializes its swatch from the inherited fan trim");
+        var innerEdit = Calibration.Effective(nested, "Inner");
+        innerEdit.GainG = 0.6;
+        Calibration.SetZone(nested.Name, "Inner", innerEdit);
+        var editedFrame = Enumerable.Repeat(Rgb.White, 20).ToArray();
+        Master.Finish(nested, editedFrame);
+        t.Equal((byte)128, editedFrame[0].R, "editing an inherited child's green preserves its previous red output");
+        t.Equal((byte)153, editedFrame[0].G, "the child edit changes the requested channel");
+        Calibration.SetZone(nested.Name, "Inner", new DeviceCalibration());
+        t.Equal(0.5, Calibration.Effective(nested, "Inner").GainR, "resetting child trim restores enclosing fan inheritance");
         t.Equal(Calibration.Apply(nested.Name, "Outer", Rgb.White), nestedFrame[19], "outer-ring UI and hardware agree");
         var slice = Enumerable.Repeat(Rgb.White, 4).ToArray();
         Master.Finish(nested, slice, 7);
@@ -126,6 +142,9 @@ static class CalibrationSuite
             () => { saved = live; captured++; }, () => { live = saved!; restored++; }, () => refreshed++);
         try
         {
+            Calibration.SetZone(nested.Name, "Fan 1", new DeviceCalibration { GainR = 0.5 });
+            t.Equal((byte)77, aid.SwatchFor(nested, "Inner").R, "live aid's 60-percent white swatch inherits containing geometry too");
+            Calibration.ResetAll();
             aid.Refresh();
             t.Equal(1, refreshed, "inactive aid forwards calibration changes to live-output refresh");
             aid.Start(new[] { nested });
@@ -1112,6 +1131,12 @@ static class CalibrationSuite
         t.Equal((byte)128, frame[0].R, "the trimmed zone is trimmed");
         t.Equal((byte)255, frame[4].R, "the zone that merely shares its name is NOT");
         t.Equal((byte)255, frame[8].R, "and neither is the one whose name collides with the generated key");
+        var secondRow = new UnifiedRgb.App.CalDeviceRow(board, board.Zones[1], keys[1]);
+        t.Check(!secondRow.HasOwnTrim, "a trim on the first header does not mark its duplicate as trimmed");
+        Calibration.ResetAll();
+        Calibration.SetZone(board.Name, keys[1], new DeviceCalibration { GainR = 0.5 });
+        t.Check(secondRow.HasOwnTrim, "the duplicate row finds its own numbered trim key");
+        t.Check(secondRow.Detail.Contains("own trim"), "duplicate-zone status explains the trim actually applied");
         Calibration.ResetAll();
     }
 

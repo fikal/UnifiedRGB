@@ -120,6 +120,7 @@ public sealed class OpenRgbHost : IOpenRgbHost
                 _snapshot = null;
                 _externalCount = 0;
             }
+            foreach (var device in _vm.Devices) _vm.ReleaseHold(device);
             if (restore != null) _vm.RestoreState(restore, honorSuppression: true);
         });
     }

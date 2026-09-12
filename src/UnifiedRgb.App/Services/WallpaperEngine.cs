@@ -207,19 +207,16 @@ public static class WallpaperEngine
 
     /// <summary>Pull the profile names out of Wallpaper Engine's config.
     ///
-    /// Searched for by KEY NAME anywhere in the tree rather than at a fixed
-    /// path. The config is keyed by Windows user name at the top level and its
-    /// shape is Wallpaper Engine's business, not ours - an update that moves
-    /// the section one level deeper should cost us nothing. What is stable is
-    /// that the section is called "profiles", which is the name the control
-    /// channel uses too.</summary>
-    internal static string[] ReadProfiles(string path)
+    /// Search within the current Windows account only. The installation's
+    /// config can contain several accounts, whose profile names and live
+    /// wallpapers must never be combined.</summary>
+    internal static string[] ReadProfiles(string path, string? userName = null)
     {
         try
         {
             using var doc = JsonDocument.Parse(File.ReadAllText(path));
             var found = new List<string>();
-            Walk(doc.RootElement, found, 0);
+            Walk(AccountConfig(doc.RootElement, userName ?? Environment.UserName), found, 0);
             var names = found
                 .Where(n => !string.IsNullOrWhiteSpace(n))
                 .Select(n => n.Trim())
@@ -244,14 +241,14 @@ public static class WallpaperEngine
     /// Null when none of them match, including when there is nothing to
     /// compare - a config with no live wallpapers listed answers "unknown"
     /// rather than "the first profile".</summary>
-    internal static string? ReadActiveProfile(string path)
+    internal static string? ReadActiveProfile(string path, string? userName = null)
     {
         try
         {
             using var doc = JsonDocument.Parse(File.ReadAllText(path));
             string? live = null;
             var saved = new List<(string Name, string Sig)>();
-            Scan(doc.RootElement, ref live, saved, 0);
+            Scan(AccountConfig(doc.RootElement, userName ?? Environment.UserName), ref live, saved, 0);
 
             if (string.IsNullOrEmpty(live)) return null;
             // First match wins. Two profiles with identical wallpapers are
@@ -266,6 +263,22 @@ public static class WallpaperEngine
             Log.Warn("wallpaper", $"could not read what Wallpaper Engine is showing: {ex.Message}");
             return null;
         }
+    }
+
+    /// <summary>Named account takes precedence, including an empty account.
+    /// Legacy files may put general or the wallpaper fields directly at the
+    /// root. An unrecognized root is not permission to borrow another user.</summary>
+    static JsonElement AccountConfig(JsonElement root, string userName)
+    {
+        if (root.ValueKind != JsonValueKind.Object) return default;
+        foreach (var property in root.EnumerateObject())
+            if (string.Equals(property.Name, userName, StringComparison.OrdinalIgnoreCase))
+                return property.Value;
+        if (root.TryGetProperty("general", out var general) && general.ValueKind == JsonValueKind.Object)
+            return general;
+        if (root.TryGetProperty("profiles", out _) || root.TryGetProperty("wallpaperconfig", out _))
+            return root;
+        return default;
     }
 
     static void Scan(JsonElement e, ref string? live, List<(string, string)> saved, int depth)

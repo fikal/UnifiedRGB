@@ -72,8 +72,8 @@ static class ProfilesSuite
     /// the screen in the case - and a second way to set one of the three only
     /// created an argument about which won.
     ///
-    /// The migration has to be honest rather than clever: an existing file must
-    /// not quietly lose steps, and must not gain a profile nobody made.</summary>
+    /// Combined steps retain their exact lighting and explicit screen. Missing
+    /// information stays available for a later migration attempt.</summary>
     static void ShowStepsBecomeProfiles(Harness t)
     {
         t.Section("show steps become profiles");
@@ -81,9 +81,13 @@ static class ProfilesSuite
         var profiles = new List<Profile>
         {
             new() { Name = "Night",  Screen = "Signal Path" },
-            new() { Name = "Day",    Screen = "Clock" },
+            new() { Name = "Day", Screen = "Clock", Wallpaper = "Beach", Show = "Loop",
+                DeviceFrames = new() { ["Offline device"] = new[] { "FF0000" } },
+                CustomColors = new[] { "00FF00" },
+                Effects = new() { new() { Device = "Offline device", Effect = "Rainbow", PatternPalette = new[] { "0000FF" } } } },
             new() { Name = "Also Day", Screen = "Clock" },      // two claim one screen
             new() { Name = "No screen" },
+            new() { Name = "Day (Signal Path)" }, // name collision must not overwrite this profile
         };
 
         var store = new SceneStore
@@ -98,29 +102,74 @@ static class ProfilesSuite
                         new SceneAction { Scene = "Signal Path" },               // one owner -> adopted
                         new SceneAction { Scene = "Clock" },                     // two owners -> stranded
                         new SceneAction { Scene = "Gone" },                      // no owner  -> stranded
-                        new SceneAction { Scene = "Signal Path", Profile = "Day" }, // already said what it wanted
+                        new SceneAction { Scene = "Signal Path", Profile = "Day" }, // explicit screen wins over Clock
                         new SceneAction { Profile = "Night" },                    // nothing to do
+                        new SceneAction { Scene = "signal path", Profile = "day" }, // same combined step reuses its variant
                     },
                 },
             },
         };
 
-        int stranded = store.MigrateSceneSteps(profiles);
+        int stranded = store.MigrateSceneSteps(profiles, p => { profiles.Add(p); return true; });
         var steps = store.Sequences[0].Actions;
 
         t.Equal(2, stranded, "the two steps with no single answer are reported, not guessed at");
         t.Equal("Night", steps[0].Profile, "a screen exactly one profile carries becomes that profile");
         t.Check(steps[1].Profile == null, "a screen two profiles carry is left for the user to decide");
         t.Check(steps[2].Profile == null, "a screen no profile carries is left alone too");
-        t.Equal("Day", steps[3].Profile, "a step that already named a profile keeps it");
+        t.Equal("Day (Signal Path) 2", steps[3].Profile, "a combined step gets its own profile without overwriting a name collision");
         t.Equal("Night", steps[4].Profile, "a step with no screen is untouched");
+        t.Equal(steps[3].Profile, steps[5].Profile, "equivalent combined steps reuse one migrated profile");
+        t.Check(steps[0].Scene == null && steps[3].Scene == null && steps[5].Scene == null,
+            "only successfully migrated scene fields are cleared");
+        t.Check(steps[1].Scene == "Clock" && steps[2].Scene == "Gone", "unresolved scenes are retained for later recovery");
 
-        foreach (var a in steps)
-            t.Check(a.Scene == null, "the retired scene field is cleared on every step, migrated or not");
+        var original = profiles.Single(p => p.Name == "Day");
+        var variant = profiles.Single(p => p.Name == steps[3].Profile);
+        t.Check(original.Screen == "Clock" && variant.Screen == "Signal Path", "migration preserves explicit screen precedence without changing the source profile");
+        t.Check(variant.Wallpaper == "Beach" && variant.Show == "Loop" && variant.Effects![0].Effect == "Rainbow",
+            "the variant carries wallpaper, show and effect settings");
+        t.Equal("FF0000", variant.DeviceFrames["Offline device"][0], "unavailable devices retain their saved frame");
+        variant.DeviceFrames["Offline device"][0] = "FFFFFF";
+        variant.CustomColors![0] = "FFFFFF";
+        variant.Effects![0].PatternPalette![0] = "FFFFFF";
+        t.Check(original.DeviceFrames["Offline device"][0] == "FF0000" && original.CustomColors![0] == "00FF00"
+            && original.Effects![0].PatternPalette![0] == "0000FF", "the migrated profile's mutable data is independent of the source");
 
-        // Running it again must not undo anything or re-report.
-        t.Equal(0, store.MigrateSceneSteps(profiles), "a second run has nothing left to do");
+        int count = profiles.Count;
+        t.Equal(2, store.MigrateSceneSteps(profiles), "a second run only reports the still-unresolved scenes");
+        t.Equal(count, profiles.Count, "a second run adds no duplicate profiles");
         t.Equal("Night", steps[0].Profile, "...and does not disturb what the first run decided");
+
+        var failed = new SceneAction { Profile = "Day", Scene = "Graph" };
+        var retry = new SceneStore { Sequences = new() { new() { Name = "Retry", Actions = new() { failed } } } };
+        t.Equal(1, retry.MigrateSceneSteps(profiles, _ => false), "failed profile persistence is reported as unresolved");
+        t.Check(failed.Profile == "Day" && failed.Scene == "Graph", "failed persistence retains the complete legacy step");
+        var diskStore = new ProfileStore();
+        diskStore.SaveProfiles();
+        int persistedCount = diskStore.Profiles.Count;
+        using (var locked = new FileStream(AppPaths.Config("profiles.json"), FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            t.Equal(1, retry.MigrateSceneSteps(profiles, diskStore.AddMigratedProfile), "a locked profiles file leaves migration unresolved");
+            t.Check(failed.Profile == "Day" && failed.Scene == "Graph" && diskStore.Profiles.Count == persistedCount,
+                "a real save failure retains the step and removes the unsaved variant from memory");
+        }
+        string? created = null;
+        try
+        {
+            t.Equal(0, retry.MigrateSceneSteps(profiles, p => { created = p.Name; return diskStore.AddMigratedProfile(p); }),
+                "a later successful migration resolves the preserved step");
+            var onDisk = new ProfileStore().Profiles.Single(p => p.Name == failed.Profile);
+            t.Check(onDisk.Screen == "Graph" && onDisk.DeviceFrames["Offline device"][0] == "FF0000",
+                "the step's replacement profile survives a reload with its exact saved combination");
+            t.Check(failed.Scene == null, "the legacy screen is retired after the replacement reaches disk");
+            var unpersistedScene = new SceneAction { Profile = "Day", Scene = "Graph" };
+            var resumed = new SceneStore { Sequences = new() { new() { Name = "Retry again", Actions = new() { unpersistedScene } } } };
+            t.Equal(0, resumed.MigrateSceneSteps(profiles.Append(onDisk), _ => throw new Exception("should reuse the persisted variant")),
+                "migration reuses the saved profile if the previous scenes save failed");
+            t.Equal(onDisk.Name, unpersistedScene.Profile, "retry points at the persisted variant instead of creating a duplicate");
+        }
+        finally { if (created != null) diskStore.Delete(created); }
     }
 
     /*---------------- the third panel ----------------*/
@@ -189,11 +238,11 @@ static class ProfilesSuite
                 string live = "{\"ryanb\":{\"general\":{\"profiles\":[{\"layout\":0,\"name\":\"Matrix\","
                             + "\"profile\":{},\"selectedwallpapers\":{\"Monitor0\":{\"file\":\"C:/x/scene.pkg\"},"
                             + "\"Monitor1\":{\"file\":\"C:/x/rain.mp4\"}}}]}}}";
-                var fromLive = Read(dir, live);
+                var fromLive = Read(dir, live, "ryanb");
                 t.Equal(1, fromLive.Length, "the real config yields one profile");
                 t.Equal("Matrix", fromLive[0], "...named from its \"name\", not from its \"profile\" key");
 
-                t.Equal(2, Read(dir, "{\"ryanb\":{\"general\":{\"profiles\":{\"Night\":{},\"Day\":{}}}}}").Length,
+                t.Equal(2, Read(dir, "{\"ryanb\":{\"general\":{\"profiles\":{\"Night\":{},\"Day\":{}}}}}", "ryanb").Length,
                     "an object keyed by name");
                 t.Equal(2, Read(dir, "{\"u\":{\"profiles\":[\"Night\",\"Day\"]}}").Length,
                     "a list of names");
@@ -228,11 +277,11 @@ static class ProfilesSuite
                     + "{\"name\":\"Diablo\",\"selectedwallpapers\":{"
                     + "\"Monitor0\":{\"file\":\"d0.mp4\"},\"Monitor1\":{\"file\":\"d1.mp4\"}}}]}}}";
 
-                static string? Active(string dir, string json)
+                static string? Active(string dir, string json, string userName = "u")
                 {
                     string path = Path.Combine(dir, "active.json");
                     File.WriteAllText(path, json);
-                    return UnifiedRgb.App.Services.WallpaperEngine.ReadActiveProfile(path);
+                    return UnifiedRgb.App.Services.WallpaperEngine.ReadActiveProfile(path, userName);
                 }
 
                 t.Equal("Matrix", Active(dir, Cfg("m0.pkg", "m1.mp4", "m0.pkg", "m1.mp4")),
@@ -244,6 +293,46 @@ static class ProfilesSuite
                 t.Check(Active(dir, "{\"u\":{\"general\":{\"profiles\":[{\"name\":\"X\"}]}}}") == null,
                     "nothing to compare answers unknown rather than naming the first profile");
                 t.Check(Active(dir, "{ not json") == null, "an unreadable config answers unknown, not a crash");
+
+                t.Section("Wallpaper Engine accounts do not share profiles or active state");
+                const string accounts = """
+                    {
+                      "Other": {"general": {
+                        "wallpaperconfig": {"selectedwallpapers": {"Monitor0": {"file": "other.pkg"}}},
+                        "profiles": [
+                          {"name": "Conflict", "selectedwallpapers": {"Monitor0": {"file": "other.pkg"}}},
+                          {"name": "OtherOnly", "selectedwallpapers": {"Monitor0": {"file": "extra.pkg"}}}
+                        ]
+                      }},
+                      "Alice": {"general": {
+                        "wallpaperconfig": {"selectedwallpapers": {"Monitor0": {"file": "mine.pkg"}}},
+                        "profiles": [
+                          {"name": "Conflict", "selectedwallpapers": {"Monitor0": {"file": "different.pkg"}}},
+                          {"name": "CurrentOnly", "selectedwallpapers": {"Monitor0": {"file": "mine.pkg"}}}
+                        ]
+                      }}
+                    }
+                    """;
+                t.Check(Read(dir, accounts, "Alice").SequenceEqual(new[] { "Conflict", "CurrentOnly" }),
+                    "the picker excludes another account even when it comes first and shares a profile name");
+                t.Equal("CurrentOnly", Active(dir, accounts, "Alice"),
+                    "active wallpaper is compared with this account's profiles only");
+                t.Equal("CurrentOnly", Active(dir, accounts, "aLiCe"), "Windows account names match without case sensitivity");
+                t.Equal(2, Read(dir, accounts, "ALICE").Length, "profile listing uses the same account case rules");
+                t.Equal(0, Read(dir, accounts, "Missing").Length, "an absent account does not borrow another account's profiles");
+                t.Check(Active(dir, accounts, "Missing") == null, "an absent account has no known active wallpaper");
+                t.Equal(0, Read(dir, "{\"Alice\":{},\"Other\":{\"profiles\":[\"OtherOnly\"]}}", "Alice").Length,
+                    "an empty current account does not fall through to another account");
+                const string unscoped = """
+                    {"wallpaperconfig":{"selectedwallpapers":{"Monitor0":{"file":"root.pkg"}}},
+                     "profiles":[{"name":"Root","selectedwallpapers":{"Monitor0":{"file":"root.pkg"}}}]}
+                    """;
+                t.Equal("Root", Read(dir, unscoped, "Alice").Single(), "legacy root profile fields remain readable");
+                t.Equal("Root", Active(dir, unscoped, "Alice"), "legacy root live wallpaper remains readable");
+                t.Equal("Root", Read(dir, "{\"general\":" + unscoped + "}", "Alice").Single(),
+                    "legacy root/general profile fields remain readable");
+                t.Equal("Root", Active(dir, "{\"general\":" + unscoped + "}", "Alice"),
+                    "legacy root/general live wallpaper remains readable");
             }
             finally { try { Directory.Delete(dir, recursive: true); } catch { } }
 
@@ -258,11 +347,11 @@ static class ProfilesSuite
             store.Delete("Wp Renamed");
         }
 
-        static string[] Read(string dir, string json)
+        static string[] Read(string dir, string json, string userName = "u")
         {
             string path = Path.Combine(dir, "config.json");
             File.WriteAllText(path, json);
-            return UnifiedRgb.App.Services.WallpaperEngine.ReadProfiles(path);
+            return UnifiedRgb.App.Services.WallpaperEngine.ReadProfiles(path, userName);
         }
     }
 }

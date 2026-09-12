@@ -175,15 +175,22 @@ public sealed class SteelSeriesApex : IRgbDevice, IKeyMappedDevice
     {
         lock (_writeLock)
         {
+            // Retry mode setup before dedup: an accepted RGB report is not
+            // visible until direct mode has been accepted too.
+            if (_needInit)
+            {
+                _last = null;
+                _needInit = !EnterDirectMode();
+                if (_needInit)
+                    return WritePolicy.Refused(ref _last, $"apex-init:{Name}", "Apex",
+                        "direct-mode setup refused; initialization and the frame will be retried");
+            }
             // Index-loop dedup (no boxed enumerators) - same shape as Strafe/EneDram.
             // A skipped identical frame is a SUCCESS: the keyboard is already
             // showing exactly what was asked for.
             if (WritePolicy.Unchanged(_last, colors)) return true;
 
             int n = Math.Min(Keys.Length, colors.Count);
-            // Retried here rather than never: this is the only path the
-            // keyboard is reachable on after construction.
-            if (_needInit) _needInit = !EnterDirectMode();
             var buf = _featureBuf ??= new byte[_featureLen];
             Array.Clear(buf);
             buf[1] = PKT_DIRECT;

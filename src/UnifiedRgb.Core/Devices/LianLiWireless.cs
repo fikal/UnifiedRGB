@@ -54,7 +54,7 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         }
     }
 
-    readonly WinUsbDevice _usb;
+    readonly IUsbWriter _usb;
     // Set under _lock by Dispose. Every background loop (PWM assert, telemetry
     // poll, settle resend, animation reconcile) checks it: before this guard a
     // Rescan disposed the WinUSB handle while PwmLoop kept writing through it
@@ -179,7 +179,7 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         return (Enumerable.Range(0, fanNum).ToArray(), Array.Empty<int>());
     }
 
-    LianLiWireless(WinUsbDevice usb, string groupName, byte[] fanMac, byte[] masterMac,
+    internal LianLiWireless(IUsbWriter usb, string groupName, byte[] fanMac, byte[] masterMac,
         byte channel, byte rxType, int fanNum)
     {
         _usb = usb; _fanMac = fanMac; _masterMac = masterMac;
@@ -374,6 +374,10 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
     {
         // Already sent exactly this: a skip is a success.
         if (_lastSent != null && FramesEqual(_lastSent, _shadow)) return true;
+        // Once a different frame starts, the old frame is no longer known to
+        // be on the fans. A later packet can fail (or throw) after an earlier
+        // copy landed, so keep neither frame cached until delivery succeeds.
+        _lastSent = null;
         _lastAnimHash = 0;   // a static frame interrupts any playing animation
         _animPending = false;   // stop resending the superseded animation
         // Pace the RF link by WAITING, never by dropping: a discarded frame is
@@ -413,10 +417,9 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         (_settleTimer ??= new Timer(SettleResend)).Change(500, Timeout.Infinite);
         if (!ok)
         {
-            // The dongle refused a bulk write, so nothing went on the air.
-            // Leave the cache alone: the next call - the engine keepalive, a
-            // retry from the must-land path - has to send this frame again
-            // rather than match it and skip.
+            // Some packets or the insurance copy may still have landed. The
+            // cache remains empty so either this frame or the previous one
+            // will really be sent when it is requested next.
             return WritePolicy.Refused("lianli-wl:tx", "LianLi",
                 "the transmitter refused a frame packet; the frame will be sent again");
         }

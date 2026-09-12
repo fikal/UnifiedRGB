@@ -48,6 +48,21 @@ public sealed class LightingController
     /// frame the merge composes over instead. The user's statics stay untouched,
     /// because they are the thing restored when the client goes away.</summary>
     readonly System.Collections.Concurrent.ConcurrentDictionary<IRgbDevice, Rgb[]> _external = new();
+    volatile bool _externalSuppressed;
+    public bool ExternalSuppressed
+    {
+        get => _externalSuppressed;
+        set
+        {
+            bool wasSuppressed = _externalSuppressed;
+            _externalSuppressed = value;
+            if (!wasSuppressed || value) return;
+            // Clients may send a final static/partial frame while locked. Keep
+            // it in the shadow and replay the latest complete picture on wake.
+            foreach (var pair in _external)
+                lock (pair.Value) QueueExternal(pair.Key, pair.Value);
+        }
+    }
 
     /// <summary>The device's stored static frame (created black on first use).</summary>
     public Rgb[] FrameFor(IRgbDevice d) => _frames.GetOrAdd(d, static k => new Rgb[k.LedCount]);
@@ -202,20 +217,26 @@ public sealed class LightingController
         lock (live)
         {
             for (int i = 0; i < count && offset + i < live.Length; i++) live[offset + i] = colors[i];
-            var whole = (Rgb[])live.Clone();
-            // Calibration applies to an SDK client's pixels for the same reason
-            // master brightness does: the trim describes the HARDWARE, not the
-            // user's taste, so a client's white has to be the same white as
-            // everything else on the desk or the mismatch is back the moment a
-            // game starts painting.
-            Master.Finish(dev, whole);
-            // Deliberately NOT a must-land write: an SDK client streams, so
-            // the frame behind this one is the retry, and holding a lane
-            // through a retry loop at a client's frame rate would be the thing
-            // that made the whole bridge stutter. The driver's own backoff and
-            // the client's next frame cover a refusal.
-            Applier.Post(LaneOf(dev), (dev, "ext"), () => { lock (GateOf(dev)) DeviceHealth.Attempt(dev, () => dev.SetColors(whole)); });
+            if (!_externalSuppressed) QueueExternal(dev, live);
         }
+    }
+
+    // Caller holds the client's shadow lock so capture and queue preserve order.
+    void QueueExternal(IRgbDevice dev, Rgb[] live)
+    {
+        var whole = (Rgb[])live.Clone();
+        Applier.Post(LaneOf(dev), (dev, "ext"), () =>
+        {
+            lock (GateOf(dev))
+            {
+                // Check at execution too: a frame queued before the blackout
+                // must not land after it, nor after this claim was released.
+                if (_externalSuppressed || !_external.TryGetValue(dev, out var current)
+                    || !ReferenceEquals(current, live)) return;
+                Master.Finish(dev, whole);
+                DeviceHealth.Attempt(dev, () => dev.SetColors(whole));
+            }
+        }, moveToEnd: true);
     }
 
     /// <summary>Black the device WITHOUT touching its stored frame (lights-off).

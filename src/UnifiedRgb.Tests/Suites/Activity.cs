@@ -34,6 +34,8 @@ static class ActivitySuite
         TheWallpaperPickerSurvivesADeselect(t);
         WhatADeletedProfileWouldBreak(t);
         AShowDoesNotTakeTheSelection(t);
+        TimedShowsAndProfileRename(t);
+        SdkOwnershipAndSuppression(t);
         t.Section("Ring bounds itself (#f1)");
         {
             var log = new ActivityLog();
@@ -383,12 +385,11 @@ static class ActivitySuite
                 t.Equal(UnifiedRgb.App.MainViewModel.NoWallpaper, vm.WallpaperChoice,
                     "refreshing the list keeps the picker on its row");
 
-                // A name Wallpaper Engine no longer has cannot stay selected:
-                // a ComboBox shows a missing item as blank, which reads as broken.
+                // Unavailable bindings remain visible until explicitly cleared.
                 vm.WallpaperChoice = "Deleted In Wallpaper Engine";
                 vm.RefreshWallpaperProfiles();
-                t.Equal(UnifiedRgb.App.MainViewModel.NoWallpaper, vm.WallpaperChoice,
-                    "a name that is no longer offered falls back to saying so");
+                t.Equal("Deleted In Wallpaper Engine", vm.WallpaperChoice,
+                    "a temporarily unavailable wallpaper binding survives refresh");
 
                 // And selecting a profile that HAS a wallpaper still adopts it,
                 // which is the behaviour the null guard must not cost.
@@ -512,6 +513,157 @@ static class ActivitySuite
         if (failure != null) throw new Exception("White guard regression", failure);
     }
 
+    static void SdkOwnershipAndSuppression(Harness t)
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            UnifiedRgb.App.MainViewModel? vm = null;
+            UnifiedRgb.App.Services.OpenRgbHost? host = null;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            try
+            {
+                vm = new UnifiedRgb.App.MainViewModel(startServices: false);
+                var dev = new FakeDevice { Name = "SDK ownership", LedCount = 2 };
+                vm.Devices.Add(dev);
+                var red = new UnifiedRgb.App.Profile { Name = "Red", DeviceFrames = new() { [dev.Name] = new[] { "FF0000", "FF0000" } } };
+                var green = new UnifiedRgb.App.Profile { Name = "Green", DeviceFrames = new() { [dev.Name] = new[] { "00FF00", "00FF00" } } };
+                vm.ApplyProfile(red); vm.Lighting.Applier.Drain(2000);
+                var original = vm.CaptureState();
+                host = new UnifiedRgb.App.Services.OpenRgbHost(vm, vm.Lighting, System.Windows.Threading.Dispatcher.CurrentDispatcher);
+                host.BeginExternal(dev);
+                int beforeClaimPaint = dev.WriteCount;
+                vm.ApplyProfile(green, fromShow: true); vm.Lighting.Applier.Drain(2000);
+                t.Equal(beforeClaimPaint, dev.WriteCount, "show profile does not paint a claimed device before the first SDK frame");
+                vm.RestoreState(original); vm.Lighting.Applier.Drain(2000);
+                t.Equal(beforeClaimPaint, dev.WriteCount, "snapshot restore respects a claim before the first SDK frame");
+                vm.ApplyProfile(green, fromShow: true); vm.Lighting.Applier.Drain(2000);
+                t.Equal(beforeClaimPaint, dev.WriteCount, "snapshot restore did not clear an unpainted SDK claim");
+                host.PushExternal(dev, 0, new[] { UnifiedRgb.Core.Rgb.White, UnifiedRgb.Core.Rgb.White });
+                vm.Lighting.Applier.Drain(2000);
+                vm.ApplyProfile(red, fromShow: true); vm.Lighting.Applier.Drain(2000);
+                t.Check(dev.Last!.All(c => c == UnifiedRgb.Core.Rgb.White), "timed profile statics leave SDK-owned hardware unchanged");
+                t.Equal("FF0000", vm.Lighting.FrameFor(dev)[0].ToHex(), "profile statics still update the user's stored frame under a claim");
+
+                using var entered = new ManualResetEventSlim();
+                using var release = new ManualResetEventSlim();
+                vm.Lighting.Applier.Post(UnifiedRgb.App.Services.LightingController.LaneOf(dev), new object(), () => { entered.Set(); release.Wait(2000); });
+                try
+                {
+                    t.Check(entered.Wait(2000), "blocked lane is ready for the queued SDK blackout race");
+                    host.PushExternal(dev, 0, new[] { new UnifiedRgb.Core.Rgb(0, 255, 0) });
+                    vm.LightsOff();
+                    host.PushExternal(dev, 1, new[] { new UnifiedRgb.Core.Rgb(0, 0, 255) });
+                }
+                finally { release.Set(); }
+                vm.Lighting.Applier.Drain(2000);
+                t.Check(dev.Last!.All(c => c == UnifiedRgb.Core.Rgb.Black), "queued and new SDK frames cannot relight suppressed hardware");
+                t.Check(vm.Lighting.IsClaimed(dev), "suppression retains SDK ownership");
+                vm.LightsSuppressed = false; vm.Lighting.Applier.Drain(2000);
+                t.Equal("00FF00", dev.Last![0].ToHex(), "wake replays the latest accumulated first SDK pixel");
+                t.Equal("0000FF", dev.Last![1].ToHex(), "wake replays partial SDK changes received while suppressed");
+                vm.RestoreState(original); vm.Lighting.Applier.Drain(2000);
+                t.Equal("00FF00", dev.Last![0].ToHex(), "unlock snapshot cannot overwrite replayed SDK output");
+                t.Equal("0000FF", dev.Last![1].ToHex(), "unlock snapshot leaves the client's second pixel intact");
+                vm.LightsOff(); vm.Lighting.Applier.Drain(2000);
+                vm.Lighting.ForgetExternal(dev);
+                vm.LightsSuppressed = false; vm.Lighting.Applier.Drain(2000);
+                t.Check(dev.Last!.All(c => c == UnifiedRgb.Core.Rgb.Black), "a released client's cached frame is not replayed on wake");
+            }
+            catch (Exception ex) { failure = ex; }
+            finally
+            {
+                host?.Shutdown();
+                if (vm != null)
+                {
+                    vm.Shows.Dispose(); vm.Lighting.StopAndDrain(); vm.Lcd.Dispose();
+                    ((UnifiedRgb.App.Services.LianBakeService)typeof(UnifiedRgb.App.MainViewModel).GetField("_bake", flags)!.GetValue(vm)!).Stop();
+                }
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA); thread.Start(); thread.Join();
+        if (failure != null) throw new Exception("SDK ownership/suppression regression", failure);
+    }
+
+    static void TimedShowsAndProfileRename(Harness t)
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            UnifiedRgb.App.MainViewModel? vm = null;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            string[] files = { "profiles.json", "settings.json", "scenes.json" };
+            var originals = files.ToDictionary(n => n, n => System.IO.File.Exists(UnifiedRgb.Core.AppPaths.Config(n))
+                ? System.IO.File.ReadAllBytes(UnifiedRgb.Core.AppPaths.Config(n)) : null);
+            try
+            {
+                vm = new UnifiedRgb.App.MainViewModel(startServices: false);
+                var dev = new FakeDevice { Name = "Show baseline", LedCount = 1 };
+                vm.Devices.Add(dev); vm.Profiles.Clear();
+                var baseline = new UnifiedRgb.App.Profile { Name = "Baseline", DeviceFrames = new() { [dev.Name] = new[] { "FF0000" } } };
+                var rule = new UnifiedRgb.App.Profile { Name = "Rule", Show = "Auto show", DeviceFrames = new() { [dev.Name] = new[] { "00FF00" } } };
+                var step = new UnifiedRgb.App.Profile { Name = "Step", DeviceFrames = new() { [dev.Name] = new[] { "0000FF" } } };
+                vm.Profiles.Add(baseline); vm.Profiles.Add(rule); vm.Profiles.Add(step);
+                vm.Lcd.Scenes.Sequences.Clear();
+                var show = new UnifiedRgb.App.SceneSequence { Name = "Auto show", Actions = new() { new UnifiedRgb.App.SceneAction { Profile = step.Name, DelaySeconds = 60 } } };
+                vm.Lcd.Scenes.Sequences.Add(show); vm.Shows.Init();
+                vm.SettingsData.ReturnToStartupProfile = false;
+                vm.ApplyProfile(baseline);
+                using (var automation = new UnifiedRgb.App.Services.AutomationService(vm, monitor: false))
+                {
+                    var transition = typeof(UnifiedRgb.App.Services.AutomationService).GetMethod("Transition", flags)!;
+                    var returnPoint = typeof(UnifiedRgb.App.Services.AutomationService).GetField("_returnPoint", flags)!;
+                    transition.Invoke(automation, new object?[] { AutomationMode.App, rule.Name, "App rule" });
+                    var originalBaseline = returnPoint.GetValue(automation);
+                    vm.WallpaperChoice = "Unsaved editor wallpaper";
+                    var sequencer = typeof(UnifiedRgb.App.ShowViewModel).GetField("_sequencer", flags)!.GetValue(vm.Shows)!;
+                    typeof(UnifiedRgb.App.SceneSequencer).GetMethod("Step", flags)!.Invoke(sequencer, null);
+                    t.Check(originalBaseline != null && ReferenceEquals(originalBaseline, returnPoint.GetValue(automation)), "timed show step retains automation's saved baseline");
+                    t.Check(vm.CaptureState().Dirty, "timed show step retains unsaved editor dirty flag");
+                    t.Equal("Unsaved editor wallpaper", vm.WallpaperChoice, "timed step retains the unsaved editor value");
+                    transition.Invoke(automation, new object?[] { AutomationMode.Base, null, null });
+                    t.Equal("FF0000", vm.Lighting.FrameFor(dev)[0].ToHex(), "ending the rule restores its original static baseline");
+                }
+
+                vm.ApplyProfile(step);
+                vm.SettingsData.StartupProfile = step.Name;
+                vm.SettingsData.AutomationRules = new() { new AutomationRule { Process = "test", Profile = step.Name } };
+                vm.SettingsData.SensorRules = new() { new SensorRule { Profile = step.Name } };
+                vm.SettingsData.Schedules = new() { new ScheduleRule { Profile = step.Name } };
+                var liveRule = new AutomationRule { Process = "live", Profile = step.Name };
+                vm.AutoRules.Add(liveRule);
+                vm.ProfileName = "Renamed Step";
+                typeof(UnifiedRgb.App.MainViewModel).GetMethod("SaveProfile", flags)!.Invoke(vm, null);
+                t.Equal("Renamed Step", show.Actions[0].Profile, "rename updates the live show's action reference");
+                t.Equal("Renamed Step", liveRule.Profile, "rename updates a separate live rule editor object");
+                var reloaded = new UnifiedRgb.App.ProfileStore();
+                t.Check(reloaded.Profiles.Any(p => p.Name == "Renamed Step"), "renamed profile survives reload");
+                t.Equal("Renamed Step", reloaded.Settings.StartupProfile, "startup rename survives reload");
+                t.Equal("Renamed Step", reloaded.Settings.AutomationRules![0].Profile, "app-rule rename survives reload");
+                t.Equal("Renamed Step", reloaded.Settings.SensorRules![0].Profile, "sensor-rule rename survives reload");
+                t.Equal("Renamed Step", reloaded.Settings.Schedules![0].Profile, "schedule rename survives reload");
+                t.Equal("Renamed Step", UnifiedRgb.App.SceneStore.Load().Sequences[0].Actions[0].Profile, "show reference rename survives reload");
+            }
+            catch (Exception ex) { failure = ex; }
+            finally
+            {
+                if (vm != null)
+                {
+                    vm.Shows.Dispose(); vm.Lighting.StopAndDrain(); vm.Lcd.Dispose();
+                    ((UnifiedRgb.App.Services.LianBakeService)typeof(UnifiedRgb.App.MainViewModel).GetField("_bake", flags)!.GetValue(vm)!).Stop();
+                }
+                foreach (var pair in originals)
+                {
+                    var path = UnifiedRgb.Core.AppPaths.Config(pair.Key);
+                    if (pair.Value == null) System.IO.File.Delete(path);
+                    else System.IO.File.WriteAllBytes(path, pair.Value);
+                }
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA); thread.Start(); thread.Join();
+        if (failure != null) throw new Exception("Timed show and rename regression", failure);
+    }
+
     static void RuntimePauseAndCalibration(Harness t)
     {
         Exception? failure = null;
@@ -590,6 +742,36 @@ static class ActivitySuite
                 var bakeTimer = (System.Windows.Threading.DispatcherTimer)typeof(UnifiedRgb.App.Services.LianBakeService).GetField("_timer", flags)!.GetValue(bakeService)!;
                 t.Check(bakeTimer.IsEnabled, "idle calibration refresh requests a bake refresh");
                 UnifiedRgb.Core.Calibration.ResetAll();
+
+                // Resume before any timer tick can reconcile the manual choice.
+                vm.ApplyProfile(a);
+                Set("_mode", AutomationMode.App); Set("_activeRuleProfile", a.Name);
+                service.Paused = true;
+                vm.ApplyProfile(b);
+                service.Paused = false;
+                t.Equal(b.Name, vm.SelectedProfile!.Name, "immediate resume preserves manual B without a paused timer tick");
+
+                string? wallpaperOnScreen = "Actual A";
+                var wallpaperRequests = new List<string?>();
+                vm.ReadWallpaperProfile = () => wallpaperOnScreen;
+                vm.ApplyWallpaperProfile = name => { wallpaperRequests.Add(name); wallpaperOnScreen = name; return true; };
+                vm.WallpaperChoice = "Unsaved wallpaper";
+                vm.PumpChoice = new UnifiedRgb.App.MainViewModel.PumpRow("Unsaved screen", "Unsaved screen");
+                vm.ShowChoice = "Unsaved show";
+                var exact = vm.CaptureState();
+                vm.ApplyProfile(a);
+                wallpaperOnScreen = "Override B";
+                vm.RestoreState(exact);
+                t.Equal("Unsaved wallpaper", vm.WallpaperChoice, "snapshot restores unsaved wallpaper choice instead of override binding");
+                t.Equal("Unsaved screen", vm.PumpChoice.Screen, "snapshot restores unsaved pump picker");
+                t.Equal("Unsaved show", vm.ShowChoice, "snapshot restores unsaved show picker");
+                t.Check(vm.CaptureState().Dirty, "restoring picker choices retains the original dirty flag");
+                t.Equal("Actual A", wallpaperOnScreen, "restore reapplies actual external wallpaper rather than unsaved picker choice");
+                int requestsBeforeSuppression = wallpaperRequests.Count;
+                vm.LightsSuppressed = true;
+                vm.RestoreState(exact, honorSuppression: true);
+                t.Equal(requestsBeforeSuppression, wallpaperRequests.Count, "suppressed restoration does not launch a wallpaper request");
+                vm.LightsSuppressed = false;
             }
             catch (Exception ex) { failure = ex; }
             finally

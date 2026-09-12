@@ -173,6 +173,10 @@ public sealed class AutomationService : IDisposable
             _pauseHoldMode = AutomationMode.Base;
             _pauseHoldProfile = null;
             _returnPoint = _pauseLighting;
+            // The user has already applied this lighting. Reconcile now,
+            // before Resume can evaluate against the previous rule's mode.
+            _mode = AutomationMode.Base;
+            _activeRuleProfile = null;
             return;
         }
         if (_selfApplying || _mode == AutomationMode.Base) return;

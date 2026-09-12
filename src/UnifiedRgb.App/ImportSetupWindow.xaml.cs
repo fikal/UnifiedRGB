@@ -385,11 +385,10 @@ public partial class ImportSetupWindow : Window
         }
         else
         {
-            // A failed Apply has already rolled itself back, and saying so is
-            // the difference between an error the user can shrug off and one
-            // that has them wondering what state their profiles are in.
-            ResultHeading.Text = "Import failed";
-            ResultSubHeading.Text = "Nothing was changed. Anything already written was put back.";
+            ResultHeading.Text = result.RollbackIncomplete ? "Import failed; recovery needed" : "Import failed";
+            ResultSubHeading.Text = result.RollbackIncomplete
+                ? "Some changes could not be undone. Review the affected files and any saved originals below before editing your setup."
+                : "Nothing was changed. Anything already written was put back.";
             ResultProblemText.Text = result.Problem ?? "the import could not be completed";
             ResultProblemCard.Visibility = Visibility.Visible;
             AppliedCard.Visibility = AppliedLines.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
