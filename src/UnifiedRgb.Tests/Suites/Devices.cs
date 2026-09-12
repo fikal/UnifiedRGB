@@ -96,6 +96,24 @@ static class DevicesSuite
         public void Dispose() { }
     }
 
+    /// <summary>Chris's HyperFlux V2 pad, in one function: echo the command, say
+    /// OK, and answer what each command asks. Accepts custom frames - which is the
+    /// interesting part, because it is a pad that ADVERTISES a strip.</summary>
+    static byte[]? UnlitPad(byte[] req)
+    {
+        const byte ST_OK = 0x02, ST_UNSUPPORTED = 0x05;
+        const int ARGS = 9;
+        byte tid = req[2], cls = req[7], cmd = req[8];
+        if (tid != 0x1F) return null;
+        var r = new byte[91];
+        r[1] = ST_OK; r[7] = cls; r[8] = cmd;
+        if (cls == 0x00 && cmd == 0x81) { r[ARGS] = 1; r[ARGS + 1] = 5; }
+        else if (cls == 0x00 && cmd == 0x82)
+            for (int i = 0; i < 22; i++) r[ARGS + i] = (byte)('A' + i % 26);
+        else if (cls == 0x04 && cmd == 0x85) r[1] = ST_UNSUPPORTED;   // no DPI: a pad, not a mouse
+        return r;
+    }
+
     public static void Run(Harness t)
     {
         WirelessFrameRecovery(t);
@@ -508,6 +526,39 @@ static class DevicesSuite
             var (guess, src) = RazerHid.ResolveCount(0x0FFF, null);
             t.Check(guess == 20 && src == "guessed", "razer pad: no config, no probe -> 20 guessed");
             t.Check(RazerHid.ResolveCount(0x0FFF, 19) == (19, "probed") && RazerHid.ResolveCount(0x0FFF, 999).Count == RazerHid.MaxLeds, "razer pad: probe wins over the guess and is capped");
+        }
+
+        t.Section("RazerHid: a pad configured as having no lights at all");
+        {
+            // Some pads advertise a strip the hardware does not have: the frame probe
+            // accepts columns, so a device is built, every write lands in nothing, and
+            // the owner has an entry that can never light. The count could not be taken
+            // below 1, so there was no way to say so. 0 is now an ANSWER.
+            var original = HardwareConfig.Load();
+            try
+            {
+                new HardwareConfig { RazerLedCounts = new() { ["00CF"] = 0 } }.Save();
+                t.Equal((0, "configured as unlit"), RazerHid.ResolveCount(0x00CF, null),
+                    "a configured 0 is an answer, not an absent setting");
+                t.Equal(0, RazerHid.ResolveCount(0x00CF, 20).Count,
+                    "...and it beats a probe that DID find columns, which is the whole point");
+
+                UnifiedRgb.Core.DetectionNotes.Clear();
+                var found = RazerHid.OpenPad(() => new FakeHid { Respond = UnlitPad, FeatureOnly = true });
+                t.Equal(0, found.Count, "a pad set to no lighting is not added as a lighting device");
+                var note = UnifiedRgb.Core.DetectionNotes.Current.SingleOrDefault(n => n.Family == "Razer");
+                t.Check(note != null && note.Reason == UnifiedRgb.Core.BlockReason.PartlyWorking,
+                    "...but it is RECORDED, so it does not read as the app dropping support for it");
+                t.Check(note?.Remedy != null && note.Remedy.Contains("Razer"),
+                    "...and says where to turn it back on");
+
+                new HardwareConfig { RazerLedCounts = new() { ["00CF"] = 20 } }.Save();
+                found = RazerHid.OpenPad(() => new FakeHid { Respond = UnlitPad, FeatureOnly = true });
+                t.Equal(1, found.Count, "raising the count above 0 brings the pad back");
+                t.Equal(20, found[0].LedCount, "...with the configured strip length");
+                foreach (var d in found) d.Dispose();
+            }
+            finally { original.Save(); UnifiedRgb.Core.DetectionNotes.Clear(); }
         }
 
         t.Section("RazerHid: Chris's HyperFlux V2, replayed from his bundle");

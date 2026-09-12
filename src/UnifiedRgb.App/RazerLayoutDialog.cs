@@ -47,7 +47,8 @@ public sealed class RazerLayoutDialog
                 {
                     Text = dev.LedCount.ToString(), Width = 46, Padding = new Thickness(6, 6, 6, 6), Margin = new Thickness(8, 0, 0, 0),
                     Background = boxBg, Foreground = fgMain, BorderThickness = new Thickness(0), CaretBrush = fgMain,
-                    VerticalAlignment = VerticalAlignment.Center, ToolTip = $"Current count is {dev.CountSource}",
+                    VerticalAlignment = VerticalAlignment.Center,
+                    ToolTip = $"Current count is {dev.CountSource}. 0 means this pad has no lights.",
                 };
                 row.Children.Add(leds);
             }
@@ -88,7 +89,11 @@ public sealed class RazerLayoutDialog
             foreach (var (dev, leds) in rows)
             {
                 if (leds == null || !int.TryParse(leds.Text, out int n)) continue;
-                cfg.RazerLedCounts[$"{dev.ProductId:X4}"] = Math.Clamp(n, 1, RazerHid.MaxLeds);
+                // 0 is allowed and MEANS something: this pad has no lighting, stop
+                // listing it as a lighting device. Clamping to 1 left an owner of a
+                // pad that advertises a strip it does not physically have with an
+                // entry that could never light and no way to say so.
+                cfg.RazerLedCounts[$"{dev.ProductId:X4}"] = Math.Clamp(n, 0, RazerHid.MaxLeds);
             }
             vm.ApplyHeaderConfig(cfg);   // saves hardware.json, rebuilds devices
             win.Close();
@@ -98,7 +103,8 @@ public sealed class RazerLayoutDialog
         body.Children.Add(new TextBlock
         {
             Text = "'Test' lights the LEDs one at a time. For the mouse the order should be scroll wheel, logo, then the underglow " +
-                   "around the base. For the charging pad, raise or lower the count until the chase reaches the last LED and stops there, then Save.",
+                   "around the base. For the charging pad, raise or lower the count until the chase reaches the last LED and stops there, then Save. " +
+                   "Set it to 0 if the pad has no lights at all - it will be left out of the device list and only its charging used.",
             Foreground = fgDim, Margin = new Thickness(0, 6, 0, 10), TextWrapping = TextWrapping.Wrap, MaxWidth = 480,
         });
         if (devices.Count == 0)

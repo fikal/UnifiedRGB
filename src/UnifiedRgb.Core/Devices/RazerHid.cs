@@ -261,6 +261,19 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
             {
                 int? probed = ProbeWidth(hid, a.Tid);
                 (int count, source) = ResolveCount(HYPERFLUX_V2, probed);
+                if (count == 0)
+                {
+                    // Told, by the user, that this pad has no lighting. Adding it
+                    // anyway means an entry in their device list that can never do
+                    // anything. Recorded rather than dropped silently, so it does not
+                    // read as "the app stopped supporting my pad".
+                    Log.Info("Razer", "HyperFlux V2 pad: configured as having no lighting; not adding it as a device");
+                    DetectionNotes.Report("Razer", "Razer HyperFlux V2 pad", BlockReason.PartlyWorking,
+                        "set to no lighting, so only its charging is in use",
+                        "Lighting > Razer… - set its LED count above 0 if it does have a strip");
+                    hid.Dispose();
+                    continue;
+                }
                 Log.Info("Razer", $"HyperFlux V2 pad strip: {count} LEDs ({source}{(probed is int p ? $", frame probe said {p}" : ", frame probe inconclusive")}) - adjust in Lighting > Razer… if the chase doesn't reach the end");
                 model = new Model(HYPERFLUX_V2, "Razer HyperFlux V2 pad", a.Tid, 1, count, Kind.Pad, PadZones, PadPositions, 1.4f);
             }
@@ -308,11 +321,22 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
     }
 
     /// <summary>Configured (hardware.json RazerLedCounts["00CF"]) beats probed
-    /// beats the guess.</summary>
+    /// beats the guess.
+    ///
+    /// A configured ZERO is an answer, not an absent setting: "this device has no
+    /// lighting". Some pads advertise a strip their hardware does not have - the
+    /// frame probe accepts columns, so we build a device, write into nothing, and
+    /// the user is left with an entry that never lights and no way to say so. The
+    /// count could not be taken below 1 before, so there was no way to express it
+    /// at all.</summary>
     internal static (int Count, string Source) ResolveCount(ushort pid, int? probed)
     {
         var counts = HardwareConfig.Load().RazerLedCounts;
-        if (counts.TryGetValue($"{pid:X4}", out int n) && n > 0) return (Math.Clamp(n, 1, MaxLeds), "configured");
+        if (counts.TryGetValue($"{pid:X4}", out int n))
+        {
+            if (n == 0) return (0, "configured as unlit");
+            if (n > 0) return (Math.Clamp(n, 1, MaxLeds), "configured");
+        }
         if (probed is int p && p > 0) return (Math.Clamp(p, 1, MaxLeds), "probed");
         return (DefaultPadLeds, "guessed");
     }
