@@ -29,17 +29,6 @@ public sealed class EffectAssignment
     public bool Canvas { get; set; }
 }
 
-/// <summary>A saved lighting setup: per-device LED frames, keyed by device
-/// name (a name is stable for as long as one machine keeps one set of
-/// drivers), plus the effect assignments and user swatches that were live when
-/// it was captured.
-///
-/// The keys stay names on purpose. Every profile ever saved uses them, as do
-/// canvas.json and the exit behaviours, and re-keying them would invalidate
-/// people's saved setups for a benefit they only see when they MOVE machines.
-/// The move is where a name stops being enough, so that is where identity is
-/// added: a setup bundle records Core's DeviceIdentity next to each name and
-/// remaps the keys on import. See Services/SetupBundle.cs.</summary>
 /// <summary>What a profile does to the pump panel: put up one screen, run one
 /// show, or leave it alone.
 ///
@@ -57,6 +46,18 @@ public readonly record struct PumpTarget(string? Screen, string? Show)
     public static PumpTarget OfShow(string name) => new(null, name);
 }
 
+/// <summary>A saved lighting setup: per-device LED frames, keyed by device
+/// name (a name is stable for as long as one machine keeps one set of
+/// drivers), plus the effect assignments and user swatches that were live when
+/// it was captured - and, since a profile became the one thing that means the
+/// whole desk, the pump panel and the wallpaper that went with it.
+///
+/// The keys stay names on purpose. Every profile ever saved uses them, as do
+/// canvas.json and the exit behaviours, and re-keying them would invalidate
+/// people's saved setups for a benefit they only see when they MOVE machines.
+/// The move is where a name stops being enough, so that is where identity is
+/// added: a setup bundle records Core's DeviceIdentity next to each name and
+/// remaps the keys on import. See Services/SetupBundle.cs.</summary>
 public sealed class Profile
 {
     // Not `required`: System.Text.Json throws for a missing required member, so
@@ -73,10 +74,12 @@ public sealed class Profile
     /// profile switch sets the lights and the pump together. Null = leave the
     /// pump as it is. Additive: an older build ignores it.</summary>
     public string? Screen { get; set; }
-    /// <summary>A saved SHOW for the pump panel, as the alternative to one fixed
-    /// screen. At most one of the two is set: the panel can display a picture or
-    /// run a sequence, not both, and a profile that tried to say both would be
-    /// asking for the fight this pair exists to settle. Additive, like Screen.</summary>
+    /// <summary>A saved SHOW - a timeline of profiles - that this profile starts.
+    /// INDEPENDENT of Screen, not an alternative to it: setting both is the
+    /// ordinary thing to build, because a profile that starts a show is usually
+    /// also a step of that show and still has to say what the panel displays
+    /// while it is up. Ignored when this profile is applied BY a show, so a step
+    /// cannot swap the show out from under itself. Additive, like Screen.</summary>
     public string? Show { get; set; }
     /// <summary>The Wallpaper Engine profile this profile was saved with, so one
     /// switch sets the lights, the pump LCD and the screen in the case. Null =

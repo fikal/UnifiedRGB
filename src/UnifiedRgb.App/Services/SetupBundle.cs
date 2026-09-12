@@ -403,6 +403,37 @@ public static class SetupBundle
     /// finds them exactly where the design says they are.</summary>
     static string AssetDir => AppPaths.Config("lcd-assets");
 
+    /// <summary>How many import backups to keep. Every import that replaces a
+    /// file leaves one, and nothing ever removed them: a user who imports a
+    /// bundle a few times a year accumulates a folder per import, forever, in
+    /// the config directory. Keeping a handful keeps the undo that matters -
+    /// the most recent - and the oldest ones are of no use to anybody.</summary>
+    const int KeepImportBackups = 5;
+
+    static void PruneOldImportBackups()
+    {
+        try
+        {
+            var dirs = Directory.GetDirectories(AppPaths.ConfigDir, "import-backup-*")
+                .OrderByDescending(d => d, StringComparer.Ordinal)   // the name is a sortable timestamp
+                .Skip(KeepImportBackups)
+                .ToList();
+            foreach (string dir in dirs)
+            {
+                try { Directory.Delete(dir, recursive: true); }
+                catch (Exception ex) { Log.Warn("bundle", $"could not remove old import backup {dir}: {ex.Message}"); }
+            }
+            if (dirs.Count > 0) Log.Info("bundle", $"removed {dirs.Count} import backup(s) older than the last {KeepImportBackups}");
+        }
+        // Housekeeping must never be the reason an import fails.
+        catch (Exception ex) { Log.Warn("bundle", $"could not tidy old import backups: {ex.Message}"); }
+    }
+
+    /// <summary>What a bundled screen background is allowed to be. The set the
+    /// designer itself can load, so anything else was never usable anyway.</summary>
+    static readonly HashSet<string> ImageExtensions =
+        new(StringComparer.OrdinalIgnoreCase) { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp" };
+
     /*==========================================================*\
     |  Export                                                    |
     \*==========================================================*/
@@ -658,7 +689,18 @@ public static class SetupBundle
 
         using (zip)
         {
-            long total = zip.Entries.Sum(e => e.Length);
+            // Saturating, not Sum: Enumerable.Sum over long is CHECKED, so two
+            // entries each declaring a huge uncompressed size threw
+            // OverflowException, which Preview's catch-all reported as "the
+            // bundle could not be read: Arithmetic operation resulted in an
+            // overflow" - blaming the reader for what the bundle declared.
+            long total = 0;
+            foreach (var entry in zip.Entries)
+            {
+                long len = entry.Length;
+                if (len < 0 || total > MaxBundleBytes - len) { total = long.MaxValue; break; }
+                total += len;
+            }
             if (total > MaxBundleBytes)
             {
                 problem = $"that bundle claims to hold {total / (1024 * 1024)} MB, which is more than a setup can be";
@@ -1359,6 +1401,7 @@ public static class SetupBundle
         // 4. Back up what is about to be replaced, then write. The backup is
         //    both the rollback source below and the user's only undo.
         string backupDir = AppPaths.Config($"import-backup-{DateTime.Now:yyyyMMdd-HHmmss}");
+        PruneOldImportBackups();
         var replaced = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);   // target -> backup copy, null = did not exist
         var written = new List<string>();
         try
@@ -1401,7 +1444,15 @@ public static class SetupBundle
                     Log.Warn("bundle", $"rollback of {target} failed: {undo.Message}");
                 }
             }
-            foreach (string f in extracted) { try { File.Delete(f); } catch { } }
+            // Only when the undo actually worked. A stranded scenes.json has
+            // already been rewritten to point at these files, so deleting them
+            // leaves the user's screen designs referencing images that are gone
+            // and rendering blank - strictly worse than "left as the bundle wrote
+            // it", which is what they are being told happened. Keeping them costs
+            // nothing: the names are content-addressed, so a re-import matches
+            // them rather than piling up copies.
+            if (stranded.Count == 0)
+                foreach (string f in extracted) { try { File.Delete(f); } catch { } }
 
             // Only claim the rollback worked when it did. A failed undo used to
             // report the same reassuring sentence as a clean one, so the user was
@@ -1444,6 +1495,16 @@ public static class SetupBundle
             string stem = Path.GetFileNameWithoutExtension(SafeFileName(asset.FileName));
             string ext = Path.GetExtension(SafeFileName(asset.FileName));
             if (stem.Length == 0) stem = "background";
+            // SafeFileName sanitises the NAME; the extension came straight from
+            // the bundle, so a file off the internet could drop arbitrary bytes
+            // into lcd-assets under any extension it liked. Nothing here runs
+            // it, but a screen background is an image and there is no reason to
+            // write anything else.
+            if (!ImageExtensions.Contains(ext))
+            {
+                Log.Warn("bundle", $"skipped bundled background '{asset.FileName}': '{ext}' is not an image");
+                continue;
+            }
             // The hash is in the NAME so the same image imported twice is the
             // same file, and so two different images that happen to share a
             // file name do not overwrite each other.
@@ -1685,7 +1746,13 @@ public static class SetupBundle
             string? target = TargetPathFor(e);
             if (target == null) continue;   // already refused at preview; belt and braces
             string text = p.Texts[KeyOf(e)];
-            if (e.Name == "calibration.json")
+            // Case-insensitively, because that is how the allow-table admitted
+            // this entry (TargetPathFor). A manifest spelling it "Calibration.json"
+            // passed the gate, wrote over the real file on a case-insensitive
+            // filesystem, and skipped the device remap AND the reload flag below -
+            // so the trims landed keyed to the SOURCE machine's device names and
+            // vanished with nothing said.
+            if (string.Equals(e.Name, "calibration.json", StringComparison.OrdinalIgnoreCase))
             {
                 var calibration = JsonNode.Parse(text) as JsonObject
                     ?? throw new InvalidDataException("The calibration store must be an object.");
@@ -1707,8 +1774,8 @@ public static class SetupBundle
             names.Add(e.Name);
         }
         if (names.Count == 0) return;
-        result.CalibrationChanged = names.Contains("calibration.json");
-        result.RestartRecommended = names.Any(n => n != "calibration.json");
+        result.CalibrationChanged = names.Contains("calibration.json", StringComparer.OrdinalIgnoreCase);
+        result.RestartRecommended = names.Any(n => !string.Equals(n, "calibration.json", StringComparison.OrdinalIgnoreCase));
         result.Applied.Add("machine wiring: " + string.Join(", ", names));
     }
 

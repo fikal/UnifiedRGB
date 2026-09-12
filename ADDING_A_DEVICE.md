@@ -93,9 +93,12 @@ that one line, already written. Since `SetColors` returns a verdict a driver
 may instead refuse a short frame outright and return `false`, which is honest
 and visible. What is banned is dropping it **silently** and padding the tail
 with **black** - both have been done, and both looked like a dead device.
-Every driver in the tree follows this now; `EneDram` and `CorsairStrafeMk2`
-were the last two black-padding, and `Suites/Devices.cs` pins the keyboard's
-behaviour so it cannot come back.
+Every driver in the tree follows this now. `EneDram` and `CorsairStrafeMk2`
+were the last two black-padding; `SteelSeriesApex` was the last to address
+only the first `colors.Count` keys and leave the tail on its previous colour -
+which is the *silent* half of the same ban, and worse for carrying a `true`
+verdict and caching the short frame as "what the device is showing".
+`Suites/Devices.cs` pins the keyboard behaviour so none of it can come back.
 
 ### The verdict: what `SetColors` returns
 
@@ -124,6 +127,25 @@ Two cases people get wrong:
 - **Writing bytes nobody displays is not delivering.** `EneDram` returns false
   when the color registers were accepted but direct mode is still off: the
   stick took the bytes and is showing its onboard effect.
+
+#### Returning false has a cost: pace anything expensive behind it
+
+The engine latches its once-a-second keepalive clock (`shared.LastWrite`) only
+on a **successful** write. A driver that keeps returning false is therefore
+called back on **every frame** - up to 60 Hz - not once a second, and each call
+runs inside `lock (gate) lock (shared)`, so it holds up every other channel on
+that device.
+
+That is fine for a cheap refusal. It is not fine for a blocking HID read, a
+sleep, or a mode-init sequence. If the work behind a `false` is expensive, put
+it behind a retry clock and refuse immediately while the window is open:
+`LogitechG403.RetryAfterFailMs`, `RazerHid._nextRetryTick`, and both keyboards'
+`InitRetryAfterFailMs` are the shape. The refusal stays honest and immediate -
+only the expensive retry is paced.
+
+**Clear the clock in `InvalidateCache`.** A caller that has decided a write
+MUST land is not served by a driver still waiting out a sulk from an earlier
+refusal, and `MustLand` calls `InvalidateCache` on every attempt.
 
 ### Failure: return, log, do not throw
 

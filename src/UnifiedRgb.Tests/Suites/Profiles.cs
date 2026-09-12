@@ -333,6 +333,77 @@ static class ProfilesSuite
                     "legacy root/general profile fields remain readable");
                 t.Equal("Root", Active(dir, "{\"general\":" + unscoped + "}", "Alice"),
                     "legacy root/general live wallpaper remains readable");
+
+                t.Section("Wallpaper Engine records the active profile; the comparison is the fallback");
+                // Its "profile" slot is an empty object whichever profile is up,
+                // which is what the per-monitor comparison was written around. But
+                // "wallpaperconfig.name" beside it holds the profile NAME while one
+                // is applied and is absent once the arrangement is changed by hand -
+                // exactly the distinction this is trying to reconstruct, and unlike
+                // the comparison it survives a display being unplugged.
+                static string Named(string? declared, string liveFile, string matrixFile) =>
+                    "{\"u\":{\"general\":{\"wallpaperconfig\":{\"profile\":{},"
+                    + (declared == null ? "" : "\"name\":\"" + declared + "\",")
+                    + "\"selectedwallpapers\":{\"Monitor0\":{\"file\":\"" + liveFile + "\"}}},"
+                    + "\"profiles\":["
+                    + "{\"name\":\"Matrix\",\"selectedwallpapers\":{\"Monitor0\":{\"file\":\"" + matrixFile + "\"},"
+                    + "\"Monitor1\":{\"file\":\"m1.mp4\"}}},"
+                    + "{\"name\":\"Diablo\",\"selectedwallpapers\":{\"Monitor0\":{\"file\":\"d0.mp4\"}}}]}}}";
+
+                // The saved profile covers two monitors and only one is live - a
+                // display asleep or unplugged. No signature can ever match, so
+                // before the name was read this answered "unknown" and every
+                // profile apply, schedule tick and show step re-sent openProfile
+                // and reloaded every remaining monitor.
+                t.Equal("Matrix", Active(dir, Named("Matrix", "m0.pkg", "m0.pkg")),
+                    "the recorded name answers even when a monitor has dropped out");
+                t.Check(Active(dir, Named(null, "hand-picked.pkg", "m0.pkg")) == null,
+                    "no recorded name and nothing matching is still unknown, not a guess");
+                t.Check(Active(dir, Named("Deleted", "hand-picked.pkg", "m0.pkg")) == null,
+                    "a name left behind by a deleted profile does not answer for one");
+                t.Equal("Matrix", Active(dir, Named("  Matrix  ", "x.pkg", "m0.pkg")),
+                    "the recorded name is trimmed before it is matched");
+
+                t.Section("one account under an unexpected key is still readable");
+                // Wallpaper Engine keys this file by Windows account name and so do
+                // we, but the two only have to disagree once - a renamed account, a
+                // config carried from another machine - for the picker to come up
+                // empty with nothing to say why. One section means no other account
+                // to borrow from; two is the case the scoping exists for.
+                const string lone = """
+                    {"?installdirectory": "C:/Steam",
+                     "SomeoneElse": {"general": {
+                       "wallpaperconfig": {"name": "Only", "selectedwallpapers": {"Monitor0": {"file": "only.pkg"}}},
+                       "profiles": [{"name": "Only", "selectedwallpapers": {"Monitor0": {"file": "only.pkg"}}}]
+                     }}}
+                    """;
+                t.Equal("Only", Read(dir, lone, "Nobody").Single(),
+                    "a lone account is read even under a key we did not expect");
+                t.Equal("Only", Active(dir, lone, "Nobody"), "...and so is what it is showing");
+                t.Equal(0, Read(dir, accounts, "Nobody").Length,
+                    "two accounts still refuse rather than guessing which one is ours");
+
+                t.Section("a config that cannot be read is not an ANSWER");
+                // Wallpaper Engine rewrites this file the moment a profile is
+                // applied, which is exactly when we next read it, so a sharing
+                // violation here is ordinary. The readers cannot tell that from "no
+                // profiles" - both come back empty - so the caching getter needs to
+                // be told, or it pins the failure to the new timestamp and switches
+                // the whole feature off until the file changes again.
+                string okPath = Path.Combine(dir, "ok.json");
+                File.WriteAllText(okPath, lone);
+                t.Check(UnifiedRgb.App.Services.WallpaperEngine.TryReadConfig(okPath, "Nobody", out var okNames, out var okActive),
+                    "a readable config reports success");
+                t.Equal("Only", okNames.Single(), "...with the profiles it found");
+                t.Equal("Only", okActive, "...and what is showing");
+                File.WriteAllText(okPath, "{ not json");
+                t.Check(!UnifiedRgb.App.Services.WallpaperEngine.TryReadConfig(okPath, "Nobody", out var badNames, out _),
+                    "an unparseable config reports FAILURE rather than an empty answer");
+                t.Equal(0, badNames.Length, "...and still hands back something safe to use");
+                File.WriteAllText(okPath, "{\"Nobody\":{\"general\":{}}}");
+                t.Check(UnifiedRgb.App.Services.WallpaperEngine.TryReadConfig(okPath, "Nobody", out var emptyNames, out _),
+                    "an account with genuinely no profiles is a SUCCESS, not a failure");
+                t.Equal(0, emptyNames.Length, "...reporting no profiles");
             }
             finally { try { Directory.Delete(dir, recursive: true); } catch { } }
 

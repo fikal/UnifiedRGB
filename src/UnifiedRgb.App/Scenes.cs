@@ -105,6 +105,22 @@ public sealed class SceneStore
     /// migrations keep their original fields so a later attempt can recover.
     ///
     /// Returns the number of steps that could not be resolved.</summary>
+    /// <summary>Two profiles identical in everything a capture stores, ignoring
+    /// the NAME. Serialising both is enough here: this runs once per
+    /// profile+scene pair during a one-time migration, and it cannot go stale
+    /// when a field is added to Profile the way a hand-written comparison
+    /// would.</summary>
+    static bool SameExceptName(Profile a, Profile b)
+    {
+        string keptA = a.Name, keptB = b.Name;
+        try
+        {
+            a.Name = b.Name = "";
+            return JsonSerializer.Serialize(a) == JsonSerializer.Serialize(b);
+        }
+        finally { a.Name = keptA; b.Name = keptB; }
+    }
+
     public int MigrateSceneSteps(IEnumerable<Profile> profiles, Func<Profile, bool>? addProfile = null)
     {
         var available = profiles.Where(p => p != null).ToList();
@@ -137,7 +153,21 @@ public sealed class SceneStore
                         continue;
                     }
 
-                    if (source != null && addProfile != null)
+                    if (source == null)
+                    {
+                        // The named profile is GONE. No later attempt can resolve
+                        // this, so retiring the dead Scene field and leaving the
+                        // dangling name is the end of it - which is what the code
+                        // before this migration did. Counting it unresolved made it
+                        // warn on every launch, forever, about something the user
+                        // cannot act on.
+                        a.Scene = null;
+                        Log.Warn("scenes", $"show '{seq!.Name}' step {i + 1} named profile '{a.Profile}', "
+                            + $"which no longer exists; its screen '{scene}' has been dropped. Point the step at a profile.");
+                        continue;
+                    }
+
+                    if (addProfile != null)
                     {
                         var variant = variants.FirstOrDefault(v =>
                             v.Profile.Equals(source.Name, StringComparison.OrdinalIgnoreCase) &&
@@ -150,20 +180,29 @@ public sealed class SceneStore
                             variant.Screen = scene;
                             // A previous launch may have saved the new profile but been
                             // unable to save scenes.json. Reuse an exact persisted match.
-                            var persisted = available.FirstOrDefault(p =>
+                            //
+                            // Compared by NAME-BLIND payload rather than by assigning the
+                            // candidate's name into the variant inside the predicate: that
+                            // left the variant holding whichever candidate was examined
+                            // last and relied on a later line to overwrite it, which is a
+                            // trap for the next person to touch this.
+                            Profile? persisted = null;
+                            foreach (var candidate in available)
                             {
-                                if (!string.Equals(p.Screen, scene, StringComparison.OrdinalIgnoreCase)) return false;
-                                variant.Name = p.Name;
-                                return JsonSerializer.Serialize(variant) == JsonSerializer.Serialize(p);
-                            });
-                            string baseName = $"{source.Name} ({scene})";
-                            variant.Name = baseName;
-                            for (int suffix = 2; available.Any(p => p.Name.Equals(variant.Name, StringComparison.OrdinalIgnoreCase)); suffix++)
-                                variant.Name = $"{baseName} {suffix}";
+                                if (!string.Equals(candidate.Screen, scene, StringComparison.OrdinalIgnoreCase)) continue;
+                                if (SameExceptName(variant, candidate)) { persisted = candidate; break; }
+                            }
                             if (persisted != null) variant = persisted;
-                            else if (!addProfile(variant)) variant = null;
                             else
-                                available.Add(variant);
+                            {
+                                // Only worth naming when we are actually going to save it.
+                                string baseName = $"{source.Name} ({scene})";
+                                variant.Name = baseName;
+                                for (int suffix = 2; available.Any(p => p.Name.Equals(variant.Name, StringComparison.OrdinalIgnoreCase)); suffix++)
+                                    variant.Name = $"{baseName} {suffix}";
+                                if (!addProfile(variant)) variant = null;
+                                else available.Add(variant);
+                            }
                             if (variant != null)
                                 variants.Add((source.Name, scene, variant));
                         }

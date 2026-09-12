@@ -79,6 +79,8 @@ public sealed class SteelSeriesApex : IRgbDevice, IKeyMappedDevice
         _featureLen = featureLen;
         _outputLen = outputLen;
         Name = name;
+        _initKey = $"apex-init:{name}";
+        _writeKey = $"apex:{name}";
         _positions = BuildPositions();
         // Enter direct-lighting mode. The verdict is kept: a refused init
         // (vendor software holding the interface at scan time) used to be
@@ -168,8 +170,29 @@ public sealed class SteelSeriesApex : IRgbDevice, IKeyMappedDevice
     }
 
     /// <summary>Drop the cached frame so the next one is written even if it is
-    /// identical (the must-land path and any mode change).</summary>
-    public void InvalidateCache() { lock (_writeLock) _last = null; }
+    /// identical (the must-land path and any mode change). The init backoff goes
+    /// with it: a caller that has decided this write MUST land is not served by a
+    /// driver still waiting out a sulk from an earlier refusal. Same rule as
+    /// LogitechG403 and RazerHid.</summary>
+    public void InvalidateCache() { lock (_writeLock) { _last = null; _initRetryAt = 0; } }
+
+    /// <summary>Earliest tick at which a refused EnterDirectMode may be attempted
+    /// again. The init verdict is the frame verdict now, and the engine latches its
+    /// once-a-second keepalive only on a SUCCESSFUL write - so a driver that keeps
+    /// returning false is called on every frame instead. EnterDirectMode allocates
+    /// a 643-byte report and sleeps 10 ms under the engine device gate, so without
+    /// this clock a keyboard held by SteelSeries GG pins its channel for as long as
+    /// GG runs. The refusal stays honest and immediate; only the retry is paced.</summary>
+    long _initRetryAt;
+    /// <summary>Internal and settable ONLY so a test can retry without sleeping;
+    /// nothing else should touch it. Matches LogitechG403.RetryAfterFailMs.</summary>
+    internal static int InitRetryAfterFailMs = 2000;
+
+    // Built once: Log.Occasional rate-limits the OUTPUT, not the formatting, and
+    // this path can now be reached on every frame.
+    readonly string _initKey;
+    readonly string _writeKey;
+    const string InitWhat = "direct-mode setup refused; initialization and the frame will be retried";
 
     public bool SetColors(IReadOnlyList<Rgb> colors)
     {
@@ -180,34 +203,48 @@ public sealed class SteelSeriesApex : IRgbDevice, IKeyMappedDevice
             if (_needInit)
             {
                 _last = null;
+                // Inside the backoff window the frame is still refused - it really
+                // has not landed - but without paying for another blocking init.
+                if (Environment.TickCount64 < _initRetryAt)
+                    return WritePolicy.Refused(ref _last, _initKey, "Apex", InitWhat);
                 _needInit = !EnterDirectMode();
                 if (_needInit)
-                    return WritePolicy.Refused(ref _last, $"apex-init:{Name}", "Apex",
-                        "direct-mode setup refused; initialization and the frame will be retried");
+                {
+                    _initRetryAt = Environment.TickCount64 + InitRetryAfterFailMs;
+                    return WritePolicy.Refused(ref _last, _initKey, "Apex", InitWhat);
+                }
+                _initRetryAt = 0;
             }
             // Index-loop dedup (no boxed enumerators) - same shape as Strafe/EneDram.
             // A skipped identical frame is a SUCCESS: the keyboard is already
             // showing exactly what was asked for.
             if (WritePolicy.Unchanged(_last, colors)) return true;
 
-            int n = Math.Min(Keys.Length, colors.Count);
+            // Every key is addressed, and a frame shorter than the keyboard
+            // repeats its last color rather than leaving the tail on whatever
+            // was there before. Addressing only the first colors.Count keys
+            // reported SUCCESS for a half-painted keyboard and then cached the
+            // short frame as "what it is showing", so nothing ever corrected it.
+            // Same rule and same helper as Strafe - see ADDING_A_DEVICE.md.
+            int n = Keys.Length;
             var buf = _featureBuf ??= new byte[_featureLen];
             Array.Clear(buf);
             buf[1] = PKT_DIRECT;
             buf[2] = (byte)n;
             for (int i = 0; i < n; i++)
             {
+                var c = WritePolicy.ColorAt(colors, i);
                 int o = i * 4 + 3;
                 buf[o] = Keys[i];
-                buf[o + 1] = colors[i].R;
-                buf[o + 2] = colors[i].G;
-                buf[o + 3] = colors[i].B;
+                buf[o + 1] = c.R;
+                buf[o + 2] = c.G;
+                buf[o + 3] = c.B;
             }
             if (!_hid.SetFeature(buf))
                 // Not cached: the next identical frame (the engine keepalive
                 // included) must try again rather than match a frame the
                 // keyboard never took. Refused drops the cache AND logs.
-                return WritePolicy.Refused(ref _last, $"apex:{Name}", "Apex",
+                return WritePolicy.Refused(ref _last, _writeKey, "Apex",
                     "feature report refused; the frame will be sent again");
             WritePolicy.Cache(ref _last, colors);
             return true;

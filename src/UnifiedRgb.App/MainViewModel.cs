@@ -883,17 +883,29 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
 
     /// <summary>Re-push every device's current static frame (after a
     /// brightness change; animated zones get overwritten next engine frame).</summary>
-    public void RefreshCalibrationLighting()
+    public void RefreshCalibrationLighting() => ReapplyAllStatic();
+
+    /// <summary>Both guards are unconditional, because both callers - a
+    /// calibration edit and the master-brightness slider - are the user asking
+    /// for a LOOK, not for the lights to come on.
+    ///
+    /// Suppressed means a dark window or a locked session. Re-pushing here lit
+    /// the whole desk from the brightness hotkey at 3 AM and then STAYED lit:
+    /// this path raises no LightingApplied, so the automation never learned it
+    /// had been overridden and its next tick saw the mode it already had and
+    /// re-blacked nothing.
+    ///
+    /// And a held device belongs to its client. Both halves of "held" are
+    /// asked, the same pair every other owner check in this file uses:
+    /// IsClaimed only turns true on a client's FIRST PAINTED FRAME, so asking
+    /// it alone writes over a client that has claimed a device and not yet
+    /// drawn to it.</summary>
+    void ReapplyAllStatic()
     {
         if (LightsSuppressed) return;
-        ReapplyAllStatic(respectOwnership: true);
-    }
-
-    void ReapplyAllStatic(bool respectOwnership = false)
-    {
         foreach (var d in Devices)
         {
-            if (respectOwnership && _lighting.IsClaimed(d)) continue;
+            if (_sdkHeld.Contains(d) || _lighting.IsClaimed(d)) continue;
             // The Lian Li handles brightness via re-baking (a direct SetColors
             // would interrupt a playing hardware animation). Only trust the flag
             // while a channel is actually running: a static "All devices" leaves

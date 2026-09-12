@@ -637,5 +637,11 @@ public sealed class AutomationService : IDisposable
         // Never leave the lights off because we're exiting mid-state.
         if (_mode is AutomationMode.Locked or AutomationMode.ScheduleOff && _returnPoint != null)
             try { _vm.RestoreState(_returnPoint); } catch { }
+        // And never leave the gate SHUT. LightsOff sets LightsSuppressed and
+        // only this service clears it, so a disposed service left it true - which
+        // also mutes the SDK bridge. Harmless while the only Dispose is process
+        // teardown, but a service that is ever recreated starts at Base, so its
+        // first Tick returns without a Transition and nothing ever reopens it.
+        _vm.LightsSuppressed = false;
     }
 }

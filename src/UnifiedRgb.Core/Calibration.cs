@@ -606,8 +606,8 @@ public static class Calibration
             // bumps Version, which stales every cached DevicePlan on the
             // machine, so each no-op call made every effect worker re-enter
             // BuildPlan and re-transform its whole device on the next frame.
-            // SetZone already had this guard through RemoveZone's bool; this
-            // side did not.
+            // SetZone had only HALF of this - its removal branch, through
+            // RemoveZone's bool. Both sides of both methods carry it now.
             if (copy.IsIdentity)
             {
                 if (!_settings.Remove(device)) return;
@@ -657,9 +657,20 @@ public static class Calibration
     /// <summary>The trim a zone inherits in the physical layout. Smaller
     /// containing zones win; equal ranges keep declaration order, matching
     /// BuildPlan. A parent editor still edits its own scope rather than one of
-    /// its smaller, independently overridden children.</summary>
+    /// its smaller, independently overridden children.
+    ///
+    /// CONTAINING, not overlapping. BuildPlan resolves a winner per boundary
+    /// sub-span, so a trimmed zone straddling this one's start governs part of it
+    /// on the hardware while this returns the enclosing trim for the whole. One
+    /// swatch cannot show two answers, and every nested layout in the tree (the
+    /// Lian Li fan and ring zones this was written for) is properly nested rather
+    /// than partially overlapping. A device that declared overlapping trimmed
+    /// zones would need the editor to say it is showing a mixture.</summary>
     public static DeviceCalibration Effective(IRgbDevice device, string? zone)
     {
+        // Guarded like every other public entry point here, so a UI row whose
+        // device went away mid-refresh gets a default trim rather than an NRE.
+        if (device == null) return new DeviceCalibration();
         if (string.IsNullOrWhiteSpace(zone)) return For(device.Name);
         var declared = device.Zones;
         if (declared == null || declared.Count == 0) return Effective(device.Name, zone);
@@ -712,6 +723,10 @@ public static class Calibration
             {
                 if (!_zoneSettings.TryGetValue(device, out var zones))
                     _zoneSettings[device] = zones = new Dictionary<string, DeviceCalibration>(StringComparer.OrdinalIgnoreCase);
+                // Storing the same numbers again is not free: see Set. It rebuilds
+                // both published tables and bumps Version, which stales every cached
+                // DevicePlan on the machine.
+                if (zones.TryGetValue(zone, out var had) && had.Fingerprint() == copy.Fingerprint()) return;
                 zones[zone] = copy;
             }
             Rebuild();
@@ -791,6 +806,17 @@ public static class Calibration
     public static string[] ZoneKeys(IReadOnlyList<RgbZone>? zones)
     {
         if (zones == null || zones.Count == 0) return Array.Empty<string>();
+        // Cached against the LIST INSTANCE. Every IRgbDevice returns the same
+        // object for Zones (LianLiUniHub swaps in a whole new one when its
+        // layout changes, which is a different key and so a different answer),
+        // and the answer is a pure function of that list. Weak keys, so a
+        // device going away takes its entry with it.
+        //
+        // Worth caching because this is on a UI loop: the calibration window
+        // calls Effective once per ROW on every slider tick, and each call was
+        // rebuilding the whole key array plus a HashSet. On a 4-fan Lian Li
+        // group that is 17 of each, per tick, per drag.
+        if (_zoneKeys.TryGetValue(zones, out var cached)) return cached;
         var keys = new string[zones.Count];
         var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (int i = 0; i < zones.Count; i++)
@@ -805,8 +831,12 @@ public static class Calibration
             for (int n = 2; !taken.Add(key); n++) key = $"{name} ({n})";
             keys[i] = key;
         }
+        // Last write wins: two threads racing produce equal arrays.
+        _zoneKeys.AddOrUpdate(zones, keys);
         return keys;
     }
+
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IReadOnlyList<RgbZone>, string[]> _zoneKeys = new();
 
     /// <summary>The zones of one device that carry a trim of their own.</summary>
     public static IReadOnlyList<string> CalibratedZones(string device)

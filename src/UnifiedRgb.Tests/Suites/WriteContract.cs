@@ -111,6 +111,13 @@ static class WriteContractSuite
             // its own lighting while the driver reports true, the frame cache
             // fills, and device health reads Connected - forever, because
             // nothing ever tried again.
+            // Retry at once, or these tests sleep out the init backoff. Same knob,
+            // same reason as LogitechG403.RetryAfterFailMs; the backoff itself is
+            // proved below and in the Devices suite.
+            int apexBackoff = SteelSeriesApex.InitRetryAfterFailMs;
+            int strafeBackoff = CorsairStrafeMk2.InitRetryAfterFailMs;
+            SteelSeriesApex.InitRetryAfterFailMs = 0;
+            CorsairStrafeMk2.InitRetryAfterFailMs = 0;
             var hid = new FakeHid { AcceptFeature = (_, _) => false };
             var kb = new SteelSeriesApex(hid, featureLen: 643, outputLen: 65, name: "Apex");
             t.Equal(1, hid.Features.Count, "the constructor attempts the direct-mode init");
@@ -134,6 +141,35 @@ static class WriteContractSuite
             t.Check(strafe.SetColors(kbFrame), "the first frame after the keyboard answers again lands");
             t.Check(chid.Writes.Count > afterCtor + 3,
                 "...and re-ran the init sequence rather than streaming color at a keyboard still in hardware mode");
+            SteelSeriesApex.InitRetryAfterFailMs = apexBackoff;
+            CorsairStrafeMk2.InitRetryAfterFailMs = strafeBackoff;
+        }
+
+        t.Section("a refused mode-init is PACED, not re-run on every frame");
+        {
+            // The other half of the same contract, and the reason this needs a
+            // clock at all. The init verdict IS the frame verdict now, so a
+            // refused init returns false - and the engine latches its
+            // once-a-second keepalive only on a SUCCESSFUL write, so a driver
+            // that keeps saying false is called back on EVERY frame, up to 60 Hz.
+            // Both inits are expensive and both run under the engine's device
+            // gate (Strafe: a blocking HID read plus 60 ms of sleeps), so without
+            // pacing, a keyboard that iCUE or SteelSeries GG is holding pins its
+            // whole channel on a hot loop for as long as that software runs.
+            var hid = new FakeHid { AcceptFeature = (_, _) => false };
+            using var kb = new SteelSeriesApex(hid, featureLen: 643, outputLen: 65, name: "Apex paced");
+            var frame = new Rgb[kb.LedCount];
+            t.Check(!kb.SetColors(frame), "the frame is refused while the init is refused");
+            int afterFirst = hid.Features.Count;
+            for (int i = 0; i < 20; i++) t.Check(!kb.SetColors(frame), "every frame in the window is still refused");
+            t.Equal(afterFirst, hid.Features.Count, "no init was re-attempted inside the backoff window");
+
+            // A caller that has decided the write MUST land is never made to
+            // wait: InvalidateCache drops the clock with the frame cache, the
+            // same rule LogitechG403 and RazerHid follow.
+            kb.InvalidateCache();
+            t.Check(!kb.SetColors(frame), "the frame is still refused - the keyboard has not answered");
+            t.Check(hid.Features.Count > afterFirst, "...but InvalidateCache let the init be attempted again at once");
         }
     }
 

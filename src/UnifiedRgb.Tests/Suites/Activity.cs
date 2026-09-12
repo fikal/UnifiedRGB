@@ -772,6 +772,37 @@ static class ActivitySuite
                 vm.RestoreState(exact, honorSuppression: true);
                 t.Equal(requestsBeforeSuppression, wallpaperRequests.Count, "suppressed restoration does not launch a wallpaper request");
                 vm.LightsSuppressed = false;
+
+                t.Section("master brightness does not relight a dark desk or write over a client");
+                // The brightness slider and its hotkey are the user asking for a
+                // LOOK, not for the lights to come on. Re-pushing every static
+                // frame from here lit the whole desk during a scheduled dark
+                // window - and then LEFT it lit, because this path raises no
+                // LightingApplied, so the automation never learned it had been
+                // overridden and its next tick saw the mode it already had.
+                vm.ApplyProfile(a); vm.Lighting.Applier.Drain(2000);
+                vm.LightsOff(); vm.LightsSuppressed = true;
+                vm.Lighting.Applier.Drain(2000);
+                t.Check(dev.Last!.All(c => c == UnifiedRgb.Core.Rgb.Black), "the dark window really blacked the device");
+                vm.MasterBrightness = 0.5;
+                vm.Lighting.Applier.Drain(2000);
+                t.Check(dev.Last!.All(c => c == UnifiedRgb.Core.Rgb.Black), "changing master brightness while suppressed leaves the desk dark");
+                vm.LightsSuppressed = false;
+
+                // And a held device belongs to its client. Both halves of "held"
+                // are asked: IsClaimed only turns true on a client's FIRST PAINTED
+                // FRAME, so asking it alone writes over a client that has claimed a
+                // device and not yet drawn to it.
+                vm.ApplyProfile(a); vm.Lighting.Applier.Drain(2000);
+                vm.StopEffectsOn(dev);                  // an SDK client just took it
+                var clientFrame = dev.Last!.ToArray();
+                vm.MasterBrightness = 0.9;
+                vm.Lighting.Applier.Drain(2000);
+                t.Check(dev.Last!.SequenceEqual(clientFrame),
+                    "changing master brightness leaves a device an SDK client is holding alone");
+                vm.ReleaseHold(dev);
+                vm.MasterBrightness = 1.0;
+                vm.Lighting.Applier.Drain(2000);
             }
             catch (Exception ex) { failure = ex; }
             finally

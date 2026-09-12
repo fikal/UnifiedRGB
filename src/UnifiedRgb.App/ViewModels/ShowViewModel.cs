@@ -192,6 +192,17 @@ public sealed class ShowViewModel : INotifyPropertyChanged, IDisposable
 
     public SceneSequencer.Playback? CapturePlayback() => _sequencer?.Capture();
 
+    /// <summary>Put playback back where the snapshot found it.
+    ///
+    /// A snapshot with NO show stops whatever is running, INCLUDING a show the
+    /// user started during the override. That is a known rough edge rather than
+    /// an oversight: the panel guards the same case (LcdDesignerViewModel.
+    /// RestoreDesign) but it can, because _userEdits counts what the USER did.
+    /// "A show is running now" is not the same test - an override that applies a
+    /// profile naming a show starts one too, and keeping THAT would leave a rule
+    /// driving the desk after the rule ended. Fixing this properly means
+    /// counting user-initiated starts the way _userEdits counts edits; do that
+    /// rather than widening this condition.</summary>
     public void RestorePlayback(SceneSequencer.Playback? state)
     {
         Stop();

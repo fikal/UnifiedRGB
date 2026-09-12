@@ -720,10 +720,18 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         // Nothing to do only when the CURRENT owner is the one asking again.
         if (_lcd.Design.SceneName == sc.Name && _liveIsShowScene == fromShow) return true;
         // Not through the SelectedSceneName setter: that is the user's dropdown
-        // and counts as their edit. And while a show has the panel, the profile's
-        // screen is shown with the same show-only status - loading it as the
-        // user's canvas used to flush it into lcd.json over their real design
-        // on the show's very next step.
+        // and counts as their edit.
+        //
+        // fromShow carries the ownership now, in place of the flag this used to
+        // consult. A show step's screen loads with show-only status and never
+        // becomes the saved canvas; a HAND-applied profile's screen takes the
+        // canvas, which is what asking for that profile means.
+        //
+        // One rough edge is left: a profile applied by hand that pins a screen
+        // AND starts a show arrives with fromShow false while the previous show
+        // still owns the panel, so its screen becomes the canvas. Arguably right
+        // - the user asked for it - but it is the first place to look if a design
+        // is ever overwritten unexpectedly.
         _selectedSceneName = sc.Name;
         OnChanged(nameof(SelectedSceneName));
         LoadDesignIntoEditor(FromScene(sc), fromShow: fromShow);

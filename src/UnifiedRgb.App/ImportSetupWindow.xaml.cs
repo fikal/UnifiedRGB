@@ -391,7 +391,13 @@ public partial class ImportSetupWindow : Window
                 : "Nothing was changed. Anything already written was put back.";
             ResultProblemText.Text = result.Problem ?? "the import could not be completed";
             ResultProblemCard.Visibility = Visibility.Visible;
-            AppliedCard.Visibility = AppliedLines.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            // Applied is filled while the bundle is built in memory, so it is
+            // fully populated by the time a WRITE fails - and its card is headed
+            // "CHANGED" with a green tick per line. Showing it here put
+            // "3 profile(s) added" under "Nothing was changed." The problem card
+            // above already says what happened, and names the stranded files when
+            // the undo was incomplete.
+            AppliedCard.Visibility = Visibility.Collapsed;
         }
 
         if (!string.IsNullOrWhiteSpace(result.BackupDirectory))

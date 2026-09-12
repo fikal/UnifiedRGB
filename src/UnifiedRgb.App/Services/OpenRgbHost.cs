@@ -120,8 +120,11 @@ public sealed class OpenRgbHost : IOpenRgbHost
                 _snapshot = null;
                 _externalCount = 0;
             }
-            foreach (var device in _vm.Devices) _vm.ReleaseHold(device);
+            // One refresh for the whole set: RestoreState ends with one anyway,
+            // and without a restore we do it ourselves below.
+            foreach (var device in _vm.Devices) _vm.ReleaseHold(device, refresh: false);
             if (restore != null) _vm.RestoreState(restore, honorSuppression: true);
+            else _vm.RefreshDeviceHealth();
         });
     }
 

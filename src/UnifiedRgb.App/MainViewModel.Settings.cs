@@ -153,19 +153,25 @@ public sealed partial class MainViewModel
         _dispatcher.BeginInvoke(new Action(() =>
         {
             int revision = Volatile.Read(ref _healthRefreshRevision);
-            try { RefreshDeviceHealth(); }
+            bool rebuilt = false;
+            try { RefreshDeviceHealth(); rebuilt = true; }
             finally
             {
                 Interlocked.Exchange(ref _healthRefreshQueued, 0);
                 // A worker may transition after its row was read. Keep that
                 // change instead of dropping it with the in-progress refresh.
-                if (Volatile.Read(ref _healthRefreshRevision) != revision) QueueDeviceHealthRefresh();
+                //
+                // Only after a rebuild that actually finished. Re-queuing from a
+                // THROWN refresh turned one dispatcher-unhandled exception into a
+                // repeating one, which is how a single bad row takes the app down
+                // instead of showing up once in the log.
+                if (rebuilt && Volatile.Read(ref _healthRefreshRevision) != revision) QueueDeviceHealthRefresh();
             }
         }));
     }
 
     /// <summary>Rebuild the rows from both sources. UI thread only.</summary>
-    void RefreshDeviceHealth()
+    internal void RefreshDeviceHealth()
     {
         // An SDK client holding a device IS "controlled by another app", and
         // the bridge has no event to tell us: it tells us by calling
@@ -236,6 +242,19 @@ public sealed partial class MainViewModel
     }
 
     internal Func<string?> ReadWallpaperProfile = () => Services.WallpaperEngine.ActiveProfile;
+
+    /// <summary>Whether this machine has any reason to ask Wallpaper Engine what
+    /// is on screen. Reading it means a stat of config.json and, when Wallpaper
+    /// Engine has just rewritten it, a parse - and CaptureState runs on the UI
+    /// thread with an SDK socket thread blocked inside _ui.Invoke waiting for it.
+    ///
+    /// The only thing that ever CHANGES the wallpaper here is
+    /// ApplyWallpaperProfile, which fires for a profile carrying one. If no
+    /// profile does and the picker is on none, nothing we do can move it, so
+    /// there is nothing to put back and no reason to look.</summary>
+    bool WallpaperInPlay
+        => !string.IsNullOrWhiteSpace(_wallpaperChoice) && _wallpaperChoice != NoWallpaper
+           || Profiles.Any(p => !string.IsNullOrWhiteSpace(p.Wallpaper));
     internal Func<string?, bool> ApplyWallpaperProfile = Services.WallpaperEngine.Apply;
 
     public LightState CaptureState()
@@ -251,7 +270,7 @@ public sealed partial class MainViewModel
             WallpaperChoice = _wallpaperChoice,
             PumpChoice = _pumpChoice,
             ShowChoice = _showChoice,
-            ActiveWallpaper = ReadWallpaperProfile(),
+            ActiveWallpaper = WallpaperInPlay ? ReadWallpaperProfile() : null,
             Dirty = _dirty,
             Screen = Lcd.SnapshotDesign(),
         };
@@ -278,11 +297,18 @@ public sealed partial class MainViewModel
     /// released device re-declared itself "controlled by another app", advising
     /// the user to close a program that had already let go, for the rest of the
     /// session.</summary>
-    public void ReleaseHold(IRgbDevice device)
+    public void ReleaseHold(IRgbDevice device) => ReleaseHold(device, refresh: true);
+
+    /// <summary><paramref name="refresh"/> false for a caller releasing SEVERAL
+    /// devices in a row. RefreshDeviceHealth clears the bound row collection and
+    /// rebuilds it a row per device, so a loop over k held devices made the Device
+    /// Health list blank and repopulate k times on the UI thread. Release them all,
+    /// then refresh once.</summary>
+    public void ReleaseHold(IRgbDevice device, bool refresh)
     {
         if (!_sdkHeld.Remove(device)) return;
         UnifiedRgb.Core.DeviceHealth.Shared.SetHeldByOther(device, false, "an OpenRGB client");
-        RefreshDeviceHealth();
+        if (refresh) RefreshDeviceHealth();
     }
 
     public void RestoreState(LightState s, bool honorSuppression = false)

@@ -317,7 +317,12 @@ public sealed partial class MainViewModel
             PumpRows.Clear();
             foreach (var r in wantScreens) PumpRows.Add(r);
         }
-        if (!ShowRows.SequenceEqual(wantShows, StringComparer.Ordinal))
+        // OrdinalIgnoreCase, matching the "is it missing?" test above. With the
+        // two disagreeing, a show whose name differed only in case counted as
+        // present when deciding whether to add it and as different when deciding
+        // whether to rebuild. It cancels out today only because SyncPumpChoice
+        // always adopts the row's own spelling.
+        if (!ShowRows.SequenceEqual(wantShows, StringComparer.OrdinalIgnoreCase))
         {
             ShowRows.Clear();
             foreach (var r in wantShows) ShowRows.Add(r);
@@ -351,6 +356,16 @@ public sealed partial class MainViewModel
                           !string.Equals(r, NoShow, StringComparison.Ordinal)
                           && string.Equals(r, p.Show, StringComparison.OrdinalIgnoreCase))
                       ?? NoShow;
+        // The rows just added are what makes each picker VISIBLE (both
+        // Available flags are Count > 1, bound to Visibility). Without saying
+        // so, a machine with no screens and no shows of its own - a setup
+        // moved from another PC, the case this preservation exists for - left
+        // both pickers hidden for the rest of the session, so the user could
+        // not see or clear the binding this code just worked to keep. Nothing
+        // else re-runs RefreshPumpRows on a selection change.
+        // SyncWallpaperChoice already does this for the same reason.
+        OnChanged(nameof(PumpAvailable));
+        OnChanged(nameof(ShowAvailable));
         OnChanged(nameof(PumpChoice));
         OnChanged(nameof(ShowChoice));
     }
@@ -412,19 +427,46 @@ public sealed partial class MainViewModel
     }
 
     /// <summary>Save the current state back into the active profile (used by
-    /// the close prompt — keeps the profile's existing name).</summary>
+    /// the close prompt — keeps the profile's existing name).
+    ///
+    /// While a SHOW is running the desk is not the user's edit: it is whatever
+    /// step is up, and a step is somebody else's profile. Capturing it here wrote
+    /// that step's colors into the profile the user had selected - on the close
+    /// prompt, and with no prompt at all from Session_Ending, which is a logoff
+    /// quietly rewriting a saved setup. So the lighting is left out of the capture
+    /// and carries over from the profile itself, through the same "device absent
+    /// right now" path BuildCapture already uses: every device is absent in the
+    /// sense that matters, because none of them is showing this profile. The
+    /// swatches and the screen/show/wallpaper choices ARE the user's and are
+    /// still saved, which is what a step must not be allowed to cost them.</summary>
     public void SaveActiveProfile()
     {
         var active = SelectedProfile;
         if (active == null) return;
-        var p = _store.TryCapture(active.Name, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), PumpForSave,
+        bool showOwnsLighting = Shows.Running;
+        var frames = showOwnsLighting
+            ? Enumerable.Empty<(IRgbDevice, Rgb[])>()
+            : Devices.Select(d => (d, FrameFor(d)));
+        if (showOwnsLighting)
+            UnifiedRgb.Core.Log.Info("profiles",
+                $"saved '{active.Name}' without its colors: a show is running, so the lighting on the desk belongs to its current step");
+        var p = _store.TryCapture(active.Name, frames, CustomColorsSnapshot(),
+                                   showOwnsLighting ? null : CaptureEffects(), PumpForSave,
                                    wallpaper: WallpaperForSave);
-        if (p == null) return;
+        if (p == null) { NoteSaveFailed(active.Name); return; }
         int idx = Profiles.IndexOf(active);
         if (idx >= 0) Profiles[idx] = p; else Profiles.Add(p);
         _selectedProfile = p; OnChanged(nameof(SelectedProfile));
         _dirty = false;
-        _appliedProfile = null;
+        // The lighting now IS this profile - that is what saving means - so
+        // say so rather than clearing it. Nulling it cost ApplyStep its "do not
+        // re-apply what is already on" skip, so a show whose next step named the
+        // just-saved profile visibly restarted every effect channel; and AddStep
+        // defaulted a new step to the first profile in the list instead of the
+        // lit one. The exception is a save taken while a SHOW is running: the
+        // colors were not captured then (see above), so the lighting still
+        // belongs to whatever step is up.
+        if (!showOwnsLighting) _appliedProfile = p.Name;
     }
 
     void SaveProfile()
@@ -445,26 +487,51 @@ public sealed partial class MainViewModel
         string newName = ProfileName.Trim();
         var prior = SelectedProfile;
         string? wallpaper = WallpaperForSave;
+        // Latched for the same reason as the wallpaper, rather than left as an
+        // argument that happens to be evaluated before the first mutation. It is
+        // correct today only because of that evaluation order; one reordering
+        // breaks it silently.
+        var pump = PumpForSave;
 
         var renamedFrom = prior != null && !newName.Equals(prior.Name, StringComparison.OrdinalIgnoreCase) ? prior : null;
         // Persist the new profile while the old name is still valid. No view or
         // saved reference changes when writing the replacement fails.
-        var p = _store.TryCapture(newName, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), PumpForSave,
+        var p = _store.TryCapture(newName, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), pump,
                                carryFrom: renamedFrom, wallpaper: wallpaper);
-        if (p == null) return;
+        if (p == null) { NoteSaveFailed(newName); return; }
         var existing = Profiles.FirstOrDefault(x => x.Name.Equals(p.Name, StringComparison.OrdinalIgnoreCase));
         if (existing != null) Profiles[Profiles.IndexOf(existing)] = p;
         else Profiles.Add(p);
         // Both names are available while bound step/rule dropdowns move to the
         // replacement. Removing the old item first clears TwoWay selections.
-        if (renamedFrom != null && RenameProfileReferences(renamedFrom.Name, p.Name)
-            && _store.TryRemoveRenamedProfile(renamedFrom.Name)) Profiles.Remove(renamedFrom);
+        if (renamedFrom != null)
+        {
+            if (RenameProfileReferences(renamedFrom.Name, p.Name)
+                && _store.TryRemoveRenamedProfile(renamedFrom.Name)) Profiles.Remove(renamedFrom);
+            else
+                // The new profile is written and the old one is still there, which
+                // is the right way round to fail - nothing on disk is inconsistent.
+                // But the user asked to RENAME and now sees two, and a Log.Warn is
+                // not somewhere they will look.
+                UnifiedRgb.Core.Automation.ActivityLog.Note(UnifiedRgb.Core.Automation.ActivityKind.Problem,
+                    $"'{renamedFrom.Name}' could not be renamed to '{p.Name}' - the new profile was saved, "
+                    + "but the old one is still there. Check that the settings folder is writable, then delete it.");
+        }
         SelectedProfile = p;
         ProfileName = "";                       // saved: clear the name box
         _dirty = false;
-        _appliedProfile = null;
+        _appliedProfile = p.Name;   // the lighting IS this profile now
         OnChanged(nameof(IsStartupProfile));
     }
+
+    /// <summary>A save that could not be written. Every one of these paths used
+    /// to just return, so the button appeared to do nothing and the only record
+    /// was a line in a log file the user has no reason to open. TrySave has
+    /// already said WHY in the log; this says THAT, somewhere they can see.</summary>
+    static void NoteSaveFailed(string name) =>
+        UnifiedRgb.Core.Automation.ActivityLog.Note(UnifiedRgb.Core.Automation.ActivityKind.Problem,
+            $"'{name}' could not be saved - profiles.json could not be written. "
+            + "Check that the settings folder is writable and not locked by another program.");
 
     /// <summary>Create a NEW profile from the current lighting — never
     /// renames or replaces the selected one (Save does that). A clashing
@@ -478,12 +545,12 @@ public sealed partial class MainViewModel
 
         var p = _store.TryCapture(name, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), PumpForSave,
                                wallpaper: WallpaperForSave);
-        if (p == null) return;
+        if (p == null) { NoteSaveFailed(name); return; }
         Profiles.Add(p);
         SelectedProfile = p;
         ProfileName = "";
         _dirty = false;
-        _appliedProfile = null;
+        _appliedProfile = p.Name;   // the lighting IS this profile now
         OnChanged(nameof(IsStartupProfile));
     }
 
@@ -534,13 +601,18 @@ public sealed partial class MainViewModel
         // previous step's screen stayed up.
         bool screenShown = false, showStarted = false;
 
+        // A profile that names no show STOPS whatever is running - including from
+        // an app rule or a schedule, not just a button. That is what makes a
+        // profile mean the whole desk rather than only the part it mentions, and
+        // it is why CapturePlayback exists: the automation has to be able to put
+        // the show back when the rule ends.
         if (!fromShow && string.IsNullOrWhiteSpace(p.Show)) Shows.Stop();
         if (!string.IsNullOrWhiteSpace(p.Screen))
         {
-            // A screen with no show of its own means NO show, or the running
-            // show's next step paints over it a second later. When this profile
-            // starts a show, leave that to ShowSequence, which stops whatever
-            // else was running anyway.
+            // fromShow decides whether this screen becomes the user's canvas or
+            // is shown on the show's behalf - see LcdDesignerViewModel.ShowScreen.
+            // (The show-stopping that used to be explained here now lives above,
+            // because it applies to screenless profiles too.)
             screenShown = Lcd.ShowScreen(p.Screen!, fromShow);
         }
 

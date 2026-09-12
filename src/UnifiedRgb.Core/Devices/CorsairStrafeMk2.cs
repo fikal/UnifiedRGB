@@ -343,10 +343,32 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
     }
 
     /// <summary>Drop the cached frame so the next one is written even if it is
-    /// identical (the must-land path and any mode change).</summary>
-    public void InvalidateCache() { lock (_writeLock) _last = null; }
+    /// identical (the must-land path and any mode change). The init backoff goes
+    /// with it: a caller that has decided this write MUST land is not served by a
+    /// driver still waiting out a sulk from an earlier refusal. Same rule as
+    /// LogitechG403 and RazerHid.</summary>
+    public void InvalidateCache() { lock (_writeLock) { _last = null; _initRetryAt = 0; } }
 
     bool _needInit;
+    /// <summary>Earliest tick at which a refused RunInit may be attempted again.
+    ///
+    /// Needed because the init verdict is now the frame verdict. The engine
+    /// latches its keepalive clock only on a SUCCESSFUL write, so a driver that
+    /// keeps returning false is called on every frame rather than once a second -
+    /// and RunInit is a blocking HID read plus 60 ms of sleeps, held under the
+    /// engine device gate. Without this clock, a keyboard that iCUE is holding
+    /// pins its whole channel on a hot loop of 200 ms reads for as long as iCUE
+    /// runs. The refusal is still honest and immediate; only the expensive retry
+    /// is paced.</summary>
+    long _initRetryAt;
+    /// <summary>Internal and settable ONLY so a test can retry without sleeping;
+    /// nothing else should touch it. Matches LogitechG403.RetryAfterFailMs.</summary>
+    internal static int InitRetryAfterFailMs = 2000;
+
+    // Built once: Log.Occasional rate-limits the OUTPUT, not the formatting,
+    // and this path can now be reached on every frame.
+    const string InitKey = "strafe-init";
+    const string InitWhat = "software-mode setup refused; initialization and the frame will be retried";
 
     public bool SetColors(IReadOnlyList<Rgb> colors)
     {
@@ -362,12 +384,18 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
                 // Mode setup is part of delivery. Color packets can be accepted
                 // while the keyboard still displays its onboard profile.
                 _last = null;
+                // Inside the backoff window the frame is still refused - it really
+                // has not landed - but without paying for another blocking init.
+                if (Environment.TickCount64 < _initRetryAt)
+                    return WritePolicy.Refused(ref _last, InitKey, "StrafeMk2", InitWhat);
                 _needInit = !RunInit();
                 if (_needInit)
-                    return WritePolicy.Refused(ref _last, "strafe-init", "StrafeMk2",
-                        "software-mode setup refused; initialization and the frame will be retried");
+                {
+                    _initRetryAt = Environment.TickCount64 + InitRetryAfterFailMs;
+                    return WritePolicy.Refused(ref _last, InitKey, "StrafeMk2", InitWhat);
+                }
+                _initRetryAt = 0;
             }
-            int n = colors.Count;
             // A skipped identical frame is a SUCCESS: the keyboard already
             // shows exactly what was asked for.
             if (WritePolicy.Unchanged(_last, colors)) return true;

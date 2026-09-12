@@ -111,8 +111,27 @@ public static class WallpaperEngine
                  System.Text.RegularExpressions.Regex.Matches(text, "\"path\"\\s*\"([^\"]+)\""))
         {
             string p = m.Groups[1].Value.Replace("\\\\", "\\");
-            if (!string.Equals(p, steam, StringComparison.OrdinalIgnoreCase)) yield return p;
+            // Compared as PATHS, not as strings. The registry spells the main
+            // library "c:/program files (x86)/steam" and this file spells it
+            // "C:\Program Files (x86)\Steam", so a plain string compare never
+            // matched and the main library was always probed a second time.
+            if (!SamePath(p, steam)) yield return p;
         }
+    }
+
+    /// <summary>Two paths naming the same folder, whatever separators and
+    /// trailing slash each happens to use. Falls back to an ordinary
+    /// case-insensitive compare for anything GetFullPath refuses.</summary>
+    static bool SamePath(string a, string b)
+    {
+        try
+        {
+            return string.Equals(
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(a)),
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(b)),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return string.Equals(a, b, StringComparison.OrdinalIgnoreCase); }
     }
 
     static string? SteamRoot()
@@ -163,9 +182,24 @@ public static class WallpaperEngine
                 // Year 1601 for a missing file, without throwing.
                 try { stamp = File.GetLastWriteTimeUtc(cfg); } catch { return _profiles; }
                 if (stamp == _configStamp) return _profiles;
+                // ONE read and ONE parse for both answers. Two would also open a
+                // window where Wallpaper Engine rewrites the file between them and
+                // the profile list and the active profile come from different
+                // versions of it.
+                //
+                // And the stamp is committed only when the read SUCCEEDED. Wallpaper
+                // Engine rewrites this file the moment a profile is applied, which is
+                // exactly when we next read it, so a sharing violation or a mid-rename
+                // miss here is ordinary. Pinning that failure to the new timestamp used
+                // to switch the whole feature off until the file changed again: the
+                // picker emptied, the "no profiles" hint came on, and every apply after
+                // it logged "Wallpaper Engine no longer has that" and did nothing, for
+                // the rest of the session. Keeping the last good answer and retrying on
+                // the next call costs one stat.
+                if (!TryReadConfig(cfg, null, out var names, out string? active)) return _profiles;
                 _configStamp = stamp;
-                _profiles = ReadProfiles(cfg);
-                _active = ReadActiveProfile(cfg);
+                _profiles = names;
+                _active = active;
             }
             return _profiles;
         }
@@ -212,12 +246,26 @@ public static class WallpaperEngine
     /// wallpapers must never be combined.</summary>
     internal static string[] ReadProfiles(string path, string? userName = null)
     {
+        TryReadConfig(path, userName, out var names, out _);
+        return names;
+    }
+
+    /// <summary>Both answers from ONE read and ONE parse, and - unlike the two
+    /// wrappers - able to say that the read FAILED rather than conflating it with
+    /// "this account has no profiles". The caching getter needs that distinction:
+    /// see Profiles.</summary>
+    internal static bool TryReadConfig(string path, string? userName, out string[] names, out string? active)
+    {
+        names = Array.Empty<string>();
+        active = null;
         try
         {
             using var doc = JsonDocument.Parse(File.ReadAllText(path));
+            var account = AccountConfig(doc.RootElement, userName ?? Environment.UserName);
+
             var found = new List<string>();
-            Walk(AccountConfig(doc.RootElement, userName ?? Environment.UserName), found, 0);
-            var names = found
+            Walk(account, found, 0);
+            names = found
                 .Where(n => !string.IsNullOrWhiteSpace(n))
                 .Select(n => n.Trim())
                 .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -226,14 +274,17 @@ public static class WallpaperEngine
             Log.Info("wallpaper", names.Length == 0
                 ? "Wallpaper Engine has no profiles saved"
                 : $"Wallpaper Engine profiles: {string.Join(", ", names)}");
-            return names;
+
+            active = ActiveIn(account);
+            return true;
         }
         catch (Exception ex)
         {
-            // A config we cannot read is the same as no profiles: the feature
-            // stays off rather than the app failing to start a profile.
+            // A config we cannot read leaves the feature off rather than failing
+            // the app - but the caller is TOLD, so it does not cache this as an
+            // answer.
             Log.Warn("wallpaper", $"could not read Wallpaper Engine's config: {ex.Message}");
-            return Array.Empty<string>();
+            return false;
         }
     }
 
@@ -243,12 +294,22 @@ public static class WallpaperEngine
     /// rather than "the first profile".</summary>
     internal static string? ReadActiveProfile(string path, string? userName = null)
     {
-        try
+        TryReadConfig(path, userName, out _, out string? active);
+        return active;
+    }
+
+    static string? ActiveIn(JsonElement account)
+    {
         {
-            using var doc = JsonDocument.Parse(File.ReadAllText(path));
-            string? live = null;
+            string? live = null, declared = null;
             var saved = new List<(string Name, string Sig)>();
-            Scan(AccountConfig(doc.RootElement, userName ?? Environment.UserName), ref live, saved, 0);
+            Scan(account, ref live, ref declared, saved, 0);
+
+            // Taken only when it names a profile this account actually has: a
+            // stale name left behind by a deleted profile must not answer for one.
+            if (!string.IsNullOrEmpty(declared)
+                && saved.Any(x => string.Equals(x.Name, declared, StringComparison.OrdinalIgnoreCase)))
+                return declared;
 
             if (string.IsNullOrEmpty(live)) return null;
             // First match wins. Two profiles with identical wallpapers are
@@ -256,11 +317,6 @@ public static class WallpaperEngine
             // between them would change nothing on screen either.
             foreach (var (name, sig) in saved)
                 if (string.Equals(sig, live, StringComparison.OrdinalIgnoreCase)) return name;
-            return null;
-        }
-        catch (Exception ex)
-        {
-            Log.Warn("wallpaper", $"could not read what Wallpaper Engine is showing: {ex.Message}");
             return null;
         }
     }
@@ -278,10 +334,34 @@ public static class WallpaperEngine
             return general;
         if (root.TryGetProperty("profiles", out _) || root.TryGetProperty("wallpaperconfig", out _))
             return root;
-        return default;
+        // One exception: a file holding exactly ONE account section under a key we
+        // did not expect. Wallpaper Engine keys this by Windows account name and so
+        // do we, but "the name Windows reports" and "the name Wallpaper Engine
+        // wrote" only have to disagree once - a renamed account, a config carried
+        // over from another machine - for the picker to come up EMPTY with nothing
+        // to say why, and the wallpaper half of every profile to quietly stop
+        // working. With a single section there is no other account to borrow from
+        // and nothing to resolve. Two or more is the case this scoping exists for,
+        // and that still refuses rather than guessing. Only account-SHAPED children
+        // count, so the scalars Wallpaper Engine keeps beside them
+        // ("?installdirectory") cannot make a lone account look like two.
+        JsonElement only = default;
+        int candidates = 0;
+        foreach (var property in root.EnumerateObject())
+        {
+            if (property.Value.ValueKind != JsonValueKind.Object
+                || !property.Value.TryGetProperty("general", out var section)
+                || section.ValueKind != JsonValueKind.Object) continue;
+            if (++candidates > 1) return default;
+            only = property.Value;
+        }
+        if (candidates != 1) return default;
+        Log.Warn("wallpaper", $"no Wallpaper Engine settings for Windows account '{userName}'; "
+            + "reading the only account in the config instead");
+        return only;
     }
 
-    static void Scan(JsonElement e, ref string? live, List<(string, string)> saved, int depth)
+    static void Scan(JsonElement e, ref string? live, ref string? declared, List<(string, string)> saved, int depth)
     {
         if (depth > 8 || e.ValueKind != JsonValueKind.Object) return;
         foreach (var prop in e.EnumerateObject())
@@ -289,9 +369,22 @@ public static class WallpaperEngine
             // The live arrangement sits under "wallpaperconfig"; the saved ones
             // sit inside each entry of "profiles". Both carry the same
             // "selectedwallpapers" map, which is what makes them comparable.
-            if (prop.NameEquals("wallpaperconfig") && prop.Value.ValueKind == JsonValueKind.Object
-                && prop.Value.TryGetProperty("selectedwallpapers", out var cur))
-                live ??= Signature(cur);
+            if (prop.NameEquals("wallpaperconfig") && prop.Value.ValueKind == JsonValueKind.Object)
+            {
+                if (prop.Value.TryGetProperty("selectedwallpapers", out var cur))
+                    live ??= Signature(cur);
+                // And the name of the profile that put it there. Wallpaper Engine
+                // DOES record this, right next to the empty "profile" slot that
+                // looks like it should hold it: a string while a profile is up,
+                // absent once the arrangement has been changed by hand. That
+                // distinction is the whole question this method asks, and unlike
+                // the per-monitor comparison it survives a display being
+                // unplugged - a four-monitor profile on a desk showing three
+                // matches no signature at all, so every apply re-sends and every
+                // monitor reloads.
+                if (prop.Value.TryGetProperty("name", out var dn) && dn.ValueKind == JsonValueKind.String)
+                    declared ??= dn.GetString()?.Trim();
+            }
 
             if (prop.NameEquals("profiles") && prop.Value.ValueKind == JsonValueKind.Array)
                 foreach (var item in prop.Value.EnumerateArray())
@@ -299,10 +392,10 @@ public static class WallpaperEngine
                     if (item.ValueKind != JsonValueKind.Object) continue;
                     if (!item.TryGetProperty("name", out var n) || n.ValueKind != JsonValueKind.String) continue;
                     string sig = item.TryGetProperty("selectedwallpapers", out var w) ? Signature(w) : "";
-                    if (sig.Length > 0) saved.Add((n.GetString() ?? "", sig));
+                    if (sig.Length > 0) saved.Add((n.GetString()?.Trim() ?? "", sig));
                 }
 
-            Scan(prop.Value, ref live, saved, depth + 1);
+            Scan(prop.Value, ref live, ref declared, saved, depth + 1);
         }
     }
 
@@ -428,6 +521,14 @@ public static class WallpaperEngine
             psi.ArgumentList.Add("-profile");
             psi.ArgumentList.Add(profile);
             using var p = Process.Start(psi);
+            // Remember it OPTIMISTICALLY. Wallpaper Engine rewrites config.json
+            // when it gets round to it, and until it does, ActiveProfile still
+            // names the previous one - so a show whose next step wants the same
+            // wallpaper a second later failed the "already up" check above and
+            // reloaded every monitor again. Safe to assume: anything that really
+            // changes the wallpaper rewrites that file, which moves its timestamp
+            // and replaces this guess with a read.
+            lock (_profileGate) _active = profile;
             Log.Info("wallpaper", $"asked Wallpaper Engine for profile '{profile}'");
             return true;
         }

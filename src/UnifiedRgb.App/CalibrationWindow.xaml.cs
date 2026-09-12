@@ -242,7 +242,7 @@ public partial class CalibrationWindow : Window
             int leds = row.Zone!.Count;
             ScopeNote.Text = row.HasOwnTrim
                 ? $"This zone has its own trim. It REPLACES the whole-device trim for these {leds} LED(s) rather than stacking on top of it."
-                : $"These {leds} LED(s) inherit the enclosing zone's trim, or the device trim when no enclosing zone is trimmed. Move any slider to give this zone a trim of its own.";
+                : $"These {leds} LED(s) follow whatever the enclosing zone or the device is set to. Move any slider to give this zone a trim of its own.";
             return;
         }
 
@@ -297,10 +297,6 @@ public partial class CalibrationWindow : Window
         }
     }
 
-    /// <summary>Repaint every swatch from the live store. Called after any
-    /// change at all, because a trim on the selected device changes its row in
-    /// the list as well as the big preview, and a Reset all changes every row
-    /// at once.</summary>
     /// <summary>The swatch pair in words. It exists because the pair alone is
     /// ambiguous in the one case that matters: a reader looking at a 60% patch
     /// going in and full white coming out has no way to tell WHICH control did
@@ -324,6 +320,10 @@ public partial class CalibrationWindow : Window
         return "This row's trim changes the patch's balance without changing how bright it is.";
     }
 
+    /// <summary>Repaint every swatch from the live store. Called after any
+    /// change at all, because a trim on the selected device changes its row in
+    /// the list as well as the big preview, and a Reset all changes every row
+    /// at once.</summary>
     void RefreshSwatches()
     {
         foreach (var row in Rows) row.Update(_aid.SwatchFor(row.Device, row.ZoneName));
@@ -626,7 +626,10 @@ public sealed class CalDeviceRow : INotifyPropertyChanged
                 return zones == 0 ? self : $"{self} · {zones} zone(s) trimmed";
             }
             string size = Zone!.Count == 1 ? "1 LED" : $"{Zone.Count} LEDs";
-            return HasOwnTrim ? $"{size} · own trim" : $"{size} · inherited trim";
+            // "no trim of its own" rather than "inherited", which is a claim:
+            // with nothing trimmed anywhere - the default state - every zone row
+            // said "inherited trim" and there was no trim to inherit.
+            return HasOwnTrim ? $"{size} · own trim" : $"{size} · no trim of its own";
         }
     }
 

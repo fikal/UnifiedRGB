@@ -80,6 +80,13 @@ static class ProfileBindingSuite
         t.Equal("Binding After", step.Profile, "failed write keeps live show reference");
         t.Equal("Binding After", vm.SelectedProfile!.Name, "failed write keeps selected profile");
         t.Check(!vm.Profiles.Any(p => p.Name == "Must not appear"), "failed write never publishes missing profile");
+        // ...and the user is TOLD. Every one of these paths used to just return, so
+        // the Save button appeared to do nothing and the only record was a line in a
+        // log file nobody has a reason to open.
+        t.Check(UnifiedRgb.Core.Automation.ActivityLog.Shared.Snapshot()
+                .Any(e => e.Kind == UnifiedRgb.Core.Automation.ActivityKind.Problem
+                          && e.Text.Contains("Must not appear")),
+            "a save that could not be written says so where the user can see it");
 
         t.Section("import reload with live profile selector");
         store.Profiles.Single().Screen = "Imported screen";

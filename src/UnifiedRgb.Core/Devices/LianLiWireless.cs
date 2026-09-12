@@ -334,8 +334,14 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
     {
         // A short frame is dropped whole here rather than padded, because the
         // wire format carries every LED of every fan and a partial one would
-        // blank the rest. Nothing reached the fans, so say so.
-        if (colors.Count < LedCount || _disposed) return false;
+        // blank the rest. Nothing reached the fans, so say so - and SAY it:
+        // the contract calls a refusal honest and visible, and this one was
+        // honest but silent, so a caller sending short frames got nothing but
+        // fans that never changed.
+        if (_disposed) return false;
+        if (colors.Count < LedCount)
+            return WritePolicy.Refused("lianli-wl:short", "LianLi",
+                $"a frame of {colors.Count} colors cannot be sent to {LedCount} LEDs; nothing was written");
         PaceOutsideLock();
         lock (_lock)
         {
@@ -428,7 +434,10 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         // a frame the dongle never received - and because nothing on the
         // streaming path calls InvalidateCache, the keepalive deduped that
         // frame away for the life of the object.
-        _lastSent = (Rgb[])_shadow.Clone();
+        // Cache, not Clone: the helper reuses the array it already has rather
+        // than allocating a new one per changed frame, and this is the
+        // streaming path.
+        WritePolicy.Cache(ref _lastSent, _shadow);
         return true;
     }
 

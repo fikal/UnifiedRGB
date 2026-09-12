@@ -53,6 +53,11 @@ public enum ActivityKind
     UserOverride,
     /// <summary>Automation was paused or resumed.</summary>
     Paused,
+    /// <summary>Something the user asked for did not fully work - a save that
+    /// could not be written, a rename only half applied. These used to reach
+    /// nothing but the log file, so "Save" appeared to do nothing at all and the
+    /// only clue was in a file the user has no reason to open.</summary>
+    Problem,
 }
 
 /// <summary>One line of history: when, what kind of thing happened, and one
@@ -72,6 +77,7 @@ public readonly record struct ActivityEntry(DateTime At, ActivityKind Kind, stri
         ActivityKind.Failsafe => "Failsafe",
         ActivityKind.UserOverride => "You took over",
         ActivityKind.Paused => "Automation",
+        ActivityKind.Problem => "Did not work",
         _ => "",
     };
 

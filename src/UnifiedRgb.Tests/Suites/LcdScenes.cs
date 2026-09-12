@@ -183,6 +183,50 @@ static class LcdScenesSuite
             typeof(MainViewModel).GetMethod("MigrateShowsToProfiles", flags)!.Invoke(vm, null);
             t.Check(vm.Shows.Running, "legacy startup show runs during its migration launch");
             t.Equal("Screen", b.Screen, "legacy migration preserves the independent startup screen");
+            vm.Shows.Stop();
+
+            t.Section("a running show cannot write its step into the user's profile");
+            // While a show runs, the desk is whatever STEP is up - and a step is
+            // somebody else's profile. SaveActiveProfile is reached from the close
+            // prompt and, with NO prompt at all, from Session_Ending, so a logoff
+            // during a show used to quietly rewrite the saved setup the user had
+            // selected with the current step's colors.
+            // A device that is PRESENT, with live colors that differ from what the
+            // profile stores. Without one, both paths agree by accident.
+            var stage = new FakeDevice { Name = "Stage", LedCount = 2 };
+            vm.Devices.Add(stage);
+            var keeper = new Profile { Name = "Keeper" };
+            keeper.DeviceFrames["Stage"] = new[] { "ABCDEF", "ABCDEF" };
+            vm.Profiles.Add(keeper); profiles.Profiles.Add(keeper);   // the store is what a capture carries from
+            vm.SelectedProfile = keeper;
+            // The step paints the desk green - this is the show's lighting, not the
+            // user's, and it is what must NOT end up in "Keeper".
+            var live = vm.Lighting.FrameFor(stage);
+            live[0] = new Rgb(0, 255, 0); live[1] = new Rgb(0, 255, 0);
+            vm.Shows.Start("Loop");
+            t.Check(vm.Shows.Running, "the show is running for the save test");
+            vm.SaveActiveProfile();
+            var saved = vm.Profiles.Single(p => p.Name == "Keeper");
+            t.Check(saved.DeviceFrames.TryGetValue("Stage", out var kept) && kept[0] == "ABCDEF",
+                "saving during a show carries the profile's own colors rather than the step's");
+            // The pickers ARE the user's and must still be saved - that is the
+            // whole reason a show step no longer clears the unsaved flag.
+            vm.PumpChoice = vm.PumpRows.First(r => r.Screen == "Screen");
+            vm.SaveActiveProfile();
+            t.Equal("Screen", vm.Profiles.Single(p => p.Name == "Keeper").Screen,
+                "saving during a show still records the picker choices the user made");
+            t.Check(vm.CaptureState().AppliedProfileName != "Keeper",
+                "a save that skipped the colors does not claim the desk is showing that profile");
+            vm.Shows.Stop();
+
+            // With no show running the save DOES capture the desk, so the desk is
+            // now that profile. Clearing this instead cost ApplyStep its "already
+            // on" skip - a step naming the just-saved profile restarted every
+            // effect channel - and made AddStep default to the first profile in
+            // the list rather than the lit one.
+            vm.SaveActiveProfile();
+            t.Equal("Keeper", vm.CaptureState().AppliedProfileName,
+                "saving outside a show records that the lighting IS that profile");
         }
         finally { lcdField.SetValue(vm.Lcd, null); vm.Dispose(); }
     }

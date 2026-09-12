@@ -257,6 +257,7 @@ public sealed class ActivityKindBrushConverter : System.Windows.Data.IValueConve
     static readonly SolidColorBrush Failsafe = Frozen(0xE0, 0x6C, 0x6C);
     static readonly SolidColorBrush UserOverride = Frozen(0xF0, 0xB4, 0x5A);
     static readonly SolidColorBrush Paused = Frozen(0xE0, 0xA8, 0x3A);
+    static readonly SolidColorBrush Problem = Frozen(0xE0, 0x6C, 0x6C);
     static readonly SolidColorBrush Unknown = Frozen(0x6E, 0x74, 0x84);
 
     static SolidColorBrush Frozen(byte r, byte g, byte b)
@@ -278,6 +279,7 @@ public sealed class ActivityKindBrushConverter : System.Windows.Data.IValueConve
                 ActivityKind.Failsafe => Failsafe,
                 ActivityKind.UserOverride => UserOverride,
                 ActivityKind.Paused => Paused,
+                ActivityKind.Problem => Problem,
                 _ => Unknown,
             }
             : Unknown;

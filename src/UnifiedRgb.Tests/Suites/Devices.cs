@@ -28,6 +28,15 @@ static class DevicesSuite
     {
         t.Section("Lian Li wireless: clear delivery cache after uncertain sends");
         var usb = new WirelessUsb();
+        // The ctor sets the process-wide LianLiWireless.Instance, which the sensor
+        // hub and the cooling view model read. Leaving a DISPOSED fake there for
+        // the rest of the run is a trap for whatever suite comes next.
+        var instanceField = typeof(LianLiWireless).GetProperty("Instance",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public
+            | System.Reflection.BindingFlags.NonPublic);
+        object? priorInstance = instanceField?.GetValue(null);
+        try
+        {
         using var fans = new LianLiWireless(usb, "Test", new byte[6], new byte[6], 8, 1, 1);
         var a = Enumerable.Repeat(Rgb.Red, fans.LedCount).ToArray();
         var b = Enumerable.Repeat(Rgb.Blue, fans.LedCount).ToArray();
@@ -68,6 +77,8 @@ static class DevicesSuite
         t.Check(!fans.SetColors(b), "fixture refuses another changed frame");
         before = usb.Attempts;
         t.Check(fans.SetColors(b) && usb.Attempts > before, "an identical failed frame is retried too");
+        }
+        finally { instanceField?.SetValue(null, priorInstance); }
     }
 
     sealed class WirelessUsb : UnifiedRgb.Core.Native.IUsbWriter
@@ -409,6 +420,12 @@ static class DevicesSuite
         }
 
         t.Section("keyboard mode-init refusal cannot be cached as delivered colors");
+        // Retry at once, or each recovery step below sleeps out the init backoff.
+        // The backoff itself is proved in the WriteContract suite.
+        int apexBackoff = SteelSeriesApex.InitRetryAfterFailMs;
+        int strafeBackoff = CorsairStrafeMk2.InitRetryAfterFailMs;
+        SteelSeriesApex.InitRetryAfterFailMs = 0;
+        CorsairStrafeMk2.InitRetryAfterFailMs = 0;
         {
             // Refuse ONLY the init, accepting RGB reports. Refusing everything
             // masks the bug because the frame fails independently of the init.
@@ -447,6 +464,8 @@ static class DevicesSuite
             t.Check(kb.SetColors(frame) && hid.Writes.Count == before, "Corsair dedups only after initialization and frame land");
             DeviceHealth.Shared.Forget(kb);
         }
+        SteelSeriesApex.InitRetryAfterFailMs = apexBackoff;
+        CorsairStrafeMk2.InitRetryAfterFailMs = strafeBackoff;
 
         t.Section("RazerHid: the report layout, byte for byte");
         // openrazer's report layout: 90 wire bytes behind report id 0. This is
