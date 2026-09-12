@@ -302,10 +302,22 @@ public partial class CalibrationWindow : Window
     /// going in and full white coming out has no way to tell WHICH control did
     /// that, and the nearest percentage on screen is the ceiling slider, which
     /// is innocent. A gain above 1 lifts; the ceiling only ever limits.</summary>
-    internal static string DescribeSend(Rgb asked, Rgb sent)
+    internal static string DescribeSend(Rgb asked, Rgb sent) => DescribeSend(asked, sent, trimmed: false);
+
+    /// <param name="trimmed">Whether this row actually CARRIES a trim. It cannot
+    /// be inferred from the colours: a trim is a fixed point for plenty of patches,
+    /// and the one that matters is the common one - gains at 2.0 send a saturated
+    /// primary straight back out at 255, because it was already at the ceiling. The
+    /// old test said "this row is untrimmed" while the list beside it said
+    /// "trimmed", on a device whose trim was about to flatten every effect.</param>
+    internal static string DescribeSend(Rgb asked, Rgb sent, bool trimmed)
     {
-        if (sent.R == asked.R && sent.G == asked.G && sent.B == asked.B)
+        bool same = sent.R == asked.R && sent.G == asked.G && sent.B == asked.B;
+        if (same && !trimmed)
             return "This row is untrimmed, so the patch reaches it unchanged.";
+        if (same)
+            return "This row IS trimmed, but this patch happens to come out unchanged - "
+                 + "a channel already at the ceiling absorbs the lift. Try a grey patch to see the trim.";
 
         int inLevel = Math.Max(asked.R, Math.Max(asked.G, asked.B));
         int outLevel = Math.Max(sent.R, Math.Max(sent.G, sent.B));
@@ -349,7 +361,8 @@ public partial class CalibrationWindow : Window
             // inside a closed case - where the swatch on screen is the only
             // feedback there is.
             TrimHex.Text = sent.ToHex();
-            SendNote.Text = DescribeSend(asked, sent);
+            SendNote.Text = DescribeSend(asked, sent,
+                trimmed: !Calibration.Effective(row2.Device, row2.ZoneName).IsIdentity);
         }
 
         StatusText.Text = _aid.Active

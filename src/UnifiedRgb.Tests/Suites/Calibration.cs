@@ -1078,6 +1078,24 @@ static class CalibrationSuite
         string untouched = UnifiedRgb.App.CalibrationWindow.DescribeSend(white60, white60);
         t.Check(untouched.Contains("unchanged"), "an untrimmed row says the patch arrives unchanged");
 
+        // A trim is a fixed point for plenty of patches, and the common case is the
+        // one that misleads: gains at 2.0 send a saturated primary straight back out
+        // at 255 because it was already at the ceiling. Inferring "untrimmed" from
+        // the colours said exactly that, on a device whose trim was about to flatten
+        // every effect - while the list beside it said "trimmed".
+        var blue = new Rgb(0, 0, 255);
+        string coincidence = UnifiedRgb.App.CalibrationWindow.DescribeSend(blue, blue, trimmed: true);
+        t.Check(!coincidence.Contains("untrimmed"), "a trimmed row is never called untrimmed");
+        t.Check(coincidence.Contains("IS trimmed"), "...it says the trim is there but this patch cannot show it");
+        t.Check(UnifiedRgb.App.CalibrationWindow.DescribeSend(blue, blue, trimmed: false).Contains("untrimmed"),
+            "a genuinely untrimmed row still says so");
+
+        // The slider range and the range Normalize enforces must agree - the
+        // constants exist for exactly that, and the gamma slider had hardcoded a
+        // 0.3 floor against a 0.25 model minimum, so the lowest gamma a user could
+        // reach was not the lowest gamma the store would keep.
+        t.Equal(0.25, DeviceCalibration.MinGamma, "the gamma floor is the one the UI binds to");
+
         // The real rig that prompted this: gains at 2.0 turn the 60% patch into
         // full white however high the ceiling is set.
         var lifted = new DeviceCalibration { GainR = 2, GainG = 2, GainB = 2, Gamma = 0.3 };
