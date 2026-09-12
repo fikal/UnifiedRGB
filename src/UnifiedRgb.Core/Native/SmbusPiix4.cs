@@ -131,7 +131,19 @@ public abstract class PawnSmbus : IDisposable
     bool AcquireMutex()
     {
         try { return _smbusMutex.WaitOne(2000); }
-        catch (AbandonedMutexException) { return true; }
+        catch (AbandonedMutexException)
+        {
+            // The previous owner died without releasing it - us killed under a
+            // debugger mid-transaction, or another RGB tool crashing. Windows
+            // hands ownership to the next waiter regardless, so we DO hold it
+            // and carry on; the finally below still releases it.
+            //
+            // Logged because it is otherwise invisible from outside a debugger,
+            // which is the one place it is loudly visible: a first-chance stop
+            // on an exception that is caught right here and is not a fault.
+            Log.Warn("smbus", "the machine-wide SMBus mutex was abandoned by whoever held it last; taking it over");
+            return true;
+        }
     }
 
     public void Dispose()
