@@ -22,6 +22,7 @@ static class Suites
         ("Codec",         CodecSuite.Run),
         ("Storage",       StorageSuite.Run),
         ("Profiles",      ProfilesSuite.Run),
+        ("Bindings",      BindingsSuite.Run),
         ("Backup",        BackupSuite.Run),
         ("Fans",          FansSuite.Run),
         ("SensorRules",   SensorRulesSuite.Run),

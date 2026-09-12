@@ -9,11 +9,15 @@
          filed it under the smallest of the three things it drives.
 
          Its DataContext is the main view model's Shows. -->
-    <ScrollViewer Visibility="{Binding IsShowOpen, Converter={StaticResource BoolToVis},
-                                       RelativeSource={RelativeSource AncestorType=Window}}"
+    <!-- Plain bindings against the inherited DataContext, exactly as SettingsPane
+         does. RelativeSource AncestorType=Window makes the WINDOW the source, so
+         the path is looked up on MainWindow rather than on its DataContext -
+         which finds nothing, fails silently, and left this page permanently
+         visible on top of the lighting pane. -->
+    <ScrollViewer Visibility="{Binding IsShowOpen, Converter={StaticResource BoolToVis}}"
                   VerticalScrollBarVisibility="Auto">
         <StackPanel MaxWidth="700" HorizontalAlignment="Left" Margin="0,0,14,0"
-                    DataContext="{Binding Shows, RelativeSource={RelativeSource AncestorType=Window}}">
+                    DataContext="{Binding Shows}">
             <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
                 <Button Content="&#x2190;  Back" Padding="10,6" Click="Back_Click" ToolTip="Back to devices"/>
                 <TextBlock Text="Shows" FontSize="20" FontWeight="SemiBold"
