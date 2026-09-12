@@ -226,27 +226,7 @@ public partial class LcdDesignerPane : UserControl
     /*--- scenes & sequences ---*/
     void SaveScene_Click(object sender, RoutedEventArgs e) => VM.SaveScene();
     void DeleteScene_Click(object sender, RoutedEventArgs e) => VM.DeleteScene();
-    void NewSequence_Click(object sender, RoutedEventArgs e) => VM.NewSequence();
-    void DeleteSequence_Click(object sender, RoutedEventArgs e) => VM.DeleteSequence();
-    void AddAction_Click(object sender, RoutedEventArgs e) => VM.AddSequenceAction();
-    void RunSequence_Click(object sender, RoutedEventArgs e) => VM.ToggleSequence();
-
-    void PauseSequence_Click(object sender, RoutedEventArgs e) => VM.ToggleSequencePaused();
-
-    void ActionRemove_Click(object sender, RoutedEventArgs e)
-    {
-        if ((sender as FrameworkElement)?.DataContext is SceneAction a) VM.RemoveSequenceAction(a);
-    }
-
-    void ActionUp_Click(object sender, RoutedEventArgs e)
-    {
-        if ((sender as FrameworkElement)?.DataContext is SceneAction a) VM.MoveSequenceAction(a, -1);
-    }
-
-    void ActionDown_Click(object sender, RoutedEventArgs e)
-    {
-        if ((sender as FrameworkElement)?.DataContext is SceneAction a) VM.MoveSequenceAction(a, +1);
-    }
+    // The show handlers left with the show: see ShowPane.
 
     static double Clamp(double v, double lo, double hi) => v < lo ? lo : v > hi ? hi : v;
 }

@@ -220,6 +220,8 @@ public partial class MainWindow : Window
     // users back to the device view.
     void Settings_Click(object sender, RoutedEventArgs e) => _vm.IsSettingsOpen = true;
 
+    void Show_Click(object sender, RoutedEventArgs e) => _vm.IsShowOpen = true;
+
     void Update_Click(object sender, RoutedEventArgs e) => _vm.InstallUpdate();
 
     void Min_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;

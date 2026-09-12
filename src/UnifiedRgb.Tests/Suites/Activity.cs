@@ -279,7 +279,7 @@ static class ActivitySuite
                 t.Equal(0, vm.WhatUsesProfile("   ").Count, "nor does a blank one");
 
                 // One of each kind that can hold a profile name.
-                vm.Lcd.Sequences.Add(new UnifiedRgb.App.SceneSequence
+                vm.Shows.Shows.Add(new UnifiedRgb.App.SceneSequence
                 {
                     Name = "Evening",
                     Actions =

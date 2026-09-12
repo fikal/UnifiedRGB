@@ -20,18 +20,15 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
 {
     LcdController? _lcd;
     PawnIoCpuTempProvider? _cpuTemp;
-    readonly Func<bool> _isOnScreen, _lightsSuppressed;
-    readonly Func<string, bool> _applyProfile;
-    readonly Func<IEnumerable<string>> _profileNames;
+    // Shows used to live here and brought their own dependencies with them: a
+    // way to apply a profile, the profile list, what is applied now. They left
+    // with the shows.
+    readonly Func<bool> _isOnScreen;
     readonly DispatcherTimer _lcdSave = new() { Interval = TimeSpan.FromMilliseconds(700) };
 
-    public LcdDesignerViewModel(Func<bool> isOnScreen, Func<bool> lightsSuppressed,
-        Func<string, bool> applyProfile, Func<IEnumerable<string>> profileNames,
-        Func<string?> currentProfile)
+    public LcdDesignerViewModel(Func<bool> isOnScreen)
     {
-        _isOnScreen = isOnScreen; _lightsSuppressed = lightsSuppressed;
-        _applyProfile = applyProfile; _profileNames = profileNames;
-        _currentProfile = currentProfile;
+        _isOnScreen = isOnScreen;
 
         AddTimeCommand     = new RelayCommand(_ => AddElement(LcdElementKind.Time), _ => Available);
         AddDateCommand     = new RelayCommand(_ => AddElement(LcdElementKind.Date), _ => Available);
@@ -667,22 +664,15 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     | and can be the startup show.                           |
     \*-----------------------------------------------------*/
     SceneStore _scenes = SceneStore.Load();
-    SceneSequencer? _sequencer;
 
     public ObservableCollection<string> SceneNames { get; } = new();
-    public ObservableCollection<SceneSequence> Sequences { get; } = new();
-    public ObservableCollection<SceneAction> SequenceActions { get; } = new();
 
     string _sceneNameInput = "";
     public string SceneNameInput { get => _sceneNameInput; set { _sceneNameInput = value; OnChanged(); } }
 
     public const string KeepChoice = "(no change)";
     public IReadOnlyList<string> SceneChoices => new[] { KeepChoice }.Concat(SceneNames).ToList();
-    public IReadOnlyList<string> ProfileChoices => new[] { KeepChoice }.Concat(_profileNames()).ToList();
 
-    /// <summary>The profile list changed (the Show tab's lights dropdowns are
-    /// computed from it and would otherwise stay frozen at launch time).</summary>
-    public void NotifyProfilesChanged() => OnChanged(nameof(ProfileChoices));
 
     string? _selectedSceneName;
     public string? SelectedSceneName
@@ -740,88 +730,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         return true;
     }
 
-    /// <summary>Start a saved show because a profile asked for it: the
-    /// counterpart to ShowScreen, and reported rather than thrown for the same
-    /// reason - the profile's lighting has already applied by the time we get
-    /// here.
-    ///
-    /// A show that is ALREADY the one running is left alone rather than
-    /// restarted, so re-applying a profile does not jump the panel back to step
-    /// one of something somebody is watching. That also breaks the loop a show
-    /// can otherwise make of itself: a step is allowed to apply a profile, and
-    /// that profile is now allowed to name a show.</summary>
-    public bool ShowSequence(string name)
-    {
-        if (_sequencer == null)
-        {
-            // Asked before the scene list exists, which is the NORMAL order at
-            // launch: the startup profile applies first and InitScenes runs
-            // after it. That ordering used to be fine because the auto-start
-            // flag lived inside InitScenes; now that a profile owns the show,
-            // the request arrives too early and was simply lost - "show could
-            // not start" at every launch, with only the first profile playing.
-            //
-            // Remembered rather than refused, and true because it WILL happen.
-            _pendingShow = name;
-            Log.Info("scenes", $"show '{name}' asked for before the scenes were loaded; starting it when they are");
-            return true;
-        }
-        var seq = Sequences.FirstOrDefault(x => x != null && x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
-        if (seq == null)
-        {
-            Log.Warn("scenes", $"a profile asked for show '{name}', which does not exist");
-            return false;
-        }
-        if (seq.Actions == null || seq.Actions.Count == 0)
-        {
-            Log.Warn("scenes", $"a profile asked for show '{name}', which has no steps");
-            return false;
-        }
-        if (_sequencer.RunningName == seq.Name) return true;
-        SelectedSequence = seq;
-        _sequencer.Start(seq);
-        return true;
-    }
 
-    /// <summary>Stop whatever show is running. A profile that pins ONE screen has
-    /// to say so to a panel a show is driving, or the show's next step paints
-    /// over that screen a second later - which is exactly what made a profile's
-    /// pump screen meaningless for anyone who had a show going.</summary>
-    public void StopSequence()
-    {
-        _pendingShow = null;   // a show asked for and then called off must not start late
-        _sequencer?.Stop();
-    }
-
-    /// <summary>A show asked for before InitScenes had built the sequencer.</summary>
-    string? _pendingShow;
-
-    /// <summary>True while a show is running, for the profile apply to know
-    /// whether "leave the pump alone" has anything to leave alone.</summary>
-    public bool AnyShowRunning => _sequencer?.Running == true;
-
-    SceneSequence? _selectedSequence;
-    public SceneSequence? SelectedSequence
-    {
-        get => _selectedSequence;
-        set
-        {
-            _selectedSequence = value;
-            OnChanged();
-            SequenceActions.Clear();
-            foreach (var a in value?.Actions ?? new()) { SequenceActions.Add(a); HookAction(a); }
-        }
-    }
-
-    // Named handler + remove-before-add: SceneActions persist across sequence
-    // selections, and the old anonymous lambda stacked one MORE save handler
-    // per select (A->B->A = every edit wrote scenes.json 3x).
-    void HookAction(SceneAction a)
-    {
-        a.PropertyChanged -= SceneActionChanged;
-        a.PropertyChanged += SceneActionChanged;
-    }
-    void SceneActionChanged(object? s, PropertyChangedEventArgs e) => _scenes.Save();
 
     /// <summary>Populate the scene/sequence lists and auto-run the startup show.
     /// Called once, after the main view model has applied the startup profile.</summary>
@@ -829,66 +738,24 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     {
         foreach (var sc in _scenes.Scenes) SceneNames.Add(sc.Name);
         SelectLoadedScene();
-        foreach (var sq in _scenes.Sequences) Sequences.Add(sq);
-        _sequencer = new SceneSequencer(ApplySceneAction);
-        _sequencer.StateChanged += () =>
-        {
-            OnChanged(nameof(SequenceRunning));
-            OnChanged(nameof(RunButtonText));
-            OnChanged(nameof(SequenceStatus));
-            OnChanged(nameof(SequencePaused));
-            OnChanged(nameof(CanPauseSequence));
-            OnChanged(nameof(PauseButtonText));
-            OnChanged(nameof(RunningShowLine));
-        };
-        // Nothing auto-starts here any more. The flag that did made a second
-        // owner of the panel: the startup profile put its screen up and then this
-        // started a show whose first step painted over it, and every later profile
-        // switch lost the same argument a second after winning it. A profile names
-        // its own show now, and MainViewModel has already moved any surviving flag
-        // onto the startup profile so nobody's show simply stops appearing.
-        SelectedSequence = Sequences.FirstOrDefault();
-
-        // Anything asked for while we were not ready yet. The startup profile is
-        // applied before this runs, so this is where its show actually starts.
-        if (_pendingShow is string pending)
-        {
-            _pendingShow = null;
-            ShowSequence(pending);
-        }
     }
 
-    /// <summary>The show that used to be marked "start with the app", or null.
-    /// Read once by the migration that moves it onto a profile.</summary>
-    public string? LegacyActiveSequence => _scenes.ActiveSequence;
+    /// <summary>The store shows share with scenes: one file holds both. Handed
+    /// to ShowViewModel through a function rather than as a value, because an
+    /// import replaces the whole thing.</summary>
+    internal SceneStore Scenes => _scenes;
 
-    /// <summary>Forget the retired flag once it has been moved somewhere real, so
-    /// the migration runs once rather than on every launch.</summary>
-    public void ClearLegacyActiveSequence()
-    {
-        if (_scenes.ActiveSequence == null) return;
-        _scenes.ActiveSequence = null;
-        _scenes.Save();
-    }
-
-    /// <summary>Move show steps that named a pump scene onto the profile that
-    /// carries it. Called once at startup, after the profile list exists.</summary>
-    public void MigrateSceneSteps(IEnumerable<Profile> profiles)
-    {
-        if (_scenes.MigrateSceneSteps(profiles) >= 0) _scenes.Save();
-    }
+    /// <summary>A show has taken the panel. The screens it puts up must not be
+    /// saved as the user's own canvas, or the next step flushes one over their
+    /// real design.</summary>
+    internal void MarkShowOwnsPanel() => _liveIsShowScene = true;
 
 
     /// <summary>Replace imported stores without leaving old timers or save handlers alive.</summary>
     public void ReloadScenes(bool currentScreenChanged)
     {
-        _sequencer?.Stop();
         _lcdSave.Stop();
-        foreach (var seq in _scenes.Sequences)
-            foreach (var action in seq.Actions) action.PropertyChanged -= SceneActionChanged;
-        SelectedSequence = null;
         SceneNames.Clear();
-        Sequences.Clear();
         _scenes = SceneStore.Load();
         _selectedSceneName = null;
         OnChanged(nameof(SelectedSceneName));
@@ -896,45 +763,6 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
             LoadDesignIntoEditor(LcdDesign.Load());
         InitScenes();
         OnChanged(nameof(SceneChoices));
-        OnChanged(nameof(ProfileChoices));
-    }
-
-    readonly Func<string?> _currentProfile;
-
-    void ApplySceneAction(SceneAction a)
-    {
-        // Lights deliberately off (locked / night): hold the step. Applying a
-        // profile here relit the case while locked AND cleared the automation's
-        // return point, so the unlock had nothing to restore and left the pump
-        // LCD blank. The sequencer keeps ticking; the next step after the
-        // lights return applies normally.
-        if (_lightsSuppressed()) return;
-        // Re-applying what is already on is not free: loading a profile stops
-        // and restarts every effect channel, so a step that names the running
-        // profile visibly resets the animation instead of leaving it alone.
-        // Steps that genuinely change nothing now just tick past.
-        //
-        // Profile FIRST, screen second. A profile carries its own pump screen
-        // (LoadProfile shows it), so with the order reversed a step asking for
-        // screen A plus a lighting profile saved with screen B finished on B:
-        // the step's explicit choice was overwritten by the profile's implicit
-        // one. The explicitly selected screen must have the last word.
-        //
-        // A step IS a profile now. Everything a step used to set separately - the
-        // lights, the pump screen - travels on the profile, and the screen in the
-        // case travels with it for free. That removes the rule this method used to
-        // need about which of two ways of choosing a screen won, and with it the
-        // whole class of argument between a step and the profile it applies.
-        if (string.IsNullOrWhiteSpace(a.Profile)) return;
-        if (string.Equals(_currentProfile(), a.Profile, StringComparison.OrdinalIgnoreCase))
-            return;   // already on it; re-applying restarts every effect channel
-
-        // Show territory, flagged BEFORE the profile applies. The profile's screen
-        // is the show's screen now, so it must go up show-only: loaded as the
-        // user's canvas it starts the debounced save, and the next step's screen
-        // then flushes it into lcd.json over their real design.
-        _liveIsShowScene = true;
-        _applyProfile(a.Profile);
     }
 
     /// <summary>What the pump is showing right now, detached: the live design
@@ -1102,107 +930,8 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         _scenes.Save();
     }
 
-    public void NewSequence()
-    {
-        string name = !string.IsNullOrWhiteSpace(SceneNameInput) ? SceneNameInput.Trim()
-                    : $"Sequence {_scenes.Sequences.Count + 1}";
-        if (_scenes.Sequences.Any(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase))) return;
-        var sq = new SceneSequence { Name = name };
-        _scenes.Sequences.Add(sq);
-        Sequences.Add(sq);
-        SceneNameInput = "";
-        SelectedSequence = sq;
-        _scenes.Save();
-    }
-
-    public void DeleteSequence()
-    {
-        if (_selectedSequence == null) return;
-        if (_sequencer?.RunningName == _selectedSequence.Name) _sequencer.Stop();
-        if (_scenes.ActiveSequence == _selectedSequence.Name) _scenes.ActiveSequence = null;
-        _scenes.Sequences.Remove(_selectedSequence);
-        Sequences.Remove(_selectedSequence);
-        SelectedSequence = Sequences.FirstOrDefault();
-        _scenes.Save();
-    }
-
-    public void AddSequenceAction()
-    {
-        if (_selectedSequence == null) return;
-        var a = new SceneAction { Profile = _currentProfile() ?? _profileNames().FirstOrDefault(), DelaySeconds = 5 };
-        _selectedSequence.Actions.Add(a);
-        SequenceActions.Add(a);
-        HookAction(a);
-        _scenes.Save();
-    }
-
-    public void RemoveSequenceAction(SceneAction a)
-    {
-        if (_selectedSequence == null) return;
-        _selectedSequence.Actions.Remove(a);
-        SequenceActions.Remove(a);
-        _scenes.Save();
-    }
-
-    public void MoveSequenceAction(SceneAction a, int delta)
-    {
-        if (_selectedSequence == null) return;
-        int i = _selectedSequence.Actions.IndexOf(a);
-        int j = i + delta;
-        if (i < 0 || j < 0 || j >= _selectedSequence.Actions.Count) return;
-        _selectedSequence.Actions.RemoveAt(i);
-        _selectedSequence.Actions.Insert(j, a);
-        SequenceActions.Move(i, j);
-        _scenes.Save();
-    }
-
-    public bool SequenceRunning => _sequencer?.Running == true;
-    public string RunButtonText => SequenceRunning ? "Stop" : "Run";
-    public string SequenceStatus => !SequenceRunning ? ""
-        : SequencePaused ? $"'{_sequencer!.RunningName}' is paused where it is"
-        : $"running '{_sequencer!.RunningName}' - loops until stopped";
-
-    /*--- Pausing a show, as distinct from stopping one.
-          A show moves the whole desk every few seconds, which is exactly what
-          you do not want while changing the settings that decide what it moves
-          to. Stop would do it, but stopping forgets the show and leaves the
-          desk wherever the last step put it; a pause holds its place, keeps
-          the time already served on the current step, and carries on. ---*/
-
-    public bool SequencePaused => _sequencer?.Paused == true;
-
-    /// <summary>True when there is a running show to pause, which is what the
-    /// settings page hangs its banner on.</summary>
-    public bool CanPauseSequence => SequenceRunning;
-
-    public string PauseButtonText => SequencePaused ? "Resume show" : "Pause show";
-
-    public string RunningShowLine => !SequenceRunning ? ""
-        : SequencePaused
-            ? $"Show “{_sequencer!.RunningName}” is paused."
-            : $"Show “{_sequencer!.RunningName}” is running and changes your desk every few seconds.";
-
-    public void ToggleSequencePaused()
-    {
-        if (_sequencer is not { Running: true }) return;
-        _sequencer.Paused = !_sequencer.Paused;
-    }
-
-    public void ToggleSequence()
-    {
-        if (_sequencer == null) return;
-        if (SequenceRunning) _sequencer.Stop();
-        else if (_selectedSequence is { Actions.Count: > 0 }) _sequencer.Start(_selectedSequence);
-    }
-
-    // No "start this show with the app" any more. A show starts because a
-    // profile named it, which is the same switch that already decides the
-    // lights, the pump screen and the screen in the case. Two switches that
-    // could disagree about one panel is the fault this replaced.
-
     public void Dispose()
     {
-        _sequencer?.Stop();   // a queued step must not drive the disposed controller
         _lcdSave.Stop();
         if (_lcd != null)
         {

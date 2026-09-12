@@ -365,6 +365,35 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     }
 
     bool _isSettingsOpen;
+    bool _isShowOpen;
+
+    /// <summary>The Shows page. Its own top-level destination beside Settings,
+    /// because a show drives the lights, the pump panel and the screen in the
+    /// case - living inside the pump designer filed it under one of the three.</summary>
+    public bool IsShowOpen
+    {
+        get => _isShowOpen;
+        set
+        {
+            if (_isShowOpen == value) return;
+            _isShowOpen = value;
+            if (value) IsSettingsOpen = false;   // one destination at a time
+            NotifyPanes();
+        }
+    }
+
+    /// <summary>Every pane's visibility is a function of the same few flags, so
+    /// they are notified together rather than each caller remembering the list -
+    /// which is how Cooling once stayed visible underneath Settings.</summary>
+    void NotifyPanes()
+    {
+        OnChanged(nameof(IsShowOpen));
+        OnChanged(nameof(IsSettingsOpen));
+        OnChanged(nameof(ShowLighting));
+        OnChanged(nameof(ShowLcdPanel));
+        OnChanged(nameof(ShowDisabledPane));
+        OnChanged(nameof(ShowCoolingPanel));
+    }
     public bool IsSettingsOpen
     {
         get => _isSettingsOpen;
@@ -379,6 +408,8 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             // viewer's, so the control is permanently visible and the event that
             // was supposed to drive this could not happen.
             if (opening) RefreshWallpaperProfiles();
+            if (value) _isShowOpen = false;   // one destination at a time
+            OnChanged(nameof(IsShowOpen));
             OnChanged(); OnChanged(nameof(ShowLighting)); OnChanged(nameof(ShowLcdPanel));
             OnChanged(nameof(ShowDisabledPane));
             // Field bug: Cooling stayed visible under Settings — this
@@ -389,7 +420,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             if (!value && IsCoolingSelected) StartCoolingRefresh();
         }
     }
-    public bool ShowLcdPanel => _isLcdSelected && !_isSettingsOpen;
+    public bool ShowLcdPanel => _isLcdSelected && !_isSettingsOpen && !_isShowOpen;
 
     string _uploadStatus = "";
     public string UploadStatus { get => _uploadStatus; set { _uploadStatus = value; OnChanged(); } }
@@ -673,7 +704,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     }
 
     public bool IsDisabledSelected => _selectedLeft?.IsDisabled == true;
-    public bool ShowDisabledPane => IsDisabledSelected && !_isSettingsOpen;
+    public bool ShowDisabledPane => IsDisabledSelected && !_isSettingsOpen && !_isShowOpen;
 
     /*-----------------------------------------------------*\
     | OpenRGB bridge: a managed, invisible OpenRGB instance |
@@ -1058,9 +1089,9 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         try
         {
-            Lcd.MigrateSceneSteps(Profiles);
+            Shows.MigrateSceneSteps(Profiles);
 
-            string? legacy = Lcd.LegacyActiveSequence;
+            string? legacy = Shows.LegacyActiveShow;
             if (string.IsNullOrWhiteSpace(legacy)) return;
 
             var startup = Profiles.FirstOrDefault(p =>
@@ -1083,7 +1114,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             startup.Show = legacy;
             startup.Screen = null;
             _store.SaveProfiles();
-            Lcd.ClearLegacyActiveSequence();
+            Shows.ClearLegacyActiveShow();
             UnifiedRgb.Core.Log.Info("scenes",
                 $"show '{legacy}' now starts because profile '{startup.Name}' asks for it");
         }
@@ -1247,13 +1278,21 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             pawnIoMissing: () => PawnIoMissing,
             isOnScreen: () => ShowCoolingPanel);
         Lcd = new LcdDesignerViewModel(
-            isOnScreen: () => ShowLcdPanel,   // visibility, not selection: Settings covers the pane
+            isOnScreen: () => ShowLcdPanel);   // visibility, not selection: Settings covers the pane
+
+        // Shows are their own thing now: a timeline of PROFILES, which is the
+        // whole desk rather than the pump panel they used to be filed under.
+        // They still borrow the panel's store, because scenes and shows share
+        // one file, and they tell the panel when a show has taken it.
+        Shows = new ShowViewModel(
+            store: () => Lcd.Scenes,
             lightsSuppressed: () => LightsSuppressed,
             // From a show, so the profile's own show binding is ignored and a
             // running show is not stopped by the profile's screen.
             applyProfile: n => ApplyProfileByName(n, fromShow: true),
             profileNames: () => Profiles.Select(p => p.Name),
-            currentProfile: () => _appliedProfile);
+            currentProfile: () => _appliedProfile,
+            showTookThePanel: () => Lcd.MarkShowOwnsPanel());
         ApplyToTargetCommand = new RelayCommand(_ => ApplyToTarget(), _ => HasSelection);
         ApplyToAllCommand    = new RelayCommand(_ => ApplyModeToAll(), _ => Devices.Count > 0);
         ApplyToDeskCommand   = new RelayCommand(_ => ApplyModeToDesk(), _ => Devices.Count > 0);
@@ -1417,6 +1456,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             LightsSuppressed: LightsSuppressed));
         _watchdog.Start();
         Lcd.InitScenes();
+        Shows.Init();
         MigrateShowsToProfiles();
         // The picker's contents, once at startup. Re-read on demand after that
         // (the settings pane asks again when it opens), so a Wallpaper Engine
@@ -1428,12 +1468,12 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // list them the moment they exist rather than whenever somebody happens
         // to navigate in a way that refreshes it. These are the collections the
         // designer edits, so this fires exactly when the answer changes.
-        Lcd.Sequences.CollectionChanged += (_, _) => RefreshPumpRows();
+        Shows.Shows.CollectionChanged += (_, _) => RefreshPumpRows();
         Lcd.SceneNames.CollectionChanged += (_, _) => RefreshPumpRows();
         // Every profile-name list in the UI is computed from Profiles (Show tab
         // lights dropdowns, app-rule pickers); without this they stay frozen at
         // whatever existed at launch.
-        Profiles.CollectionChanged += (_, _) => { Lcd.NotifyProfilesChanged(); OnChanged(nameof(ProfileNames)); };
+        Profiles.CollectionChanged += (_, _) => { Shows.NotifyProfilesChanged(); OnChanged(nameof(ProfileNames)); };
     }
 
     bool _initializing = true;

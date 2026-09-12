@@ -296,7 +296,7 @@ public sealed partial class MainViewModel
         foreach (string name in Lcd.SceneNames) wantScreens.Add(new PumpRow(name, name));
 
         var wantShows = new List<string> { NoShow };
-        foreach (var seq in Lcd.Sequences) if (seq != null) wantShows.Add(seq.Name);
+        foreach (var seq in Shows.Shows) if (seq != null) wantShows.Add(seq.Name);
 
         // Rebuilt only when the contents differ: clearing a bound collection
         // makes the combo box drop its selection, and its reset is posted rather
@@ -519,7 +519,7 @@ public sealed partial class MainViewModel
             // show's next step paints over it a second later. When this profile
             // starts a show, leave that to ShowSequence, which stops whatever
             // else was running anyway.
-            if (!fromShow && string.IsNullOrWhiteSpace(p.Show)) Lcd.StopSequence();
+            if (!fromShow && string.IsNullOrWhiteSpace(p.Show)) Shows.Stop();
             screenShown = Lcd.ShowScreen(p.Screen!, fromShow);
         }
 
@@ -527,7 +527,7 @@ public sealed partial class MainViewModel
         // different show would have the show swap itself out mid-run, and one
         // naming its own show would restart it from step one on every pass.
         if (!fromShow && !string.IsNullOrWhiteSpace(p.Show))
-            showStarted = Lcd.ShowSequence(p.Show!);
+            showStarted = Shows.Start(p.Show!);
         // And the screen in the case. Same reasoning as the pump panel: this is
         // the one door every apply comes through - the button, a hotkey, an app
         // rule, a schedule, a show step - so it is the only place that can make
@@ -569,7 +569,7 @@ public sealed partial class MainViewModel
         bool Is(string? s) => !string.IsNullOrWhiteSpace(s)
                               && s!.Trim().Equals(name!.Trim(), StringComparison.OrdinalIgnoreCase);
 
-        foreach (var seq in Lcd.Sequences)
+        foreach (var seq in Shows.Shows)
         {
             var steps = seq?.Actions;
             if (steps == null) continue;

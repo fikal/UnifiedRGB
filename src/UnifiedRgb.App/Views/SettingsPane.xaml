@@ -63,11 +63,11 @@
                              show page: this is where somebody is standing when
                              it gets in their way. -->
                         <Border Background="#FF1B2030" CornerRadius="8" Padding="12,9" Margin="0,0,0,12"
-                                Visibility="{Binding Lcd.CanPauseSequence, Converter={StaticResource BoolToVis}}">
+                                Visibility="{Binding Shows.CanPause, Converter={StaticResource BoolToVis}}">
                             <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="{Binding Lcd.RunningShowLine}" Style="{StaticResource Hint}"
+                                <TextBlock Text="{Binding Shows.RunningLine}" Style="{StaticResource Hint}"
                                            Opacity="0.85" VerticalAlignment="Center" MaxWidth="370"/>
-                                <Button Content="{Binding Lcd.PauseButtonText}" Padding="12,5" Margin="12,0,0,0"
+                                <Button Content="{Binding Shows.PauseButtonText}" Padding="12,5" Margin="12,0,0,0"
                                         VerticalAlignment="Center" Click="PauseShow_Click"
                                         ToolTip="Holds the show where it is, keeping its place and the time already served on this step. Stop, on the show page, forgets it instead."/>
                             </StackPanel>

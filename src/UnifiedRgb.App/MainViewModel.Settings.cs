@@ -695,8 +695,17 @@ public sealed partial class MainViewModel
             if (!LightsSuppressed) ReapplyEffects();
         }
 
-        if (result.ScenesChanged) Lcd.ReloadScenes(result.CurrentScreenChanged);
-        if (result.ProfilesChanged) Lcd.NotifyProfilesChanged();
+        if (result.ScenesChanged)
+        {
+            // Both sides of one file. The shows are torn down BEFORE the store is
+            // replaced - a running show would otherwise keep stepping through a
+            // store nobody saves any more, and its step handlers would stay
+            // hooked to the old objects - and rebuilt after, against the new one.
+            Shows.Reset();
+            Lcd.ReloadScenes(result.CurrentScreenChanged);
+            Shows.Init();
+        }
+        if (result.ProfilesChanged) Shows.NotifyProfilesChanged();
         if (result.ProfilesChanged || result.SettingsChanged)
         {
             AutoRules.Clear();

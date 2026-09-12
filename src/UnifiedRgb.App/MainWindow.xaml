@@ -44,6 +44,8 @@
             </StackPanel>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
                         WindowChrome.IsHitTestVisibleInChrome="True">
+                <Button Style="{StaticResource CaptionButton}" Content="&#xE916;" FontSize="13"
+                        Cursor="Hand" Click="Show_Click" ToolTip="Shows"/>
                 <Button Style="{StaticResource CaptionButton}" Content="&#xE713;" FontSize="13"
                         Cursor="Hand" Click="Settings_Click" ToolTip="Settings"/>
                 <Button Style="{StaticResource CaptionButton}"
@@ -90,6 +92,7 @@
             </StackPanel>
 
             <views:SettingsPane/>
+            <views:ShowPane/>
           </Grid>
         </Border>
     </Grid>

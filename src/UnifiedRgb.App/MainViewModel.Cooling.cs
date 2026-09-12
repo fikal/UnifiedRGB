@@ -11,7 +11,7 @@ public sealed partial class MainViewModel
     public CoolingViewModel Cooling { get; }
 
     public bool IsCoolingSelected => _selectedLeft?.IsCooling == true;
-    public bool ShowCoolingPanel => IsCoolingSelected && !_isSettingsOpen;
+    public bool ShowCoolingPanel => IsCoolingSelected && !_isSettingsOpen && !_isShowOpen;
 
     // Start the refresh timer only while Cooling is on screen; it self-stops
     // when the pane leaves (it used to fire 40x/min for the process lifetime).

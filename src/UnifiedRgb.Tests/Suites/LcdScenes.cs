@@ -35,11 +35,14 @@ static class LcdScenesSuite
 
         int applied = 0;
         string current = "Matrix";
-        using var vm = new LcdDesignerViewModel(() => false, () => false,
-            name => { applied++; current = name; return true; },
-            () => new[] { "Matrix", "Diablo" }, () => current);
+        using var vm = new ShowViewModel(
+            store: SceneStore.Load, lightsSuppressed: () => false,
+            applyProfile: name => { applied++; current = name; return true; },
+            profileNames: () => new[] { "Matrix", "Diablo" },
+            currentProfile: () => current,
+            showTookThePanel: () => { });
 
-        var action = typeof(LcdDesignerViewModel).GetMethod("ApplySceneAction",
+        var action = typeof(ShowViewModel).GetMethod("ApplyStep",
             BindingFlags.Instance | BindingFlags.NonPublic)!;
 
         // Guard 1: a step naming the profile that is ALREADY on does nothing at
@@ -68,13 +71,13 @@ static class LcdScenesSuite
         // InitScenes builds the sequencer, so a show it names arrives too early.
         // Refusing it there meant "show could not start" at every launch with
         // only the first profile ever playing, so the request is remembered.
-        t.Check(vm.ShowSequence("later"), "a show asked for before the scenes load is remembered, not refused");
-        t.Equal("later", typeof(LcdDesignerViewModel)
-            .GetField("_pendingShow", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(vm),
-            "...and held until the scenes are ready");
-        vm.StopSequence();
-        t.Check(typeof(LcdDesignerViewModel)
-            .GetField("_pendingShow", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(vm) == null,
+        t.Check(vm.Start("later"), "a show asked for before the shows load is remembered, not refused");
+        t.Equal("later", typeof(ShowViewModel)
+            .GetField("_pending", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(vm),
+            "...and held until they are ready");
+        vm.Stop();
+        t.Check(typeof(ShowViewModel)
+            .GetField("_pending", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(vm) == null,
             "a show called off before it starts does not start late");
     }
 
@@ -130,8 +133,7 @@ static class LcdScenesSuite
     static void CheckScenes(Harness t)
     {
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        using var vm = new LcdDesignerViewModel(() => false, () => false,
-            _ => false, () => Array.Empty<string>(), () => null);
+        using var vm = new LcdDesignerViewModel(() => false);
         var lcd = (LcdController)RuntimeHelpers.GetUninitializedObject(typeof(LcdController));
         var lcdField = typeof(LcdDesignerViewModel).GetField("_lcd", flags)!;
         var scenes = (SceneStore)typeof(LcdDesignerViewModel).GetField("_scenes", flags)!.GetValue(vm)!;

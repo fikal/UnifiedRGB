@@ -505,14 +505,24 @@ static class BackupSuite
         {
             try
             {
-                using var vm = new LcdDesignerViewModel(() => false, () => false, _ => false, () => Array.Empty<string>(), () => null);
+                using var vm = new LcdDesignerViewModel(() => false);
                 vm.InitScenes();
                 vm.SelectedSceneName = "Image";
                 const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
-                var sequencerField = typeof(LcdDesignerViewModel).GetField("_sequencer", flags)!;
-                var oldSequencer = (SceneSequencer)sequencerField.GetValue(vm)!;
+
+                // Shows live in their own view model now, but they share this
+                // file, so an import still has to stop one that is running -
+                // otherwise it keeps stepping through a store nobody saves.
+                using var shows = new ShowViewModel(
+                    store: () => vm.Scenes, lightsSuppressed: () => false,
+                    applyProfile: _ => false, profileNames: Array.Empty<string>,
+                    currentProfile: () => null, showTookThePanel: () => { });
+                shows.Init();
+                var sequencerField = typeof(ShowViewModel).GetField("_sequencer", flags)!;
+                var oldSequencer = (SceneSequencer)sequencerField.GetValue(shows)!;
                 oldSequencer.Start(new SceneSequence { Name = "Previous", Actions = new() { new SceneAction { DelaySeconds = 100 } } });
                 new SceneStore { Scenes = new() { new LcdScene { Name = "Imported" } } }.Save();
+                shows.Reset();
                 vm.ReloadScenes(false);
                 t.Check(vm.SelectedSceneName == null, "scene reload clears a stale selected scene name");
                 t.Check(!oldSequencer.Running, "old sequence stops before replacing imported store");
