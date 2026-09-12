@@ -115,10 +115,6 @@
         </StackPanel>
         <TextBlock Text="{Binding Status}" Opacity="0.6" FontSize="11" Margin="0,6,0,0"/>
 
-        <Border Background="#FF1E212A" CornerRadius="8" Padding="12,10" Margin="0,14,0,0">
-            <TextBlock Opacity="0.65" FontSize="12" TextWrapping="Wrap"
-                       Text="Try it: save two profiles with different colors, add a step for each, set both waits to 1 second and hit Run. Your lights flash back and forth."/>
-        </Border>
     </StackPanel>
         </StackPanel>
     </ScrollViewer>

@@ -128,7 +128,7 @@
                              until there is something real to pick. -->
                         <StackPanel Margin="0,14,0,0"
                                     Visibility="{Binding WallpaperAvailable, Converter={StaticResource BoolToVis}}">
-                            <TextBlock Text="Screen in the case" Style="{StaticResource SectionTitle}" Margin="0,0,0,4"/>
+                            <TextBlock Text="Wallpaper Engine Profile" Style="{StaticResource SectionTitle}" Margin="0,0,0,4"/>
                             <!-- The caveat that used to be a paragraph here lives
                                  in the tooltip. Wallpaper Engine reports nothing
                                  back, which is worth being straight about, but
