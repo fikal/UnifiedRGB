@@ -111,7 +111,12 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
     static readonly Model[] Models =
     {
         BasiliskV3Pro,                                  // wired / charging cable
-        BasiliskV3Pro with { Pid = 0x00AB },            // its own HyperSpeed dongle
+        // Its own HyperSpeed dongle. Named apart from the cable identity: with
+        // the mouse charging on its cable and the dongle still in a port both
+        // enumerate, and Name is the primary key everywhere (profiles, the desk,
+        // exit behaviour, "it has gone" notes) - two devices sharing one used
+        // to land those on whichever instance came first.
+        BasiliskV3Pro with { Pid = 0x00AB, Name = "Razer Basilisk V3 Pro (dongle)" },
     };
 
     /// <summary>HyperFlux V2 charging pad + built-in receiver. Whatever mouse is
@@ -242,8 +247,11 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
         Log.Info("Razer", "HyperFlux V2 pad answers: " + string.Join("; ", answers.Select(a => $"0x{a.Tid:X2} fw {a.Fw}{(a.HasDpi ? " (mouse)" : " (pad)")}")));
 
         // One identity may answer on several ids (a dongle relaying everything):
-        // keep the first id per serial.
-        foreach (var a in answers.GroupBy(a => a.Serial).Select(g => g.First()))
+        // keep the first id per serial. An identity whose serial read FAILED
+        // ("?") is not the same identity as another that also failed: grouping
+        // those together silently dropped the second one (the pad's own
+        // controller on a firmware that refuses 0x82), so they group by id.
+        foreach (var a in answers.GroupBy(a => a.Serial == "?" ? $"tid:{a.Tid:X2}" : a.Serial).Select(g => g.First()))
         {
             IHidTransport hid;
             try { hid = open(); }
@@ -429,12 +437,13 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
             for (int start = 0; start < cols; start += MAX_LEDS_PER_PACKET)
             {
                 int stop = Math.Min(cols - 1, start + MAX_LEDS_PER_PACKET - 1);
-                var rep = CustomFrameReport(_tid, row, start, stop, frame, row * cols + start);
+                var rep = CustomFrameReport(_frameRep ??= new byte[FEATURE_LEN],
+                                            _tid, row, start, stop, frame, row * cols + start);
                 if (!Send(rep, wantReply, out byte st)) return false;
                 if (st != ST_OK) status = st;
             }
         }
-        var apply = NewReport(_tid, 0x0F, 0x02, 0x0C);
+        var apply = FillReport(_applyRep ??= new byte[FEATURE_LEN], _tid, 0x0F, 0x02, 0x0C);
         apply[ARGS + 2] = 0x08;   // effect: custom frame (NOSTORE, ZERO_LED)
         if (!Send(apply, wantReply, out byte st2)) return false;
         if (st2 != ST_OK) status = st2;
@@ -467,12 +476,22 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
         }
     }
 
+    /// <summary>The instance lock around a settings exchange. Dispose takes the
+    /// same lock before closing the handle (see ReadBattery for the full
+    /// story), so a DPI or polling change from a future UI pane cannot land on
+    /// a handle a rescan is closing underneath it. The frame path holds the
+    /// lock itself; these one-shot exchanges did not.</summary>
+    byte[]? ExchangeLocked(byte[] report)
+    {
+        lock (_writeLock) return Exchange(_hid, report);
+    }
+
     /// <summary>0x0F/0x04: brightness for the whole device, not stored.</summary>
     public bool SetBrightness(byte level)
     {
         var rep = NewReport(_tid, 0x0F, 0x04, 0x03);
         rep[ARGS] = NOSTORE; rep[ARGS + 1] = ZERO_LED; rep[ARGS + 2] = level;
-        var r = Exchange(_hid, rep);
+        var r = ExchangeLocked(rep);
         return r != null && r[1] == ST_OK;
     }
 
@@ -484,14 +503,14 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
     {
         var rep = NewReport(_tid, 0x04, 0x85, 0x07);
         rep[ARGS] = VARSTORE;
-        var r = Exchange(_hid, rep);
+        var r = ExchangeLocked(rep);
         if (r == null || r[1] != ST_OK) return null;
         return (r[ARGS + 1] << 8 | r[ARGS + 2], r[ARGS + 3] << 8 | r[ARGS + 4]);
     }
 
     public bool SetDpi(int x, int y)
     {
-        var r = Exchange(_hid, DpiReport(_tid, x, y));
+        var r = ExchangeLocked(DpiReport(_tid, x, y));
         return r != null && r[1] == ST_OK;
     }
 
@@ -501,21 +520,21 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
     {
         var rep = NewReport(_tid, 0x04, 0x86, 0x26);
         rep[ARGS] = VARSTORE;
-        var r = Exchange(_hid, rep);
+        var r = ExchangeLocked(rep);
         if (r == null || r[1] != ST_OK) return null;
         return DecodeDpiStages(r.AsSpan(ARGS, 80));
     }
 
     public bool SetDpiStages(int active, IReadOnlyList<(int X, int Y)> stages)
     {
-        var r = Exchange(_hid, DpiStagesReport(_tid, active, stages));
+        var r = ExchangeLocked(DpiStagesReport(_tid, active, stages));
         return r != null && r[1] == ST_OK;
     }
 
     /// <summary>Polling rate in Hz (125/500/1000), or null.</summary>
     public int? GetPollingRate()
     {
-        var r = Exchange(_hid, NewReport(_tid, 0x00, 0x85, 0x01));
+        var r = ExchangeLocked(NewReport(_tid, 0x00, 0x85, 0x01));
         if (r == null || r[1] != ST_OK) return null;
         return PollingHz(r[ARGS]);
     }
@@ -526,7 +545,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
         if (code == 0) return false;
         var rep = NewReport(_tid, 0x00, 0x05, 0x01);
         rep[ARGS] = code;
-        var r = Exchange(_hid, rep);
+        var r = ExchangeLocked(rep);
         return r != null && r[1] == ST_OK;
     }
 
@@ -553,11 +572,11 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
         // still be in flight when the handle closes underneath it.
         lock (_writeLock)
         {
-            var level = Exchange(_hid, NewReport(_tid, 0x07, 0x80, 0x02));
+            var level = ExchangeLocked(NewReport(_tid, 0x07, 0x80, 0x02));
             // Nothing usable came back: don't spend a second round trip on a
             // mouse that is asleep or has no battery to report.
             if (DecodeBattery(level, null) == null) return null;
-            return DecodeBattery(level, Exchange(_hid, NewReport(_tid, 0x07, 0x84, 0x02)));
+            return DecodeBattery(level, ExchangeLocked(NewReport(_tid, 0x07, 0x84, 0x02)));
         }
     }
 
@@ -580,7 +599,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
     /// <summary>Battery 0-100, or null (wired / unsupported).</summary>
     public int? BatteryPercent()
     {
-        var r = Exchange(_hid, NewReport(_tid, 0x07, 0x80, 0x02));
+        var r = ExchangeLocked(NewReport(_tid, 0x07, 0x80, 0x02));
         if (r == null || r[1] != ST_OK) return null;
         return (int)Math.Round(r[ARGS + 1] * 100.0 / 255.0);
     }
@@ -588,7 +607,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
     /// <summary>0x00/0x84: 0 = normal, 3 = driver mode (never set by us).</summary>
     public int? GetDeviceMode()
     {
-        var r = Exchange(_hid, NewReport(_tid, 0x00, 0x84, 0x02));
+        var r = ExchangeLocked(NewReport(_tid, 0x00, 0x84, 0x02));
         return r == null || r[1] != ST_OK ? null : r[ARGS];
     }
 
@@ -637,7 +656,14 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
                     if (fw[1] != ST_OK) { sb.AppendLine($"    tid 0x{t:X2}: status 0x{fw[1]:X2} ({StatusName(fw[1])})"); continue; }
                     var line = new StringBuilder($"    tid 0x{t:X2}: fw v{fw[ARGS]}.{fw[ARGS + 1]}");
                     var s = Exchange(hid, NewReport(t, 0x00, 0x82, 0x16));
-                    if (s != null && s[1] == ST_OK) line.Append($"  serial {Ascii(s, ARGS, 22)}");
+                    // Last three characters only: enough to tell two devices apart, and
+                    // not the warranty/registration identifier this bundle would otherwise
+                    // carry into a public issue (OpenKnown deliberately never logs it).
+                    if (s != null && s[1] == ST_OK)
+                    {
+                        string serial = Ascii(s, ARGS, 22).Trim();
+                        line.Append($"  serial ...{(serial.Length > 3 ? serial[^3..] : serial)}");
+                    }
                     var m = Exchange(hid, NewReport(t, 0x00, 0x84, 0x02));
                     if (m != null && m[1] == ST_OK) line.Append($"  mode {m[ARGS]}");
                     var dq = NewReport(t, 0x04, 0x85, 0x07); dq[ARGS] = VARSTORE;
@@ -661,8 +687,13 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
     /// wire report with transaction id, class, command and data size set.
     /// Arguments go at index ARGS (9); Seal() writes the crc.</summary>
     internal static byte[] NewReport(byte tid, byte cls, byte cmd, byte dataSize)
+        => FillReport(new byte[FEATURE_LEN], tid, cls, cmd, dataSize);
+
+    /// <summary>The same, into a buffer the caller keeps. Cleared first, so a
+    /// reused buffer carries nothing from the report before it.</summary>
+    internal static byte[] FillReport(byte[] r, byte tid, byte cls, byte cmd, byte dataSize)
     {
-        var r = new byte[FEATURE_LEN];
+        Array.Clear(r);
         r[2] = tid; r[6] = dataSize; r[7] = cls; r[8] = cmd;
         return r;
     }
@@ -676,9 +707,17 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
     }
 
     internal static byte[] CustomFrameReport(byte tid, int row, int startCol, int stopCol, IReadOnlyList<Rgb> colors, int colorOffset)
+        => CustomFrameReport(new byte[FEATURE_LEN], tid, row, startCol, stopCol, colors, colorOffset);
+
+    /// <summary>The frame report into a buffer the caller keeps. A lit keyboard
+    /// builds one of these per ROW per changed frame, so an animated effect at 60
+    /// Hz was allocating six 91-byte reports 60 times a second, forever. Send()
+    /// seals and writes it and keeps no reference, so one buffer per device is
+    /// enough - and every path to it holds Gate.</summary>
+    internal static byte[] CustomFrameReport(byte[] into, byte tid, int row, int startCol, int stopCol, IReadOnlyList<Rgb> colors, int colorOffset)
     {
         int n = stopCol - startCol + 1;
-        var rep = NewReport(tid, 0x0F, 0x03, (byte)(5 + 3 * n));
+        var rep = FillReport(into, tid, 0x0F, 0x03, (byte)(5 + 3 * n));
         rep[ARGS + 2] = (byte)row; rep[ARGS + 3] = (byte)startCol; rep[ARGS + 4] = (byte)stopCol;
         for (int i = 0; i < n; i++)
         {
@@ -773,6 +812,10 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
     }
 
     /// <summary>Hot path: send; optionally read the reply status.</summary>
+    // Per-device report buffers for the frame path, reused across frames; every
+    // path to them holds Gate. See CustomFrameReport(byte[], ...).
+    byte[]? _frameRep, _applyRep;
+
     bool Send(byte[] req, bool wantReply, out byte status)
     {
         status = ST_OK;

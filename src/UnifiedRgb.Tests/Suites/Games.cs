@@ -155,6 +155,30 @@ static class GamesSuite
                 .GetAwaiter().GetResult();
             Thread.Sleep(150);
             t.Equal(42, gsi.State.Health, "cs2 e2e: a forged post is ignored");
+
+            // Bodies the game would never send, from a sender that might: an
+            // oversize body with an honest length, the same without one
+            // (chunked), and one that is not JSON. None may change the state,
+            // hang the listener, or stop the next honest post from landing.
+            string big = "{\"auth\":{\"token\":\"tok-e2e\"},\"pad\":\"" + new string('x', 600 * 1024) + "\"}";
+            try { http.PostAsync($"http://localhost:{port}/", new System.Net.Http.StringContent(big)).GetAwaiter().GetResult(); }
+            catch (System.Net.Http.HttpRequestException) { /* a refusal mid-upload is an acceptable answer too */ }
+            var chunked = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, $"http://localhost:{port}/")
+            { Content = new System.Net.Http.StringContent(big) };
+            chunked.Headers.TransferEncodingChunked = true;
+            try { http.SendAsync(chunked).GetAwaiter().GetResult(); }
+            catch (System.Net.Http.HttpRequestException) { }
+            http.PostAsync($"http://localhost:{port}/", new System.Net.Http.StringContent("{garbage")).GetAwaiter().GetResult();
+            Thread.Sleep(150);
+            t.Equal(42, gsi.State.Health, "cs2 e2e: oversize, chunked and unreadable posts change nothing");
+            t.Check(gsi.Running, "cs2 e2e: and the listener is still up");
+
+            string again = "{\"player\":{\"state\":{\"health\":7}},\"auth\":{\"token\":\"tok-e2e\"}}";
+            var ok = http.PostAsync($"http://localhost:{port}/", new System.Net.Http.StringContent(again)).GetAwaiter().GetResult();
+            t.Equal(200, (int)ok.StatusCode, "cs2 e2e: the next honest post is answered");
+            bool landed = false;
+            for (int i = 0; i < 200 && !landed; i++) { landed = gsi.State.Health == 7; Thread.Sleep(10); }
+            t.Check(landed, "cs2 e2e: ...and lands");
         }
     }
 }

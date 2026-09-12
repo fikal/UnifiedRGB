@@ -325,6 +325,7 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
     /// until something actually changes its lighting.</summary>
     public bool ReturnToHardware()
     {
+        if (_disposed) return false;   // a write that outlives Dispose (a slow drain): refuse quietly, per the contract
         lock (_writeLock)
         {
             var p = new byte[PKT]; p[1] = 0x07; p[2] = 0x05; p[3] = 0x01; p[5] = 0x03;
@@ -372,6 +373,7 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
 
     public bool SetColors(IReadOnlyList<Rgb> colors)
     {
+        if (_disposed) return false;   // a write that outlives Dispose (a slow drain): refuse quietly, per the contract
         lock (_writeLock)
         {
             // Cleared only when the init actually LANDED. Clearing first meant
@@ -456,5 +458,16 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
         return ok;
     }
 
-    public void Dispose() => _hid.Dispose();
+    // The contract's shape: the flag is set under the write lock, so a write
+    // that arrives after this returns false instead of hitting a closed handle
+    // and logging a "stopped answering" the device never earned.
+    volatile bool _disposed;
+    public void Dispose()
+    {
+        lock (_writeLock)
+        {
+            _disposed = true;
+            _hid.Dispose();
+        }
+    }
 }

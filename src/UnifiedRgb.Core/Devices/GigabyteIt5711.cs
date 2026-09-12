@@ -337,6 +337,7 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
     /// with them (a static zone past the end was skipped, never blacked).</summary>
     public bool SetColors(IReadOnlyList<Rgb> colors)
     {
+        if (_disposed) return false;   // a write that outlives Dispose (a slow drain): refuse quietly, per the contract
         lock (_writeLock)
         {
             for (int z = 0; z < ZoneDefs.Length; z++)
@@ -377,6 +378,7 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
     /// nothing on this board.</summary>
     public bool SetZone(int offset, IReadOnlyList<Rgb> colors)
     {
+        if (_disposed) return false;   // a write that outlives Dispose (a slow drain): refuse quietly, per the contract
         int start = Math.Max(0, offset);
         int end = Math.Min(_ledCount, offset + colors.Count);
         // An empty range asks for nothing, so nothing can have been refused:
@@ -559,6 +561,7 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
     /// disable mask is cleared, which is what makes the color survive.</summary>
     public bool SetHardwareStatic(Rgb color)
     {
+        if (_disposed) return false;   // a write that outlives Dispose (a slow drain): refuse quietly, per the contract
         lock (_writeLock)
         {
             // Every step is attempted even after a refusal - a board left with
@@ -693,5 +696,16 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
         return results;
     }
 
-    public void Dispose() => _hid.Dispose();
+    // The contract's shape: the flag is set under the write lock, so a write
+    // that arrives after this returns false instead of hitting a closed handle
+    // and logging a "stopped answering" the device never earned.
+    volatile bool _disposed;
+    public void Dispose()
+    {
+        lock (_writeLock)
+        {
+            _disposed = true;
+            _hid.Dispose();
+        }
+    }
 }

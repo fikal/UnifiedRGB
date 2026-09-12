@@ -20,6 +20,12 @@ public partial class SettingsPane : UserControl
 
     void SettingsBack_Click(object sender, RoutedEventArgs e) => VM.IsSettingsOpen = false;
 
+    // The category strip is a pill list like the others: mouse-first (arrow
+    // keys after a click used to flip the category), and the page scrolls
+    // under it.
+    void Pills_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e) => KeyPolicy.MouseFirst(e);
+    void List_PreviewMouseWheel(object sender, System.Windows.Input.MouseWheelEventArgs e) => WheelPolicy.Bubble(sender, e);
+
     /// <summary>Open a link in the user's browser. UseShellExecute, because a
     /// bare Process.Start of a URL does not launch anything on .NET Core - and
     /// caught, because a machine with no default browser must not take the app

@@ -186,6 +186,31 @@ public static class NvApi
     delegate int GetTachReadingFn(IntPtr handle, out uint rpm);
     static GetTachReadingFn? _tach;
 
+    /*-----------------------------------------------------*\
+    | PCI identity: NvAPI_GPU_GetPCIIdentifiers (0x2DDFB66E). |
+    | The subsystem id's low 16 bits are the board vendor    |
+    | (0x1462 = MSI), which is how a driver tells an MSI card |
+    | from any other card that happens to answer on I2C.     |
+    \*-----------------------------------------------------*/
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    delegate int GetPciIdsFn(IntPtr handle, out uint deviceId, out uint subSystemId, out uint revisionId, out uint extDeviceId);
+    static GetPciIdsFn? _pciIds;
+
+    /// <summary>Device id and subsystem id of a GPU, or null when NvAPI cannot
+    /// say (old driver, unusual handle). Null means "unknown", not "not MSI".</summary>
+    public static (uint DeviceId, uint SubSystemId)? GetPciIds(IntPtr gpu)
+    {
+        try
+        {
+            if (!TryInit()) return null;
+            _pciIds ??= Resolve<GetPciIdsFn>(0x2DDFB66E);
+            if (_pciIds == null) return null;
+            if (_pciIds(gpu, out uint dev, out uint sub, out _, out _) != 0) return null;
+            return (dev, sub);
+        }
+        catch { return null; }
+    }
+
     /// <summary>GPU fan speed in RPM, or null when unavailable (no tach,
     /// or fan-stop mode reporting 0 — 0 is returned as a real value so the
     /// UI can show a stopped fan).</summary>

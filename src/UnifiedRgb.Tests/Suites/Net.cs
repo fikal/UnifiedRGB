@@ -335,5 +335,144 @@ static class NetSuite
             server.DeviceListChanged();
             t.Equal(1, host.ResetCount, "orgb e2e: a rescan unwinds the takeover");
         }
+
+        t.Section("SDK server: single-LED writes and malformed traffic");
+        {
+            // Hand-built packets, because the in-house client has no single-LED
+            // call and never sends anything malformed - which is exactly what
+            // left both paths untested. This port is what other software talks
+            // to, so "the server survives and the next client still works" is
+            // the property.
+            var host = new StubOrgbHost();
+            host.Add(new FakeZonedDevice { Name = "Board", Zones2 = new[] { ("Header 1", 4), ("Logo", 1) } });
+            using var server = new OpenRgbServer(host, silenceSeconds: 0.4);
+            int port = server.Start(listenOnLan: false, port: 0);
+            t.Check(port > 0, "orgb raw: the server bound a port");
+
+            static System.Net.Sockets.NetworkStream Open(int port)
+            {
+                var tcp = new System.Net.Sockets.TcpClient();
+                tcp.Connect(System.Net.IPAddress.Loopback, port);
+                tcp.NoDelay = true;
+                var s = tcp.GetStream();
+                s.ReadTimeout = 3000;
+                return s;
+            }
+            static void Send(System.Net.Sockets.NetworkStream s, uint device, uint packet, byte[] payload)
+            {
+                var buf = new byte[OpenRgbProtocol.HeaderBytes + payload.Length];
+                OpenRgbProtocol.WriteHeader(buf, device, packet, payload.Length);
+                payload.CopyTo(buf, OpenRgbProtocol.HeaderBytes);
+                s.Write(buf, 0, buf.Length);
+            }
+            static void SendHeaderOnly(System.Net.Sockets.NetworkStream s, uint device, uint packet, int declaredSize)
+            {
+                var buf = new byte[OpenRgbProtocol.HeaderBytes];
+                OpenRgbProtocol.WriteHeader(buf, device, packet, declaredSize);
+                s.Write(buf, 0, buf.Length);
+            }
+            // A ControllerCount round trip proves the connection is alive and served.
+            static bool Answers(System.Net.Sockets.NetworkStream s)
+            {
+                try
+                {
+                    Send(s, 0, OpenRgbProtocol.PktControllerCount, Array.Empty<byte>());
+                    var header = new byte[OpenRgbProtocol.HeaderBytes];
+                    int got = 0;
+                    while (got < header.Length) { int n = s.Read(header, got, header.Length - got); if (n <= 0) return false; got += n; }
+                    var parsed = OpenRgbProtocol.ReadHeader(header);
+                    if (parsed is not { PacketId: OpenRgbProtocol.PktControllerCount, Size: 4 }) return false;
+                    var body = new byte[4]; got = 0;
+                    while (got < 4) { int n = s.Read(body, got, 4 - got); if (n <= 0) return false; got += n; }
+                    return BitConverter.ToInt32(body) == 1;
+                }
+                catch (IOException) { return false; }
+            }
+            static bool Closed(System.Net.Sockets.NetworkStream s)
+            {
+                // A dropped client sees end-of-stream (or a reset) on its next read.
+                try { return s.Read(new byte[1], 0, 1) == 0; }
+                catch (IOException) { return true; }
+            }
+
+            // The single-LED packet is 8 bytes - i32 index, u32 colour - with NO
+            // length prefix (RGBController_Network::UpdateSingleLED, openrgb-python).
+            using (var s = Open(port))
+            {
+                var color = new Rgb(12, 34, 56);
+                var payload = new byte[8];
+                BitConverter.GetBytes(2).CopyTo(payload, 0);
+                BitConverter.GetBytes(OpenRgbProtocol.ToWire(color)).CopyTo(payload, 4);
+                Send(s, 0, OpenRgbProtocol.PktUpdateSingleLed, payload);
+                t.Check(host.WaitForWrite("Board"), "orgb raw: an 8-byte single-LED write arrives");
+                var w = host.LastWrite("Board");
+                t.Equal(2, w.Offset, "orgb raw: at that LED index");
+                t.Equal(1, w.Colors.Count, "orgb raw: one colour");
+                t.Equal(color, w.Colors[0], "orgb raw: the colour");
+                t.Equal(1, host.BeginCount("Board"), "orgb raw: and it claims the device");
+                // Out of range is ignored, not a crash.
+                host.Reset();
+                BitConverter.GetBytes(99).CopyTo(payload, 0);
+                Send(s, 0, OpenRgbProtocol.PktUpdateSingleLed, payload);
+                t.Check(Answers(s), "orgb raw: an out-of-range LED index is ignored and the connection lives");
+                t.Equal(-1, host.LastWrite("Board").Offset, "orgb raw: ...with no write");
+            }
+
+            // A declared size of two gigabytes: the client is dropped, nothing allocated.
+            using (var s = Open(port))
+            {
+                SendHeaderOnly(s, 0, OpenRgbProtocol.PktUpdateLeds, int.MaxValue);
+                t.Check(Closed(s), "orgb raw: a client asking for a 2 GB packet is dropped");
+            }
+            // A count that exceeds the payload is ignored.
+            using (var s = Open(port))
+            {
+                host.Reset();
+                var p = new byte[4 + 2 + 4];
+                BitConverter.GetBytes(p.Length).CopyTo(p, 0);
+                BitConverter.GetBytes((ushort)500).CopyTo(p, 4);   // 500 colours claimed, one present
+                Send(s, 0, OpenRgbProtocol.PktUpdateLeds, p);
+                t.Check(Answers(s), "orgb raw: an over-declared colour count is ignored, connection lives");
+                t.Equal(-1, host.LastWrite("Board").Offset, "orgb raw: ...with no write");
+            }
+            // A device index past the list, and an unknown packet id.
+            using (var s = Open(port))
+            {
+                host.Reset();
+                var p = new byte[4 + 2 + 4];
+                BitConverter.GetBytes(p.Length).CopyTo(p, 0);
+                BitConverter.GetBytes((ushort)1).CopyTo(p, 4);
+                Send(s, 99, OpenRgbProtocol.PktUpdateLeds, p);
+                Send(s, 0, 9999, new byte[4]);
+                t.Check(Answers(s), "orgb raw: device 99 and packet 9999 are ignored, connection lives");
+                t.Equal(-1, host.LastWrite("Board").Offset, "orgb raw: ...with no write");
+            }
+            // Not speaking the protocol at all.
+            using (var s = Open(port))
+            {
+                s.Write(System.Text.Encoding.ASCII.GetBytes("GET / HTTP/1.1\r\n\r\n"));
+                t.Check(Closed(s), "orgb raw: a non-protocol client is dropped");
+            }
+            // The client cap: the seventeenth idle connection is refused, the
+            // sixteen before it are still served, and a client after they all
+            // leave gets its answer.
+            {
+                var idle = new List<System.Net.Sockets.NetworkStream>();
+                try
+                {
+                    for (int i = 0; i < 17; i++) idle.Add(Open(port));
+                    bool settled = false;
+                    for (int i = 0; i < 100 && !settled; i++) { settled = server.ClientCount == 16; Thread.Sleep(10); }
+                    t.Equal(16, server.ClientCount, "orgb raw: sixteen clients are served, the seventeenth is refused");
+                    t.Check(Answers(idle[0]), "orgb raw: the first of them is still answered");
+                }
+                finally { foreach (var s in idle) s.Dispose(); }
+                bool empty = false;
+                for (int i = 0; i < 200 && !empty; i++) { empty = server.ClientCount == 0; Thread.Sleep(10); }
+                t.Equal(0, server.ClientCount, "orgb raw: and they are all released on disconnect");
+                using var s2 = Open(port);
+                t.Check(Answers(s2), "orgb raw: a new client after the storm is served");
+            }
+        }
     }
 }

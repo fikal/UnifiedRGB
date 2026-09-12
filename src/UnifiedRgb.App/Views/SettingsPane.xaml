@@ -43,7 +43,8 @@
             <!-- Category strip -->
             <ListBox ItemsSource="{Binding SettingsTabs}" SelectedItem="{Binding SettingsTab}"
                      Background="Transparent" BorderThickness="0" Margin="0,0,0,10"
-                     ItemContainerStyle="{StaticResource Pill}" IsTextSearchEnabled="False">
+                     ItemContainerStyle="{StaticResource Pill}" IsTextSearchEnabled="False"
+                     PreviewKeyDown="Pills_PreviewKeyDown" PreviewMouseWheel="List_PreviewMouseWheel">
                 <ListBox.ItemsPanel>
                     <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
                 </ListBox.ItemsPanel>

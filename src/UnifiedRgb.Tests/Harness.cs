@@ -16,6 +16,11 @@ public sealed class Harness
 {
     public int Passed { get; private set; }
     public int Failed { get; private set; }
+    /// <summary>Checks that could not run on this machine (a fixture, a port, a
+    /// build product missing). Counted and printed rather than folded into
+    /// Passed or silently dropped: "N passed, 0 failed" on a checkout without the
+    /// Chroma shims used to look identical to a full run.</summary>
+    public int Skipped { get; private set; }
 
     /// <summary>Every failure, suite-and-section qualified, for the recap.</summary>
     public IReadOnlyList<string> Failures => _failures;
@@ -37,6 +42,22 @@ public sealed class Harness
         string where = _section.Length > 0 ? $"{_suite} / {_section}" : _suite;
         _failures.Add($"{where}: {what}");
         Console.WriteLine($"  FAIL  {where}: {what}");
+    }
+
+    /// <summary>A check that cannot run here. Says so on its own line, in the
+    /// summary, and never as a pass. On CI (the CI environment variable is set)
+    /// a skip is a FAILURE: the runner builds every fixture, so a missing one
+    /// there is a broken build step, not a developer's laptop.</summary>
+    public void Skip(string what)
+    {
+        string where = _section.Length > 0 ? $"{_suite} / {_section}" : _suite;
+        if (Environment.GetEnvironmentVariable("CI") is { Length: > 0 })
+        {
+            Check(false, $"{what} (skipped, and skips are failures on CI)");
+            return;
+        }
+        Skipped++;
+        Console.WriteLine($"  SKIP  {where}: {what}");
     }
 
     /// <summary>Equality with both values in the message - the failure line

@@ -35,8 +35,48 @@ static class EngineLightingSuite
             StoppedEffectCannotOutlastStaticReplacement(t);
             PartialAfterWholeFrameStillLandsAfterIt(t);
             StoppedChannelGettingTheGateDoesNotWrite(t);
+            ComposedFrameReusesTheCallerBuffers(t);
         }
         finally { Master.Brightness = savedBrightness; }
+    }
+
+    /*---------------- the preview pull, without the per-pull garbage ----------------*/
+    static void ComposedFrameReusesTheCallerBuffers(Harness t)
+    {
+        t.Section("LightingController: the preview pull reuses the caller's buffers");
+        var lighting = new UnifiedRgb.App.Services.LightingController();
+        var dev = new FakeDevice { Name = "Preview", LedCount = 4 };
+        var red = new Rgb(255, 0, 0);
+        lighting.PushExternalFrame(dev, 0, new[] { red, red, red, red });
+        lighting.Applier.Drain(2000);
+
+        // The desk preview asks for every device 30 times a second. A frame clone
+        // and a channel list per device per pull was most of what an idle app with
+        // that window open allocated.
+        var chans = new List<UnifiedRgb.Core.Effects.EffectEngine.Channel>();
+        var first = lighting.ComposedFrame(dev, null, chans);
+        var again = lighting.ComposedFrame(dev, first, chans);
+        t.Check(ReferenceEquals(first, again), "a buffer of the right length is filled rather than replaced");
+
+        // Same ANSWER as the allocating overload - the reuse must not change what
+        // the dots are painted with.
+        var fresh = lighting.ComposedFrame(dev);
+        t.Check(!ReferenceEquals(fresh, again), "the no-buffer overload still hands back its own array");
+        t.Check(fresh.Length == again.Length && fresh.SequenceEqual(again),
+            "...carrying exactly what the reusing overload produced");
+
+        // A buffer from a DIFFERENT device must not be written past its end, nor
+        // quietly truncate this one: the preview walks devices of mixed sizes with
+        // one buffer.
+        var small = new Rgb[2];
+        var grown = lighting.ComposedFrame(dev, small, chans);
+        t.Check(!ReferenceEquals(grown, small), "a buffer of the wrong length is replaced, not overrun");
+        t.Equal(4, grown.Length, "...with one the device's size");
+
+        // The channel list is the caller's and is refilled, not appended to.
+        chans.Add(null!);
+        lighting.ComposedFrame(dev, grown, chans);
+        t.Check(!chans.Contains(null!), "the channel list is cleared before it is refilled");
     }
 
     /*---------------- B3: one client's partials compose, and never touch the statics ----------------*/

@@ -184,10 +184,21 @@ public sealed class EffectEngine
     public List<Channel> ChannelsFor(IRgbDevice dev)
     {
         var list = new List<Channel>();
+        ChannelsFor(dev, list);
+        return list;
+    }
+
+    /// <summary>Same answer into a list the CALLER owns, so a repeating reader
+    /// does not allocate one per pull. The preview redraws every device on the
+    /// desk at 30 Hz, which made this one of the few steady allocation sources in
+    /// an idle app. The list is cleared first; the caller must not hold it across
+    /// calls, and must not touch it from another thread.</summary>
+    public void ChannelsFor(IRgbDevice dev, List<Channel> into)
+    {
+        into.Clear();
         lock (_lock)
             foreach (var c in _channels)
-                if (ReferenceEquals(c.Device, dev)) list.Add(c);
-        return list;
+                if (ReferenceEquals(c.Device, dev)) into.Add(c);
     }
 
     /// <summary>The device's static frame was edited and pushed (a static

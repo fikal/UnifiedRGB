@@ -98,7 +98,7 @@ static class NativeSuite
                         if (line.Contains("[memory]")) lastMem = line;
                 t.Check(lastMem != null && lastMem.Contains("working set trimmed"), $"last [memory] log line reports success ({lastMem})");
             }
-            catch (Exception ex) { Console.WriteLine($"  (skip) log tail unreadable: {ex.Message}"); }
+            catch (Exception ex) { t.Skip($"memory trim: log tail unreadable: {ex.Message}"); }
         }
 
         t.Section("DiagnosticReport.Ps stdout/stderr merge (#24)");

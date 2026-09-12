@@ -207,6 +207,15 @@ public sealed partial class MainViewModel
         _ => "Speed",
     };
 
+    /// <summary>The slider's tooltip follows the label: the sound sentence was
+    /// showing for Rainbow Wave and Breathing too.</summary>
+    public string SpeedHint => ChoiceOf(CurrentFx()).Effect switch
+    {
+        AudioBars or AudioPulse => "How hard the lights react to sound. Low = only the peaks, high = always moving.",
+        TempGlow => "How quickly the glow pulses.",
+        _ => "How fast the effect moves. Reverse flips its direction.",
+    };
+
     /// <summary>Preview only where it's meaningful: the keyboard replica and
     /// fan-zone discs. Generic dot scatter (mobo/mouse) adds nothing.</summary>
     public bool ShowPreview => !_isLcdSelected &&

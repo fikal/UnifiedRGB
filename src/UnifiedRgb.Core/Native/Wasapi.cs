@@ -36,7 +36,13 @@ interface IMMDevice
     [PreserveSig]
     int Activate(ref Guid iid, int clsCtx, IntPtr activationParams,
                  [MarshalAs(UnmanagedType.IUnknown)] out object iface);
-    // (OpenPropertyStore / GetId / GetState follow; unused)
+    // Vtable order matters: OpenPropertyStore sits between Activate and GetId.
+    [PreserveSig]
+    int OpenPropertyStore(int stgmAccess, out IntPtr properties);
+    // The endpoint id string is CoTaskMem-allocated; LPWStr out marshalling frees it.
+    [PreserveSig]
+    int GetId([MarshalAs(UnmanagedType.LPWStr)] out string id);
+    // (GetState follows; unused)
 }
 
 [ComImport, Guid("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2"),
@@ -105,6 +111,32 @@ public sealed class WasapiLoopback : IDisposable
     /// <summary>False once the polling thread has exited (device lost etc.).</summary>
     public bool IsAlive => _running && _thread is { IsAlive: true };
 
+    /// <summary>The endpoint this capture opened on, so the owner can notice
+    /// when Windows' default output moves elsewhere: a shared-mode loopback
+    /// stream does NOT follow a default-device switch, it just delivers nothing
+    /// from then on (speakers to headset = the rig goes dark and stays dark).</summary>
+    public string? EndpointId { get; private set; }
+
+    /// <summary>The current default render endpoint's id, or null when it
+    /// cannot be read (no output device at all).</summary>
+    public static string? DefaultRenderEndpointId()
+    {
+        IMMDeviceEnumerator? enumerator = null;
+        IMMDevice? device = null;
+        try
+        {
+            enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
+            if (enumerator.GetDefaultAudioEndpoint(ERender, EMultimedia, out device) < 0 || device == null) return null;
+            return device.GetId(out string id) >= 0 ? id : null;
+        }
+        catch { return null; }
+        finally
+        {
+            if (device != null) Marshal.ReleaseComObject(device);
+            if (enumerator != null) Marshal.ReleaseComObject(enumerator);
+        }
+    }
+
     int _sampleRate, _channels;
     bool _isFloat; int _bytesPerSample;
     float[] _mono = new float[4800];
@@ -141,6 +173,7 @@ public sealed class WasapiLoopback : IDisposable
     {
         {
             Check(enumerator.GetDefaultAudioEndpoint(ERender, EMultimedia, out device), "endpoint");
+            try { EndpointId = device.GetId(out string id) >= 0 ? id : null; } catch { EndpointId = null; }
 
             var iid = IidAudioClient;
             Check(device.Activate(ref iid, ClsCtxAll, IntPtr.Zero, out var clientObj), "activate");

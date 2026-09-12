@@ -78,7 +78,7 @@ public static class Authenticode
             dwUnionChoice = WTD_CHOICE_FILE,
             pFile = pFile,
             dwStateAction = WTD_STATEACTION_VERIFY,      // keep the state so we can read the signer
-            dwProvFlags = WTD_SAFER_FLAG,
+            dwProvFlags = WTD_SAFER_FLAG | WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT,
         };
         bool marshaled = false;
         try
@@ -115,7 +115,12 @@ public static class Authenticode
     }
 
     static readonly Guid WINTRUST_ACTION_GENERIC_VERIFY_V2 = new("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
-    const uint WTD_UI_NONE = 2, WTD_REVOKE_NONE = 0, WTD_CHOICE_FILE = 1, WTD_SAFER_FLAG = 0x100;
+    // WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT: consult CRL/OCSP for the signing chain.
+    // With WTD_REVOKE_NONE alone nothing ever asked, so a revoked signing key would still
+    // have passed for a kernel-driver installer. An unreachable CRL is "revocation unknown",
+    // which does not fail the check, so this stays offline-safe.
+    const uint WTD_UI_NONE = 2, WTD_REVOKE_NONE = 0, WTD_CHOICE_FILE = 1, WTD_SAFER_FLAG = 0x100,
+               WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT = 0x80;
     const uint WTD_STATEACTION_VERIFY = 1, WTD_STATEACTION_CLOSE = 2;
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]

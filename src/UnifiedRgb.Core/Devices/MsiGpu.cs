@@ -47,6 +47,17 @@ public sealed class MsiGpu : IRgbDevice
         Span<byte> probe = stackalloc byte[1];   // outside the loop: stackallocs only free at method exit
         foreach (var (handle, name) in NvApi.EnumGpus())
         {
+            // Only an MSI board. The probe below is a one-byte read at 0x68 on
+            // the aux I2C port, and "something answered" is not "an MSI ITE
+            // controller": another vendor's part at that address would have been
+            // named "MSI ..." and written mode/colour registers. When NvAPI can
+            // name the board vendor and it is not MSI, skip; when it cannot say,
+            // the probe decides as before.
+            if (NvApi.GetPciIds(handle) is { } ids && (ids.SubSystemId & 0xFFFF) != 0x1462)
+            {
+                Log.Info("MsiGpu", $"'{name}': board vendor 0x{ids.SubSystemId & 0xFFFF:X4} is not MSI - not probed");
+                continue;
+            }
             // Probe the ITE controller: a register read at 0x68 must succeed.
             if (NvApi.I2CRead(handle, ADDR, REG_MODE, probe))
             {

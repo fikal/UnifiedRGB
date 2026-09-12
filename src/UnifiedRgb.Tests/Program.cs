@@ -84,6 +84,7 @@ if (harness.Failed > 0)
 }
 
 Console.WriteLine();
-Console.WriteLine($"{harness.Passed} passed, {harness.Failed} failed  "
-                + $"({ran} suite(s){(skipped > 0 ? $", {skipped} skipped" : "")}, {total.Elapsed.TotalSeconds:0.00}s)");
+Console.WriteLine($"{harness.Passed} passed, {harness.Failed} failed"
+                + (harness.Skipped > 0 ? $", {harness.Skipped} check(s) skipped on this machine" : "") + "  "
+                + $"({ran} suite(s){(skipped > 0 ? $", {skipped} suite(s) not selected" : "")}, {total.Elapsed.TotalSeconds:0.00}s)");
 return harness.Failed;

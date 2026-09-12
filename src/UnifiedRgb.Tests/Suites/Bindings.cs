@@ -37,7 +37,7 @@ static class BindingsSuite
             // Running from somewhere without the sources beside it. Say so
             // rather than passing quietly, which would make this look like
             // coverage it is not.
-            t.Check(true, "SKIPPED: the XAML sources are not next to this assembly");
+            t.Skip("binding check: the XAML sources are not next to this assembly");
             return;
         }
 

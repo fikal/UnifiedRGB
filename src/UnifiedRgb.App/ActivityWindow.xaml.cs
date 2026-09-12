@@ -236,7 +236,7 @@ public partial class ActivityWindow : Window
     /// window draws its own caption and has no system chrome to grab.</summary>
     void Drag_Down(object sender, MouseButtonEventArgs e)
     {
-        if (e.ButtonState == MouseButtonState.Pressed && e.OriginalSource is not TextBox) DragMove();
+        if (e.ButtonState == MouseButtonState.Pressed && e.OriginalSource is not TextBox) this.TryDragMove();
     }
 }
 

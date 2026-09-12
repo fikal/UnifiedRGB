@@ -60,7 +60,8 @@
                                    Foreground="#FF9AA3B2" Opacity="0.8" Margin="2,8,0,8"/>
                         <ListBox ItemsSource="{Binding CoolingFans}" SelectedItem="{Binding EditingFan}"
                                  Background="Transparent" BorderThickness="0" IsTextSearchEnabled="False"
-                                 HorizontalContentAlignment="Stretch" PreviewKeyDown="Pills_PreviewKeyDown">
+                                 HorizontalContentAlignment="Stretch" PreviewKeyDown="Pills_PreviewKeyDown"
+                                 PreviewMouseWheel="List_PreviewMouseWheel">
                             <ListBox.ItemContainerStyle>
                                 <Style TargetType="ListBoxItem">
                                     <Setter Property="Margin" Value="0,0,0,6"/>
@@ -194,7 +195,7 @@
                                     <ListBox ItemsSource="{x:Static local:FanRowModel.AllModes}"
                                              SelectedItem="{Binding EditingFan.Mode}"
                                              Background="Transparent" BorderThickness="0" IsTextSearchEnabled="False"
-                                             PreviewKeyDown="Pills_PreviewKeyDown">
+                                             PreviewKeyDown="Pills_PreviewKeyDown" PreviewMouseWheel="List_PreviewMouseWheel">
                                         <ListBox.ItemContainerStyle>
                                             <Style TargetType="ListBoxItem">
                                                 <Setter Property="Cursor" Value="Hand"/>

@@ -93,12 +93,21 @@ that one line, already written. Since `SetColors` returns a verdict a driver
 may instead refuse a short frame outright and return `false`, which is honest
 and visible. What is banned is dropping it **silently** and padding the tail
 with **black** - both have been done, and both looked like a dead device.
-Every driver in the tree follows this now. `EneDram` and `CorsairStrafeMk2`
+Every HID driver in the tree follows this now. `EneDram` and `CorsairStrafeMk2`
 were the last two black-padding; `SteelSeriesApex` was the last to address
 only the first `colors.Count` keys and leave the tail on its previous colour -
 which is the *silent* half of the same ban, and worse for carrying a `true`
 verdict and caching the short frame as "what the device is showing".
 `Suites/Devices.cs` pins the keyboard behaviour so none of it can come back.
+
+Three drivers keep a **shadow frame** instead, because their `SetZone` writes a
+slice into a whole-device image that is then sent entire: `GigabyteIt5711`
+(a fan zone that is left out of a short frame goes black, by design - a fan
+ring with no colour is off), `LianLiUniHub` (merges `colors.Count` entries
+into the shadow) and `OpenRgbDevice` (`Math.Min(colors.Count, LedCount)`).
+No caller sends a short frame today - the engine sizes every frame to
+`LedCount` - so this is documented rather than changed; a new caller that
+does (an SDK client, a test) should expect those three to behave that way.
 
 ### The verdict: what `SetColors` returns
 

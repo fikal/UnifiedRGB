@@ -58,6 +58,26 @@ static class HardwareExitSuite
             var keeb = new FakeHardwareDevice { Name = "Keeb", ExitCaps = HardwareExitCaps.ReturnToHardware };
             var plain = new FakeDevice { Name = "Plain" };
 
+            // Refusals. The exit path retries within its budget and reports
+            // honestly: a single refusal lands on the retry, a permanent one
+            // returns within the budget with delivered == false. No fake could
+            // say no before, so none of this ran under test.
+            {
+                var dozing = new FakeHardwareDevice { Name = "Dozing", ExitCaps = HardwareExitCaps.Static, RefuseNext = 1 };
+                string? what = HardwareExit.Apply(dozing, new ExitBehavior { Mode = ExitMode.Off }, out bool landed, budgetMs: 400);
+                t.Check(landed && what == "off", "exit: a single refusal lands on the retry");
+                t.Equal(2, dozing.Attempts, "exit: ...on the second attempt");
+                t.Equal(Rgb.Black, dozing.StaticSet, "exit: and the color arrived");
+
+                var dead = new FakeHardwareDevice { Name = "Dead", ExitCaps = HardwareExitCaps.ReturnToHardware, RefuseForever = true };
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                what = HardwareExit.Apply(dead, new ExitBehavior { Mode = ExitMode.ReturnToHardware }, out landed, budgetMs: 150);
+                t.Check(!landed && what == "onboard profile", "exit: a permanent refusal is reported as not delivered, naming what was tried");
+                t.Check(sw.ElapsedMilliseconds < 1500, "exit: ...and returns within the budget rather than forever");
+                t.Check(dead.Attempts >= 2, "exit: ...after more than one attempt");
+                t.Equal(0, dead.HandbackCount, "exit: nothing was recorded as handed back");
+            }
+
             // Nothing configured, and KeepLast, both send nothing at all: a device the
             // user never touched must not be written to on the way out.
             t.Check(HardwareExit.Apply(board, null) == null, "exit: no config sends nothing");

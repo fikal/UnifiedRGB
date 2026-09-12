@@ -260,16 +260,32 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
     {
         // 1) Addressing from L-Connect's config — read-only, no device I/O.
         var cfg = ReadConfig();
-        if (cfg == null) return null;
-
-        // 2) The transmitter interface. Absent = no hardware; open failure =
-        //    L-Connect owns it (WinUSB is exclusive) — both are quiet skips.
         string? path = WinUsbDevice.FindPath(IfaceGuid, VidPid);
-        if (path == null) return null;
+        if (path == null) return null;   // no transmitter: nothing to say
+        if (cfg == null)
+        {
+            // The hardware is here but the pairing (L-Connect's saved
+            // devices file) is not: without it we cannot address the fans.
+            DetectionNotes.Report(nameof(LianLiWireless), "Lian Li wireless fans (SLV3 transmitter)",
+                BlockReason.DriverMissing,
+                "the transmitter is plugged in but L-Connect 3's pairing file was not found, so the fans cannot be addressed",
+                "pair the fans once in L-Connect 3 (it writes the file), then Scan again");
+            return null;
+        }
+
+        // 2) The transmitter interface. Open failure = L-Connect owns it
+        //    (WinUSB is exclusive): skipped, and said through DetectionNotes.
         var usb = WinUsbDevice.Open(path);
         if (usb == null)
         {
             Log.Info("LianLi", "SLV3 transmitter present but busy (L-Connect running?) - skipped");
+            // Present but unusable is exactly what the notes channel is for:
+            // Settings > Devices and the support bundle used to say nothing,
+            // and "my fans are missing" had no answer on screen.
+            DetectionNotes.Report(nameof(LianLiWireless), "Lian Li wireless fans (SLV3 transmitter)",
+                BlockReason.HeldByOtherSoftware,
+                "the transmitter is plugged in but another program has it open (L-Connect 3's service, usually)",
+                "close L-Connect 3, or stop its background service, then Scan again");
             return null;
         }
 
@@ -420,7 +436,9 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         // together. Insurance: once the state has SETTLED for half a second,
         // transmit it once more. Streams skip this (the shadow keeps
         // changing); the final resting state always gets an extra copy.
-        (_settleTimer ??= new Timer(SettleResend)).Change(500, Timeout.Infinite);
+        // Not after Dispose: Change on a disposed timer throws, and a Transmit
+        // that started before a rescan's Dispose can reach here after it.
+        if (!_disposed) (_settleTimer ??= new Timer(SettleResend)).Change(500, Timeout.Infinite);
         if (!ok)
         {
             // Some packets or the insurance copy may still have landed. The
@@ -456,9 +474,12 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
 
     /// <summary>Logical shadow (slot order) -> physical wire order (chain
     /// order + per-fan ring interleave) as RGB bytes.</summary>
+    // Reused across frames; every caller holds _lock, like _rfPkt below.
+    byte[]? _wireBytes;
+
     byte[] BuildWireBytes()
     {
-        var rgb = new byte[LedCount * 3];
+        var rgb = _wireBytes ??= new byte[LedCount * 3];
         for (int s = 0; s < _fanNum; s++)
         {
             int bLog = s * LedsPerFan;
@@ -1027,10 +1048,16 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
     public void Dispose()
     {
         Instance = null;
-        _settleTimer?.Dispose();
         lock (_lock)
         {
             _disposed = true;
+            // Inside the lock, after the flag: a Transmit in flight (a wedged
+            // transmitter makes one take seconds) re-arms the settle timer on
+            // its way out, and disposing it before it got there threw
+            // ObjectDisposedException out of SetColors. Timer.Dispose does not
+            // wait for a running callback, and SettleResend takes _lock only
+            // after this releases it, so there is no deadlock here.
+            _settleTimer?.Dispose();
             _animPending = false;
             _pwmDirty = false;
             // Swap the field under _rxLock, free the snapshot outside it: the

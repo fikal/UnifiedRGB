@@ -61,10 +61,13 @@ public sealed class OpenRgbServer : IDisposable
     /// what happens when they open ten thousand connections.</summary>
     const int MaxClients = 16;
 
-    /// <summary>A client that connects and then goes silent must not park a
-    /// thread forever, and one that stops reading must not wedge a write.</summary>
-    const int ClientReadTimeoutMs = 120_000;
+    /// <summary>A client that stops reading must not wedge a write. Reads have
+    /// no timeout: an idle client is a normal client (one that set a colour and
+    /// is holding it), MaxClients bounds the parked threads, and a peer that
+    /// died without closing is found by TCP keepalive - not by the two-minute
+    /// read timeout that used to cut live-but-quiet clients off silently.</summary>
     const int ClientWriteTimeoutMs = 3_000;
+    const int KeepAliveIdleSeconds = 30, KeepAliveIntervalSeconds = 5, KeepAliveProbes = 4;
 
     /// <summary>How long Stop waits, in total, for client threads to leave
     /// their host callbacks. Bounded because a callback can be marshalling to
@@ -133,7 +136,13 @@ public sealed class OpenRgbServer : IDisposable
     /// the settings line can follow along. Fired from a socket thread.</summary>
     public event Action? ClientsChanged;
 
-    public OpenRgbServer(IOpenRgbHost host, double silenceSeconds = 5)
+    /// <param name="silenceSeconds">How long a claim survives with no further
+    /// writes. Infinite by default: a claim ends when the client disconnects (a
+    /// crashed process closes its socket; a dead LAN peer is caught by the TCP
+    /// keepalive). A finite value undid one-shot clients - Home Assistant sets a
+    /// colour once and holds the connection, so five seconds later the user's
+    /// own lighting came back over it. Tests pass a short value.</param>
+    public OpenRgbServer(IOpenRgbHost host, double silenceSeconds = double.PositiveInfinity)
     {
         _host = host;
         _owned = new ExternalOwnership<IRgbDevice>(silenceSeconds);
@@ -172,8 +181,10 @@ public sealed class OpenRgbServer : IDisposable
         _stopping = false;
         _accept = new Thread(AcceptLoop) { IsBackground = true, Name = "orgb-accept" };
         _accept.Start();
-        // Claims lapse on silence, so something has to notice the silence.
-        _sweep = new System.Threading.Timer(_ => SweepExpired(), null, 1000, 1000);
+        // Claims lapse on silence only when a finite silence was asked for;
+        // then something has to notice the silence.
+        if (!double.IsPositiveInfinity(_owned.SilenceSeconds))
+            _sweep = new System.Threading.Timer(_ => SweepExpired(), null, 1000, 1000);
 
         Log.Info("orgb-server", $"listening on {(listenOnLan ? "0.0.0.0" : "127.0.0.1")}:{Port}");
         if (listenOnLan)
@@ -291,10 +302,13 @@ public sealed class OpenRgbServer : IDisposable
         try
         {
             client.Tcp.NoDelay = true;
+            EnableKeepAlive(client.Tcp.Client);
             var stream = client.Tcp.GetStream();
-            stream.ReadTimeout = ClientReadTimeoutMs;
             stream.WriteTimeout = ClientWriteTimeoutMs;
             var header = new byte[OpenRgbProtocol.HeaderBytes];
+            // Grown on demand and reused: a client streaming at 60 fps is a
+            // per-frame path, and this was one allocation per packet.
+            var payload = Array.Empty<byte>();
 
             while (!_stopping)
             {
@@ -316,15 +330,18 @@ public sealed class OpenRgbServer : IDisposable
                     Log.Warn("orgb-server", $"dropping a client that asked for a {size} byte packet");
                     break;
                 }
-                var payload = size == 0 ? Array.Empty<byte>() : new byte[size];
+                if (payload.Length < size) payload = new byte[Math.Min(Math.Max(size, payload.Length * 2), 1 << 20)];
                 if (size > 0 && !ReadExactly(stream, payload, size)) break;
 
-                Handle(client, stream, deviceIndex, packetId, payload);
+                Handle(client, stream, deviceIndex, packetId, payload, size);
             }
         }
         catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException)
         {
-            // A client going away is not news.
+            // A client going away is ordinary (a clean close never gets here:
+            // Read returns 0), but an abrupt one - a crash, a dead LAN peer the
+            // keepalive gave up on - is worth one line for a support bundle.
+            if (!_stopping) Log.Info("orgb-server", $"client '{client.Name}' connection ended: {ex.Message}");
         }
         catch (Exception ex)
         {
@@ -347,13 +364,13 @@ public sealed class OpenRgbServer : IDisposable
         }
     }
 
-    void Handle(Client client, NetworkStream stream, uint deviceIndex, uint packetId, byte[] payload)
+    void Handle(Client client, NetworkStream stream, uint deviceIndex, uint packetId, byte[] payload, int size)
     {
         switch (packetId)
         {
             case OpenRgbProtocol.PktProtocolVersion:
             {
-                uint theirs = payload.Length >= 4 ? BitConverter.ToUInt32(payload) : 0;
+                uint theirs = size >= 4 ? BitConverter.ToUInt32(payload) : 0;
                 client.Version = Math.Min(theirs, OpenRgbProtocol.MaxVersion);
                 Send(stream, 0, OpenRgbProtocol.PktProtocolVersion,
                      BitConverter.GetBytes(client.Version));
@@ -367,7 +384,7 @@ public sealed class OpenRgbServer : IDisposable
                 // carrying an embedded newline forges lines indistinguishable
                 // from ours. Bounded as well: the packet cap is a megabyte, and
                 // the name also lands in a settings-page binding.
-                string named = CleanClientName(Encoding.ASCII.GetString(payload));
+                string named = CleanClientName(Encoding.ASCII.GetString(payload, 0, size));
                 if (named == client.Name) break;   // a rename to what it already was
                 client.Name = named;
                 // Occasional, not Info: this was the one ingress handler that
@@ -404,15 +421,15 @@ public sealed class OpenRgbServer : IDisposable
             }
 
             case OpenRgbProtocol.PktUpdateLeds:
-                ApplyWrite(client, deviceIndex, payload, zoneWrite: false);
+                ApplyWrite(client, deviceIndex, payload, size, zoneWrite: false);
                 break;
 
             case OpenRgbProtocol.PktUpdateZoneLeds:
-                ApplyWrite(client, deviceIndex, payload, zoneWrite: true);
+                ApplyWrite(client, deviceIndex, payload, size, zoneWrite: true);
                 break;
 
             case OpenRgbProtocol.PktUpdateSingleLed:
-                ApplySingleLed(client, deviceIndex, payload);
+                ApplySingleLed(client, deviceIndex, payload, size);
                 break;
 
             case OpenRgbProtocol.PktSetCustomMode:
@@ -429,7 +446,7 @@ public sealed class OpenRgbServer : IDisposable
 
     /// <summary>Both LED writes, which differ only in a zone index up front.
     /// Layout: u32 payload length, [u32 zone], u16 count, then count colors.</summary>
-    void ApplyWrite(Client client, uint deviceIndex, byte[] payload, bool zoneWrite)
+    void ApplyWrite(Client client, uint deviceIndex, byte[] payload, int size, bool zoneWrite)
     {
         var device = DeviceAt(deviceIndex);
         if (device == null) return;
@@ -438,12 +455,12 @@ public sealed class OpenRgbServer : IDisposable
         int zone = 0;
         if (zoneWrite)
         {
-            if (payload.Length < o + 4) return;
+            if (size < o + 4) return;
             zone = BitConverter.ToInt32(payload, o); o += 4;
         }
-        if (payload.Length < o + 2) return;
+        if (size < o + 2) return;
         int count = BitConverter.ToUInt16(payload, o); o += 2;
-        if (count < 0 || payload.Length < o + count * 4) return;
+        if (count < 0 || size < o + count * 4) return;
 
         int offset = 0;
         if (zoneWrite)
@@ -453,33 +470,40 @@ public sealed class OpenRgbServer : IDisposable
             for (int i = 0; i < zone; i++) offset += zones[i].Count;
         }
 
-        var colors = new Rgb[count];
+        // Reused per client: the host copies the colors into its own picture
+        // before returning, so the buffer is free again by then. A client at
+        // 60 fps is a per-frame path, and this was an array per packet.
+        if (client.Colors.Length < count) client.Colors = new Rgb[Math.Max(count, client.Colors.Length * 2)];
+        var colors = client.Colors;
         for (int i = 0; i < count; i++)
             colors[i] = OpenRgbProtocol.FromWire(BitConverter.ToUInt32(payload, o + i * 4));
 
         // Claiming has to happen before the paint, so the user's lighting is
         // saved before anything overwrites it.
         Claimed(client, device);
-        try { _host.PushExternal(device, offset, colors); }
+        try { _host.PushExternal(device, offset, new ArraySegment<Rgb>(colors, 0, count)); }
         catch (Exception ex) { Log.Warn("orgb-server", $"write {device.Name}: {ex.Message}"); }
     }
 
-    /// <summary>One LED: u32 payload length, i32 led index, then one color.
-    /// Home Assistant and Stream Deck integrations use this, and without it
-    /// they were silently ignored AND never claimed the device, so the silence
-    /// sweep tore their session down underneath them.</summary>
-    void ApplySingleLed(Client client, uint deviceIndex, byte[] payload)
+    /// <summary>One LED: i32 led index, then one color - and NO leading payload
+    /// length, unlike the two bulk writes. OpenRGB's own RGBController_Network
+    /// sends exactly sizeof(int) + sizeof(RGBColor) = 8 bytes here, and so does
+    /// openrgb-python (Home Assistant, Stream Deck plugins). This handler used
+    /// to expect the bulk layout (12 bytes, index at offset 4), so every
+    /// single-LED write was dropped by the length check: no write, no claim, no
+    /// log line - the exact silence the previous fix here set out to end.</summary>
+    void ApplySingleLed(Client client, uint deviceIndex, byte[] payload, int size)
     {
         var device = DeviceAt(deviceIndex);
         if (device == null) return;
-        if (payload.Length < 4 + 4 + 4) return;
+        if (size < 4 + 4) return;
 
-        int led = BitConverter.ToInt32(payload, 4);
+        int led = BitConverter.ToInt32(payload, 0);
         if (led < 0 || led >= device.LedCount) return;
-        var color = OpenRgbProtocol.FromWire(BitConverter.ToUInt32(payload, 8));
+        client.OneColor[0] = OpenRgbProtocol.FromWire(BitConverter.ToUInt32(payload, 4));
 
         Claimed(client, device);
-        try { _host.PushExternal(device, led, new[] { color }); }
+        try { _host.PushExternal(device, led, client.OneColor); }
         catch (Exception ex) { Log.Warn("orgb-server", $"write {device.Name}: {ex.Message}"); }
     }
 
@@ -551,6 +575,22 @@ public sealed class OpenRgbServer : IDisposable
         lock (stream) stream.Write(buf, 0, buf.Length);
     }
 
+    /// <summary>Dead-peer detection for a socket with no read timeout: a peer
+    /// that vanished without a FIN (power loss, a cable, a crashed VM) is closed
+    /// by the stack after idle + probes x interval, which releases its claims
+    /// through the ordinary disconnect path.</summary>
+    static void EnableKeepAlive(Socket s)
+    {
+        try
+        {
+            s.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            s.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, KeepAliveIdleSeconds);
+            s.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, KeepAliveIntervalSeconds);
+            s.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, KeepAliveProbes);
+        }
+        catch (Exception ex) { Log.Occasional("orgb-keepalive", "orgb-server", $"keepalive not set: {ex.Message}"); }
+    }
+
     static bool ReadExactly(NetworkStream stream, byte[] buf, int count)
     {
         int got = 0;
@@ -588,6 +628,9 @@ public sealed class OpenRgbServer : IDisposable
         public TcpClient Tcp { get; }
         public string Name = "unnamed";
         public uint Version;
+        // Per-client scratch for the write path (see ApplyWrite / ApplySingleLed).
+        public Rgb[] Colors = new Rgb[64];
+        public readonly Rgb[] OneColor = new Rgb[1];
         public void Close() { try { Tcp.Close(); } catch { } }
     }
 }

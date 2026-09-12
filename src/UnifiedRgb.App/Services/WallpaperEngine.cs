@@ -147,7 +147,8 @@ public static class WallpaperEngine
         {
             try
             {
-                if (hive.OpenSubKey(key)?.GetValue(value) is string s && s.Length > 0 && Directory.Exists(s))
+                using var sub = hive.OpenSubKey(key);   // a RegistryKey is a handle; it was never closed
+                if (sub?.GetValue(value) is string s && s.Length > 0 && Directory.Exists(s))
                     return s;
             }
             catch { /* a locked-down machine is a miss, not a crash */ }

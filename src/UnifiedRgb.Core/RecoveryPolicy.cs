@@ -66,7 +66,11 @@ public enum RecoveryAction
 /// device.</param>
 /// <param name="LightsSuppressed">The automation is deliberately keeping the
 /// lights off: a scheduled dark window, or a locked session.</param>
-public readonly record struct RecoveryConditions(bool SdkClientHolds, bool LightsSuppressed);
+/// <param name="CalibrationRunning">A calibration session has reference patches
+/// on the hardware. A rescan replaces the very instances the aid is driving:
+/// the patch would vanish and every slider move afterwards would retry a
+/// disposed handle for 400 ms per device. Deferred like a client hold.</param>
+public readonly record struct RecoveryConditions(bool SdkClientHolds, bool LightsSuppressed, bool CalibrationRunning = false);
 
 /// <summary>The decision, with enough detail to log one honest sentence.</summary>
 /// <param name="Relight">Whether the recovery may put the user's lighting back
@@ -248,7 +252,7 @@ public sealed class RecoveryPolicy
         // client would yank the lighting out of whatever is driving it and
         // hand the user their own profile back mid-scene. Waiting is nearly
         // always free: clients let go in seconds.
-        if (conditions.SdkClientHolds && _busyDeferrals < MaxBusyDeferrals)
+        if ((conditions.SdkClientHolds || conditions.CalibrationRunning) && _busyDeferrals < MaxBusyDeferrals)
         {
             _busyDeferrals++;
             _dueAt = now + BusyRetryMs;

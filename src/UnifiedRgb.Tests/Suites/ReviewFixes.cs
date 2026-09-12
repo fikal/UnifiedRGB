@@ -23,8 +23,8 @@ static class ReviewFixesSuite
         foreach (string name in new[] { "RzChromaSDK64.dll", "RzChromaSDK.dll" })
         {
             using var payload = ChromaShimInstaller.OpenBundledShim(name);
-            // Native builds are optional in source checkouts.
-            if (payload == null) continue;
+            // Native builds are optional in source checkouts - but say so.
+            if (payload == null) { t.Skip($"Chroma shim payload '{name}' is not embedded in this build (run native/chroma-shim/build.bat)"); continue; }
             using var copy = new System.IO.MemoryStream();
             payload.CopyTo(copy);
             var bytes = copy.ToArray();

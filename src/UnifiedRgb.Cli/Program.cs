@@ -13,6 +13,23 @@ void Sleep(int ms) { if (cancel.Token.WaitHandle.WaitOne(ms)) throw new Operatio
 // Probe output goes to the console AND the log: the elevated probes may run
 // where the console isn't visible. One helper; each probe picks its log tag.
 Action<string> Probe(string tag) => m => { Console.WriteLine(m); UnifiedRgb.Core.Log.Info(tag, m); };
+// What --help prints, and what a bad command line is answered with. The
+// hardware probes are documented where they are implemented (each handler
+// below starts with its own comment block); this is the map.
+const string Usage = """
+  (no args)                      list every detected device
+  RRGGBB                         set every LED on every device to that colour
+  <deviceIndex> RRGGBB           set one device
+  --openrgb [echo]               OpenRGB bridge test (echo = write-path round trip)
+  --razer [color|dpi|stages|poll]  Razer mice: probe, hold a colour, or write onboard settings
+  --scan                         probe the board's ARGB headers for connected segments
+  --pump ...  --lcd ...  --lcdinfo   pump LCD probes
+  --argb/--argball/--argbblocks/--argbrange/--argbwalk   board ARGB header probes
+  --gpu --gpurgb --gpufan0 --gpufanctl                   GPU probes (NvAPI)
+  --fanctl --fanmap --lhmfan --cputemp --superio --sioldn --gbecdump   fan / sensor probes
+  --ram --mouse --keys --audio --staticfade              other device probes
+  Exit codes: 0 ok, 1 a device refused, 2 bad command line, 130 cancelled (Ctrl+C).
+""";
 try
 {
 // --openrgb [echo]: OpenRGB bridge test. Ensures a server is running (downloads
@@ -742,11 +759,24 @@ if (args.Length >= 1 && args[0] == "--mouse")
 
 // --razer                    detect Razer mice, print fw/serial/DPI/stages/poll/battery + the raw probe
 // --razer color RRGGBB       hold a color for 3 s
-// --razer dpi X [Y]          set the live DPI (onboard)
-// --razer stages A X1 X2..   set the onboard DPI stages (A = active, 1-based)
-// --razer poll HZ            set the polling rate (125/500/1000)
+// --razer dpi X [Y]          set the live DPI (written to the mouse's onboard memory)
+// --razer stages A X1 X2..   set the DPI stages (A = active, 1-based; onboard memory)
+// --razer poll HZ            set the polling rate 125/500/1000 (onboard memory)
+// The three settings commands address MICE only: a HyperFlux pad's own
+// controller answers the probe too, and used to receive (and refuse) them.
+// Exit code 1 when a device refused, 2 for a bad command line.
 if (args.Length >= 1 && args[0] == "--razer")
 {
+    const string razerUsage = "usage: --razer [color RRGGBB | dpi X [Y] | stages A X1 X2.. | poll 125|500|1000]";
+    string sub = args.Length >= 2 ? args[1] : "";
+    bool known = sub is "" or "color" or "dpi" or "stages" or "poll";
+    bool enoughArgs = sub switch { "" => true, "color" => args.Length >= 3, "dpi" => args.Length >= 3, "stages" => args.Length >= 4, "poll" => args.Length >= 3, _ => false };
+    if (!known || !enoughArgs)
+    {
+        Console.WriteLine(razerUsage);
+        Environment.ExitCode = 2;
+        return;
+    }
     Console.WriteLine("-- probe (every Razer control collection, every transaction id) --");
     Console.WriteLine(RazerHid.ProbeAll());
     var razers = RazerHid.DetectAll();
@@ -756,26 +786,40 @@ if (args.Length >= 1 && args[0] == "--razer")
         foreach (var d in razers.OfType<RazerHid>())
         {
             Console.WriteLine($"{d.Name}: {d.DiagnosticInfo()}");
-            if (args.Length >= 3 && args[1] == "color")
+            if (sub == "color")
             {
                 var col = Rgb.FromHex(args[2]);
                 Console.WriteLine($"  holding {col} for 3 s...");
                 d.SetColors(Enumerable.Repeat(col, d.LedCount).ToArray());
-                Thread.Sleep(3000);
+                Sleep(3000);   // cooperative: Ctrl+C restores instead of being swallowed
+                continue;
             }
-            else if (args.Length >= 3 && args[1] == "dpi")
+            if (sub == "") continue;
+            if (d.GetDpi() == null)
+            {
+                Console.WriteLine("  (not a mouse - settings left alone)");
+                continue;
+            }
+            bool ok;
+            if (sub == "dpi")
             {
                 int x = int.Parse(args[2]); int y = args.Length >= 4 ? int.Parse(args[3]) : x;
-                Console.WriteLine($"  set dpi {x}x{y}: {(d.SetDpi(x, y) ? "ok" : "FAILED")}  now {d.GetDpi()}");
+                ok = d.SetDpi(x, y);
+                Console.WriteLine($"  set dpi {x}x{y}: {(ok ? "ok" : "FAILED")}  now {d.GetDpi()}");
             }
-            else if (args.Length >= 4 && args[1] == "stages")
+            else if (sub == "stages")
             {
                 int active = int.Parse(args[2]);
                 var stages = args.Skip(3).Select(s => { int v = int.Parse(s); return (v, v); }).ToArray();
-                Console.WriteLine($"  set stages: {(d.SetDpiStages(active, stages) ? "ok" : "FAILED")}  now {d.DiagnosticInfo()}");
+                ok = d.SetDpiStages(active, stages);
+                Console.WriteLine($"  set stages: {(ok ? "ok" : "FAILED")}  now {d.DiagnosticInfo()}");
             }
-            else if (args.Length >= 3 && args[1] == "poll")
-                Console.WriteLine($"  set poll {args[2]} Hz: {(d.SetPollingRate(int.Parse(args[2])) ? "ok" : "FAILED")}  now {d.GetPollingRate()} Hz");
+            else
+            {
+                ok = d.SetPollingRate(int.Parse(args[2]));
+                Console.WriteLine($"  set poll {args[2]} Hz: {(ok ? "ok" : "FAILED")}  now {d.GetPollingRate()} Hz");
+            }
+            if (!ok) Environment.ExitCode = 1;
         }
     }
     finally { foreach (var d in razers) d.Dispose(); }
@@ -808,7 +852,13 @@ if (args.Length > 0 && args[0] == "--scan")
 // handlers such as --argb/--lcd simply don't match on a miscount). Reject it
 // here, before the generic path opens every device and reports "Done.".
 if (args.Length > 0 && args[0].StartsWith("--"))
-{ Console.WriteLine($"Unknown option or wrong argument count: {string.Join(' ', args)}"); Environment.ExitCode = 2; return; }
+{
+    Console.WriteLine(args[0] is "--help" or "-h" or "/?" ? "UnifiedRgb CLI"
+                    : $"Unknown option or wrong argument count: {string.Join(' ', args)}");
+    Console.WriteLine(Usage);
+    Environment.ExitCode = args[0] is "--help" or "-h" or "/?" ? 0 : 2;
+    return;
+}
 
 using var manager = new DeviceManager();
 manager.DetectAll();
@@ -843,6 +893,15 @@ else if (args.Length == 2 && int.TryParse(args[0], out int idx))
     Console.WriteLine($"Setting [{idx}] {manager.Devices[idx].Name} to {color}...");
     manager.Devices[idx].SetAll(color);
 }
+else
+{
+    // "FF0000 extra" or three bare words used to list the devices and print
+    // "Done." with exit 0, having set nothing.
+    Console.WriteLine($"Did not understand: {string.Join(' ', args)}");
+    Console.WriteLine(Usage);
+    Environment.ExitCode = 2;
+    return;
+}
 
 Console.WriteLine("Done.");
 }
@@ -850,4 +909,12 @@ catch (OperationCanceledException)
 {
     Console.WriteLine("Cancelled.");
     Environment.ExitCode = 130;
+}
+catch (Exception ex) when (ex is FormatException or OverflowException)
+{
+    // A typo in a number or colour argument (dpi 8oo, poll 5000000) used to
+    // end in a stack trace after the hardware probes had already run.
+    Console.WriteLine($"Bad argument: {ex.Message}");
+    Console.WriteLine(Usage);
+    Environment.ExitCode = 2;
 }

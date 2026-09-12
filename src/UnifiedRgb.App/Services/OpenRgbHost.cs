@@ -123,7 +123,7 @@ public sealed class OpenRgbHost : IOpenRgbHost
             // One refresh for the whole set: RestoreState ends with one anyway,
             // and without a restore we do it ourselves below.
             foreach (var device in _vm.Devices) _vm.ReleaseHold(device, refresh: false);
-            if (restore != null) _vm.RestoreState(restore, honorSuppression: true);
+            if (restore != null) PutBack(restore);
             else _vm.RefreshDeviceHealth();
         });
     }
@@ -152,7 +152,29 @@ public sealed class OpenRgbHost : IOpenRgbHost
                     _snapshot = null;
                 }
             }
-            if (restore != null) _vm.RestoreState(restore, honorSuppression: true);
+            if (restore != null) PutBack(restore);
         });
+    }
+
+    /// <summary>The user's lighting after the last claim ends. The snapshot was
+    /// taken at the FIRST claim, and the desk may have moved on while the client
+    /// held a device: an app rule, a schedule, a hotkey. Restoring the snapshot
+    /// then undid all of that for every device - the game exited, the startup
+    /// profile came back, and seconds later the whole desk snapped to what was
+    /// on before the game. When a profile was applied meanwhile, that profile is
+    /// what the desk should show, held device included, which is why it is
+    /// re-applied whole rather than patched per device; the snapshot serves only
+    /// when nothing was applied. A lock or a dark window is honoured either way.</summary>
+    void PutBack(MainViewModel.LightState snapshot)
+    {
+        string? applied = _vm.AppliedProfileName;
+        bool movedOn = applied != null
+            && !string.Equals(applied, snapshot.AppliedProfileName, StringComparison.OrdinalIgnoreCase);
+        if (movedOn && !_vm.LightsSuppressed && _vm.ApplyProfileByName(applied!, fromShow: true))
+        {
+            Log.Info("lighting", $"SDK client gone: profile '{applied}' was applied while it held a device, so that is what comes back");
+            return;
+        }
+        _vm.RestoreState(snapshot, honorSuppression: true);
     }
 }

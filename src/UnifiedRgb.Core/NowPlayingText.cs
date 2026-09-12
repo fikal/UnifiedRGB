@@ -38,6 +38,10 @@ public static class NowPlayingText
         if (maxChars <= 0) return "";
         if (s.Length <= maxChars) return s;
         if (maxChars == 1) return "…";
-        return string.Concat(s.AsSpan(0, maxChars - 1).TrimEnd(), "…");
+        int cut = maxChars - 1;
+        // Never split a surrogate pair: an emoji straddling the cut left a lone
+        // high surrogate in front of the ellipsis, which the panel drew as a box.
+        if (char.IsHighSurrogate(s[cut - 1])) cut--;
+        return string.Concat(s.AsSpan(0, cut).TrimEnd(), "…");
     }
 }

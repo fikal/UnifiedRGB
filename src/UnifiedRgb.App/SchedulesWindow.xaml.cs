@@ -58,6 +58,6 @@ public partial class SchedulesWindow : Window
 
     void Drag_Down(object sender, MouseButtonEventArgs e)
     {
-        if (e.ButtonState == MouseButtonState.Pressed && e.OriginalSource is not TextBox) DragMove();
+        if (e.ButtonState == MouseButtonState.Pressed && e.OriginalSource is not TextBox) this.TryDragMove();
     }
 }

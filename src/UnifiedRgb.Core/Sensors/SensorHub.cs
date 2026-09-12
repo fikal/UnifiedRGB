@@ -155,35 +155,72 @@ public static class SensorHub
     /// declaration): ReconcileFans below changes fan modes and writes duties
     /// while _gate is held, and both of those take _writeGate themselves.
     /// A no-op once opened, or after Shutdown.</summary>
+    /// <summary>Serialises the open with ResetSources and Shutdown, so neither
+    /// can capture a half-open set of sources (a leaked PawnIO driver handle).
+    /// Outermost in the lock order: _openGate, then _writeGate, then _gate.</summary>
+    static readonly object _openGate = new();
+
     static void OpenSourcesOnce()
     {
-        lock (_writeGate)
-        lock (_gate)
+        // Fast path first, and NOT under _openGate: a tick arriving while
+        // Shutdown holds that lock and drains the timer would otherwise block
+        // on it, and the drain would then wait 2 s for that very tick.
+        lock (_gate) { if (_sourcesOpened || _shutdown) return; }
+        lock (_openGate)
         {
-            if (_sourcesOpened || _shutdown) return;
-            _sourcesOpened = true;
-            _lastApplied.Clear();   // fresh backends know nothing: ReconcileFans must write, not dedup
-            // Board/GPU entries are re-derived below (ReconcileFans restores
-            // every unconfigured fan); a wireless one is not - it is a fan the
-            // receiver still holds at our duty - so it stays queued.
-            _pendingRestore.RemoveWhere(i => !IsLian(i));
-            try { _cpu = RyzenCpuTemperature.TryCreate(); } catch { }
-            try { _lhm?.Dispose(); } catch { }   // safe on re-open after ResetSources
-            _lhm = null;
-            try { _lhm = LhmFans.TryOpen(); } catch { }
+            lock (_gate) { if (_sourcesOpened || _shutdown) return; }
+
+            // The backends open into locals with no lock held but _openGate.
+            // LhmFans.TryOpen is the ring0 driver load plus a full Super-I/O
+            // probe - seconds on a first run - and every UI getter takes _gate:
+            // held across the open, it parked the Cooling pane's second refresh
+            // (1.5 s after the first) on the dispatcher for the whole thing.
+            LhmFans? old;
+            lock (_gate) { old = _lhm; _lhm = null; }
+            // Under _writeGate: a RestoreFan/SetFanDuty on the UI thread must not
+            // interleave a write with the old instance's close (a re-open after
+            // ResetSources; a no-op the first time).
+            lock (_writeGate) { try { old?.Dispose(); } catch { } }
+
+            RyzenCpuTemperature? cpu = null; LhmFans? lhm = null; List<IteBoardChip>? ite = null;
+            IntPtr gpu = IntPtr.Zero; bool gpuFanCtl = false; int? gpuMinDuty = null;
+            try { cpu = RyzenCpuTemperature.TryCreate(); } catch { }
+            try { lhm = LhmFans.TryOpen(); } catch { }
             // LHM found nothing (driver blocked, or an unsupported board):
             // fall back to the ITE Super-I/O over PawnIO for monitoring.
-            if (_lhm == null)
-                try { OpenIteFallback(); } catch (Exception ex) { Log.Warn("sensors", $"ITE fallback failed: {ex.Message}"); }
-            try { _gpu = NvApi.EnumGpus().FirstOrDefault().Handle; } catch { }
-            try { _gpuFanCtl = _gpu != IntPtr.Zero && NvApi.CanControlGpuFans(_gpu); } catch { }
-            try { if (_gpuFanCtl) _gpuMinDuty = NvApi.GetGpuFanMinLevel(_gpu) ?? 30; } catch { }
-            string board = _lhm != null ? $"{_lhm.Fans.Count} fans"
-                : _iteChips != null ? $"{_iteChips.Sum(c => c.FanSlots.Length)} fans (ITE/PawnIO)"
-                : "n/a";
-            Log.Info("sensors",
-                $"hub started (cpu={(_cpu != null ? "ok" : "n/a")}, board={board}, gpu={(_gpu != IntPtr.Zero ? (_gpuFanCtl ? "ok+fanctl" : "ok") : "n/a")})");
-            ReconcileFans();
+            if (lhm == null)
+                try { ite = OpenIteFallback(); } catch (Exception ex) { Log.Warn("sensors", $"ITE fallback failed: {ex.Message}"); }
+            try { gpu = NvApi.EnumGpus().FirstOrDefault().Handle; } catch { }
+            try { gpuFanCtl = gpu != IntPtr.Zero && NvApi.CanControlGpuFans(gpu); } catch { }
+            try { if (gpuFanCtl) gpuMinDuty = NvApi.GetGpuFanMinLevel(gpu) ?? 30; } catch { }
+
+            lock (_writeGate)
+            lock (_gate)
+            {
+                if (_shutdown)
+                {
+                    // Went down while the backends were opening: publish nothing.
+                    try { lhm?.Dispose(); } catch { }
+                    DisposeSources(cpu, ite);
+                    return;
+                }
+                _sourcesOpened = true;
+                _lastApplied.Clear();   // fresh backends know nothing: ReconcileFans must write, not dedup
+                // Board/GPU entries are re-derived below (ReconcileFans restores
+                // every unconfigured fan); a wireless one is not - it is a fan the
+                // receiver still holds at our duty - so it stays queued.
+                _pendingRestore.RemoveWhere(i => !IsLian(i));
+                _cpu = cpu; _lhm = lhm;
+                if (ite != null) _iteChips = ite;
+                _gpu = gpu; _gpuFanCtl = gpuFanCtl;
+                if (gpuMinDuty is int min) _gpuMinDuty = min;
+                string board = _lhm != null ? $"{_lhm.Fans.Count} fans"
+                    : _iteChips != null ? $"{_iteChips.Sum(c => c.FanSlots.Length)} fans (ITE/PawnIO)"
+                    : "n/a";
+                Log.Info("sensors",
+                    $"hub started (cpu={(_cpu != null ? "ok" : "n/a")}, board={board}, gpu={(_gpu != IntPtr.Zero ? (_gpuFanCtl ? "ok+fanctl" : "ok") : "n/a")})");
+                ReconcileFans();
+            }
         }
     }
 
@@ -246,15 +283,17 @@ public static class SensorHub
         // BoardFans projections are UI-only: gated on a recent FULL Touch(),
         // not on the temp-only TouchTemps() the effects and LCD use.
         bool uiActive = sinceUi <= IdleStopSeconds;
+        // The board sweep (a port-I/O pass under the ISA mutex) is UI-only.
+        // A "Hottest" curve used to force it every tick, window closed, for
+        // a value HottestC does not even read (it is Max(CPU, GPU)).
         bool needBoard = uiActive;
-        if (!needBoard)
-            lock (_gate) needBoard = _fanCurves.Values.Any(c => c.Source == TempSource.Hottest);
 
         // Snapshot the sources once: ResetSources/Shutdown null the fields and
         // then wait for this tick before disposing what they held.
         var cpu = _cpu; var lhm = _lhm; var ite = _iteChips;
         try { CpuTempC = cpu?.ReadCelsius(); } catch { CpuTempC = null; }
         try { GpuTempC = _gpu != IntPtr.Zero ? NvApi.GetGpuTemperature(_gpu) : null; } catch { GpuTempC = null; }
+        HasPublished = true;
         if (uiActive)
         {
             try { GpuFanRpms = _gpu != IntPtr.Zero ? NvApi.GetGpuFanRpms(_gpu) : null; } catch { GpuFanRpms = null; }
@@ -363,7 +402,7 @@ public static class SensorHub
                     // snapshot means this fan may no longer be ours to hand
                     // back (RestoreFan did it, or it is now Manual).
                     if (ModeChangedSince(gen)) break;
-                    handed = RestoreOne(kv.Key, keepCooling: true);
+                    handed = RestoreOne(kv.Key, keepCooling: true, retry: true);
                     if (handed) lock (_gate) _sourceLost.Add(kv.Key);
                 }
                 if (handed)
@@ -397,8 +436,8 @@ public static class SensorHub
                 {
                     bool still; lock (_gate) still = _pendingRestore.Contains(i);
                     if (!still) continue;
-                    handed = RestoreOne(i);
-                    if (handed) lock (_gate) _pendingRestore.Remove(i);
+                    handed = RestoreOne(i, retry: true);   // a handback already reported done needs a forced write
+                    if (handed) { lock (_gate) _pendingRestore.Remove(i); if (!AnyBoardFanOurs()) MarkBoardControl(false); }
                 }
                 if (handed) Log.Info("fans", $"fan {i}: handed back to automatic control on retry");
                 else Log.Occasional($"pending-restore:{i}", "fans",
@@ -470,10 +509,10 @@ public static class SensorHub
     /// fans are read-only and feed the LCD RPM element / diagnostics; the
     /// Cooling pane lists only controllable LHM fans). Needs PawnIO installed
     /// + elevation; a no-op otherwise.</summary>
-    static void OpenIteFallback()
+    static List<IteBoardChip>? OpenIteFallback()
     {
         var chips = IteSuperIo.OpenAll();
-        if (chips.Count == 0) return;
+        if (chips.Count == 0) return null;
         var kept = new List<IteBoardChip>();
         foreach (var chip in chips)
         {
@@ -487,7 +526,7 @@ public static class SensorHub
                 kept.Add(new IteBoardChip(chip, fanSlots.ToArray(), tempSlots.ToArray()));
             else chip.Dispose();
         }
-        if (kept.Count > 0) _iteChips = kept;
+        return kept.Count > 0 ? kept : null;   // the caller publishes it under _gate
     }
 
     /// <summary>One monitoring sweep of the ITE fallback chips into BoardTemps/
@@ -517,6 +556,8 @@ public static class SensorHub
     /// which was absent at first open).</summary>
     public static void ResetSources()
     {
+        lock (_openGate)   // never against an open in flight (see OpenSourcesOnce)
+        {
         Timer? timer; RyzenCpuTemperature? cpu; List<IteBoardChip>? ite;
         lock (_gate)
         {
@@ -545,6 +586,14 @@ public static class SensorHub
             _sourcesOpened = false;
             _running = false;
         }
+        }
+        // The timer was taken above and nothing else restarts it: with curves
+        // or manual fans configured that left every header holding its last
+        // duty and the thermal failsafe unevaluated until the Cooling pane
+        // happened to be opened. The idle-stop reclaims it when nothing needs it.
+        bool configured;
+        lock (_gate) configured = _manualFans.Count > 0 || _fanCurves.Count > 0 || _pendingRestore.Count > 0;
+        if (configured) EnsureRunning();
     }
 
     /// <summary>App exit: stop the timer and close every source. Only LHM's
@@ -553,6 +602,8 @@ public static class SensorHub
     /// is a no-op afterwards so a late render tick can't re-open anything.</summary>
     public static void Shutdown()
     {
+        lock (_openGate)   // never against an open in flight (see OpenSourcesOnce)
+        {
         Timer? timer; LhmFans? lhm; RyzenCpuTemperature? cpu; List<IteBoardChip>? ite;
         lock (_gate)
         {
@@ -575,6 +626,7 @@ public static class SensorHub
         lock (_writeGate)
             try { lhm?.Dispose(); } catch { }   // RestoreAll + Close
         DisposeSources(cpu, ite);
+        }
     }
 
     /// <summary>Stop the timer and wait (bounded) for an in-flight tick. TickCore
@@ -616,9 +668,9 @@ public static class SensorHub
     | duty OR a temperature curve — driven through LHM, with |
     | a CPU-temp failsafe. Modes persist per fan (by name)   |
     | and are re-applied on launch; any fan NOT configured   |
-    | is set back to the BIOS curve, which also cleans up an |
-    | unclean exit. Fans are addressed by flat index into    |
-    | BoardFans.                                             |
+    | is set back to the BIOS curve (as far as this process  |
+    | can: see ReconcileFans and the dirty-start marker).    |
+    | Fans are addressed by flat index into BoardFans.       |
     \*-----------------------------------------------------*/
     public const int MinDutyPct = 30;          // pump-safe floor, no soft-off
     const double FailsafeCpuC = 96;
@@ -795,7 +847,51 @@ public static class SensorHub
             return set;
         }
         LhmFans? lhm; lock (_gate) lhm = _lhm;
-        return lhm != null && lhm.SetDuty(fanIndex, percent);
+        if (lhm == null) return false;
+        bool landed = lhm.SetDuty(fanIndex, percent);
+        if (landed) MarkBoardControl(true);   // a board header is ours from here until it is handed back
+        return landed;
+    }
+
+    /*--- Dirty-start marker. LibreHardwareMonitor can only undo what it did
+          in-process: a run killed with a board header on our duty leaves that
+          header where it was, and the next run's "Auto" is the value LHM finds
+          there, not the BIOS curve, until a reboot. The marker exists while a
+          board header is under our control and goes away with a clean handback;
+          a launch that finds it says so, on screen and in the log. ---*/
+    static string FanMarkerFile => AppPaths.Local("fan-control.active");
+    static bool _markerWritten;
+
+    static void MarkBoardControl(bool active)
+    {
+        try
+        {
+            if (active)
+            {
+                if (_markerWritten) return;
+                File.WriteAllText(FanMarkerFile, DateTime.Now.ToString("s"));
+                _markerWritten = true;
+            }
+            else
+            {
+                _markerWritten = false;
+                if (File.Exists(FanMarkerFile)) File.Delete(FanMarkerFile);
+            }
+        }
+        catch (Exception ex) { Log.Occasional("fan-marker", "fans", $"fan-control marker: {ex.Message}"); }
+    }
+
+    static void NoteDirtyStart()
+    {
+        try
+        {
+            if (!File.Exists(FanMarkerFile)) return;
+            File.Delete(FanMarkerFile);
+            Log.Warn("fans", "the previous run ended without handing its board fans back: a header may still be on that run's duty, and Auto cannot be the BIOS curve again until a reboot");
+            UnifiedRgb.Core.Automation.ActivityLog.Note(UnifiedRgb.Core.Automation.ActivityKind.Problem,
+                "UnifiedRGB did not shut down cleanly last time while it was driving a board fan. That fan may still be on the old speed, and Automatic will not be the board's own curve again until you reboot.");
+        }
+        catch (Exception ex) { Log.Occasional("fan-marker", "fans", $"fan-control marker: {ex.Message}"); }
     }
 
     /// <summary>Hand one fan back to automatic control: route the restore to the
@@ -812,7 +908,10 @@ public static class SensorHub
     /// back because its sensor died, dropping a fan the curve had at 90% to 40%
     /// halves the cooling at the one moment nothing is watching the
     /// temperature.</param>
-    static bool RestoreOne(int fanIndex, bool keepCooling = false)
+    /// <param name="retry">The tick re-trying a handback that was reported
+    /// done: forces a real register write through LHM's dedup (see
+    /// LhmFans.Restore).</param>
+    static bool RestoreOne(int fanIndex, bool keepCooling = false, bool retry = false)
     {
         int safeDuty;
         lock (_gate)
@@ -854,7 +953,7 @@ public static class SensorHub
                 return ok || (!engaged && NvApi.IsGpuFanManual(gpu) != true);
             }
             var lhm = Lhm;
-            return lhm != null && lhm.Restore(fanIndex);
+            return lhm != null && lhm.Restore(fanIndex, force: retry);
         }
         catch (Exception ex)
         {
@@ -917,6 +1016,17 @@ public static class SensorHub
     /// <summary>Set when the thermal failsafe forced everything back to auto;
     /// cleared by the next successful set.</summary>
     public static bool FailsafeTripped { get; private set; }
+
+    /// <summary>The hub has completed at least one read since it started. Until
+    /// then a null temperature means "not yet" (LHM is still loading), not
+    /// "no source": the sensor-rule status used to say "PawnIO may not be
+    /// installed" for the first seconds of every launch.</summary>
+    public static bool HasPublished { get; private set; }
+
+    /// <summary>Fans a handback was asked for but has not landed on (retried
+    /// every tick). The activity history reads it so "every fan went back to
+    /// the board" is only said when it is true.</summary>
+    public static int PendingHandbackCount { get { lock (_gate) return _pendingRestore.Count; } }
 
     public static bool AnyControlledFan
     {
@@ -1127,6 +1237,15 @@ public static class SensorHub
             EnsureRunning();   // the retry lives in the tick; make sure there is one
         }
         SaveFanConfig();
+        if (!AnyBoardFanOurs()) MarkBoardControl(false);
+    }
+
+    /// <summary>A board (LHM) header still under our control, or owed a handback.</summary>
+    static bool AnyBoardFanOurs()
+    {
+        lock (_gate)
+            return _manualFans.Keys.Concat(_fanCurves.Keys).Concat(_pendingRestore)
+                .Any(i => !IsLian(i) && i != GpuFanIndex);
     }
 
     /// <summary>Hand every fan back to automatic (exit, crash, failsafe).
@@ -1213,6 +1332,9 @@ public static class SensorHub
         if (failed.Count == 0) Log.Info("fans", $"all fans restored to auto ({reason})");
         else Log.Error("fans", $"NOT fully restored ({reason}): {string.Join(", ", failed)} still under our control"
             + (pending.Count > 0 ? " - retrying every tick" : ""));
+        // Every board header is the board's again (or queued for the retry,
+        // which clears the marker itself once the last one lands).
+        if (pending.Count == 0) MarkBoardControl(false);
     }
 
     static readonly HashSet<int> _identifying = new();
@@ -1273,7 +1395,10 @@ public static class SensorHub
     /*------------------- durable per-fan config -------------------*\
     | Persisted by fan NAME (stable across launches). On start we    |
     | reconcile every fan: configured -> apply its mode; not         |
-    | configured -> SetDefault, which also clears a crash-stuck duty.|
+    | configured -> SetDefault. NOTE: that does NOT clear a duty a    |
+    | crashed run left behind - LHM can only restore what it saw at  |
+    | its own first write in THIS process - which is what the        |
+    | fan-control.active marker below is for.                        |
     \*--------------------------------------------------------------*/
     static string FanConfigFile => AppPaths.Local("fan-config.json");
 
@@ -1310,9 +1435,15 @@ public static class SensorHub
     }
 
     /// <summary>On hub start: apply saved modes and hand every other fan back
-    /// to automatic (which also undoes an unclean exit's stuck duty).</summary>
+    /// to automatic. A duty a KILLED run left on a header is not undone by
+    /// that: LibreHardwareMonitor's SetDefault restores the register value it
+    /// captured at its first write in this process, so on a fresh process it
+    /// has nothing to restore - and worse, a header still in software mode
+    /// from the dead run is what it captures as "default". The marker file
+    /// makes that visible instead of silent.</summary>
     static void ReconcileFans()
     {
+        NoteDirtyStart();
         Dictionary<string, FanConfigEntry> cfg = new();
         try
         {
@@ -1356,9 +1487,8 @@ public static class SensorHub
             else Log.Warn("fans", $"ignoring saved mode for '{name}': kind={e.Kind}, curve={(e.Curve != null)}");
         }
 
-        // A crash-stuck cleanup the backend refuses is queued for the tick to
-        // retry, like any other failed handback (the fan is still on whatever
-        // duty the last run left it at).
+        // A handback the backend refuses is queued for the tick to retry, like
+        // any other failed handback.
         var lhm = _lhm;
         if (lhm != null)
             for (int i = 0; i < lhm.Fans.Count; i++)
@@ -1367,7 +1497,7 @@ public static class SensorHub
                 if (cfg.TryGetValue(lhm.Fans[i].Name, out var e)) Apply(i, lhm.Fans[i].Name, e);
                 else
                 {
-                    bool ok; try { ok = lhm.Restore(i); } catch { ok = false; }   // clean crash-stuck duty
+                    bool ok; try { ok = lhm.Restore(i); } catch { ok = false; }   // back to the board (this run's view of it)
                     if (!ok) lock (_gate) _pendingRestore.Add(i);
                 }
             }
@@ -1375,7 +1505,7 @@ public static class SensorHub
         if (_gpuFanCtl)
         {
             if (cfg.TryGetValue("GPU", out var e)) Apply(GpuFanIndex, "GPU", e);
-            else if (!RestoreOne(GpuFanIndex)) lock (_gate) _pendingRestore.Add(GpuFanIndex);   // clean crash-stuck duty
+            else if (!RestoreOne(GpuFanIndex)) lock (_gate) _pendingRestore.Add(GpuFanIndex);   // the card reports a stuck duty itself (see RestoreOne)
         }
 
         // Lian Li wireless fans: keys are chain-stable so re-arranging slots

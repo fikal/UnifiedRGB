@@ -43,6 +43,12 @@ public sealed partial class MainViewModel
 
     void BuildLeftItems()
     {
+        // Read the selection BEFORE either list is cleared: both nav lists bind
+        // SelectedItem two-way, and clearing a bound collection makes the
+        // ListBox push null through that binding synchronously, inside Clear().
+        // Read afterwards, "the previous selection" was always null and every
+        // rescan snapped the nav to the first device.
+        var prev = _selectedLeft;
         // Devices scroll in their own list; the SYSTEM section (Pump LCD,
         // Cooling) is pinned at the bottom of the card so it never needs
         // scrolling to reach, no matter how many devices there are.
@@ -67,7 +73,6 @@ public sealed partial class MainViewModel
         // LeftItem, so re-match the same row by name/kind instead of snapping to
         // the first device (changing the Lian fan count rescans and used to kick
         // the selection off the hub). Falls back to the first device on startup.
-        var prev = _selectedLeft;
         // Not via the SelectedLeftItem setter: a rebuild is not a user pick,
         // so an open Settings pane (Rescan from its OpenRGB/PawnIO controls)
         // must stay open.

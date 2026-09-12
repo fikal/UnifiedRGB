@@ -57,7 +57,27 @@ public sealed class ShowViewModel : INotifyPropertyChanged, IDisposable
     public ObservableCollection<SceneAction> Steps { get; } = new();
 
     public const string KeepChoice = "(no change)";
-    public IReadOnlyList<string> ProfileChoices => new[] { KeepChoice }.Concat(_profileNames()).ToList();
+
+    /// <summary>What a step's dropdown offers: "(no change)", every profile, and
+    /// any name a step of the selected show still carries that is NOT a profile
+    /// any more. The last group matters: the list is re-read when the profile
+    /// list changes, and a WPF combo whose selected item is missing from its new
+    /// list deselects and pushes null through the binding - which wrote
+    /// "Profile: null" into scenes.json the moment a referenced profile was
+    /// deleted, while the delete dialog promised the steps would keep the name.</summary>
+    public IReadOnlyList<string> ProfileChoices
+    {
+        get
+        {
+            var list = new List<string> { KeepChoice };
+            list.AddRange(_profileNames());
+            foreach (var step in Steps)
+                if (!string.IsNullOrWhiteSpace(step.Profile)
+                    && !list.Any(n => n.Equals(step.Profile, StringComparison.OrdinalIgnoreCase)))
+                    list.Add(step.Profile);
+            return list;
+        }
+    }
 
     /// <summary>The profile list changed. The step dropdowns are computed from
     /// it and would otherwise stay frozen at launch time.</summary>
@@ -176,7 +196,11 @@ public sealed class ShowViewModel : INotifyPropertyChanged, IDisposable
             return false;
         }
         if (_sequencer.RunningName == seq.Name) return true;
-        SelectedShow = seq;
+        // The page's selection is the user's place in the editor, not a mirror
+        // of what is playing: a schedule starting a show at 22:00 must not swap
+        // the step list out from under someone editing another one. Only an
+        // empty selection follows the start, as a convenience.
+        if (_selectedShow == null) SelectedShow = seq;
         _sequencer.Start(seq);
         return true;
     }
@@ -271,7 +295,17 @@ public sealed class ShowViewModel : INotifyPropertyChanged, IDisposable
 
         // The profile loader passes fromShow to the screen loader, which
         // evaluates the old ownership before replacing the design.
-        _applyProfile(a.Profile);
+        if (!_applyProfile(a.Profile))
+        {
+            // A step naming a profile that no longer exists (deleted, imported
+            // over, hand-edited) used to do nothing at all, every cycle, with no
+            // line anywhere: the show looked stuck on the previous step.
+            string show = _sequencer?.RunningName ?? "?";
+            Log.Occasional($"show-step:{show}:{a.Profile}", "scenes",
+                $"show '{show}': a step asks for profile '{a.Profile}', which does not exist - step skipped");
+            UnifiedRgb.Core.Automation.ActivityLog.Note(UnifiedRgb.Core.Automation.ActivityKind.Problem,
+                $"Show '{show}' has a step asking for profile '{a.Profile}', which no longer exists, so that step is skipped.");
+        }
     }
 
     /*--- editing ---*/
@@ -281,7 +315,15 @@ public sealed class ShowViewModel : INotifyPropertyChanged, IDisposable
         var scenes = _store();
         string name = !string.IsNullOrWhiteSpace(NameInput) ? NameInput.Trim()
                     : $"Show {scenes.Sequences.Count + 1}";
-        if (scenes.Sequences.Any(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase))) return;
+        var existing = scenes.Sequences.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (existing != null)
+        {
+            // A name that already is a show: go to it rather than do nothing, so
+            // the click visibly did something.
+            NameInput = "";
+            SelectedShow = Shows.FirstOrDefault(x => ReferenceEquals(x, existing)) ?? existing;
+            return;
+        }
         var sq = new SceneSequence { Name = name };
         scenes.Sequences.Add(sq);
         Shows.Add(sq);

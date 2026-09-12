@@ -328,7 +328,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         OnChanged(nameof(CurrentEffectStarBrush)); OnChanged(nameof(ShowCurrentEffectStar));
         OnChanged(nameof(IsEffectRunning)); OnChanged(nameof(IsCustomPattern));
         OnChanged(nameof(IsStaticMode)); OnChanged(nameof(ShowColorControls)); OnChanged(nameof(ShowSpeedInMain));
-        OnChanged(nameof(SpeedLabel));
+        OnChanged(nameof(SpeedLabel)); OnChanged(nameof(SpeedHint));
         OnChanged(nameof(EffectSpeed));
         OnChanged(nameof(EffectReverse)); OnChanged(nameof(ShowDirection));
         OnChanged(nameof(ShowEffectPalette)); OnChanged(nameof(PatternPalette)); OnChanged(nameof(HasPalette));
@@ -379,6 +379,10 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             _isShowOpen = value;
             if (value) IsSettingsOpen = false;   // one destination at a time
             NotifyPanes();
+            // The gated cooling timer self-stops while the Shows page covers
+            // the pane (exactly as under Settings); Back has to restart it or
+            // the gauges sit frozen at the values from before the visit.
+            if (!value && IsCoolingSelected) StartCoolingRefresh();
         }
     }
 
@@ -691,7 +695,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         _selectedLeft = value; OnChanged(nameof(SelectedLeftItem));
         if (value == null) return;
-        if (closeSettings) IsSettingsOpen = false;
+        if (closeSettings) { IsSettingsOpen = false; IsShowOpen = false; }   // a user pick leaves BOTH top-level pages
         if (value.IsLcd) IsLcdSelected = true;
         else { IsLcdSelected = false; if (value.Device != null) SelectedDevice = value.Device; }
         // Start the refresh timer only while Cooling is on screen; leaving
@@ -952,6 +956,11 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     /// about the lighting rather than about the editor.</summary>
     string? _appliedProfile;
 
+    /// <summary>The name of the profile the lighting currently is, or null for
+    /// ad-hoc lighting. The SDK host reads it to tell whether the desk moved on
+    /// while a client held a device.</summary>
+    public string? AppliedProfileName => _appliedProfile;
+
     public void ApplyProfileByIndex(int i)
     {
         if (i < 0 || i >= Profiles.Count) return;
@@ -1090,6 +1099,21 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             SyncWallpaperChoice(value);
             SyncPumpChoice(value);
         }
+    }
+
+    /// <summary>Move the selection as part of a RESTORE (an automation return, an
+    /// SDK client letting go, a reload after import), not a user pick. The name
+    /// box follows, including to empty when nothing is selected. The setter above
+    /// leaves the box alone on null because a bound combo pushes null while its
+    /// list is rebuilt; but a restore that left "Game" in the box beside a combo
+    /// reading "Evening" made the next Save a RENAME of Evening over Game - two
+    /// profiles gone for one click.</summary>
+    void SelectProfileRestored(Profile? p)
+    {
+        _selectedProfile = p;
+        _profileName = p?.Name ?? "";
+        OnChanged(nameof(SelectedProfile)); OnChanged(nameof(ProfileName));
+        OnChanged(nameof(IsStartupProfile)); OnChanged(nameof(CanDeleteProfile));
     }
 
     /// <summary>One-time moves for the two things a show used to own itself.
@@ -1302,7 +1326,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // Before anything renders: the layout decides what coordinates every
         // effect sees, and an LED override applies whether the desk is on or not.
         UnifiedRgb.Core.Effects.CanvasLayout.Current = UnifiedRgb.Core.Effects.CanvasLayout.Load();
-        Cooling = new CoolingViewModel(_store.Settings, _store.SaveSettings,
+        Cooling = new CoolingViewModel(() => _store.Settings, _store.SaveSettings,
             isGigabyteBoard: () => Devices.OfType<GigabyteIt5711>().Any(),
             pawnIoMissing: () => PawnIoMissing,
             isOnScreen: () => ShowCoolingPanel);
@@ -1435,6 +1459,10 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         foreach (var r in _store.Settings.SensorRules ?? new()) SensorRules.Add(r);
         foreach (var r in _store.Settings.Schedules ?? new()) Schedules.Add(r);
         Lcd.Attached += () => { BuildLeftItems(); OnChanged(nameof(ShowLcdPanel)); };
+        // The wired hub's optional layout file changed: its LED count and zones
+        // are fixed per instance, so the hub asks for a rescan rather than
+        // mutating itself (see LianLiUniHub.Tick).
+        LianLiUniHub.LayoutFileChanged += OnUniHubLayoutFileChanged;
         if (!startServices) { _initializing = false; return; }
         Lcd.Start();
         UnifiedRgb.Core.Effects.ChromaFeed.Start();      // DLL-shim pipe (Wallpaper Engine)
@@ -1481,7 +1509,10 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             SdkClientHolds: Devices.Any(d => _sdkHeld.Contains(d) || _lighting.IsClaimed(d)),
             // A scheduled dark window or a locked session. We still redetect;
             // we just do not turn anything on. See RecoverDevices.
-            LightsSuppressed: LightsSuppressed));
+            LightsSuppressed: LightsSuppressed,
+            // Reference patches on the hardware: the aid drives device INSTANCES
+            // a rescan would replace, so the policy waits for the session to end.
+            CalibrationRunning: Services.CalibrationAid.AnyActive));
         _watchdog.Start();
         Lcd.InitScenes();
         Shows.Init();
@@ -1878,16 +1909,24 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
 
     readonly Services.RecoveryLightingState _recoveryLighting = new();
 
+    /// <summary>Raised on the hub's timer thread. _watchdog is nulled first
+    /// thing in Dispose, so it doubles as "still alive": a rescan onto handles
+    /// that are closing is the one thing this must never do.</summary>
+    void OnUniHubLayoutFileChanged() => _dispatcher.BeginInvoke(() => { if (_watchdog != null) Rescan(); });
+
     void Rescan()
     {
         // Carry the current lighting across the rescan: static frames by device
         // name, and effect assignments via the same snapshot profiles use.
         _recoveryLighting.Remember(Devices, FrameFor, CaptureEffects(), replaceEffects: !LightsSuppressed);
-        // Copies. The restore below runs the whole effect-start path, which
-        // pumps the dispatcher, and CaptureState writes to these same objects -
-        // so an automation tick arriving mid-restore would mutate the collection
-        // being enumerated and throw on the UI thread. Two shallow copies at
-        // rescan time is not a cost worth thinking about.
+        // Copies. CaptureState writes to these same objects, and the restore
+        // below runs the whole effect-start path; if anything in between ever
+        // re-enters this view model (a dialog pumping the dispatcher, say), an
+        // automation tick would mutate the collection being enumerated and throw
+        // on the UI thread. (A plain Thread.Join on the UI thread does NOT run a
+        // DispatcherTimer tick - measured with a probe - so the copies are
+        // insurance, not a known repro.) Two shallow copies at rescan time is
+        // not a cost worth thinking about.
         var savedEffects = new List<EffectAssignment>(_recoveryLighting.Effects);
         var savedFrames = new Dictionary<string, Rgb[]>(_recoveryLighting.Frames, StringComparer.Ordinal);
 
@@ -1895,6 +1934,11 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // writing to a handle that is about to close, and a socket thread posts
         // straight past it: it would queue work AFTER the drain and land on a
         // disposed device. Clients reconnect once the new list is up.
+        // Claims are dropped as a RESCAN first (one history line, the host told
+        // once): Stop alone releases whatever is still held as if every client
+        // had let go - a "client released X" line and a restore per device -
+        // which is not what happened.
+        _sdkServer?.DeviceListChanged();
         _sdkServer?.Dispose();
         _sdkServer = null;
         // An in-flight bake renders on a worker and posts its upload later; the
@@ -1990,6 +2034,10 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // shutting down would rescan onto handles that are about to close.
         _watchdog?.Dispose();
         _watchdog = null;
+        LianLiUniHub.LayoutFileChanged -= OnUniHubLayoutFileChanged;
+        // A queued show step must not apply a profile onto handles that are
+        // about to close. (Shows implemented IDisposable; nothing called it.)
+        try { Shows.Dispose(); } catch { }
         Cooling.DiscardPendingDuties();
         if (UnifiedRgb.Core.Sensors.SensorHub.AnyControlledFan)
             UnifiedRgb.Core.Sensors.SensorHub.RestoreAllFans("app exit", keepConfig: true);

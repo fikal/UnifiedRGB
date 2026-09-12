@@ -11,6 +11,13 @@ public partial class LightingPane : UserControl
     MainViewModel? _vm;
     MainViewModel VM => _vm ??= (MainViewModel)DataContext;
 
+    // The pane scrolls under the effect pills. A ListBox's own ScrollViewer eats
+    // the wheel even with nothing to scroll, so without this the wheel does
+    // nothing while the pointer is over the pills - which is most of the top of
+    // the page. Same handler name and reason as the Cooling and Settings panes.
+    void List_PreviewMouseWheel(object sender, System.Windows.Input.MouseWheelEventArgs e)
+        => WheelPolicy.Bubble(sender, e);
+
     public LightingPane()
     {
         InitializeComponent();

@@ -278,8 +278,10 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
     /// rather than believing a partial handover.</summary>
     bool SetOnboardMode(byte mode, Rgb color)
     {
+        if (_disposed) return false;
         lock (_writeLock)
         {
+            if (_disposed) return false;
             Span<byte> triple = stackalloc byte[3];
             triple[0] = color.R; triple[1] = color.B; triple[2] = color.G;   // same order as direct
             int slots = Math.Min(_ledCount, EffectColorLeds(_effectReg));
@@ -340,8 +342,10 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
 
     public bool SetColors(IReadOnlyList<Rgb> colors)
     {
+        if (_disposed) return false;   // a write that outlives Dispose (a slow drain): refuse quietly, per the contract
         lock (_writeLock)
         {
+            if (_disposed) return false;
             // (index loop: SequenceEqual boxed two enumerators per frame). An
             // identical frame is skipped and reported as a SUCCESS: the stick
             // is already showing exactly what was asked for.
@@ -425,5 +429,16 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
         }
     }
 
-    public void Dispose() => _lease.Release();
+    /// <summary>Set without taking _writeLock on purpose: a transaction can be
+    /// two seconds inside the machine-wide SMBus mutex, and the exit path must
+    /// not wait for it. The flag turns every later entry into a quiet false,
+    /// and PawnSmbus itself survives being disposed underneath a wait.</summary>
+    volatile bool _disposed;
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _lease.Release();
+    }
 }

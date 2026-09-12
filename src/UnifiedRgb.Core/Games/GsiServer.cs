@@ -51,9 +51,21 @@ public sealed class GsiServer : IDisposable
         _lastPostTicks == 0 ? null
         : (Environment.TickCount64 - Interlocked.Read(ref _lastPostTicks)) / 1000.0;
 
-    /// <summary>Raised on the first post after a quiet spell, so the UI can
-    /// stop saying "waiting for game". Fired from the listener thread.</summary>
-    public event Action? Connectedchanged;
+    /// <summary>Raised when Connected flips: on the first post after a quiet
+    /// spell (from the listener thread), and when the posts stop (from a timer
+    /// thread) - the settings line used to keep saying "Connected: in game"
+    /// until something else happened to refresh it. </summary>
+    public event Action? ConnectedChanged;
+    System.Threading.Timer? _dropWatch;
+    bool _announcedConnected;
+
+    void WatchForDrop()
+    {
+        bool now = Connected;
+        if (now == _announcedConnected) return;
+        _announcedConnected = now;
+        if (!now) { Log.Info("gsi", "game stopped posting"); ConnectedChanged?.Invoke(); }
+    }
 
     /// <summary>Bind, stepping to the next port if one is taken. Returns the
     /// port, or 0 if none was free. The token is the caller's, because the same
@@ -88,6 +100,7 @@ public sealed class GsiServer : IDisposable
         _stopping = false;
         _thread = new Thread(Loop) { IsBackground = true, Name = "gsi" };
         _thread.Start();
+        _dropWatch = new System.Threading.Timer(_ => WatchForDrop(), null, 5000, 5000);
         Log.Info("gsi", $"listening on http://localhost:{Port}/");
         return Port;
     }
@@ -95,6 +108,7 @@ public sealed class GsiServer : IDisposable
     public void Stop()
     {
         _stopping = true;
+        _dropWatch?.Dispose(); _dropWatch = null;
         // Before the handles go, so a worker reading State sees "nothing
         // playing" rather than the last frame of a game that has closed.
         _state = GameState.Empty;
@@ -170,7 +184,8 @@ public sealed class GsiServer : IDisposable
             // The difference between "your config is wrong" and "you have not
             // started the game yet" is worth one line.
             Log.Info("gsi", "game connected");
-            Connectedchanged?.Invoke();
+            _announcedConnected = true;
+            ConnectedChanged?.Invoke();
         }
     }
 

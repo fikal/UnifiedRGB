@@ -3,10 +3,12 @@ namespace UnifiedRgb.Core.Net;
 /// <summary>Who is driving which device while an SDK client is connected.
 ///
 /// The rule is deliberately blunt: writing to a device claims it, and the claim
-/// lapses when the writer goes quiet or disconnects. There is no locking or
-/// negotiation, because the clients this serves (a Home Assistant integration,
-/// a game mod, a Stream Deck button) do not have a way to ask for one and would
-/// not release it if they crashed.
+/// lapses when the writer disconnects - or, when a finite SilenceSeconds is
+/// configured, goes quiet. The server runs it with an INFINITE silence: the
+/// clients this serves (a Home Assistant integration, a Stream Deck button) set
+/// a colour once and hold the connection, and a crashed one closes its socket
+/// anyway. There is no locking or negotiation, because those clients have no
+/// way to ask for one.
 ///
 /// The clock is injected so the whole thing is testable without waiting five
 /// seconds per case.</summary>

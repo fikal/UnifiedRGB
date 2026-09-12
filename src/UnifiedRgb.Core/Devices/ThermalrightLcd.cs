@@ -74,6 +74,7 @@ public sealed class ThermalrightLcd : IDisposable
 
     public void ShowFrame(byte[] rgb565)
     {
+        if (_disposed) return;   // a frame that outlives Dispose: nothing to send it to
         // The header declares the pixel byte count and the panel counts them
         // down, so a wrong-sized frame does not merely look wrong - it leaves
         // the parser expecting more (or fewer) bytes than the next frame's
@@ -140,8 +141,17 @@ public sealed class ThermalrightLcd : IDisposable
     /// slower than the retry.</summary>
     public void Resync()
     {
+        if (_disposed) return;
         try { Handshake(); } catch { /* the next frame will try again */ }
     }
 
-    public void Dispose() => _hid.Dispose();
+    // The stream thread can be mid-frame when the controller lets go; the flag
+    // turns its next call into a quiet no-op instead of a refused report on a
+    // closed handle.
+    volatile bool _disposed;
+    public void Dispose()
+    {
+        _disposed = true;
+        _hid.Dispose();
+    }
 }

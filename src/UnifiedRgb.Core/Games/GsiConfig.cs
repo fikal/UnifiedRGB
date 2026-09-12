@@ -156,6 +156,26 @@ public static class GsiConfig
         return written;
     }
 
+    /// <summary>The port the installed config points the game at, or null when
+    /// no config of ours is installed (or it cannot be read). The listener
+    /// steps to the next free port at launch, so what it bound and what the
+    /// game was told can drift apart: this is how the caller notices.</summary>
+    public static int? InstalledPort()
+    {
+        foreach (string folder in Cs2CfgFolders())
+        {
+            try
+            {
+                string file = Path.Combine(folder, FileName);
+                if (!File.Exists(file)) continue;
+                var m = System.Text.RegularExpressions.Regex.Match(File.ReadAllText(file), @"localhost:(\d{2,5})");
+                if (m.Success && int.TryParse(m.Groups[1].Value, out int port)) return port;
+            }
+            catch { }
+        }
+        return null;
+    }
+
     /// <summary>Remove the config again, so turning the feature off does not
     /// leave the game posting to a port nothing is listening on.</summary>
     public static void Uninstall()

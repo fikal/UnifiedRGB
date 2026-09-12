@@ -15,12 +15,15 @@ namespace UnifiedRgb.App;
 /// screen) and hands in the few things this needs from it.</summary>
 public sealed class CoolingViewModel : INotifyPropertyChanged
 {
-    readonly SettingsData _settings;
+    // A getter, not the object: ProfileStore.Reload() (a setup import) replaces
+    // the SettingsData instance, and a captured reference kept writing fan
+    // labels and the Lian handoff toggle into an orphan nobody saved.
+    readonly Func<SettingsData> _settings;
     readonly Action _saveSettings;
     readonly Func<bool> _isGigabyteBoard, _pawnIoMissing, _isOnScreen;
     DispatcherTimer? _timer;
 
-    public CoolingViewModel(SettingsData settings, Action saveSettings,
+    public CoolingViewModel(Func<SettingsData> settings, Action saveSettings,
         Func<bool> isGigabyteBoard, Func<bool> pawnIoMissing, Func<bool> isOnScreen)
     {
         _settings = settings; _saveSettings = saveSettings;
@@ -131,7 +134,7 @@ public sealed class CoolingViewModel : INotifyPropertyChanged
 
     Action<string, string> RenameSaver(string def) => (k, v) =>
     {
-        var d = _settings.FanLabels ??= new();
+        var d = _settings().FanLabels ??= new();
         if (v == def) d.Remove(k); else d[k] = v;
         _saveSettings();
     };
@@ -149,11 +152,11 @@ public sealed class CoolingViewModel : INotifyPropertyChanged
     public bool ShowLianHandoff => LianLiWireless.Instance != null;
     public bool LianHandoffOnExit
     {
-        get => _settings.LianHandoffOnExit;
+        get => _settings().LianHandoffOnExit;
         set
         {
-            if (_settings.LianHandoffOnExit == value) return;
-            _settings.LianHandoffOnExit = value;
+            if (_settings().LianHandoffOnExit == value) return;
+            _settings().LianHandoffOnExit = value;
             _saveSettings();
             OnChanged();
         }
@@ -303,7 +306,7 @@ public sealed class CoolingViewModel : INotifyPropertyChanged
         string key = $"fan:{rawName}";
         string def = isGpu ? "GPU fans" : FanDefault(i, rawName);
         return new FanRowModel(i, canControl, def, key,
-            _settings.FanLabels?.GetValueOrDefault(key), mode, duty, curve, src, RenameSaver(def),
+            _settings().FanLabels?.GetValueOrDefault(key), mode, duty, curve, src, RenameSaver(def),
             minDuty: SensorHub.ManualFloorFor(i),
             curveFloor: SensorHub.FloorFor(i));
     }

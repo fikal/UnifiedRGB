@@ -178,6 +178,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         _lcd.Temp = _cpuTemp;
         foreach (var e in _lcd.Design.Elements) { LcdElements.Add(e); Hook(e); }
         EnsureBgRect();   // migrate pre-rect designs to an explicit cover rect
+        _baseline = Snapshot();   // the loaded design is what the first edit undoes back to
         _lcd.Ticked += RefreshDisplays;
         _lcd.Start();
         OnChanged(nameof(Available));
@@ -399,6 +400,12 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         // Put the selection back on the same row, which is what the eye expects
         // after undoing a change to one element.
         int index = _selectedElement == null ? -1 : LcdElements.IndexOf(_selectedElement);
+        // The Screens dropdown follows the canvas, as it does for a restore:
+        // undoing past a screen pick must not leave that screen selected over a
+        // design that is no longer it (an empty-name "Save screen" would then
+        // overwrite it).
+        _selectedSceneName = d.SceneName != null && SceneNames.Contains(d.SceneName) ? d.SceneName : null;
+        OnChanged(nameof(SelectedSceneName));
         LoadDesignIntoEditor(d, fromShow: false);
         if (index >= 0 && index < LcdElements.Count) SelectedElement = LcdElements[index];
         TouchLcd();
@@ -585,8 +592,8 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         {
             if (_lcd == null) return;
             var d = _lcd.Design;
+            CaptureUndo();   // before the write, like LcdBgW: the snapshot must predate the change
             d.BgH = Math.Round(Math.Clamp(value, 8, 2000));
-            CaptureUndo();
             if (d.BgAspectLock) d.BgW = Math.Round(d.BgH * BgAspect);
             NotifyBgRect(); TouchLcd();
         }
@@ -597,9 +604,9 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         set
         {
             if (_lcd == null) return;
+            CaptureUndo();   // before the write: the snapshot must predate the change
             _lcd.Design.BgAspectLock = value;
             // Re-locking snaps the height back onto the image's aspect.
-            CaptureUndo();
             if (value) _lcd.Design.BgH = Math.Round(_lcd.Design.BgW / BgAspect);
             NotifyBgRect(); TouchLcd();
         }
@@ -642,6 +649,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     void PlaceBackground(double? scale)
     {
         if (_lcd == null) return;
+        CaptureUndoNow();   // Fill / Fit / Center are one-shot edits, and were not undoable
         var d = _lcd.Design;
         if (scale is double s) { d.BgW = Math.Round(_bgNatW * s); d.BgH = Math.Round(_bgNatH * s); }
         d.BgX = Math.Round((320 - d.BgW) / 2); d.BgY = Math.Round((240 - d.BgH) / 2);
@@ -685,7 +693,11 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
             OnChanged();
             // Selecting a scene loads it into the editor (and onto the pump).
             var sc = _scenes.Scenes.FirstOrDefault(x => x.Name == value);
-            if (sc != null) LoadDesignIntoEditor(FromScene(sc));
+            if (sc != null)
+            {
+                CaptureUndoNow();   // picking a screen replaces the canvas: one undo step
+                LoadDesignIntoEditor(FromScene(sc));
+            }
         }
     }
 
@@ -883,7 +895,13 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         // A show replacing the canvas also invalidates any drag in progress:
         // its remembered snapshot is of a design that is no longer on screen,
         // and recording it later would undo to something the user never saw.
-        if (fromShow) { _history.EndGesture(); _undoSettle.Stop(); _baseline = Snapshot(); }
+        if (fromShow) _history.EndGesture();
+        // Every load, show or not: the baseline is what the NEXT edit undoes back
+        // to. Left alone on a user's screen pick it still held the previous
+        // canvas, so undoing a nudge after picking "Boot" put the old design back
+        // while the Screens dropdown kept saying Boot - and an empty-name "Save
+        // screen" then overwrote Boot with it.
+        _undoSettle.Stop(); _baseline = Snapshot();
         if (fromShow) { _liveIsShowScene = true; _clockSecond = -1; _lcd.Refresh(); }
         else MarkCanvas();   // not a user edit in itself: the caller decides that
     }
@@ -935,6 +953,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     public void Dispose()
     {
         _lcdSave.Stop();
+        _find.Stop();   // no more panel probes once the app is on its way out
         if (_lcd != null)
         {
             _lcd.Ticked -= RefreshDisplays;

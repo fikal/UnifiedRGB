@@ -61,6 +61,12 @@ public sealed class CalibrationAid
     /// that what the user is looking at is NOT their lighting.</summary>
     public bool Active { get; private set; }
 
+    /// <summary>Any aid, anywhere in the process, with patches on the hardware.
+    /// The recovery policy reads this to hold a rescan until the session ends,
+    /// the way it holds one for an SDK client.</summary>
+    public static bool AnyActive => Volatile.Read(ref s_active) > 0;
+    static int s_active;
+
     /// <summary>The patch currently displayed.</summary>
     public CalibrationReference Reference { get; private set; } = CalibrationReference.White;
 
@@ -86,6 +92,7 @@ public sealed class CalibrationAid
         if (_devices.Count == 0) return;
         _capture?.Invoke();
 
+        if (!Active) Interlocked.Increment(ref s_active);
         Active = true;
         Reference = reference;
         foreach (var d in _devices)
@@ -143,6 +150,7 @@ public sealed class CalibrationAid
         }
         _devices.Clear();
         Active = false;
+        if (wasActive) Interlocked.Decrement(ref s_active);
         if (wasActive) _restore?.Invoke();
     }
 

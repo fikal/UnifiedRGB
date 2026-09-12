@@ -60,13 +60,21 @@ static class OpenRgbBridgeSuite
     {
         t.Section("(b) the bridge probe on 6742");
         const int port = OpenRgbManager.Port;   // 6742
+        // This section binds the REAL ecosystem port, which a running
+        // UnifiedRGB on the same machine cares about: its bridge would take a
+        // listener here for an OpenRGB backend (its own-listener registry is
+        // per process) and bridge the stub's empty device list. Not while the
+        // app is up - and a skip is a skip, not a pass.
+        if (System.Diagnostics.Process.GetProcessesByName("UnifiedRgb.App").Length > 0)
+        {
+            t.Skip("orgb probe: UnifiedRgb.App is running on this machine, so the real port is left alone");
+            return;
+        }
         // Someone's OpenRGB (or another app) may genuinely own the port on the
-        // build machine; that is not a failure of this code, so skip with a
-        // note rather than fail.
+        // build machine; that is not a failure of this code.
         if (!PortIsFree(port))
         {
-            Console.WriteLine($"  note  orgb probe: port {port} is busy on this machine; skipping the self-listener probe test");
-            t.Check(true, "orgb probe: skipped, port busy");
+            t.Skip($"orgb probe: port {port} is busy on this machine");
             return;
         }
 
@@ -76,8 +84,7 @@ static class OpenRgbBridgeSuite
         {
             // Free a moment ago, taken now: a race with something else on the
             // machine, not a bug here.
-            Console.WriteLine($"  note  orgb probe: port {port} was taken between the probe and the bind; skipping");
-            t.Check(true, "orgb probe: skipped, port taken");
+            t.Skip($"orgb probe: port {port} was taken between the probe and the bind");
             return;
         }
 

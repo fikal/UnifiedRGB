@@ -82,6 +82,7 @@
                              Background="Transparent" BorderThickness="0"
                              ItemContainerStyle="{StaticResource Pill}"
                              IsTextSearchEnabled="False" PreviewKeyDown="Pills_PreviewKeyDown"
+                             PreviewMouseWheel="List_PreviewMouseWheel"
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                         <ListBox.ItemsPanel>
                             <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
@@ -322,7 +323,7 @@
                                         Margin="0,14,0,0">
                                 <TextBlock Text="{Binding SpeedLabel}" Opacity="0.7" Margin="0,0,0,2"/>
                                 <Slider Minimum="0.1" Maximum="4" Value="{Binding EffectSpeed}" local:Sl.Unit="x"
-                                        ToolTip="How hard the lights react to sound. Low = only the peaks, high = always moving."/>
+                                        ToolTip="{Binding SpeedHint}"/>
                             </StackPanel>
 
                             <!-- Direction: reverse any animated effect -->
@@ -402,7 +403,7 @@
                         <ListBox ItemsSource="{Binding LianFanNames}" SelectedIndex="{Binding LianFan}"
                                  Background="Transparent" BorderThickness="0" HorizontalAlignment="Center"
                                  ItemContainerStyle="{StaticResource Pill}" IsTextSearchEnabled="False"
-                                 Margin="0,0,0,12">
+                                 PreviewKeyDown="Pills_PreviewKeyDown" Margin="0,0,0,12">
                             <ListBox.ItemsPanel>
                                 <ItemsPanelTemplate><StackPanel Orientation="Horizontal"/></ItemsPanelTemplate>
                             </ListBox.ItemsPanel>

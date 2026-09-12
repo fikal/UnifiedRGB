@@ -24,6 +24,20 @@ public static class Redaction
         @"(\b(?:USB|HID|BTHENUM|BTHLE)\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}(?:&\w+)*\\)\S+",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
+    /// <summary>The same tail in the device-PATH spelling
+    /// (\?\hid#vid_1532&amp;pid_00cf&amp;mi_01#9&amp;2036339a&amp;0&amp;0001#{guid}) that
+    /// HID paths and the bundled OpenRGB's log use; the backslash form above
+    /// never matched it.</summary>
+    static readonly Regex DevicePathTail = new(
+        @"(\bhid#vid_[0-9a-f]{4}&pid_[0-9a-f]{4}(?:&\w+)*#)[^#{\s]+",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    /// <summary>Instance-id and device-path serial tails, for the tests as much
+    /// as for Scrub: the suite used to check a private copy of the pattern,
+    /// which proved nothing about this one.</summary>
+    internal static string RedactInstanceTails(string text)
+        => DevicePathTail.Replace(InstanceTail.Replace(text, "$1<instance>"), "$1<instance>");
+
     /// <summary>Replace a person's or machine's name where it stands as its own
     /// word AND is not written as an acronym. Under three characters is left
     /// alone entirely: it would match far too much to be worth it, and the
@@ -37,7 +51,17 @@ public static class Redaction
     /// still gets redacted, because then the casing agrees.</summary>
     internal static bool ReplaceName(ref string text, string name, string replacement)
     {
-        if (name.Length < 3) return false;
+        if (name.Length < 3)
+        {
+            // Too short for a bare-word match, but the exact quoted or
+            // path-delimited forms are unambiguous - "account 'Ed'" is the
+            // Wallpaper Engine line, "\Ed\" a path the profile pass missed.
+            if (name.Length == 0) return false;
+            var strict = new Regex($@"(?<=['""\\]){Regex.Escape(name)}(?=['""\\])", Opts);
+            if (!strict.IsMatch(text)) return false;
+            text = strict.Replace(text, replacement);
+            return true;
+        }
         bool nameIsUpper = name.ToUpperInvariant() == name;
         bool hit = false;
 
@@ -73,9 +97,9 @@ public static class Redaction
         if (!machine.Equals(Environment.UserName, StringComparison.OrdinalIgnoreCase)
             && ReplaceName(ref text, machine, "<pc>")) removed.Add("computer name");
 
-        if (InstanceTail.IsMatch(text))
+        if (InstanceTail.IsMatch(text) || DevicePathTail.IsMatch(text))
         {
-            text = InstanceTail.Replace(text, "$1<instance>");
+            text = RedactInstanceTails(text);
             removed.Add("device serial numbers");
         }
 

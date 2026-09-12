@@ -71,7 +71,13 @@ public partial class SensorRulesWindow : Window
             AddHint.Text = "Pick a sensor first.";
             return;
         }
-        if (!double.TryParse(ThresholdBox.Text.Trim(), out double threshold))
+        // Invariant first, then the OS culture: the rows' bound boxes format and
+        // parse in en-US (WPF bindings use the element's Language), so on a
+        // comma-decimal locale "85.5" copied from a row used to parse as 855
+        // here and the rule never fired. Both spellings are accepted now.
+        string typed = ThresholdBox.Text.Trim();
+        if (!double.TryParse(typed, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double threshold)
+            && !double.TryParse(typed, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.CurrentCulture, out threshold))
         {
             AddHint.Text = "That threshold is not a number.";
             return;
@@ -91,7 +97,7 @@ public partial class SensorRulesWindow : Window
             Profile = profile,
         });
         AddHint.Text = $"Added: {SensorSources.Label(source)} {(above ? "at or above" : "at or below")} " +
-                       $"{threshold:0.#}{SensorSources.Unit(source)} applies '{profile}'.";
+                       $"{threshold.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)}{SensorSources.Unit(source)} applies '{profile}'.";
         if (!_vm.SensorRulesEnabled)
             AddHint.Text += " Tick the box above to start watching.";
     }
@@ -116,6 +122,6 @@ public partial class SensorRulesWindow : Window
 
     void Drag_Down(object sender, MouseButtonEventArgs e)
     {
-        if (e.ButtonState == MouseButtonState.Pressed && e.OriginalSource is not TextBox) DragMove();
+        if (e.ButtonState == MouseButtonState.Pressed && e.OriginalSource is not TextBox) this.TryDragMove();
     }
 }

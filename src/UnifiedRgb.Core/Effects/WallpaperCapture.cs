@@ -110,6 +110,13 @@ public static class WallpaperCapture
                 {
                     Log.Occasional("wallpaper", "cap", $"capture failed: {ex.GetType().Name}: {ex.Message}");
                     TearDown();
+                    // The device too, not only the session: after a driver
+                    // reset (TDR, GPU switch) the D3D device is REMOVED and every
+                    // retry on it fails the same way, so all 20 retries burned on
+                    // a dead device and the effect sat in the 5-minute cooldown.
+                    // StartSession recreates both; a device is cheap next to a
+                    // failed frame.
+                    DisposeDevice();
                     if (++fails >= 20)
                     {
                         // Sticks: Touch() honours the cooldown. Without it the

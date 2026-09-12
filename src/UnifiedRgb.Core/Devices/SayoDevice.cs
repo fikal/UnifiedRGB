@@ -56,6 +56,7 @@ public sealed class SayoDevice : IRgbDevice
 
     public bool SetColors(IReadOnlyList<Rgb> colors)
     {
+        if (_disposed) return false;   // a write that outlives Dispose (a slow drain): refuse quietly, per the contract
         // No color to send is not a delivery: an empty frame is a caller bug
         // (everything above passes exactly LedCount), and reporting it as a
         // success would let a must-land caller believe the pad was painted.
@@ -67,13 +68,18 @@ public sealed class SayoDevice : IRgbDevice
 
             // SAYO_MODE_PACK(speed=3(1x), color=STATIC(0), mode=STATIC(0)).
             byte modeByte = (3 & 0x3) << 6 | (0 & 0x3) << 4 | (0 & 0xF);
-            var payload = new byte[]
+            // Reused rather than rebuilt: only the last three bytes ever change,
+            // and an animated effect reaches here on every changed frame. Safe
+            // because every path to it holds _writeLock.
+            var payload = _payload ??= new byte[]
             {
                 0x1C, 0x00, 0x11, 0x00, 0x01, 0x00, 0x00, 0x00,
                 0x15, 0x00, 0x28, 0x00, 0x26, 0x00, 0x4C, 0x00,
-                0x26, 0x00, 0x00, 0x00, modeByte, 0x00, 0x80, 0x80,
-                c.R, c.G, c.B,
+                0x26, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x80,
+                0, 0, 0,
             };
+            payload[20] = modeByte;
+            payload[24] = c.R; payload[25] = c.G; payload[26] = c.B;
             // Commit the dedup only when the write landed, so a dropped packet is
             // retried by the next apply / engine keepalive instead of cached.
             if (!SendPacket(payload))
@@ -87,6 +93,10 @@ public sealed class SayoDevice : IRgbDevice
         }
     }
 
+    // Both reused under _writeLock; see SetColors.
+    byte[]? _payload;
+    byte[]? _packet;
+
     bool SendPacket(byte[] payload)
     {
         // 16-bit LE-word checksum of the 0x1221 header + payload.
@@ -98,7 +108,8 @@ public sealed class SayoDevice : IRgbDevice
             checksum = (ushort)(checksum + word);
         }
 
-        var packet = new byte[_outLen];
+        var packet = _packet ??= new byte[_outLen];
+        Array.Clear(packet);
         packet[0] = 0x21;                    // report id
         packet[1] = 0x12;
         packet[2] = (byte)(checksum & 0xFF);
@@ -107,5 +118,16 @@ public sealed class SayoDevice : IRgbDevice
         return _hid.Write(packet);
     }
 
-    public void Dispose() => _hid.Dispose();
+    // The contract's shape: the flag is set under the write lock, so a write
+    // that arrives after this returns false instead of hitting a closed handle
+    // and logging a "stopped answering" the device never earned.
+    volatile bool _disposed;
+    public void Dispose()
+    {
+        lock (_writeLock)
+        {
+            _disposed = true;
+            _hid.Dispose();
+        }
+    }
 }

@@ -46,10 +46,7 @@ public partial class MainWindow : Window
             Loaded += (_, _) =>
             {
                 Hide();
-                Task.Delay(30_000).ContinueWith(_ =>
-                {
-                    if (!Dispatcher.Invoke(() => IsVisible)) UnifiedRgb.Core.MemoryTrimmer.Trim();
-                });
+                TrimIfStillHidden(30_000);
             };
         }
 
@@ -68,6 +65,23 @@ public partial class MainWindow : Window
     }
 
     bool _wizardShown;
+
+    /// <summary>Hand idle pages back to the OS once the window has stayed hidden
+    /// for a while. Checked on the dispatcher, and only while it still runs: the
+    /// delay can outlive the window, and Invoke on a shut-down dispatcher throws
+    /// inside a continuation where nothing observes it.</summary>
+    void TrimIfStillHidden(int delayMs)
+    {
+        Task.Delay(delayMs).ContinueWith(_ =>
+        {
+            try
+            {
+                if (Dispatcher.HasShutdownStarted) return;
+                if (!Dispatcher.Invoke(() => IsVisible)) UnifiedRgb.Core.MemoryTrimmer.Trim();
+            }
+            catch (Exception ex) when (ex is TaskCanceledException or OperationCanceledException) { }
+        });
+    }
 
     /*-----------------------------------------------------*\
     | Drag smoothness: freeze the per-frame preview while   |
@@ -240,10 +254,7 @@ public partial class MainWindow : Window
             // lives hidden most of its life and the UI faults back in cheaply.
             Hide();
             ShowInTaskbar = false;
-            Task.Delay(2000).ContinueWith(_ =>
-            {
-                if (!Dispatcher.Invoke(() => IsVisible)) UnifiedRgb.Core.MemoryTrimmer.Trim();
-            });
+            TrimIfStillHidden(2000);
         }
     }
 
@@ -293,9 +304,10 @@ public partial class MainWindow : Window
     /// selected LCD element (unless a TextBox has focus).</summary>
     void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Escape && _vm.IsSettingsOpen)
+        if (e.Key == Key.Escape && (_vm.IsSettingsOpen || _vm.IsShowOpen))
         {
             _vm.IsSettingsOpen = false;
+            _vm.IsShowOpen = false;
             e.Handled = true;
             return;
         }

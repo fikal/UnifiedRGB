@@ -5,29 +5,46 @@ namespace UnifiedRgb.Core.Automation;
 /// <summary>"When the CPU hits 85 degrees, go red." One threshold rule over a
 /// sensor the app already reads. Deliberately not a general expression engine:
 /// a source, a direction, a number, a profile.</summary>
-public sealed class SensorRule
+public sealed class SensorRule : System.ComponentModel.INotifyPropertyChanged
 {
+    // Change notification like ScheduleRule: the rules dialog edits these
+    // objects in place and the Settings page's summary line binds to the same
+    // objects, so without it the summary stayed stale until a rule was added
+    // or removed. The serializer ignores the event.
+    public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+    void Changed(string n) => PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(n));
+    bool Set<T>(ref T field, T value, string name)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value)) return false;
+        field = value; Changed(name); return true;
+    }
+
+    string _source = SensorSources.CpuTemp, _profile = "";
+    bool _above = true, _enabled = true;
+    double _threshold = 85, _clearMargin = 3;
+    int _holdSeconds = 5;
+
     /// <summary>One of the <see cref="SensorSources"/> constants, or a prefixed
     /// name for the per-board lists ("Board:Fan #2", "Fan:CPU Fan").</summary>
-    public string Source { get; set; } = SensorSources.CpuTemp;
+    public string Source { get => _source; set => Set(ref _source, value, nameof(Source)); }
 
     /// <summary>True: fire at or above Threshold. False: at or below.</summary>
-    public bool Above { get; set; } = true;
+    public bool Above { get => _above; set => Set(ref _above, value, nameof(Above)); }
 
-    public double Threshold { get; set; } = 85;
+    public double Threshold { get => _threshold; set => Set(ref _threshold, value, nameof(Threshold)); }
 
     /// <summary>How far past the threshold the value must come back before the
     /// rule releases, so a reading sitting on the line cannot chatter. Applied
     /// on the far side of the threshold from the trigger direction.</summary>
-    public double ClearMargin { get; set; } = 3;
+    public double ClearMargin { get => _clearMargin; set => Set(ref _clearMargin, value, nameof(ClearMargin)); }
 
     /// <summary>The condition must hold this long before the rule flips, in
     /// EITHER direction. With ClearMargin this makes a toggle faster than once
     /// per hold impossible.</summary>
-    public int HoldSeconds { get; set; } = 5;
+    public int HoldSeconds { get => _holdSeconds; set => Set(ref _holdSeconds, value, nameof(HoldSeconds)); }
 
-    public string Profile { get; set; } = "";
-    public bool Enabled { get; set; } = true;
+    public string Profile { get => _profile; set => Set(ref _profile, value, nameof(Profile)); }
+    public bool Enabled { get => _enabled; set => Set(ref _enabled, value, nameof(Enabled)); }
 }
 
 /// <summary>Where a rule stands between ticks: whether it is currently firing,

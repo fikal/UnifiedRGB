@@ -145,7 +145,10 @@ public static class AutomationDecision
         if (x.Sensor is SensorHit hit)
             return ($"{hit.Describe()} → profile '{hit.Profile}'", AutomationTopic.Sensor);
         if (x.SensorUnavailable is string missing)
-            return ($"Sensor rule paused: no reading for {SensorSources.Label(missing)}. PawnIO may not be installed.",
+            // "PawnIO may not be installed" was said on Intel CPUs forever, with
+            // PawnIO installed: its CPU-temperature module is AMD-only.
+            return ($"Sensor rule paused: no reading for {SensorSources.Label(missing)}. "
+                    + (Native.PawnIO.IsAvailable ? "Nothing on this machine provides it." : "PawnIO may not be installed."),
                     AutomationTopic.Sensor);
         if (!x.AppSwitchEnabled) return ("", AutomationTopic.None);
         if (x.ForegroundProcess == null)

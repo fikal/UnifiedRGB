@@ -84,7 +84,10 @@ public static class AudioAnalyzer
             }
             catch (Exception ex)
             {
-                Log.Warn("audio", $"loopback unavailable: {ex.Message}");
+                // Rate-limited: with an audio effect selected and no usable
+                // endpoint this retried, and warned, every ten seconds for as
+                // long as the effect stayed on.
+                Log.Occasional("audio-open", "audio", $"loopback unavailable: {ex.Message}");
                 Interlocked.Exchange(ref _failedUntilTicks, DateTime.UtcNow.AddSeconds(10).Ticks);
             }
         }
@@ -98,7 +101,13 @@ public static class AudioAnalyzer
         if (cap == null) return;
         var last = new DateTime(Interlocked.Read(ref _lastReadTicks), DateTimeKind.Utc);
         bool idle = (DateTime.UtcNow - last).TotalSeconds >= IdleStopSeconds;
-        if (!idle && cap.IsAlive) return;
+        // A live capture on an endpoint that is no longer the default is as
+        // good as dead: loopback does not follow the switch, it goes silent.
+        // Tear it down so the next Touch reopens on the new default.
+        bool moved = !idle && cap.IsAlive && cap.EndpointId != null
+                     && WasapiLoopback.DefaultRenderEndpointId() is string current
+                     && !string.Equals(current, cap.EndpointId, StringComparison.OrdinalIgnoreCase);
+        if (!idle && cap.IsAlive && !moved) return;
         lock (_gate)
         {
             if (_capture == null) return;
@@ -107,7 +116,9 @@ public static class AudioAnalyzer
             _watchdog?.Change(Timeout.Infinite, Timeout.Infinite);   // nothing to guard until Touch re-arms
             Array.Clear(_bands);
             _level = _bass = 0;
-            Log.Info("audio", idle ? "loopback capture stopped (idle)" : "loopback capture died - will restart");
+            Log.Info("audio", idle ? "loopback capture stopped (idle)"
+                            : moved ? "default output device changed - loopback capture restarts on the new one"
+                            : "loopback capture died - will restart");
         }
     }
 

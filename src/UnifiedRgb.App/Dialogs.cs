@@ -6,6 +6,21 @@ using System.Windows.Media.Effects;
 
 namespace UnifiedRgb.App;
 
+/// <summary>Custom-chrome windows drag by their body. Window.DragMove re-checks
+/// the mouse button when it runs and throws InvalidOperationException if it is
+/// already up - which happens with a fast click on a busy UI thread - and that
+/// used to land in the app-wide error dialog from nine windows. One guarded
+/// call for all of them; e.ButtonState alone was not enough, it is the state
+/// when the message was queued.</summary>
+public static class WindowDrag
+{
+    public static void TryDragMove(this Window w)
+    {
+        if (Mouse.LeftButton != MouseButtonState.Pressed) return;
+        try { w.DragMove(); } catch (InvalidOperationException) { }
+    }
+}
+
 /// <summary>App-themed dialogs (the stock MessageBox clashes with the dark UI).
 /// Built in code so they need no shared resource dictionary. The two save
 /// prompts share one shell/button factory — they used to be ~85% copy-paste,

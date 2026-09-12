@@ -27,7 +27,7 @@ public sealed class AudioBars : IEffect
         // Vertical spread decides equalizer-fill vs pure brightness mode —
         // a per-channel constant, cached (was a full pos[] scan every frame).
         var (yMin, yMax) = Geo.YRange(pos);
-        bool fill = yMax - yMin > 0.3;
+        bool fill = !Geo.IsFlat(pos);   // same aspect-based test as Rain/Matrix/Tide: the desk shrinks every span
         // Speed is punch, not direction: Reverse (negative speed) must not pin it.
         double punch = Math.Clamp(Math.Abs(speed), 0.25, 4.0);
 

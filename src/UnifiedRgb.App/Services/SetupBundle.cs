@@ -797,10 +797,19 @@ public static class SetupBundle
                     p.Warnings.Add($"'{e.Name}' is part of a newer feature this build does not know about, so it will be skipped");
                     continue;
                 }
-                if (TargetPathFor(e) == null)
+                if (!IsSafeName(e.Name ?? ""))
                 {
                     problem = $"the bundle names a file it is not allowed to write ('{e.Name}')";
                     return null;
+                }
+                if (TargetPathFor(e) == null)
+                {
+                    // A safe name this build does not publish under that root and
+                    // group: a file a NEWER build added. Skipped and said, like an
+                    // unknown group - refusing the whole bundle for it was the
+                    // opposite of the forward compatibility the manifest promises.
+                    p.Warnings.Add($"'{e.Name}' is a file this build does not know about (a newer feature?), so it will be skipped");
+                    continue;
                 }
                 // Keyed by root+name, NOT by the path inside the zip: the
                 // manifest is the index, and a bundle that lays its files out
@@ -864,11 +873,16 @@ public static class SetupBundle
     /// root must be one of ours and the name must be a bare file name, so
     /// "..\\..\\Startup\\evil.cmd" resolves to null and the whole import is
     /// refused rather than obeyed.</summary>
+    /// <summary>A bare file name and nothing else: no separators, no "." or
+    /// "..". The reader refuses a bundle that fails this; a name that passes but
+    /// is not one we publish is merely skipped (see ReadArchive).</summary>
+    internal static bool IsSafeName(string name)
+        => name.Length > 0 && Path.GetFileName(name) == name && name is not ("." or "..");
+
     internal static string? TargetPathFor(BundleEntry e)
     {
         string name = e.Name ?? "";
-        if (name.Length == 0 || Path.GetFileName(name) != name) return null;
-        if (name is "." or "..") return null;
+        if (!IsSafeName(name)) return null;
         // And the root/name/group triple has to be one WE publish. Confining the
         // destination to our own two folders was not enough on its own: the
         // group is what decides which consent checkbox covers the entry and what
@@ -878,7 +892,8 @@ public static class SetupBundle
         // unknown name is refused for the same reason - nothing should be able
         // to write a file into our config folder that we do not put there
         // ourselves. A bundle from a newer build carrying a new file is skipped
-        // rather than obeyed, which is the documented direction.
+        // rather than obeyed (ReadArchive turns this null into a warning), which
+        // is the documented direction.
         if (!Files.Any(f => f.Root == e.Root && f.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
                             && f.Group == e.Group))
             return null;
@@ -936,9 +951,9 @@ public static class SetupBundle
 
     static void DiffProfiles(ImportPreview p, Dictionary<string, string> remap)
     {
-        var incoming = BundleProfiles(p, remap);
+        var incoming = BundleProfiles(p, remap, strict: false);
         if (incoming == null) return;
-        var current = CurrentProfiles();
+        var current = CurrentProfiles(peek: true);
         foreach (var prof in incoming)
         {
             var mine = current.FirstOrDefault(x => x.Name.Equals(prof.Name, StringComparison.OrdinalIgnoreCase));
@@ -965,7 +980,11 @@ public static class SetupBundle
     /// <summary>The bundle's profiles, with device names already remapped.
     /// Null when profiles.json is in the bundle but unreadable, which is
     /// reported rather than silently treated as "no profiles".</summary>
-    static List<Profile>? BundleProfiles(ImportPreview p, Dictionary<string, string> remap)
+    /// <param name="strict">True for Apply, where the mapping is the user's own
+    /// choice and a collision is a contradiction to refuse; false for the
+    /// preview's automatic identity mapping, where a collision means the profile
+    /// carries a stale entry that is dropped and said.</param>
+    static List<Profile>? BundleProfiles(ImportPreview p, Dictionary<string, string> remap, bool strict)
     {
         if (!p.Texts.TryGetValue($"{RootConfig}/profiles.json", out string? text)) return null;
         List<Profile> list;
@@ -983,26 +1002,47 @@ public static class SetupBundle
             prof.Name ??= "";
             prof.Effects?.RemoveAll(e => e == null);
             foreach (var e in prof.Effects ?? new()) e.Device ??= "";
-            RemapProfile(prof, remap);
+            RemapProfile(prof, remap, p.Warnings, strict);
         }
         list.RemoveAll(x => string.IsNullOrWhiteSpace(x.Name));
         return list;
     }
 
     /// <summary>Rewrite a profile's device keys onto this machine's names.
-    /// The one place a saved setup stops being name-bound.</summary>
-    static void RemapProfile(Profile prof, Dictionary<string, string> remap)
+    /// The one place a saved setup stops being name-bound.
+    ///
+    /// Two mapped keys landing on one target is a contradiction in the mapping
+    /// and still throws. A MAPPED key landing on a name the profile already
+    /// carries UNMAPPED is not: profiles keep frames for devices that are gone
+    /// (a renamed keyboard leaves its old entry behind), so that entry is stale
+    /// and the mapped one wins. It used to throw too, out of the preview, which
+    /// refused the whole bundle with a sentence about a dialog the user never
+    /// got to see.</summary>
+    static void RemapProfile(Profile prof, Dictionary<string, string> remap, List<string>? warnings, bool strict)
     {
         if (remap.Count == 0) return;
         var frames = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        var dropped = new List<string>();
         foreach (var kv in prof.DeviceFrames)
         {
-            string key = remap.TryGetValue(kv.Key, out string? to) ? to : kv.Key;
-            // Refuse overlapping manual mappings before any files are written.
-            if (!frames.TryAdd(key, kv.Value))
-                throw new InvalidOperationException($"Device mapping sends more than one frame to '{key}'. Choose distinct target devices.");
+            if (!remap.TryGetValue(kv.Key, out string? to)) continue;
+            if (!frames.TryAdd(to, kv.Value))
+                throw new InvalidOperationException($"Device mapping sends more than one frame to '{to}'. Choose distinct target devices.");
+        }
+        foreach (var kv in prof.DeviceFrames)
+        {
+            if (remap.ContainsKey(kv.Key)) continue;
+            if (frames.TryAdd(kv.Key, kv.Value)) continue;
+            if (strict)
+                throw new InvalidOperationException($"Device mapping sends more than one frame to '{kv.Key}'. Choose distinct target devices.");
+            dropped.Add(kv.Key);
         }
         prof.DeviceFrames = frames;
+        if (dropped.Count > 0)
+        {
+            prof.Effects?.RemoveAll(e => dropped.Contains(e.Device, StringComparer.OrdinalIgnoreCase));
+            warnings?.Add($"profile '{prof.Name}': its stale entry for {string.Join(", ", dropped)} is dropped, the mapped device wins");
+        }
         foreach (var e in prof.Effects ?? new())
             if (remap.TryGetValue(e.Device, out string? to)) e.Device = to;
     }
@@ -1125,7 +1165,7 @@ public static class SetupBundle
             p.Warnings.Add("the bundle's desk layout could not be read and will be skipped");
             return;
         }
-        RemapCanvas(incoming, remap);
+        RemapCanvas(incoming, remap, p.Warnings, strict: false);
         var mine = CanvasLayout.Load();
         var item = new ImportItem { Name = "Desk layout" };
         if (mine.Items.Count == 0)
@@ -1146,16 +1186,20 @@ public static class SetupBundle
         p.Canvas = item;
     }
 
-    static void RemapCanvas(CanvasLayout layout, Dictionary<string, string> remap)
+    /// <summary>Same rules as RemapProfile: two mapped sources on one target is
+    /// a contradiction and throws; an unmapped item already sitting on a mapped
+    /// target is a stale placement and is dropped in favour of the mapped one.</summary>
+    static void RemapCanvas(CanvasLayout layout, Dictionary<string, string> remap, List<string>? warnings, bool strict)
     {
         if (remap.Count == 0) return;
-        var sources = layout.Items.Select(i => i.Device).Distinct(StringComparer.OrdinalIgnoreCase);
-        var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (string source in sources)
-        {
-            string target = remap.TryGetValue(source, out var mapped) ? mapped : source;
-            if (!targets.Add(target)) throw new InvalidOperationException($"Conflicting desk layout mapping for '{target}'.");
-        }
+        var mappedTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string source in layout.Items.Select(i => i.Device).Distinct(StringComparer.OrdinalIgnoreCase))
+            if (remap.TryGetValue(source, out var mapped) && !mappedTargets.Add(mapped))
+                throw new InvalidOperationException($"Conflicting desk layout mapping for '{mapped}'.");
+        if (strict && layout.Items.Any(i => !remap.ContainsKey(i.Device) && mappedTargets.Contains(i.Device)))
+            throw new InvalidOperationException("Conflicting desk layout mapping: a mapped device lands on one that is placed already. Choose distinct target devices.");
+        int stale = layout.Items.RemoveAll(i => !remap.ContainsKey(i.Device) && mappedTargets.Contains(i.Device));
+        if (stale > 0) warnings?.Add($"desk layout: {stale} stale placement(s) of a device that is also mapped are dropped, the mapped placement wins");
         foreach (var i in layout.Items)
             if (remap.TryGetValue(i.Device, out string? to)) i.Device = to;
     }
@@ -1172,7 +1216,10 @@ public static class SetupBundle
         }
         if (incoming == null) return;
 
-        var mine = ProfileStore.LoadJson<SettingsData>(AppPaths.Config("settings.json"), "settings.json") ?? new SettingsData();
+        // PeekJson, not LoadJson: this is the PREVIEW. See ProfileStore.PeekJson -
+        // a dialog the user may cancel must not leave a .corrupt- copy behind or
+        // disable saves for the session.
+        var mine = ProfileStore.PeekJson<SettingsData>(AppPaths.Config("settings.json")) ?? new SettingsData();
 
         foreach (var pal in incoming.SavedPalettes ?? new())
         {
@@ -1519,7 +1566,7 @@ public static class SetupBundle
                               Dictionary<string, string> writes, ImportResult result)
     {
         if (c.Profiles.Count == 0) return;
-        var incoming = BundleProfiles(p, remap);
+        var incoming = BundleProfiles(p, remap, strict: true);
         if (incoming == null) return;
 
         var current = CurrentProfiles();
@@ -1538,8 +1585,13 @@ public static class SetupBundle
         result.Applied.Add($"{added} profile(s) added, {replacedCount} replaced");
     }
 
-    static List<Profile> CurrentProfiles()
-        => ProfileStore.LoadJson<List<Profile?>>(AppPaths.Config("profiles.json"), "profiles.json")
+    /// <summary>The profiles on disk. <paramref name="peek"/> for the PREVIEW,
+    /// which is only looking: see ProfileStore.PeekJson. The APPLY path keeps
+    /// LoadJson, because there the consequences are wanted - a corrupt file really
+    /// is about to be replaced, and it should be copied aside first.</summary>
+    static List<Profile> CurrentProfiles(bool peek = false)
+        => (peek ? ProfileStore.PeekJson<List<Profile?>>(AppPaths.Config("profiles.json"))
+                 : ProfileStore.LoadJson<List<Profile?>>(AppPaths.Config("profiles.json"), "profiles.json"))
                ?.OfType<Profile>().ToList() ?? new List<Profile>();
 
     static void BuildScenes(ImportPreview p, ImportChoices c, Dictionary<string, string> assetMap,
@@ -1615,7 +1667,7 @@ public static class SetupBundle
         if (!c.Canvas || !p.Texts.TryGetValue($"{RootConfig}/canvas.json", out string? text)) return;
         var layout = CanvasLayout.TryParse(text);
         if (layout == null) return;
-        RemapCanvas(layout, remap);
+        RemapCanvas(layout, remap, null, strict: true);   // the user chose this mapping: a collision is refused
         writes[AppPaths.Config("canvas.json")] = JsonSerializer.Serialize(layout, Json);
         result.CanvasChanged = true;
         result.Applied.Add($"the desk layout was replaced ({layout.Items.Count} device(s) placed)");

@@ -86,6 +86,13 @@ public sealed class IteSuperIo : IDisposable
             io = PawnIO.LoadModule(blob);
             if (io == null) return null;
             held = TryAcquire(isa, 1000);
+            if (isa != null && !held)
+            {
+                // Another monitor has held the bus for over a second: probing
+                // through its transaction could corrupt both sides. Not this time.
+                Log.Info("superio", "ISA bus mutex busy - Super-I/O probe skipped");
+                io.Dispose(); return null;
+            }
 
             if (Call(io, "ioctl_select_slot", slot) < 0 || !EnterConfig(io, slot))
             {
@@ -187,11 +194,21 @@ public sealed class IteSuperIo : IDisposable
     /// other monitors (TRCC, BIOS tools) can't tear it, nor we theirs. One
     /// bracket rather than one per method: the first review's "ISA mutex left
     /// owned" bug was exactly this pattern done wrong once.</summary>
-    T WithBus<T>(Func<T> body, int timeoutMs = 250)
+    /// <param name="failure">What to answer when the mutex exists and another
+    /// tool would not give it up in time. The body used to run anyway - "held"
+    /// only decided whether to release - which is the interleaving the mutex
+    /// exists to prevent: our index/data port writes inside another monitor's
+    /// transaction, and one side reads the wrong register.</param>
+    T WithBus<T>(Func<T> body, T failure, int timeoutMs = 250)
     {
         lock (_lock)
         {
             bool held = TryAcquire(_isaMutex, timeoutMs);
+            if (_isaMutex != null && !held)
+            {
+                Log.Occasional("superio-busy", "superio", "ISA bus mutex held by another tool; skipping this access");
+                return failure;
+            }
             try { return body(); }
             finally { if (held) { try { _isaMutex?.ReleaseMutex(); } catch { } } }
         }
@@ -199,19 +216,19 @@ public sealed class IteSuperIo : IDisposable
 
     /// <summary>Raw EC register access for the CLI recipe probes ONLY — the
     /// app only ever monitors (<see cref="Read"/>).</summary>
-    public int ReadEcRaw(byte reg) => WithBus(() => EcRead(reg));
+    public int ReadEcRaw(byte reg) => WithBus(() => EcRead(reg), -1);
 
     /// <summary>See <see cref="ReadEcRaw"/> — probe use only.</summary>
-    public bool WriteEcRaw(byte reg, byte val) => WithBus(() => EcWrite(reg, val));
+    public bool WriteEcRaw(byte reg, byte val) => WithBus(() => EcWrite(reg, val), false);
 
     /// <summary>Raw port read through this chip's whitelist (the module only
     /// allows ports find_bars discovered on THIS chip's logical devices).
     /// Used by the Gigabyte ECIO interface (0x3F0/0x3F4) that lives on the
     /// secondary chip. -1 = denied/failed.</summary>
-    public int PioInb(ushort port) => WithBus(() => In1(_io, "ioctl_pio_inb", port));
+    public int PioInb(ushort port) => WithBus(() => In1(_io, "ioctl_pio_inb", port), -1);
 
     /// <summary>See <see cref="PioInb"/>.</summary>
-    public bool PioOutb(ushort port, byte val) => WithBus(() => Call(_io, "ioctl_pio_outb", port, val) >= 0);
+    public bool PioOutb(ushort port, byte val) => WithBus(() => Call(_io, "ioctl_pio_outb", port, val) >= 0, false);
 
     /// <summary>Read-only dump of this chip's logical devices: LDN, activate
     /// bit (0x30), BAR0 (0x60/61), BAR1 (0x62/63). Probe use.</summary>
@@ -234,7 +251,7 @@ public sealed class IteSuperIo : IDisposable
         }
         finally { ExitConfig(_io); }   // never leave the chip in config mode
         return list;
-    }, 1000);
+    }, new(), 1000);
 
     /// <summary>Percent → an 8-bit duty byte (0-255), the encoding of the
     /// ITE EXTENDED duty registers (0x63/0x6B/0x73). It is NOT valid for the
@@ -282,7 +299,7 @@ public sealed class IteSuperIo : IDisposable
                 duty[i] = v >= 0 ? (int)Math.Round(Math.Min(v, 255) * 100.0 / 255) : null;
             }
         return new Reading(temps, rpm, duty);
-    });
+    }, new Reading(new double?[TempRegs.Length], new int?[FanRegs.Length], new int?[PwmRegs.Length]));   // bus busy: an all-null sweep, not a torn one
 
     /// <summary>The machine-wide ISA-bus mutex hardware monitors share
     /// (documented in the LpcIO module as a required courtesy).</summary>

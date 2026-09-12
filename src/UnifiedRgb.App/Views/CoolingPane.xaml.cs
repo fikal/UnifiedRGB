@@ -31,6 +31,9 @@ public partial class CoolingPane : UserControl
 
     void Pills_PreviewKeyDown(object sender, KeyEventArgs e) => KeyPolicy.MouseFirst(e);
 
+    // The page scrolls under the fan and mode lists (see WheelPolicy).
+    void List_PreviewMouseWheel(object sender, MouseWheelEventArgs e) => WheelPolicy.Bubble(sender, e);
+
     /*-----------------------------------------------------*\
     | Fan curve editor: keep the graph in sync with the     |
     | edited fan, push edits back, and animate the live     |

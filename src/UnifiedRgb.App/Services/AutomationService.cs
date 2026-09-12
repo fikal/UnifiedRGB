@@ -82,6 +82,15 @@ public sealed class AutomationService : IDisposable
 
     bool _selfApplying;   // our own profile applies must not clear the return point
 
+    // The user applied their own lighting while a rule was driving (or during
+    // a dark window). From then on THEIR choice is the baseline: when the rule
+    // ends the desk keeps it, rather than going to the startup profile.
+    bool _userTookOver;
+    // LightsOff() ran since the last relight (a lock, a dark window): the way
+    // back to Base has to put the lighting on again, whichever branch runs.
+    bool _lightsOff;
+    bool _inTick, _tickAgain;
+
     /*--- Temporary pause. Per session and never persisted: see AutomationPause,
           which owns the reasoning and the copy. The held mode and profile are
           the lighting the pause froze, so a lock that happens mid-pause can be
@@ -188,7 +197,12 @@ public sealed class AutomationService : IDisposable
             ActivityLog.Note(ActivityKind.UserOverride,
                 "You lit things up during a scheduled dark window, so that schedule stays paused until the window ends.");
         }
-        _returnPoint = null;
+        // Keep the choice itself, not a null. A null baseline plus a lock (or a
+        // dark window) before the rule ended left the desk BLACK on the way
+        // back: the Base branch had nothing to restore and nothing to apply.
+        _returnPoint = _vm.CaptureState();
+        _userTookOver = true;
+        _lightsOff = false;   // the user has just lit things up
         Log.Info("auto", "lighting changed during an override, keeping it as the new baseline");
         ActivityLog.Note(ActivityKind.UserOverride,
             "You changed the lighting while a rule was running, so that is your baseline from now on.");
@@ -209,7 +223,24 @@ public sealed class AutomationService : IDisposable
         else if (e.Reason == SessionSwitchReason.SessionUnlock) { _locked = false; Tick(); }
     }
 
+    /// <summary>One evaluation, never re-entered: a modal pumping the dispatcher
+    /// inside a profile apply (the error box, a prompt) would let the timer tick
+    /// land in the middle of a Transition, apply the profile twice and overwrite
+    /// the saved baseline with a half-applied capture. A tick that arrives while
+    /// one runs is not dropped either - a lock event must not be lost because the
+    /// timer happened to be busy - it runs once the current one is done.</summary>
     void Tick()
+    {
+        if (_inTick) { _tickAgain = true; return; }
+        _inTick = true;
+        try
+        {
+            do { _tickAgain = false; TickCore(); } while (_tickAgain);
+        }
+        finally { _inTick = false; }
+    }
+
+    void TickCore()
     {
         try
         {
@@ -243,6 +274,7 @@ public sealed class AutomationService : IDisposable
                     _selfApplying = true;
                     try { _vm.RestoreState(_pauseLighting); }
                     finally { _selfApplying = false; }
+                    _lightsOff = false;
                     _mode = held.Mode;
                     _activeRuleProfile = held.Profile;
                     return;
@@ -329,8 +361,11 @@ public sealed class AutomationService : IDisposable
         bool tripped = SensorHub.FailsafeTripped;
         if (tripped == _failsafeSeen) return;
         _failsafeSeen = tripped;
+        int pending = tripped ? SensorHub.PendingHandbackCount : 0;
         ActivityLog.Note(ActivityKind.Failsafe, tripped
-            ? "The thermal failsafe fired: the CPU or GPU got too hot, so every fan went back to the board's own control. Your curves are kept."
+            ? pending == 0
+                ? "The thermal failsafe fired: the CPU or GPU got too hot, so every fan went back to the board's own control. Your curves are kept."
+                : $"The thermal failsafe fired: the CPU or GPU got too hot. {pending} fan(s) did not accept the handback yet and are retried every tick; the log says which. Your curves are kept."
             : "The thermal failsafe was cleared by a new fan-control setting. Other fans may still be on automatic control.");
     }
 
@@ -435,7 +470,8 @@ public sealed class AutomationService : IDisposable
             double? v = r.Enabled ? SensorSources.Read(r.Source) : null;
             _sensorValues[i] = v;
             _sensorStates[i] = SensorRuleEvaluator.Step(r, v, _sensorStates[i], now);
-            if (r.Enabled && v == null && unavailable == null) unavailable = r.Source;
+            // Not before the hub's first read: a null then is "still loading".
+            if (r.Enabled && v == null && unavailable == null && SensorHub.HasPublished) unavailable = r.Source;
         }
         var hit = SensorRuleEvaluator.FirstActive(rules, _sensorStates, _sensorValues, _profileExists);
         // A firing rule outranks the "no reading" note.
@@ -460,6 +496,7 @@ public sealed class AutomationService : IDisposable
         if (_mode == AutomationMode.Base && next != AutomationMode.Base)
         {
             _returnPoint = _vm.CaptureState();
+            _userTookOver = false;   // a fresh override: the baseline is what was on before it
             Log.Info("auto", $"baseline saved: {Describe(_returnPoint)}");
         }
 
@@ -471,6 +508,7 @@ public sealed class AutomationService : IDisposable
             case AutomationMode.Locked:
             case AutomationMode.ScheduleOff:
                 _vm.LightsOff();
+                _lightsOff = true;
                 Log.Info("auto", next == AutomationMode.Locked ? "session locked, lights off" : "scheduled window, lights off");
                 ActivityLog.Note(ActivityKind.LightsOff, next == AutomationMode.Locked
                     ? "Your session locked, so the lights went off. They come back when you sign in."
@@ -485,6 +523,7 @@ public sealed class AutomationService : IDisposable
                 if (profile == null) break;
                 if (_vm.ApplyProfileByName(profile))
                 {
+                    _lightsOff = false;
                     Log.Info("auto", next switch
                     {
                         AutomationMode.Sensor => $"sensor rule fired, applied profile '{profile}'",
@@ -527,7 +566,27 @@ public sealed class AutomationService : IDisposable
                 // that was never involved.
                 string why = _paused ? "Automation is paused" : "No rule matches any more";
 
-                if (!string.IsNullOrWhiteSpace(startup) && _vm.ApplyProfileByName(startup))
+                if (_userTookOver)
+                {
+                    // Their choice IS the baseline (OnUserLighting). The startup
+                    // profile used to win here regardless, so a colour picked by
+                    // hand mid-game was replaced two seconds after the game closed
+                    // by whatever the startup profile happened to be.
+                    if (_lightsOff && _returnPoint != null)
+                    {
+                        _vm.RestoreState(_returnPoint);
+                        Log.Info("auto", $"no rule matches, back to the lighting you set during it: {Describe(_returnPoint)}");
+                        ActivityLog.Note(ActivityKind.BackToBase,
+                            $"{why}, so the lighting you set while a rule was running is back on.");
+                    }
+                    else
+                    {
+                        Log.Info("auto", "no rule matches, keeping the lighting you set during it");
+                        ActivityLog.Note(ActivityKind.BackToBase,
+                            $"{why}, and you changed the lighting while a rule was running, so that is what you keep.");
+                    }
+                }
+                else if (!string.IsNullOrWhiteSpace(startup) && _vm.ApplyProfileByName(startup))
                 {
                     Log.Info("auto", $"no rule matches, back to your startup profile '{startup}'");
                     ActivityLog.Note(ActivityKind.BackToBase,
@@ -542,19 +601,25 @@ public sealed class AutomationService : IDisposable
                     ActivityLog.Note(ActivityKind.BackToBase,
                         $"{why}, so {Describe(_returnPoint)} is back on.");
                 }
-                // No return point (the user relit things mid-override): the LCD
-                // still has to come back - RestoreState was the only path that did it.
+                // No baseline at all (nothing was ever captured this session).
+                // If the lights are off, put the stored lighting back on rather
+                // than leave the desk black; otherwise there is nothing to do.
                 else
                 {
-                    _vm.SetPumpLcdOn(true);
-                    Log.Info("auto", "no rule matches, keeping the lighting you set during it");
-                    ActivityLog.Note(ActivityKind.BackToBase,
-                        $"{why}, and you changed the lighting while a rule was running, so that is what you keep.");
+                    if (_lightsOff)
+                    {
+                        _vm.LightsSuppressed = false;
+                        _vm.RestoreState(_vm.CaptureState());
+                        Log.Info("auto", "no rule matches and no baseline was saved, relit the stored lighting");
+                    }
+                    else Log.Info("auto", "no rule matches and no baseline was saved, leaving the lighting alone");
+                    ActivityLog.Note(ActivityKind.BackToBase, $"{why}, so your lighting is back.");
                 }
                 break;
         }
         }
         finally { _selfApplying = false; }
+        if (next == AutomationMode.Base) { _lightsOff = false; _userTookOver = false; }
         _mode = next;
         _activeRuleProfile = next is AutomationMode.App or AutomationMode.Sensor
             or AutomationMode.ScheduleProfile ? profile : null;

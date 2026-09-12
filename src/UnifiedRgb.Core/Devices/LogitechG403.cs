@@ -157,6 +157,19 @@ public sealed class LogitechG403 : IRgbDevice
             if (!tried.Add(iface.ProductId)) continue;   // one probe per device
             IHidTransport? hid = null;
             try { hid = HidNative.Open(iface.Path); } catch { continue; }
+            if (hid.FeatureOnly)
+            {
+                // Open for feature reports only: HID++ needs the output/input
+                // pipe, and ACCESS_DENIED on it means another program holds the
+                // mouse (G HUB, Logitech Options+). This used to fall through to
+                // "not present" with nothing on screen and nothing in the bundle.
+                string product = string.IsNullOrWhiteSpace(iface.Product) ? $"Logitech mouse (pid {iface.ProductId:X4})" : $"Logitech {iface.Product}";
+                DetectionNotes.Report(nameof(LogitechG403), product, BlockReason.HeldByOtherSoftware,
+                    "the mouse is present but another program has its HID++ channel open (G HUB or Logitech Options+, usually)",
+                    "close G HUB / Logitech Options+ (and their background services), then Scan again");
+                hid.Dispose();
+                continue;
+            }
 
             foreach (byte dev in new byte[] { 0xFF, 0x01 })
             {
@@ -225,9 +238,14 @@ public sealed class LogitechG403 : IRgbDevice
         Array.Copy(parms, 0, buf, 4, Math.Min(parms.Length, LONG_LEN - 4));
         if (!hid.Write(buf)) return null;
 
+        // One buffer for the whole read loop: a reply that does not match is
+        // discarded, so only the one we RETURN escapes, and the next call brings
+        // its own. Allocating inside the loop meant up to eight throwaway buffers
+        // per exchange, on a path an animated effect walks every frame.
+        var rx = new byte[LONG_LEN];
         for (int i = 0; i < 8; i++)
         {
-            var rx = new byte[LONG_LEN];
+            Array.Clear(rx);
             int got = hid.Read(rx, 200);
             if (got <= 0) return null;
             if ((rx[0] == LONG_MSG || rx[0] == 0x10) && rx[2] == featIdx && (rx[3] & 0x0F) == SW_ID)
@@ -311,10 +329,25 @@ public sealed class LogitechG403 : IRgbDevice
         lock (_writeLock)
         {
             bool landed = true;
-            long tick = Environment.TickCount64;
-            long wait = MinFrameGapMs - (tick - _lastFrameTick);
-            if (!persist && wait > 0) Thread.Sleep((int)wait);
-            _lastFrameTick = Environment.TickCount64;
+            // Pace only a frame that will actually be sent. Sleeping first meant
+            // an unchanged frame, or one whose clusters are all inside their
+            // refusal backoff, still parked the caller for up to 33 ms under the
+            // engine's device gate - a sleeping mouse turned its effect worker
+            // into a 30 Hz sleep loop instead of the cheap "refuse immediately"
+            // the contract asks for.
+            bool anyToSend = false;
+            for (int i = 0; i < _clusterEffect.Length && !anyToSend; i++)
+            {
+                var c = colors[Math.Min(i, colors.Count - 1)];
+                anyToSend = _lastPer[i] != c && Environment.TickCount64 >= _retryAfter[i];
+            }
+            if (anyToSend)
+            {
+                long tick = Environment.TickCount64;
+                long wait = MinFrameGapMs - (tick - _lastFrameTick);
+                if (!persist && wait > 0) Thread.Sleep((int)wait);
+                _lastFrameTick = Environment.TickCount64;
+            }
             bool claimed = false, changed = false;
             for (int i = 0; i < _clusterEffect.Length; i++)
             {
@@ -381,9 +414,14 @@ public sealed class LogitechG403 : IRgbDevice
     /// <summary>False when the request did not reach the mouse (or its reply
     /// never came back), so callers can avoid recording state the hardware
     /// does not actually have.</summary>
+    // Reused across frames; every caller holds _writeLock. An animated effect
+    // reaches SendEffect once per cluster per changed frame.
+    byte[]? _effectParms;
+
     bool SendEffect(int cluster, Rgb c, bool persist)
     {
-        var parms = new byte[LONG_LEN - 4];
+        var parms = _effectParms ??= new byte[LONG_LEN - 4];
+        Array.Clear(parms);
         parms[0] = (byte)cluster;
         parms[1] = _clusterEffect[cluster];
         parms[2] = c.R; parms[3] = c.G; parms[4] = c.B;
@@ -460,7 +498,13 @@ public sealed class LogitechG403 : IRgbDevice
     {
         lock (_writeLock)
         {
-            if (!_hid.IsDisposed) CommitPersist();   // save what the mouse is showing before the handle goes
+            // Save what the mouse is showing before the handle goes - but only
+            // under the same quiet-period rule as the streaming path. A fresh
+            // instance is disposed at every rescan (a replug, a resume, a
+            // flapping hub), and an unconditional commit here was a flash write
+            // per cluster per rescan; an effect that was running has no colour
+            // worth persisting, and a static apply already persisted itself.
+            if (!_hid.IsDisposed && Environment.TickCount64 - _lastChangeTick >= PersistAfterMs) CommitPersist();
             _hid.Dispose();
         }
     }

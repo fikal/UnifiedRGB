@@ -101,8 +101,13 @@ public sealed class LhmFans : IDisposable
         foreach (var hw in _computer.Hardware)
             foreach (var sub in Flatten(hw))
             {
-                var controls = sub.Sensors.Where(s => s.Control != null)
-                    .ToDictionary(s => s.Index, s => s.Control!);
+                // First control per index: a board exposing two controls with
+                // one index used to throw out of ToDictionary and take the WHOLE
+                // board (fans and temps) down to the read-only ITE fallback.
+                var controls = new Dictionary<int, IControl>();
+                foreach (var s in sub.Sensors.Where(s => s.Control != null))
+                    if (!controls.TryAdd(s.Index, s.Control!))
+                        Log.Warn("lhm", $"'{sub.Name}': two controls share index {s.Index} ('{s.Name}' ignored)");
                 foreach (var s in sub.Sensors.Where(s => s.SensorType == SensorType.Fan))
                     _fans.Add(new Fan
                     {
@@ -168,7 +173,20 @@ public sealed class LhmFans : IDisposable
         if ((uint)index >= (uint)_fans.Count) return false;
         var ctl = _fans[index].Control;
         if (ctl == null) return false;
-        try { ctl.SetSoftware(Math.Clamp(percent, 0, 100)); return true; }
+        try
+        {
+            float clamped = Math.Clamp(percent, 0, 100);
+            // LHM writes the chip only from its own change events, and both of
+            // Control's setters dedup: re-asserting the value it already holds
+            // (the hub does so every ReassertTicks, for a driver reset or a
+            // resume, and after a write the ISA mutex made it drop) reached
+            // nothing. The nudge is two events - the same register byte twice,
+            // so no visible step - and the second one is the real write.
+            if (ctl.ControlMode == ControlMode.Software && ctl.SoftwareValue == clamped)
+                ctl.SetSoftware(clamped + 0.1f);
+            ctl.SetSoftware(clamped);
+            return true;
+        }
         catch (Exception ex) { Log.Warn("lhm", $"set duty failed: {ex.Message}"); return false; }
     }
 
@@ -178,10 +196,20 @@ public sealed class LhmFans : IDisposable
     /// keeps retrying such fans). A fan we never had control of - no control
     /// paired, or an index that no longer exists - has nothing to release and
     /// reports true.</summary>
-    public bool Restore(int index)
+    /// <param name="force">A retry of a handback that was reported done: LHM
+    /// dedups SetDefault when it already believes the header is on default, so
+    /// the retry re-takes and releases it to get a real register write.</param>
+    public bool Restore(int index, bool force = false)
     {
         if ((uint)index >= (uint)_fans.Count) return true;
-        try { _fans[index].Control?.SetDefault(); return true; }
+        try
+        {
+            var ctl = _fans[index].Control;
+            if (ctl == null) return true;
+            if (force && ctl.ControlMode == ControlMode.Default) ctl.SetSoftware(ctl.SoftwareValue);
+            ctl.SetDefault();
+            return true;
+        }
         catch (Exception ex)
         {
             // Rate-limited: the hub retries a refused handback every tick, and

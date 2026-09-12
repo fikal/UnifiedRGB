@@ -432,8 +432,16 @@ static class DevicesSuite
             kb.SetColors(frame);
             t.Equal(4, hid.Features.Count, "a frame whose report was refused is sent again, not cached");
 
+            // The onboard-profile handback is the user's exit choice (IHardwareModes),
+            // not a side effect of every Dispose: a rescan used to flash the keyboard
+            // to its saved profile and back, and "keeps its last colors" was a lie.
+            t.Check(kb.ReturnToHardware(), "ReturnToHardware is accepted");
+            t.Check(hid.Writes.Count == 1 && hid.Writes[0][1] == 0x41, "...and sends the onboard-profile packet (0x41)");
+            kb.SetColors(frame);
+            t.Check(hid.Features.Count == 6 && hid.Features[4][1] == 0x4B, "the next frame re-enters direct mode and repaints");
+
             kb.Dispose();
-            t.Check(hid.Writes.Count == 1 && hid.Writes[0][1] == 0x41, "Dispose hands the keyboard back to its onboard profile (0x41)");
+            t.Equal(1, hid.Writes.Count, "Dispose sends nothing of its own: it only closes the handle");
             t.Check(hid.IsDisposed, "...and closes the handle");
         }
 

@@ -18,7 +18,7 @@ static class Geo
         public double[] Diag = Array.Empty<double>();     // (X + Y) / 2
         public double[] Angle = Array.Empty<double>();    // Atan2(Y-.5, X-.5)
         public double[] Radius = Array.Empty<double>();   // distance from center
-        public double MinY, MaxY;
+        public double MinY, MaxY, MinX, MaxX;
     }
 
     static readonly ConditionalWeakTable<LedPos[], Cache> _cache = new();
@@ -32,6 +32,8 @@ static class Geo
             Radius = new double[pos.Length],
             MinY = double.MaxValue,
             MaxY = double.MinValue,
+            MinX = double.MaxValue,
+            MaxX = double.MinValue,
         };
         for (int i = 0; i < pos.Length; i++)
         {
@@ -42,8 +44,10 @@ static class Geo
             c.Radius[i] = Math.Sqrt(dx * dx + dy * dy);
             if (y < c.MinY) c.MinY = y;
             if (y > c.MaxY) c.MaxY = y;
+            if (x < c.MinX) c.MinX = x;
+            if (x > c.MaxX) c.MaxX = x;
         }
-        if (pos.Length == 0) { c.MinY = 0; c.MaxY = 1; }
+        if (pos.Length == 0) { c.MinY = 0; c.MaxY = 1; c.MinX = 0; c.MaxX = 1; }
         return c;
     }
 
@@ -55,11 +59,20 @@ static class Geo
     /// ribbon, light bar, a single fan ring) where every LED shares one Y.
     /// Effects that animate along Y collapse there: whole regions light in
     /// lockstep because their fall coordinate is constant. Those effects use
-    /// this to fall along the strip's own axis instead.</summary>
+    /// this to fall along the strip's own axis instead.
+    ///
+    /// Judged by the channel's own aspect, not by an absolute span: with the
+    /// desk on, positions are desk-relative and a keyboard occupies a sixth of
+    /// the desk's height, so "span at most 0.3" called every 2-D device but the
+    /// fans a strip and Rain ran sideways along the keys. A strip on the desk
+    /// still has one Y (span 0) whatever its size; a rotated strip has one X
+    /// and a real height, and the Y-based effects then run along it, which is
+    /// what a vertical strip wants.</summary>
     public static bool IsFlat(LedPos[] pos)
     {
         var c = _cache.GetValue(pos, Build);
-        return c.MaxY - c.MinY <= 0.3;
+        double ys = c.MaxY - c.MinY, xs = c.MaxX - c.MinX;
+        return ys <= 1e-6 || ys <= 0.3 * xs;
     }
 
     public static (double Min, double Max) YRange(LedPos[] pos)

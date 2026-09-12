@@ -294,13 +294,34 @@ public sealed class LightingController
     /// a second time on the UI thread per preview pull; the on-demand render
     /// remains only for a channel with no frame yet (just started) or one
     /// idle in baked Lian mode, where the worker renders nothing.</summary>
-    public Rgb[] ComposedFrame(IRgbDevice dev)
+    public Rgb[] ComposedFrame(IRgbDevice dev) => ComposedFrame(dev, null, null);
+
+    /// <summary>The same frame, reusing buffers the CALLER owns.
+    ///
+    /// For the desk preview, which pulls this for every device 30 times a second:
+    /// the frame clone and the channel list were an allocation per device per
+    /// pull, which is most of what an idle app with the preview open was making.
+    /// Both buffers are grown as needed and returned, so the caller keeps whatever
+    /// it was handed and passes it back next time.
+    ///
+    /// Caller-owned rather than fields on this controller ON PURPOSE: the support
+    /// bundle and the SDK host also compose frames, and shared scratch here would
+    /// be shared across threads. Pass null from anywhere that is not a hot loop.</summary>
+    public Rgb[] ComposedFrame(IRgbDevice dev, Rgb[]? into, List<EffectEngine.Channel>? channels)
     {
-        var frame = (Rgb[])FrameFor(dev).Clone();
-        foreach (var ch in Engine.ChannelsFor(dev))
+        var src = FrameFor(dev);
+        var frame = into != null && into.Length == src.Length ? into : new Rgb[src.Length];
+        Array.Copy(src, frame, src.Length);
+        if (channels != null) Engine.ChannelsFor(dev, channels);
+        else channels = Engine.ChannelsFor(dev);
+        Rgb[]? buf = null;
+        foreach (var ch in channels)
         {
             if (Engine.TryCopyLastFrame(ch, frame, ch.Offset)) continue;
-            var buf = new Rgb[ch.Count];
+            // RenderChannel wants a buffer of exactly ch.Count, so this is reused
+            // only between channels of the same size. It is the rare path anyway
+            // (a channel with no frame yet, or idle in baked Lian mode).
+            if (buf == null || buf.Length != ch.Count) buf = new Rgb[ch.Count];
             if (Engine.RenderChannel(ch, buf))
                 for (int i = 0; i < buf.Length && ch.Offset + i < frame.Length; i++)
                     frame[ch.Offset + i] = buf[i];

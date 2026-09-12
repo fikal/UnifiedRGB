@@ -18,6 +18,12 @@ if (git status --porcelain) { throw "Working tree not clean - commit or stash fi
 
 # The Chroma shim is bundled INTO the single-file exe (the csproj picks it up
 # when present); a release without it silently hides the whole Chroma section.
+# Built here, with the same script CI uses, rather than merely checked for: the
+# DLLs are gitignored build products, and a Test-Path only proved that build.bat
+# had run at SOME point - a shim missing an export added since would have
+# shipped, with CI green (CI rebuilds and checks its own copies).
+cmd /c native\chroma-shim\build.bat
+if ($LASTEXITCODE -ne 0) { throw "native/chroma-shim/build.bat failed - the shims must build before a release" }
 if (-not (Test-Path "native/chroma-shim/RzChromaSDK64.dll")) { throw "native/chroma-shim/RzChromaSDK64.dll missing - run native/chroma-shim/build.bat first" }
 if (-not (Test-Path "native/chroma-shim/RzChromaSDK.dll"))   { throw "native/chroma-shim/RzChromaSDK.dll (32-bit) missing - run native/chroma-shim/build.bat first" }
 
@@ -97,9 +103,11 @@ try {
         & $signtool.FullName verify /pa $asset
         if ($LASTEXITCODE -ne 0) { throw "signature verification failed" }
         Write-Host "signed $asset" -ForegroundColor Green
+        $signedNote = "Signed with Azure Artifact Signing (timestamped)."
     }
     else {
         Write-Host "no signing.json, publishing UNSIGNED" -ForegroundColor Yellow
+        $signedNote = "Unsigned binary - SmartScreen will warn on first run (More info -> Run anyway)."
     }
 
     $sha = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
@@ -133,7 +141,7 @@ $notes = @"
 ``````
 sha256: $sha
 ``````
-Unsigned binary - SmartScreen will warn on first run (More info -> Run anyway).
+$signedNote
 
 In-app updates: existing installs offer this version automatically at next launch.
 "@

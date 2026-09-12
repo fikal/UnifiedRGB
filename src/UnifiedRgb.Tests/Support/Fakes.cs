@@ -39,9 +39,23 @@ sealed class FakeHardwareDevice : IRgbDevice, IHardwareModes
     public (string Name, Rgb? Color)? EffectSet;
     public int HandbackCount;
 
-    public bool SetHardwareStatic(Rgb color) { StaticSet = color; return true; }
-    public bool SetHardwareEffect(string name, Rgb? color) { EffectSet = (name, color); return true; }
-    public bool ReturnToHardware() { HandbackCount++; return true; }
+    // Refusals, so the exit path's must-land retry and its "did not land"
+    // verdict are exercised too: a dozing mouse refusing the very last write is
+    // the case HardwareExit exists for, and no fake could say no before.
+    public int RefuseNext;          // refuse this many calls, then accept
+    public bool RefuseForever;
+    public int Attempts;
+    bool Accept()
+    {
+        Attempts++;
+        if (RefuseForever) return false;
+        if (RefuseNext > 0) { RefuseNext--; return false; }
+        return true;
+    }
+
+    public bool SetHardwareStatic(Rgb color) { if (!Accept()) return false; StaticSet = color; return true; }
+    public bool SetHardwareEffect(string name, Rgb? color) { if (!Accept()) return false; EffectSet = (name, color); return true; }
+    public bool ReturnToHardware() { if (!Accept()) return false; HandbackCount++; return true; }
 }
 
 /// <summary>A device with declared zones, for the SDK blob tests.</summary>
@@ -92,7 +106,9 @@ sealed class StubOrgbHost : IOpenRgbHost
     }
     public void PushExternal(IRgbDevice device, int offset, IReadOnlyList<Rgb> colors)
     {
-        lock (_lock) _writes[device.Name] = (offset, colors);
+        // A copy, like the real host: the server hands over a per-client buffer
+        // it reuses for the next packet.
+        lock (_lock) _writes[device.Name] = (offset, colors.ToArray());
     }
     public void EndExternal(IRgbDevice device)
     {

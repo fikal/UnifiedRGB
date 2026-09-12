@@ -456,7 +456,11 @@ public sealed partial class MainViewModel
         if (p == null) { NoteSaveFailed(active.Name); return; }
         int idx = Profiles.IndexOf(active);
         if (idx >= 0) Profiles[idx] = p; else Profiles.Add(p);
-        _selectedProfile = p; OnChanged(nameof(SelectedProfile));
+        // Through the setter: replacing the item made the bound combo push null
+        // through it (raising IsStartupProfile/CanDeleteProfile for "nothing
+        // selected"), and a direct field write afterwards left Delete greyed
+        // and the startup checkbox stale until the profile was re-picked.
+        SelectedProfile = p;
         _dirty = false;
         // The lighting now IS this profile - that is what saving means - so
         // say so rather than clearing it. Nulling it cost ApplyStep its "do not
@@ -713,7 +717,15 @@ public sealed partial class MainViewModel
     public void DeleteProfile()
     {
         if (SelectedProfile == null) return;
-        _store.Delete(SelectedProfile.Name);
+        if (!_store.Delete(SelectedProfile.Name))
+        {
+            // The file still has it, so the list keeps it: a row that vanished
+            // and was back at the next launch was the old behaviour.
+            UnifiedRgb.Core.Automation.ActivityLog.Note(UnifiedRgb.Core.Automation.ActivityKind.Problem,
+                $"'{SelectedProfile.Name}' could not be deleted - profiles.json could not be written. "
+                + "Check that the settings folder is writable and not locked by another program.");
+            return;
+        }
         Profiles.Remove(SelectedProfile);
         SelectedProfile = null;
         ProfileName = "";       // the deleted name lingering in the box invites a confusing re-save

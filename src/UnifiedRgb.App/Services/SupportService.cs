@@ -41,7 +41,7 @@ public sealed class SupportService
             catch (Exception ex) { diag = $"(diagnostic failed: {ex})"; }
 
             string log;
-            try { log = File.ReadAllText(Log.FilePath); }
+            try { log = ReadShared(Log.FilePath); }
             catch (Exception ex) { log = $"(log unavailable: {ex.Message})"; }
 
             // The rotated half too. Once a log passed the cap, every future
@@ -55,7 +55,7 @@ public sealed class SupportService
                     older = "\r\n\r\n==============================================\r\n"
                           + " EARLIER LOG (unifiedrgb.log.old)\r\n"
                           + "==============================================\r\n"
-                          + File.ReadAllText(old);
+                          + ReadShared(old);
             }
             catch { /* the current log is the part that matters */ }
 
@@ -105,6 +105,16 @@ public sealed class SupportService
     /// <summary>Shared with the standalone diagnostic exe, which used to write
     /// its report with no scrubbing at all. See Core/Redaction.</summary>
     static string Redact(string text) => UnifiedRgb.Core.Redaction.Scrub(text);
+
+    /// <summary>Read a file another process (the app, or the diagnostic exe)
+    /// may be appending to. File.ReadAllText asks for exclusive write access and
+    /// failed against a writer mid-append, which shipped a bundle without its log.</summary>
+    static string ReadShared(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var sr = new StreamReader(fs, System.Text.Encoding.UTF8);
+        return sr.ReadToEnd();
+    }
 
     /// <summary>Browser to a new-issue page with version/OS prefilled and a
     /// reminder to attach the just-saved bundle. Best-effort — the saved file

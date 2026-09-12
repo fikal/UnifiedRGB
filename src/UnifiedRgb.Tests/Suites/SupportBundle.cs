@@ -109,7 +109,7 @@ static class SupportBundleSuite
             string? repo = null;
             for (var d = new DirectoryInfo(AppContext.BaseDirectory); d != null && repo == null; d = d.Parent)
                 if (File.Exists(Path.Combine(d.FullName, "src", "UnifiedRgb.App", "app.manifest"))) repo = d.FullName;
-            if (repo == null) Console.WriteLine("  (skip) repo root not found from the test binary");
+            if (repo == null) t.Skip("shim identity: repo root not found from the test binary");
             else
             {
                 // #100: SupportService's elevation relaunch was deleted because the app
@@ -130,6 +130,7 @@ static class SupportBundleSuite
                     t.Equal("RzChromaSDK.dll", vi.OriginalFilename, "32-bit shim OriginalFilename");
                     t.Equal("UnifiedRGB Chroma Shim", vi.ProductName, "32-bit shim ProductName (IsOurs pin)");
                 }
+                else t.Skip("32-bit Chroma shim is not built (native/chroma-shim/build.bat)");
                 if (File.Exists(shim64))
                 {
                     var b = File.ReadAllBytes(shim64);
@@ -138,6 +139,7 @@ static class SupportBundleSuite
                     t.Equal("RzChromaSDK64.dll", vi.OriginalFilename, "64-bit shim OriginalFilename");
                     t.Equal("UnifiedRGB Chroma Shim", vi.ProductName, "64-bit shim ProductName (IsOurs pin)");
                 }
+                else t.Skip("64-bit Chroma shim is not built (native/chroma-shim/build.bat)");
             }
         }
 
@@ -173,9 +175,23 @@ static class SupportBundleSuite
 
             // Device serial tails. The VID and PID are what anyone diagnosing needs;
             // the tail is the device's own serial, and on some adapters a MAC.
-            string Tail(string text) => System.Text.RegularExpressions.Regex.Replace(
-                text, @"(\b(?:USB|HID|BTHENUM|BTHLE)\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}(?:&\w+)*\\)\S+", "$1<instance>",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            // Through the production seam: this used to test a private copy of the
+            // regex, which stayed green whatever happened to the real one.
+            static string Tail(string text) => Redaction.RedactInstanceTails(text);
+
+            // The device-PATH spelling (HID paths, the bundled OpenRGB's log).
+            t.Equal(@"\\?\hid#vid_1532&pid_00cf&mi_01#<instance>#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+                  Tail(@"\\?\hid#vid_1532&pid_00cf&mi_01#9&2036339a&0&0001#{4d1e55b2-f16f-11cf-88cb-001111000030}"),
+                  "redact: a device path's serial segment goes, the interface GUID stays");
+            // A two-letter account name is still caught in its quoted/path forms.
+            {
+                string s = @"no Wallpaper Engine settings for Windows account 'Ed' and C:\Users\Ed\x";
+                t.Check(Redaction.ReplaceName(ref s, "Ed", "<user>") && !s.Contains("'Ed'") && !s.Contains(@"\Ed\"),
+                        "redact: a short account name goes where it is quoted or a path segment");
+                string plain = "Edward edited the bed";
+                t.Check(!Redaction.ReplaceName(ref plain, "Ed", "<user>") && plain == "Edward edited the bed",
+                        "redact: but a short name never matches inside other words");
+            }
 
             t.Equal(@"USB\VID_0B05&PID_190E\<instance>", Tail(@"USB\VID_0B05&PID_190E\00E04C239987"),
                   "redact: a usb serial tail goes");

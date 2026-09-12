@@ -53,7 +53,7 @@ public abstract class PawnSmbus : IDisposable
                 int n = _io.Execute("ioctl_piix4_port_sel", new[] { (ulong)port }, outv);
                 return n >= 1 ? (int)outv[0] : -1;
             }
-            finally { if (got) _smbusMutex.ReleaseMutex(); }
+            finally { if (got) ReleaseMutexQuietly(); }
         }
     }
 
@@ -74,23 +74,30 @@ public abstract class PawnSmbus : IDisposable
     {
         if (data.Length is < 1 or > 32) return false;
 
-        // Cells 4..8 carry 33 bytes packed little-endian: [len, data...].
-        var bytes = new byte[40];
-        bytes[0] = (byte)data.Length;
-        data.CopyTo(bytes.AsSpan(1));
-        var input = new ulong[4 + 5];
-        input[0] = addr; input[1] = WRITE; input[2] = command; input[3] = PROTO_BLOCK_DATA;
-        for (int c = 0; c < 5; c++)
-            input[4 + c] = BitConverter.ToUInt64(bytes, c * 8);
-
         lock (_lock)
         {
+            // Cells 4..8 carry 33 bytes packed little-endian: [len, data...].
+            // Both buffers are reused under _lock: this runs twice per stick per
+            // changed frame, and was two allocations each time.
+            var bytes = _blockBytes; var input = _blockInput;
+            Array.Clear(bytes);
+            bytes[0] = (byte)data.Length;
+            data.CopyTo(bytes.AsSpan(1));
+            input[0] = addr; input[1] = WRITE; input[2] = command; input[3] = PROTO_BLOCK_DATA;
+            for (int c = 0; c < 5; c++)
+                input[4 + c] = BitConverter.ToUInt64(bytes, c * 8);
+
             bool got = AcquireMutex();
             if (!got) return false;
             try { return _io.Execute("ioctl_smbus_xfer", input, Array.Empty<ulong>()) >= 0; }
-            finally { if (got) _smbusMutex.ReleaseMutex(); }
+            finally { if (got) ReleaseMutexQuietly(); }
         }
     }
+
+    // Per-transaction scratch, reused under _lock (see the block write).
+    readonly byte[] _blockBytes = new byte[40];
+    readonly ulong[] _blockInput = new ulong[4 + 5];
+    readonly ulong[] _simpleInput = new ulong[5];
 
     int SimpleRead(byte addr, byte command, ulong proto)
     {
@@ -104,7 +111,7 @@ public abstract class PawnSmbus : IDisposable
                 int n = _io.Execute("ioctl_smbus_xfer", new[] { (ulong)addr, READ, (ulong)command, proto }, outv);
                 return n >= 1 ? (int)outv[0] : -1;
             }
-            finally { if (got) _smbusMutex.ReleaseMutex(); }
+            finally { if (got) ReleaseMutexQuietly(); }
         }
     }
 
@@ -116,10 +123,11 @@ public abstract class PawnSmbus : IDisposable
             if (!got) return false;
             try
             {
-                return _io.Execute("ioctl_smbus_xfer",
-                    new[] { (ulong)addr, WRITE, (ulong)command, proto, value }, Array.Empty<ulong>()) >= 0;
+                var input = _simpleInput;
+                input[0] = addr; input[1] = WRITE; input[2] = command; input[3] = proto; input[4] = value;
+                return _io.Execute("ioctl_smbus_xfer", input, Array.Empty<ulong>()) >= 0;
             }
-            finally { if (got) _smbusMutex.ReleaseMutex(); }
+            finally { if (got) ReleaseMutexQuietly(); }
         }
     }
 
@@ -130,7 +138,12 @@ public abstract class PawnSmbus : IDisposable
     /// read for the other tool). A failed write is repainted next frame.</summary>
     bool AcquireMutex()
     {
+        if (_disposed) return false;
         try { return _smbusMutex.WaitOne(2000); }
+        // Disposed underneath the wait (the last stick let go while this
+        // transaction was queued behind another tool): a failed transaction,
+        // not an exception out of a driver's SetColors.
+        catch (ObjectDisposedException) { return false; }
         catch (AbandonedMutexException)
         {
             // The previous owner died without releasing it - us killed under a
@@ -146,8 +159,25 @@ public abstract class PawnSmbus : IDisposable
         }
     }
 
+    /// <summary>The mutex can be disposed while a transaction still holds it
+    /// (see AcquireMutex); the release then must not throw out of a finally.</summary>
+    void ReleaseMutexQuietly()
+    {
+        try { _smbusMutex.ReleaseMutex(); }
+        catch (ObjectDisposedException) { }
+        catch (ApplicationException) { }   // not owned: the wait was cut short by the dispose
+    }
+
+    volatile bool _disposed;
+
+    /// <summary>Not under _lock on purpose: a transaction may be two seconds
+    /// inside the machine-wide mutex, and the logoff path cannot wait for it.
+    /// Every entry point checks the flag and the release path tolerates a
+    /// disposed handle, so a straggler fails its transaction instead of
+    /// throwing.</summary>
     public void Dispose()
     {
+        _disposed = true;
         _io.Dispose();
         _smbusMutex.Dispose();
     }

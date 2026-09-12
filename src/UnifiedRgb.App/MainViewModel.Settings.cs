@@ -326,7 +326,7 @@ public sealed partial class MainViewModel
         if (!suppressed) RestoreEffects(s.Effects);
         // Restore the selection exactly - including "no profile selected" (an
         // app rule's profile used to stay selected over restored ad-hoc lighting).
-        _selectedProfile = s.ProfileName is null ? null : Profiles.FirstOrDefault(p => p.Name == s.ProfileName);
+        SelectProfileRestored(s.ProfileName is null ? null : Profiles.FirstOrDefault(p => p.Name == s.ProfileName));
         _wallpaperChoice = s.WallpaperChoice;
         _pumpChoice = s.PumpChoice;
         _showChoice = s.ShowChoice;
@@ -336,8 +336,6 @@ public sealed partial class MainViewModel
         OnChanged(nameof(WallpaperChoice));
         OnChanged(nameof(PumpChoice));
         OnChanged(nameof(ShowChoice));
-        OnChanged(nameof(SelectedProfile));
-        OnChanged(nameof(IsStartupProfile));   // direct field write bypasses the setter
         SyncWheelToSelection();
         // The screen goes back with the LEDs: the snapshot is the whole desk.
         if (!suppressed && s.Screen != null) Lcd.RestoreDesign(s.Screen);
@@ -570,9 +568,11 @@ public sealed partial class MainViewModel
         OnChanged(nameof(SdkServerStatus));
     }
 
-    /// <summary>Called after every detect, including the first. Starts the
-    /// server if the user has it on, and tells any connected client that the
-    /// device instances it was addressing have been replaced.</summary>
+    /// <summary>Called after every detect, including the first. Rescan unwinds
+    /// the claims (DeviceListChanged) and disposes the server BEFORE the old
+    /// instances go away, so from there this only brings a fresh server up on
+    /// the new list when the user has it on; clients reconnect to it. The second
+    /// branch serves a caller that kept the server up across a detect.</summary>
     void SyncSdkServer()
     {
         if (!SdkServerEnabled) return;
@@ -651,8 +651,25 @@ public sealed partial class MainViewModel
         int port = server.Start(GsiToken);
         if (port == 0) { OnChanged(nameof(Cs2Status)); return; }
 
+        // The listener steps to the next free port, and the game's config was
+        // written with the port of the day it was installed: with 27180 taken
+        // by something else at a later launch the game posted to a port nobody
+        // listened on and the status blamed the game. Our own file, so it is
+        // simply rewritten to the port we actually have.
+        try
+        {
+            if (UnifiedRgb.Core.Games.GsiConfig.InstalledPort() is int installed && installed != port)
+            {
+                var rewritten = UnifiedRgb.Core.Games.GsiConfig.Install($"http://localhost:{port}", GsiToken, out string? err);
+                UnifiedRgb.Core.Log.Info("gsi", rewritten.Count > 0
+                    ? $"the game's config named port {installed}, rewritten for port {port}"
+                    : $"the game's config names port {installed} but the listener is on {port} and the file could not be rewritten: {err}");
+            }
+        }
+        catch (Exception ex) { UnifiedRgb.Core.Log.Warn("gsi", $"config port check failed: {ex.Message}"); }
+
         // Fired from the listener thread; the status line is a UI binding.
-        server.Connectedchanged += () => _dispatcher.BeginInvoke(() => OnChanged(nameof(Cs2Status)));
+        server.ConnectedChanged += () => _dispatcher.BeginInvoke(() => OnChanged(nameof(Cs2Status)));
         _gsi = server;
         UnifiedRgb.Core.Effects.Cs2Effect.Server = server;
     }
@@ -740,13 +757,12 @@ public sealed partial class MainViewModel
             // The selection is by reference, and every Profile object was just
             // replaced, so re-find it by name or drop it rather than leaving a
             // dangling one selected.
-            _selectedProfile = was == null ? null
-                : Profiles.FirstOrDefault(p => p.Name.Equals(was, StringComparison.OrdinalIgnoreCase));
+            SelectProfileRestored(was == null ? null
+                : Profiles.FirstOrDefault(p => p.Name.Equals(was, StringComparison.OrdinalIgnoreCase)));
             _dirty = false;
             RefreshPumpRows();
             SyncPumpChoice(_selectedProfile);
             SyncWallpaperChoice(_selectedProfile);
-            OnChanged(nameof(SelectedProfile));
             OnChanged(nameof(ProfileNames));
         }
 
@@ -804,6 +820,12 @@ public sealed partial class MainViewModel
 
     /// <summary>What a device is showing now, for the desk editor's LED dots.</summary>
     public Rgb[] ComposedFrameFor(IRgbDevice device) => _lighting.ComposedFrame(device);
+
+    /// <summary>The same, reusing buffers the caller owns - for the desk preview,
+    /// which asks for every device 30 times a second. Pass back whatever it
+    /// returned. UI thread only: the buffers are not synchronised.</summary>
+    public Rgb[] ComposedFrameFor(IRgbDevice device, Rgb[]? into, List<EffectEngine.Channel>? channels)
+        => _lighting.ComposedFrame(device, into, channels);
 
     /// <summary>Restart every running channel so a layout change takes effect
     /// without the user having to re-pick anything.</summary>

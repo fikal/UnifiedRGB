@@ -20,14 +20,18 @@ Everything goes through **GitHub Releases**:
 .\release.ps1 -Version 1.0.19
 ```
 
-That stamps the csproj, runs the tests, builds the self-contained exe,
-verifies the built binary really is that version, commits + pushes the
-stamp, and creates the GitHub release with the exe and a `.sha256` asset
-(the sha also goes in the notes — the updater reads either). Edit the
-auto-generated notes on GitHub afterwards if you want prose.
+That rebuilds both Chroma shims with `native/chroma-shim/build.bat` (the
+same script CI uses), stamps the csproj and `docs/index.html`, runs the
+tests, builds the self-contained exe, verifies the built binary really is
+that version, signs it when `%APPDATA%\UnifiedRgb\signing.json` exists
+(Azure Artifact Signing, timestamped; the notes say whether the binary is
+signed), commits + pushes the stamp, and creates the GitHub release with
+the exe and a `.sha256` asset (the sha also goes in the notes — the
+updater reads either). Edit the auto-generated notes on GitHub afterwards
+if you want prose.
 
-Rules the script enforces: run from `main`, clean tree, tests green,
-built FileVersion == the version being released.
+Rules the script enforces: run from `main`, clean tree, both shims build,
+tests green, built FileVersion == the version being released.
 
 ## Docs and the website
 

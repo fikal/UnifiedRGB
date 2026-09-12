@@ -185,6 +185,8 @@ static class BackupSuite
         // ...whose keyboard the driver names differently. Same shape, so the
         // identity matches and the profile's device keys can be remapped.
         var localKeeb = new FakeDevice { Name = "K95 RGB", LedCount = 26 };
+        PreviewLeavesNoTrace(t, bundlePath);
+
         var preview = SetupBundle.Preview(bundlePath, new IRgbDevice[] { localKeeb });
         t.Check(preview.Ok, $"a bundle we just wrote previews cleanly ({preview.Problem})");
         t.Check(preview.Manifest != null && preview.Manifest.MachineName.Length > 0,
@@ -621,6 +623,31 @@ static class BackupSuite
         });
         thread.SetApartmentState(ApartmentState.STA); thread.Start(); thread.Join();
         if (failure != null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+
+    /// <summary>A preview is only LOOKING. Through ProfileStore.LoadJson it was
+    /// not: opening the import dialog against a corrupt profiles.json dropped a
+    /// `.corrupt-` copy beside it, and a momentary sharing violation registered the
+    /// path as unreadable, which disables saves to it for the rest of the session -
+    /// all before the user has agreed to anything, and possibly on a dialog they
+    /// then cancel.</summary>
+    static void PreviewLeavesNoTrace(Harness t, string bundlePath)
+    {
+        t.Section("a preview does not write, quarantine or disable anything");
+        CleanConfig();
+        string profiles = AppPaths.Config("profiles.json");
+        File.WriteAllText(profiles, "{ this is not a profile list");
+        int corruptBefore = Directory.GetFiles(AppPaths.ConfigDir, "profiles.json.corrupt-*").Length;
+
+        var preview = SetupBundle.Preview(bundlePath, Array.Empty<IRgbDevice>());
+        t.Check(preview.Ok, $"the bundle still previews over a corrupt profiles.json ({preview.Problem})");
+        t.Equal(corruptBefore, Directory.GetFiles(AppPaths.ConfigDir, "profiles.json.corrupt-*").Length,
+            "the preview left no .corrupt- copy beside the user's file");
+        t.Equal("{ this is not a profile list", File.ReadAllText(profiles),
+            "...and did not touch the file itself");
+        t.Check(!ProfileStore.IsUnreadable(profiles),
+            "...and did not disable saves to it for the session");
+        CleanConfig();
     }
 
     /// <summary>Leave the isolated config root as this suite found it. Other

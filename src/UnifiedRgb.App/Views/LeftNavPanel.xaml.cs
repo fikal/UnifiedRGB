@@ -28,5 +28,6 @@ public partial class LeftNavPanel : UserControl
         sibling.SelectedItem = null;      // pushes null through the shared binding first
         VM.SelectedLeftItem = li;         // then the clicked row wins
         VM.IsSettingsOpen = false;
+        VM.IsShowOpen = false;            // the Shows page is the other top-level page
     }
 }

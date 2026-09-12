@@ -6,6 +6,10 @@
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
     <Border x:Name="RootPanel" Background="#FF1B1D24" CornerRadius="12" Padding="22"
             BorderBrush="#FF2A2E38" BorderThickness="1">
+      <!-- The desk plus four cards is ~800 px tall; on a 768 px display the window
+           is capped to the work area (code-behind) and this viewer scrolls the
+           rest instead of leaving the last card off the bottom of the screen. -->
+      <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <StackPanel>
             <Grid Margin="0,0,0,4" MouseLeftButtonDown="Drag_Down">
                 <TextBlock Text="Your desk" FontSize="18" FontWeight="SemiBold"/>
@@ -97,5 +101,6 @@
                 </StackPanel>
             </Border>
         </StackPanel>
+      </ScrollViewer>
     </Border>
 </Window>

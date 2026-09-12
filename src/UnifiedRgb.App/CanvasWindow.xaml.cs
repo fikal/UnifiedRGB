@@ -51,6 +51,9 @@ public partial class CanvasWindow : Window
         _layout = vm.Canvas;
         InitializeComponent();
         DataContext = vm;
+        // NoResize + SizeToContent: Windows does not shrink a window to the work
+        // area, so on a short display the footer sat below the screen edge.
+        SourceInitialized += (_, _) => MaxHeight = Math.Max(400, SystemParameters.WorkArea.Height - 40);
 
         // Anything attached since the layout was last saved needs a place, or
         // it would be invisible here and unaffected by a desk effect. Saved
@@ -79,7 +82,16 @@ public partial class CanvasWindow : Window
         foreach (var (brush, dev, led) in _dots)
         {
             // The list is grouped by device, so the frame is fetched once each.
-            if (!ReferenceEquals(dev, device)) { device = dev; colors = _vm.ComposedFrameFor(dev); }
+            // Through the buffer-reusing overload: this runs for every device on
+            // the desk 30 times a second, and a frame clone plus a channel list
+            // per device per pull was most of what an idle app with this window
+            // open allocated. One buffer is enough for all of them because each
+            // group is finished with before the next begins.
+            if (!ReferenceEquals(dev, device))
+            {
+                device = dev;
+                colors = _frameBuf = _vm.ComposedFrameFor(dev, _frameBuf, _chanBuf);
+            }
             if (led >= colors.Length) continue;
             var c = colors[led];
             // The brush is mutated, not replaced: ten times a second across a
@@ -89,6 +101,10 @@ public partial class CanvasWindow : Window
                 Math.Max(c.R, (byte)24), Math.Max(c.G, (byte)24), Math.Max(c.B, (byte)28));
         }
     }
+
+    // Scratch for RefreshDots, reused across pulls. UI thread only.
+    Rgb[]? _frameBuf;
+    readonly List<EffectEngine.Channel> _chanBuf = new();
 
     void Redraw()
     {
@@ -513,7 +529,7 @@ public partial class CanvasWindow : Window
 
     void Drag_Down(object sender, MouseButtonEventArgs e)
     {
-        if (e.ButtonState == MouseButtonState.Pressed) DragMove();
+        if (e.ButtonState == MouseButtonState.Pressed) this.TryDragMove();
     }
 
     void Close_Click(object sender, RoutedEventArgs e) => Close();

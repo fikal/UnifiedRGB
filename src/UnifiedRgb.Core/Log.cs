@@ -6,7 +6,12 @@ namespace UnifiedRgb.Core;
 public static class Log
 {
     static readonly object _lock = new();
-    static readonly string PathName = AppPaths.Config("unifiedrgb.log");
+    // The diagnostic exe links this same class. It used to append to the
+    // app's file: run beside the running tray app, the two fought over the
+    // handle (see AppendShared) and its lines landed in the app's session.
+    static readonly string PathName = AppPaths.Config(
+        System.Reflection.Assembly.GetEntryAssembly()?.GetName().Name?.Contains("Diagnostic", StringComparison.OrdinalIgnoreCase) == true
+            ? "unifiedrgb-diag.log" : "unifiedrgb.log");
     static readonly Dictionary<string, (DateTime Last, int Suppressed)> _occasional = new();
 
     static Log()
@@ -90,7 +95,7 @@ public static class Log
             lock (_lock)
             {
                 string line = $"{DateTime.Now:MM-dd HH:mm:ss} {level} {message}{Environment.NewLine}";
-                File.AppendAllText(PathName, line);
+                AppendShared(line);
 
                 // Rotation used to be checked once, in the static constructor.
                 // This is a tray app that runs from Windows startup for weeks,
@@ -113,10 +118,21 @@ public static class Log
             var f = new FileInfo(PathName);
             if (!f.Exists || f.Length <= 1_000_000) return;
             File.Move(PathName, PathName + ".old", overwrite: true);
-            File.AppendAllText(PathName,
-                $"{DateTime.Now:MM-dd HH:mm:ss} ==== log rotated, the previous one is unifiedrgb.log.old"
+            AppendShared($"{DateTime.Now:MM-dd HH:mm:ss} ==== log rotated, the previous one is {Path.GetFileName(PathName)}.old"
                 + Environment.NewLine);
         }
         catch { }
+    }
+
+    /// <summary>Append with the file left readable AND writable by others.
+    /// File.AppendAllText opens with FileShare.Read: the support bundle's read of
+    /// the log (and anything else holding it open, an editor say) then fails a
+    /// write in the other process, and Write's catch drops the line silently.
+    /// UTF-8 without a BOM, as AppendAllText writes.</summary>
+    static void AppendShared(string text)
+    {
+        using var fs = new FileStream(PathName, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+        var bytes = System.Text.Encoding.UTF8.GetBytes(text);
+        fs.Write(bytes, 0, bytes.Length);
     }
 }

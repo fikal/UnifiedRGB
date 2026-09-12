@@ -96,6 +96,9 @@ public partial class ImportSetupWindow : Window
         // half-applied setup, and the whole window can be laid out from a
         // result that is already known.
         _afterApply = afterApply;
+        // The XAML cap (880) only helps on a tall display; on a 768 px laptop
+        // the Import/Cancel footer was off screen. Follow the work area.
+        SourceInitialized += (_, _) => MaxHeight = Math.Min(MaxHeight, Math.Max(400, SystemParameters.WorkArea.Height - 40));
         Preview = SetupBundle.Preview(bundlePath, devices);
         var local = (devices ?? Enumerable.Empty<IRgbDevice>())
             .Select(d => d.Name)

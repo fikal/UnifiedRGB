@@ -544,7 +544,7 @@ public partial class CalibrationWindow : Window
 
     void Drag_Down(object sender, MouseButtonEventArgs e)
     {
-        if (e.ButtonState == MouseButtonState.Pressed) DragMove();
+        if (e.ButtonState == MouseButtonState.Pressed) this.TryDragMove();
     }
 
     void Close_Click(object sender, RoutedEventArgs e) => Close();

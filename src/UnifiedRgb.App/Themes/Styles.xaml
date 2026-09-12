@@ -92,6 +92,14 @@
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+            <!-- A disabled control must LOOK disabled: the templates only react to
+                 hover/focus, so a greyed-out state never appeared (same for the
+                 Slider, TextBox and ComboBox styles below). -->
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.45"/>
+                </Trigger>
+            </Style.Triggers>
         </Style>
 
         <!-- Dark slider: accent-filled track + round thumb -->
@@ -191,6 +199,11 @@
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.45"/>
+                </Trigger>
+            </Style.Triggers>
         </Style>
 
         <!-- Slim dark scrollbars -->
@@ -554,6 +567,11 @@
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.45"/>
+                </Trigger>
+            </Style.Triggers>
         </Style>
 
         <!-- Dark, themed ComboBox -->
@@ -637,6 +655,11 @@
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.45"/>
+                </Trigger>
+            </Style.Triggers>
         </Style>
 
 </ResourceDictionary>

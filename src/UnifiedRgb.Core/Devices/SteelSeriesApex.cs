@@ -11,7 +11,7 @@ namespace UnifiedRgb.Core.Devices;
 /// Keys are HID usage codes from the shared Apex table. The direct/control
 /// interface is the 0xFFC0 usage-1 collection. SteelSeries GG must not be
 /// running (it fights for the device, like iCUE).</summary>
-public sealed class SteelSeriesApex : IRgbDevice, IKeyMappedDevice
+public sealed class SteelSeriesApex : IRgbDevice, IKeyMappedDevice, IHardwareModes
 {
     // Lazy: static initializers run in TEXTUAL order and Keys is declared
     // below — an eager initializer here kills the type (and detection).
@@ -251,16 +251,31 @@ public sealed class SteelSeriesApex : IRgbDevice, IKeyMappedDevice
         }
     }
 
-    public void Dispose()
+    /*-----------------------------------------------------*\
+    | Exit behaviour. The onboard-profile handback used to   |
+    | live in Dispose, unconditionally: every rescan flashed  |
+    | the keyboard to its saved profile and back, and the     |
+    | only choice the Settings page could offer was "keeps    |
+    | its last colors" - which Dispose then overrode. Through |
+    | IHardwareModes the user picks, and Dispose just closes. |
+    \*-----------------------------------------------------*/
+    public HardwareExitCaps ExitCaps => HardwareExitCaps.ReturnToHardware;
+    public IReadOnlyList<string> HardwareEffects => Array.Empty<string>();
+    public bool SetHardwareStatic(Rgb color) => false;      // no onboard static mode on this protocol
+    public bool SetHardwareEffect(string name, Rgb? color) => false;
+
+    public bool ReturnToHardware()
     {
-        // Hand lighting back to the keyboard's onboard profile.
-        try
+        lock (_writeLock)
         {
             var buf = new byte[_outputLen];
             buf[1] = PKT_ONBOARD;
-            _hid.Write(buf);
+            bool ok = _hid.Write(buf);
+            _needInit = true;   // the next frame re-enters direct mode
+            _last = null;       // and repaints rather than deduping against a frame the keyboard no longer shows
+            return ok;
         }
-        catch { }
-        _hid.Dispose();
     }
+
+    public void Dispose() => _hid.Dispose();
 }

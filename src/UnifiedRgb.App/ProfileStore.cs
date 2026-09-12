@@ -281,11 +281,29 @@ public sealed class ProfileStore
     /// briefly, and if it still fails the store runs on defaults with saves
     /// to that path disabled for this session - so the intact file on disk is
     /// never replaced by an empty one.</summary>
+    /// <summary>Read a JSON store WITHOUT any of LoadJson's consequences: no
+    /// `.corrupt-*` copy, no Unreadable entry, no log line, no retry. Null for any
+    /// reason at all.
+    ///
+    /// For a reader that is only LOOKING - the setup-bundle preview answers "what
+    /// would this change?" against the user's own files. Through LoadJson, opening
+    /// that preview could drop a `.corrupt-` copy beside their profiles, or turn a
+    /// momentary sharing violation from a sync client into saves being disabled for
+    /// the rest of the session - all from a dialog the user might then cancel.</summary>
+    internal static T? PeekJson<T>(string path) where T : class
+    {
+        try { return File.Exists(path) ? JsonSerializer.Deserialize<T>(File.ReadAllText(path)) : null; }
+        catch { return null; }
+    }
+
     internal static T? LoadJson<T>(string path, string what) where T : class
     {
         if (!File.Exists(path)) return null;
         string text;
-        try { text = ReadWithRetry(path); }
+        // Readable again (a reload after an import over a file that failed at
+        // startup): saves to it may resume, or every later save is skipped for
+        // the session with a stale "could not be read at startup" story.
+        try { text = ReadWithRetry(path); lock (Unreadable) Unreadable.Remove(path); }
         // Vanished between Exists and the read (sync client relocating the
         // folder, AV quarantine): nothing on disk to protect, so it is "no
         // file" - defaults, saves allowed - not "unreadable".
@@ -320,6 +338,11 @@ public sealed class ProfileStore
     /// <summary>Paths whose load failed for a non-corruption reason this
     /// session; Save skips them (see LoadJson).</summary>
     static readonly HashSet<string> Unreadable = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Whether saves to this path are off for the session because it
+    /// could not be read. For the harness, which pins that a PREVIEW never causes
+    /// it.</summary>
+    internal static bool IsUnreadable(string path) { lock (Unreadable) return Unreadable.Contains(path); }
 
     public void SaveProfiles() => TrySaveProfiles();
     internal bool TrySaveProfiles() => TrySave(ProfilesPath, Profiles, "profiles.json");
@@ -449,15 +472,27 @@ public sealed class ProfileStore
         return true;
     }
 
-    public void Delete(string name)
+    /// <summary>Remove a profile and write the file. False when the write did
+    /// not land: the profile goes back into the list (the file still has it)
+    /// and the startup pointer is left alone, so the caller can say so instead
+    /// of showing a deletion the next launch undoes.</summary>
+    public bool Delete(string name)
     {
+        int idx = Profiles.FindIndex(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (idx < 0) return true;
+        var removed = Profiles[idx];
         Profiles.RemoveAll(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (!TrySaveProfiles())
+        {
+            Profiles.Insert(Math.Min(idx, Profiles.Count), removed);
+            return false;
+        }
         if (Settings.StartupProfile?.Equals(name, StringComparison.OrdinalIgnoreCase) == true)
         {
             Settings.StartupProfile = null;
             SaveSettings();
         }
-        SaveProfiles();
+        return true;
     }
 
     /*-----------------------------------------------------*\

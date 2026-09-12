@@ -293,6 +293,6 @@ public partial class AppRulesWindow : Window
     {
         // A press that began on a rule row belongs to row-reorder, not window-move.
         if (_pressRule != null) return;
-        if (e.ButtonState == MouseButtonState.Pressed && e.OriginalSource is not TextBox) DragMove();
+        if (e.ButtonState == MouseButtonState.Pressed && e.OriginalSource is not TextBox) this.TryDragMove();
     }
 }

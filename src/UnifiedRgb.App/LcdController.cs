@@ -14,6 +14,14 @@ public sealed class LcdController : IDisposable
 {
     readonly ThermalrightLcd _lcd;
     byte[]? _latest;
+    // The buffer the stream thread is transmitting right now, and the lock that
+    // makes "read the latest and mark it in flight" one step with "pick a free
+    // buffer to render into". Without it the renderer chose by what was last
+    // PUBLISHED, not what was being SENT: two GIF ticks after a publish it
+    // overwrote the frame still going down a slow link, top of one frame and
+    // bottom of the next on the panel.
+    byte[]? _sending;
+    readonly object _pick = new();
     Thread? _streamThread;
     volatile bool _stop;
 
@@ -71,11 +79,13 @@ public sealed class LcdController : IDisposable
         byte[]? lastSent = null;
         while (!_stop)
         {
-            var frame = Volatile.Read(ref _latest);
+            byte[]? frame;
+            lock (_pick) { frame = _latest; _sending = frame; }
             if (frame == null) { Thread.Sleep(50); continue; }
             // Reference identity is enough: RenderDesign always renders into
-            // the buffer that is NOT published, so a new publish is a new
-            // reference (and the screen-off blank is one shared array).
+            // a buffer that is neither published nor in flight, so a new
+            // publish is a new reference (and the screen-off blank is one
+            // shared array).
             bool unchanged = ReferenceEquals(frame, lastSent);
             long t0 = Environment.TickCount64;
             try { _lcd.ShowFrame(frame); }
@@ -89,6 +99,7 @@ public sealed class LcdController : IDisposable
                 try { _lcd.Resync(); } catch { }
                 continue;   // lastSent untouched: a failed frame is retried promptly
             }
+            finally { Volatile.Write(ref _sending, null); }
             lastSent = frame;
             long ms = Environment.TickCount64 - t0;
             sent++; msSum += ms;
@@ -273,8 +284,18 @@ public sealed class LcdController : IDisposable
         _rtb.CopyPixels(bgra, LW * 4, 0);
 
         int dw = ThermalrightLcd.Width, dh = ThermalrightLcd.Height;
-        // Rotate 90 deg clockwise into the buffer the stream thread is not holding.
-        var outp = ReferenceEquals(Volatile.Read(ref _latest), _outA) ? _outB : _outA;
+        // Rotate 90 deg clockwise into a buffer that is neither published nor
+        // being sent. With a slow link both can be busy (the published frame is
+        // waiting, the previous one is still going out): then this tick keeps
+        // what is published rather than tearing the frame in flight.
+        byte[]? outp;
+        lock (_pick)
+        {
+            bool aBusy = ReferenceEquals(_latest, _outA) || ReferenceEquals(_sending, _outA);
+            bool bBusy = ReferenceEquals(_latest, _outB) || ReferenceEquals(_sending, _outB);
+            outp = !aBusy ? _outA : !bBusy ? _outB : null;
+            if (outp == null) return _latest ?? _blank;
+        }
         for (int dy = 0; dy < dh; dy++)
             for (int dx = 0; dx < dw; dx++)
             {

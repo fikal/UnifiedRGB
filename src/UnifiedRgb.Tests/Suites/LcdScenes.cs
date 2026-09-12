@@ -14,7 +14,7 @@ static class LcdScenesSuite
         Exception? failure = null;
         var thread = new Thread(() =>
         {
-            try { CheckScenes(t); ShowThatContainsItsOwnStarter(t); PausingAShow(t); ProfileShowIntegration(t); SnapshotPlayback(t); }
+            try { CheckScenes(t); ShowThatContainsItsOwnStarter(t); PausingAShow(t); PauseResumeTiming(t); DeletedProfileStep(t); ProfileShowIntegration(t); SnapshotPlayback(t); DragIsOneUndoStep(t); }
             catch (Exception ex) { failure = ex; }
         });
         thread.SetApartmentState(ApartmentState.STA);
@@ -129,6 +129,77 @@ static class LcdScenesSuite
         t.Equal(0, applied, "no step ran: every wait here is 30 seconds and nothing waited that long");
     }
 
+    /// <summary>Run this thread's dispatcher for a while, so DispatcherTimers
+    /// (the sequencer's) actually fire. The other sections never pump, which is
+    /// why every wait in them is 30 s: nothing was ever seen to fire.</summary>
+    static void Pump(int ms)
+    {
+        var frame = new System.Windows.Threading.DispatcherFrame();
+        var stop = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(ms) };
+        stop.Tick += (_, _) => { stop.Stop(); frame.Continue = false; };
+        stop.Start();
+        System.Windows.Threading.Dispatcher.PushFrame(frame);
+    }
+
+    /// <summary>The sequencer's real work - stop the clock on pause, resume with
+    /// the REMAINING delay rather than a fresh full one - observed firing.</summary>
+    static void PauseResumeTiming(Harness t)
+    {
+        t.Section("pause and resume timing");
+        int applied = 0;
+        var seq = new SceneSequence
+        {
+            Name = "Timed",
+            Actions = { new SceneAction { Profile = "A", DelaySeconds = 0.6 },
+                        new SceneAction { Profile = "B", DelaySeconds = 0.6 } },
+        };
+        var sequencer = new SceneSequencer(_ => applied++);
+        sequencer.Start(seq);
+        Pump(200);
+        t.Equal(0, applied, "timing: nothing fires before the delay");
+        sequencer.Paused = true;                      // ~400 ms of the 600 remain
+        Pump(800);
+        t.Equal(0, applied, "timing: nothing fires while paused, even past the due time");
+        sequencer.Paused = false;
+        Pump(150);
+        t.Equal(0, applied, "timing: resuming does not fire at once");
+        Pump(350);                                    // 500 ms since resume: past the remaining 400, short of a fresh 600
+        t.Equal(1, applied, "timing: after resume the step fires after the REMAINING delay, not a full one");
+        Pump(700);
+        t.Equal(2, applied, "timing: the next step follows at its own delay");
+        sequencer.Stop();
+    }
+
+    /// <summary>A step naming a profile that no longer exists does nothing -
+    /// but SAYS so now, in the log and the activity history, instead of
+    /// looking like a show stuck on the previous step.</summary>
+    static void DeletedProfileStep(Harness t)
+    {
+        t.Section("a step whose profile was deleted");
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var vm = new MainViewModel(startServices: false);
+        var lcd = (LcdController)RuntimeHelpers.GetUninitializedObject(typeof(LcdController));
+        lcd.Design = LcdDesign.Default();
+        typeof(LcdDesignerViewModel).GetField("_lcd", flags)!.SetValue(vm.Lcd, lcd);
+        try
+        {
+            vm.Profiles.Clear();
+            var store = vm.Lcd.Scenes;
+            store.Scenes.Clear(); store.Sequences.Clear();
+            vm.Lcd.InitScenes(); vm.Shows.Init();
+            var a = new Profile { Name = "A" };
+            vm.Profiles.Add(a);
+            vm.ApplyProfile(a);
+            UnifiedRgb.Core.Automation.ActivityLog.Shared.Clear();
+            typeof(ShowViewModel).GetMethod("ApplyStep", flags)!.Invoke(vm.Shows, new object[] { new SceneAction { Profile = "Gone" } });
+            var notes = UnifiedRgb.Core.Automation.ActivityLog.Shared.Snapshot();
+            t.Check(notes.Any(n => n.Kind == UnifiedRgb.Core.Automation.ActivityKind.Problem && n.Text.Contains("'Gone'")),
+                    "deleted step: the activity history names the missing profile");
+            t.Equal("A", vm.AppliedProfileName, "deleted step: the lighting stays on the previous step");
+        }
+        finally { vm.Dispose(); }
+    }
+
     static void ProfileShowIntegration(Harness t)
     {
         t.Section("show and profile integration");
@@ -227,6 +298,54 @@ static class LcdScenesSuite
             vm.SaveActiveProfile();
             t.Equal("Keeper", vm.CaptureState().AppliedProfileName,
                 "saving outside a show records that the lighting IS that profile");
+        }
+        finally { lcdField.SetValue(vm.Lcd, null); vm.Dispose(); }
+    }
+
+    /// <summary>A canvas drag is ONE undo step, driven through the view model's
+    /// own gesture API rather than the undo stack underneath it. The stack is
+    /// tested directly in the Undo suite; what that cannot catch is the view model
+    /// failing to CALL it - the editor can hold a perfectly good stack and still
+    /// push an entry per mouse-move, which is the bug a user would actually see.</summary>
+    static void DragIsOneUndoStep(Harness t)
+    {
+        t.Section("designer: a drag is one undo step, through the gesture API");
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var vm = new MainViewModel(startServices: false);
+        var lcd = (LcdController)RuntimeHelpers.GetUninitializedObject(typeof(LcdController));
+        lcd.Design = LcdDesign.Default();
+        var lcdField = typeof(LcdDesignerViewModel).GetField("_lcd", flags)!;
+        lcdField.SetValue(vm.Lcd, lcd);
+        try
+        {
+            var el = lcd.Design.Elements.FirstOrDefault();
+            if (el == null) { t.Check(false, "the default design has an element to drag"); return; }
+            var vmType = typeof(LcdDesignerViewModel);
+            // Hooked and baselined the way loading a design does it, so an edit
+            // reaches the editor and the first one has somewhere to step back to.
+            vmType.GetMethod("Hook", flags)!.Invoke(vm.Lcd, new object[] { el });
+            vmType.GetField("_baseline", flags)!
+                .SetValue(vm.Lcd, vmType.GetMethod("Snapshot", flags)!.Invoke(vm.Lcd, null));
+
+            double start = el.X;
+            // Mouse down, a dozen moves, mouse up: ONE drag.
+            vm.Lcd.BeginGesture();
+            for (int i = 1; i <= 12; i++) el.X = start + i;
+            vm.Lcd.EndGesture();
+            t.Equal(start + 12, el.X, "the drag moved the element");
+
+            vm.Lcd.Undo();
+            t.Equal(start, lcd.Design.Elements[0].X,
+                "one undo returns to where the drag began, not to the previous mouse-move");
+
+            // And a second drag is its own step rather than joining the first.
+            var el2 = lcd.Design.Elements[0];
+            vmType.GetMethod("Hook", flags)!.Invoke(vm.Lcd, new object[] { el2 });
+            vm.Lcd.BeginGesture();
+            for (int i = 1; i <= 5; i++) el2.X = start + 100 + i;
+            vm.Lcd.EndGesture();
+            vm.Lcd.Undo();
+            t.Equal(start, lcd.Design.Elements[0].X, "undoing the second drag leaves the first one undone");
         }
         finally { lcdField.SetValue(vm.Lcd, null); vm.Dispose(); }
     }

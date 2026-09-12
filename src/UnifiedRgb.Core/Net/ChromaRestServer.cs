@@ -43,6 +43,10 @@ public static class ChromaRestServer
             {
                 var l = new HttpListener();
                 l.Prefixes.Add($"http://localhost:{Port}/");
+            // HTTP.sys matches a prefix on the Host header: a Chroma host that
+            // spells the documented base URL as 127.0.0.1 got no answer at all.
+            // Loopback either way; nothing on the LAN is reached by this.
+            l.Prefixes.Add($"http://127.0.0.1:{Port}/");
                 l.Start();
                 _listener = l;
                 new Thread(() => Loop(l)) { IsBackground = true, Name = "chroma-rest" }.Start();

@@ -12,6 +12,11 @@ namespace UnifiedRgb.App;
 /// physical fans respond. Saves to hardware.json and rebuilds devices.</summary>
 public sealed class HeaderConfigDialog
 {
+    /// <summary>One limit for Test and Save. They disagreed (64 vs 256): a
+    /// 100-LED strip tested short, the user "fixed" the count to match, and the
+    /// saved device came out short for real.</summary>
+    const int MaxHeaderLeds = 256;
+
     static readonly string[] Orders = { "GRB", "RGB", "BGR", "RBG", "GBR", "BRG" };
 
     /// <summary>Builds the dialog on the shared Dialogs shell and shows it
@@ -71,7 +76,7 @@ public sealed class HeaderConfigDialog
             test.PreviewMouseLeftButtonDown += (_, e2) =>
             {
                 e2.Handled = true;
-                vm.TestHeader(h, int.TryParse(leds.Text, out int n) ? Math.Clamp(n, 1, 64) : 12);
+                vm.TestHeader(h, int.TryParse(leds.Text, out int n) ? Math.Clamp(n, 1, MaxHeaderLeds) : 12);
             };
 
             var strip = new CheckBox
@@ -101,7 +106,7 @@ public sealed class HeaderConfigDialog
                 {
                     Header = i + 1,
                     Name = string.IsNullOrWhiteSpace(name.Text) ? $"ARGB Header {i + 1}" : name.Text.Trim(),
-                    Leds = int.TryParse(leds.Text, out int n) ? Math.Clamp(n, 1, 256) : 8,
+                    Leds = int.TryParse(leds.Text, out int n) ? Math.Clamp(n, 1, MaxHeaderLeds) : 8,
                     ColorOrder = order.SelectedItem as string ?? "GRB",
                     Strip = strip.IsChecked == true,
                 });

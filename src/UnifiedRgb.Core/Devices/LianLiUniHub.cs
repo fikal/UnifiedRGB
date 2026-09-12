@@ -11,10 +11,17 @@ namespace UnifiedRgb.Core.Devices;
 /// LEDs power-limited to sum(R,B,G)<=460.
 ///
 /// The per-fan LED count is NOT reported by the hub (OpenRGB makes the user
-/// configure it too), so it's read from a hot-reloadable config file
+/// configure it too), so it is read from a config file
 /// (lianli-uni-layout.json) - innerPerFan/outerPerFan/fanCount, plus a `tune`
-/// flag that paints a per-fan color probe so the layout can be dialed in live
-/// without rebuilding.</summary>
+/// flag that paints a per-fan color probe so the layout can be dialed in
+/// without rebuilding.
+///
+/// The file is watched, but a change is NOT applied in place: LedCount and Zones
+/// are fixed for the life of a driver instance (the engine sizes its buffers when
+/// a channel starts, and the contract forbids moving them under it), so a changed
+/// file asks the app for a RESCAN and the fresh instance reads it. Editing the
+/// file still takes effect within a second or two; it just arrives as a new
+/// device rather than a resized one. `tune` needs the same rescan.</summary>
 public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IHardwareModes
 {
     const ushort VID = 0x0CF2, PID = 0xA102;
@@ -245,17 +252,23 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IH
             if (stamp.Year < 1700) return;                 // file absent
             string txt = File.ReadAllText(_cfg);
             if (txt == _cfgSeen) return;
-            LoadCfg();
-            BuildLayout();
-            // LedCount and Zones just moved. Anything caching a per-device plan
-            // against the old offsets has to be told, or a zone trim keeps
-            // being applied to the LEDs that zone used to cover.
-            Calibration.NoteLayoutChanged();
-            Log.Info("LianLiUni", $"layout reloaded: inner={_inner} outer={_outer} fans={_fans} tune={_tune}");
-            if (_tune) Probe();
+            _cfgSeen = txt;
+            // Not applied in place. LedCount and Zones are fixed for a device
+            // object's lifetime (the engine sized its frame buffers at channel
+            // start, the SDK server published the zone list, the preview cached
+            // the geometry): reloading here left fans 2-3 dark and the picker
+            // disagreeing with the hardware until the next rescan. So a changed
+            // file IS a rescan: the app is asked for one, and the fresh instance
+            // reads the file at open.
+            Log.Info("LianLiUni", "layout file changed - asking for a rescan");
+            LayoutFileChanged?.Invoke();
         }
         catch { }
     }
+
+    /// <summary>The optional layout file was edited. Raised on the hub's own
+    /// timer thread; the app answers with a rescan.</summary>
+    public static event Action? LayoutFileChanged;
 
     /// <summary>Refresh the cached per-group tach. Under the same lock as color
     /// writes so the feature-report read never overlaps an output-report burst.</summary>

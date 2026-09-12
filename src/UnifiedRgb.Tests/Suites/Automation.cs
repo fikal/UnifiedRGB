@@ -281,7 +281,12 @@ static class AutomationSuite
                 AppSwitchEnabled = false, ForegroundProcess = null, ForegroundIsSelf = false,
                 AppRules = null, Sensor = null, SensorUnavailable = SensorSources.CpuTemp,
             };
-            t.Check(AutomationDecision.Resolve(missing).Status.Contains("PawnIO"), "missing sensor status mentions PawnIO");
+            string status = AutomationDecision.Resolve(missing).Status;
+            // The reason follows the machine: PawnIO absent, or (PawnIO present,
+            // an Intel CPU say) simply no source for that reading here.
+            t.Check(status.Contains("no reading for")
+                    && (UnifiedRgb.Core.Native.PawnIO.IsAvailable ? status.Contains("provides it") : status.Contains("PawnIO")),
+                "missing sensor status says why");
             t.Equal(AutomationMode.Base, AutomationDecision.Resolve(missing).Mode, "missing sensor does not change the mode");
         }
 

@@ -75,6 +75,39 @@ public partial class App : Application
             try { UnifiedRgb.Core.Sensors.SensorHub.Shutdown(); } catch { }
         };
 
+        // A binding whose path stops resolving fails silently in a shipped build:
+        // the control goes blank and nothing anywhere says why. WPF does report
+        // it, on a trace source nobody listens to by default. Listen, and put
+        // each distinct message in the session log once, so a support bundle
+        // can answer "why is that box empty".
+        System.Diagnostics.PresentationTraceSources.Refresh();
+        System.Diagnostics.PresentationTraceSources.DataBindingSource.Switch.Level = System.Diagnostics.SourceLevels.Warning;
+        System.Diagnostics.PresentationTraceSources.DataBindingSource.Listeners.Add(new BindingTraceListener());
+
         base.OnStartup(e);
+    }
+
+    /// <summary>Routes WPF data-binding trace output into the app log, once per
+    /// distinct message, with a cap so a binding failing on every frame cannot
+    /// grow the set for the life of the process.</summary>
+    sealed class BindingTraceListener : System.Diagnostics.TraceListener
+    {
+        readonly HashSet<string> _seen = new();
+        public override void Write(string? message) { }
+        public override void WriteLine(string? message) { }
+        public override void TraceEvent(System.Diagnostics.TraceEventCache? eventCache, string source,
+            System.Diagnostics.TraceEventType eventType, int id, string? message)
+        {
+            if (string.IsNullOrEmpty(message)) return;
+            lock (_seen)
+            {
+                if (_seen.Count >= 200 || !_seen.Add(message)) return;
+            }
+            Log.Warn("binding", message);
+        }
+        public override void TraceEvent(System.Diagnostics.TraceEventCache? eventCache, string source,
+            System.Diagnostics.TraceEventType eventType, int id, string? format, params object?[]? args)
+            => TraceEvent(eventCache, source, eventType, id,
+                          args is { Length: > 0 } && format != null ? string.Format(format, args) : format);
     }
 }
