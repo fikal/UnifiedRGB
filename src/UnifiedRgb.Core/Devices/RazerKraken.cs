@@ -52,6 +52,11 @@ public sealed class RazerKraken : IRgbDevice
         _hid = hid; _outLen = outLen; Name = name;
     }
 
+    /// <summary>Product ids this driver owns. RazerHid asks, so the bundle does not
+    /// print "nothing here can drive this" directly above a line saying we just
+    /// drove it - the Kraken speaks a different protocol, not no protocol.</summary>
+    internal static bool Handles(ushort pid) => pid == PID_KRAKEN_V3_X;
+
     public static RazerKraken? TryOpen()
     {
         // The consumer collection, which is where the lighting commands land.

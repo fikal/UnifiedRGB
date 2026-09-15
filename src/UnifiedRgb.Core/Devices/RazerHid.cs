@@ -648,7 +648,9 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
                              ? $"   <- vendor collection, but a {c.FeatureLength - 1}-byte report; the driver speaks {FEATURE_LEN - 1}"
                              : ""));
         if (!list.Any(IsControlCollection))
-            sb.AppendLine("    -> no collection this driver can speak to; if it lights at all it is bridged through OpenRGB");
+            sb.AppendLine(RazerKraken.Handles(pid)
+                ? "    -> a different Razer protocol, driven natively by the Kraken driver"
+                : "    -> no collection this driver can speak to; if it lights at all it is bridged through OpenRGB");
         return sb.ToString();
     }
 

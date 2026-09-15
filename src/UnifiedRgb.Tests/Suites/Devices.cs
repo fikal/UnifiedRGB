@@ -629,8 +629,20 @@ static class DevicesSuite
             t.Check(text.Contains("feat=41"), "razer probe: every collection is listed, whatever its report size");
             t.Check(text.Contains("40-byte report") && text.Contains("speaks 90"),
                 "razer probe: a vendor collection of the wrong size says so, with both sizes");
-            t.Check(text.Contains("bridged through OpenRGB"),
-                "razer probe: and says where the lighting would have to come from instead");
+            // The Kraken has a native driver of its own now, so the bundle must not
+            // say nothing can drive it.
+            t.Check(text.Contains("driven natively by the Kraken driver"),
+                "razer probe: a device a SIBLING driver owns says so, not \"nothing can drive this\"");
+            t.Check(!text.Contains("bridged through OpenRGB"),
+                "razer probe: ...and is not blamed on a bridge it no longer needs");
+
+            // A Razer device nothing owns still points at the bridge.
+            var unknown = new[]
+            {
+                new UnifiedRgb.Core.Native.HidNative.HidInfo("p1", 0xFFA0, 0x0001, 0, 0, 0x1532, 0x0999, 41, "Razer Something"),
+            };
+            t.Check(RazerHid.DescribeCollections(0x0999, unknown).Contains("bridged through OpenRGB"),
+                "razer probe: an unowned Razer device still names the bridge");
             t.Check(!text.Contains("<- control collection"), "razer probe: none of these is a control collection");
 
             // A device the driver CAN speak to is marked, and gets no such warning.
