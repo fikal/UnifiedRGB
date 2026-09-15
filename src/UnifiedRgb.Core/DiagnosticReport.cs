@@ -160,6 +160,13 @@ public static class DiagnosticReport
                     {
                         var d = orgb.GetControllerData(i);
                         Say($"  [{i}] {d.Name}  type={d.Type} leds={Math.Max(d.LedCount, d.Colors.Length)}  loc={d.Location}");
+                        // The mode is the answer to "it says connected and nothing
+                        // lights": a write only sticks in the direct/custom mode, and
+                        // a device sitting in an onboard effect takes every frame and
+                        // shows none of it.
+                        string active = d.ActiveModeName;
+                        Say($"      mode: {(active.Length > 0 ? active : $"#{d.ActiveMode} (not in the server's own list)")}"
+                          + $"   of: {(d.ModeNames.Count > 0 ? string.Join(", ", d.ModeNames) : "(none reported)")}");
                     }
                     catch (Exception ex) { Say($"  [{i}] (read failed: {ex.Message})"); }
                 }

@@ -42,7 +42,20 @@ public sealed class OpenRgbClient : IDisposable
     public sealed record DeviceInfo(
         int Index, int Type, string Name, string Vendor, string Description,
         string Version, string Serial, string Location,
-        IReadOnlyList<ZoneInfo> Zones, int LedCount, uint[] Colors);
+        IReadOnlyList<ZoneInfo> Zones, int LedCount, uint[] Colors,
+        // Optional so the harness can build a device without spelling out a mode
+        // list it is not testing.
+        IReadOnlyList<string>? Modes = null, int ActiveMode = -1)
+    {
+        /// <summary>Every mode the server reports, in its own order. Empty when
+        /// the caller built this without one.</summary>
+        public IReadOnlyList<string> ModeNames => Modes ?? Array.Empty<string>();
+
+        /// <summary>The mode the device is in, by name, or "" when the server
+        /// reported an index outside its own list.</summary>
+        public string ActiveModeName
+            => ActiveMode >= 0 && ActiveMode < ModeNames.Count ? ModeNames[ActiveMode] : "";
+    }
 
     /// <summary>Connect and handshake. Throws on failure.</summary>
     public static OpenRgbClient Connect(string host = "127.0.0.1", int port = 6742, int timeoutMs = 2000)
@@ -237,11 +250,17 @@ public sealed class OpenRgbClient : IDisposable
         string serial = ReadStr(p, ref o);
         string location = ReadStr(p, ref o);
 
+        // Modes were read and thrown away. They are the first thing anyone
+        // needs when a bridged device reports connected and does not light: an
+        // LED write only sticks while the device is in its direct/custom mode,
+        // and without the name of the mode it is ACTUALLY in there is no way to
+        // tell "ignoring us" from "taking the write and showing nothing".
         int numModes = ReadU16(p, ref o);
-        _ = ReadI32(p, ref o);                               // active mode
+        int activeMode = ReadI32(p, ref o);
+        var modes = new List<string>(numModes);
         for (int m = 0; m < numModes; m++)
         {
-            _ = ReadStr(p, ref o);                           // mode name
+            modes.Add(ReadStr(p, ref o).Trim());
             o += 4 * 9;                                      // value..color_mode (9 u32/i32 fields)
             int nc = ReadU16(p, ref o);
             o += nc * 4;
@@ -284,7 +303,8 @@ public sealed class OpenRgbClient : IDisposable
         for (int i = 0; i < numColors; i++) colors[i] = (uint)ReadI32(p, ref o);
 
         return new DeviceInfo(index, type, name.Trim(), vendor.Trim(), description.Trim(),
-                              version.Trim(), serial.Trim(), location.Trim(), zones, numLeds, colors);
+                              version.Trim(), serial.Trim(), location.Trim(), zones, numLeds, colors,
+                              modes, activeMode);
     }
 
     static int ReadI32(byte[] p, ref int o) { int v = BitConverter.ToInt32(p, o); o += 4; return v; }

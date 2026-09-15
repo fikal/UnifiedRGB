@@ -198,6 +198,12 @@ public sealed class OpenRgbServer : IDisposable
     /// log. The wait matters at shutdown: the host tears down lighting right
     /// after this, and a client thread still in PushExternal would be painting
     /// onto devices that are being disposed underneath it.</summary>
+    int _customModeRequests;
+
+    /// <summary>How many times a client has asked to be put in the custom mode.
+    /// For the harness; see the handler.</summary>
+    internal int CustomModeRequests => System.Threading.Volatile.Read(ref _customModeRequests);
+
     public void Stop()
     {
         _stopping = true;
@@ -435,6 +441,11 @@ public sealed class OpenRgbServer : IDisposable
             case OpenRgbProtocol.PktSetCustomMode:
                 // We are always in the one mode we advertise. Clients send this
                 // before writing colors, and expect no reply.
+                //
+                // Counted only so the harness can see that a client re-asserted the
+                // mode rather than asking once at detection - the thing a device
+                // held by vendor software needs and the bridge used not to do.
+                System.Threading.Interlocked.Increment(ref _customModeRequests);
                 break;
 
             case OpenRgbProtocol.PktResizeZone:

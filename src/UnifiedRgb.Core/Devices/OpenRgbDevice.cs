@@ -62,8 +62,7 @@ public sealed class OpenRgbDevice : IRgbDevice, IZoneWritable
 
         (LedPositions, PreviewAspect) = BuildPositions(info);
 
-        try { client.SetCustomMode(_index); }
-        catch (Exception ex) { Log.Warn("openrgb", $"{Name}: custom mode failed: {ex.Message}"); }
+        AssertCustomMode();
     }
 
     /// <summary>Positions from matrix zones when the server provides them
@@ -110,9 +109,33 @@ public sealed class OpenRgbDevice : IRgbDevice, IZoneWritable
         return (pos, aspect);
     }
 
+    /// <summary>Ask the server to put the device in its direct/custom mode.
+    ///
+    /// An LED write only sticks while the device is in that mode - anything else
+    /// is an onboard effect, which takes every frame and shows none of it. This
+    /// used to run ONCE, in the constructor, so a device that never took the mode
+    /// (vendor software holding it at detection) or later reverted (it woke, the
+    /// vendor service reclaimed it, someone opened Synapse) reported connected and
+    /// stayed on its own lighting for the rest of the session with nothing said.</summary>
+    void AssertCustomMode()
+    {
+        try { _client.SetCustomMode(_index); }
+        catch (Exception ex) { Log.Warn("openrgb", $"{Name}: custom mode failed: {ex.Message}"); }
+    }
+
     /// <summary>Forget the last frame so the next one is written even if it is
-    /// identical (the must-land path and any mode change).</summary>
-    public void InvalidateCache() { lock (_writeLock) _last = null; }
+    /// identical (the must-land path and any mode change).
+    ///
+    /// The mode is re-asserted with it. This is the ONE call every caller that has
+    /// decided a write must land already makes - a static apply, a profile, the
+    /// exit path - so the mode is re-sent exactly when somebody is asking for a
+    /// change and never on a streaming effect frame, which would put a packet on
+    /// the wire sixty times a second to say something that has not changed.</summary>
+    public void InvalidateCache()
+    {
+        lock (_writeLock) _last = null;
+        AssertCustomMode();
+    }
 
     /// <summary>The server's LED protocol is one-way: a frame is written to
     /// the socket and there is no reply to say the remote device took it, or

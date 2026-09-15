@@ -26,6 +26,69 @@ static class OpenRgbBridgeSuite
         StopWaitsForCallbacks(t);
         StopGivesUpAfterBudget(t);
         StopFromInsideCallbackReturns(t);
+        ModesAreReadAndTheModeIsReAsserted(t);
+    }
+
+    /*---------------- modes: the thing a silent bridged device needs ----------------*/
+    static void ModesAreReadAndTheModeIsReAsserted(Harness t)
+    {
+        t.Section("bridged devices: the mode is read, and re-asserted when a write must land");
+        var host = new StubOrgbHost();
+        host.Add(new FakeZonedDevice { Name = "Headset", Zones2 = new[] { ("Device", 1) } });
+        using var server = new OpenRgbServer(host);
+        int port = server.Start(listenOnLan: false, port: FreePort());
+        t.Check(port > 0, "orgb modes: server started");
+        using var client = OpenRgbClient.Connect("127.0.0.1", port);
+
+        // The mode list was parsed and thrown away. It is the first thing anyone
+        // needs when a bridged device reports connected and does not light: an LED
+        // write only sticks in the direct/custom mode, and without the name of the
+        // mode it is ACTUALLY in there is no telling "ignoring us" from "took the
+        // write and showed nothing". Round-tripped against our own encoder, which
+        // advertises exactly one mode and says it is active.
+        var info = client.GetControllerData(0);
+        t.Check(info.ModeNames.Count == 1 && info.ModeNames[0] == "Direct",
+            "orgb modes: the server's mode list survives the parse");
+        t.Equal(0, info.ActiveMode, "orgb modes: and which one is active");
+        t.Equal("Direct", info.ActiveModeName, "orgb modes: resolved to a name for the report");
+
+        // An index the server never listed must not throw or invent a name.
+        t.Equal("", (info with { ActiveMode = 7 }).ActiveModeName, "orgb modes: an out-of-range index is no name");
+        t.Equal("", (info with { Modes = null }).ActiveModeName, "orgb modes: no list is no name");
+
+        // The mode used to be asked for ONCE, in the constructor. A device held by
+        // vendor software at that moment, or one that reverted later, then took
+        // every frame and showed none of it for the rest of the session.
+        // Every one of these packets is fire-and-forget - the protocol sends no
+        // reply - so the count is read by WAITING for it rather than straight after
+        // the call, which races the server thread.
+        bool Reached(int n)
+        {
+            for (long end = Environment.TickCount64 + 3000; Environment.TickCount64 < end; Thread.Sleep(10))
+                if (server.CustomModeRequests >= n) return true;
+            return false;
+        }
+
+        int afterCtor = server.CustomModeRequests;
+        using var dev = new OpenRgbDevice(client, info);
+        t.Check(Reached(afterCtor + 1), "orgb modes: detection asks for the custom mode");
+
+        int beforeInvalidate = server.CustomModeRequests;
+        dev.InvalidateCache();
+        t.Check(Reached(beforeInvalidate + 1),
+            "orgb modes: a caller that needs the write to LAND re-asserts the mode");
+
+        // ...and a streaming frame does NOT, or an effect would put a packet on
+        // the wire sixty times a second to say what has not changed. The frames are
+        // drained first: a LED write and a mode request travel the same socket in
+        // order, so once the second frame has been served, any mode packet the
+        // frames had sent would already have been counted.
+        int beforeFrames = server.CustomModeRequests;
+        dev.SetColors(new[] { new Rgb(1, 2, 3) });
+        dev.SetColors(new[] { new Rgb(4, 5, 6) });
+        t.Check(host.WaitForWrite("Headset"), "orgb modes: the frames reached the server");
+        t.Equal(beforeFrames, server.CustomModeRequests, "orgb modes: ordinary frames do not re-assert it");
+        server.Stop();
     }
 
     /*---------------- (a) the own-port registry ----------------*/
