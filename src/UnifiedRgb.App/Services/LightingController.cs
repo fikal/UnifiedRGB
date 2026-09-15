@@ -67,6 +67,20 @@ public sealed class LightingController
     /// <summary>The device's stored static frame (created black on first use).</summary>
     public Rgb[] FrameFor(IRgbDevice d) => _frames.GetOrAdd(d, static k => new Rgb[k.LedCount]);
 
+    readonly System.Collections.Concurrent.ConcurrentDictionary<IRgbDevice, bool> _written = new();
+
+    /// <summary>Whether this session has ever actually written to a device.
+    ///
+    /// FrameFor hands back a ZEROED array for a device nothing has set, and zero is
+    /// black - so a device we have never touched reads as "showing black" in the
+    /// bundle, which is not what it is showing at all. It is whatever its firmware
+    /// or its vendor software left on it. The two are worth telling apart when
+    /// somebody is looking at a report trying to work out why a device looks
+    /// wrong.</summary>
+    public bool HasBeenWritten(IRgbDevice d) => _written.ContainsKey(d);
+
+    void NoteWritten(IRgbDevice d) => _written[d] = true;
+
     /// <summary>An SDK client gave a device back. The next client starts from
     /// the user's lighting again instead of inheriting the last one's pixels.</summary>
     public void ForgetExternal(IRgbDevice dev) => _external.TryRemove(dev, out _);
@@ -121,6 +135,7 @@ public sealed class LightingController
     /// a bounded deadline before saying so loudly.</summary>
     public void PushFrame(IRgbDevice dev)
     {
+        NoteWritten(dev);
         var snap = (Rgb[])FrameFor(dev).Clone();
         Engine.InvalidateBase(dev);   // running non-zone channels re-snapshot the edited statics
         Applier.Post(LaneOf(dev), dev, () =>
@@ -152,6 +167,7 @@ public sealed class LightingController
     /// per (device, offset) so zones coalesce independently.</summary>
     public void PushZone(IZoneWritable zw, IRgbDevice dev, int off, int count)
     {
+        NoteWritten(dev);
         var frame = FrameFor(dev);
         var slice = new Rgb[count];
         for (int i = 0; i < count; i++) slice[i] = off + i < frame.Length ? frame[off + i] : Rgb.Black;
@@ -186,6 +202,7 @@ public sealed class LightingController
     /// slider.</summary>
     public void PushExternalFrame(IRgbDevice dev, int offset, IReadOnlyList<Rgb> colors)
     {
+        NoteWritten(dev);
         int count = Math.Min(colors.Count, Math.Max(0, dev.LedCount - offset));
         if (count <= 0) return;
 

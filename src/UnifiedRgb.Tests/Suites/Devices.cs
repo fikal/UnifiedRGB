@@ -536,6 +536,79 @@ static class DevicesSuite
             t.Check(RazerHid.ResolveCount(0x0FFF, 19) == (19, "probed") && RazerHid.ResolveCount(0x0FFF, 999).Count == RazerHid.MaxLeds, "razer pad: probe wins over the guess and is capped");
         }
 
+        t.Section("RazerKraken: the mode is part of delivery, and it is re-armed");
+        {
+            // Every byte here was confirmed against the real headset on two machines.
+            // The mode command is what OpenRGB never successfully landed: it reported
+            // the device in Direct and accepted every colour while the headset stayed
+            // on its onboard effect.
+            const byte REPORT = 0x40, CMD_MODE = 0x01, CMD_COLOR = 0x03;
+            var hid = new FakeHid();
+            using var kraken = new RazerKraken(hid, 37, "Razer Kraken V3 X");
+            t.Equal(1, kraken.LedCount, "kraken: one LED");
+
+            t.Check(kraken.SetColors(new[] { Rgb.Red }), "kraken: the first frame lands");
+            t.Equal(2, hid.Writes.Count, "kraken: mode first, then the colour");
+            var mode = hid.Writes[0];
+            t.Check(mode[0] == REPORT && mode[1] == CMD_MODE && mode[3] == 0x0F && mode[4] == 0x08,
+                "kraken: 40 01 00 0F 08 - direct mode");
+            t.Equal(37, mode.Length, "kraken: padded to the collection's report length");
+            var col = hid.Writes[1];
+            t.Check(col[0] == REPORT && col[1] == CMD_COLOR && col[3] == 255 && col[4] == 0 && col[5] == 0,
+                "kraken: 40 03 00 RR GG BB - the colour");
+
+            // The mode is sent ONCE while it keeps working.
+            hid.Writes.Clear();
+            t.Check(kraken.SetColors(new[] { Rgb.Green }), "kraken: a second colour lands");
+            t.Equal(1, hid.Writes.Count, "kraken: ...without re-sending the mode every frame");
+
+            // A skipped identical frame is a SUCCESS: the headset already shows it.
+            hid.Writes.Clear();
+            t.Check(kraken.SetColors(new[] { Rgb.Green }) && hid.Writes.Count == 0,
+                "kraken: an identical frame is deduped and still reports success");
+
+            // InvalidateCache is what a must-land caller uses, and it re-arms the
+            // mode - the case that matters is vendor software holding the headset at
+            // detection, which is when the mode was most likely to have failed.
+            hid.Writes.Clear();
+            kraken.InvalidateCache();
+            t.Check(kraken.SetColors(new[] { Rgb.Green }), "kraken: the forced frame lands");
+            t.Equal(2, hid.Writes.Count, "kraken: InvalidateCache re-sends the mode AND the colour");
+            t.Equal(CMD_MODE, hid.Writes[0][1], "kraken: ...mode first again");
+        }
+        {
+            // A refused MODE refuses the frame. Reporting success there would be a
+            // lie a must-land caller cannot see through: the colour is accepted at
+            // the HID layer and changes nothing on the user's head.
+            var hid = new FakeHid { Accept = (_, p) => p[1] != 0x01 };   // refuse only the mode
+            using var kraken = new RazerKraken(hid, 37, "Refusing mode");
+            t.Check(!kraken.SetColors(new[] { Rgb.Red }), "kraken: a refused mode refuses the frame");
+            t.Check(!hid.Writes.Any(p => p[1] == 0x03), "kraken: ...and no colour goes out before the mode lands");
+            hid.Accept = null;
+            hid.Writes.Clear();
+            t.Check(kraken.SetColors(new[] { Rgb.Red }), "kraken: it recovers once the mode is accepted");
+            t.Equal(2, hid.Writes.Count, "kraken: recovery sends the mode then the colour");
+        }
+        {
+            // A refused COLOUR is not cached, and re-arms the mode: whatever took the
+            // headset will have put it back on its own lighting.
+            var hid = new FakeHid { Accept = (_, p) => p[1] != 0x03 };   // refuse only colours
+            using var kraken = new RazerKraken(hid, 37, "Refusing colour");
+            t.Check(!kraken.SetColors(new[] { Rgb.Blue }), "kraken: a refused colour refuses the frame");
+            hid.Accept = null;
+            hid.Writes.Clear();
+            t.Check(kraken.SetColors(new[] { Rgb.Blue }), "kraken: the same colour is retried, not deduped away");
+            t.Equal(2, hid.Writes.Count, "kraken: ...and the mode is re-asserted with it");
+        }
+        {
+            var hid = new FakeHid();
+            var kraken = new RazerKraken(hid, 37, "Disposed");
+            t.Check(!kraken.SetColors(Array.Empty<Rgb>()), "kraken: an empty frame is not a delivery");
+            kraken.Dispose();
+            t.Check(!kraken.SetColors(new[] { Rgb.Red }), "kraken: a write after Dispose refuses quietly");
+            t.Check(hid.IsDisposed, "kraken: Dispose closes the handle");
+        }
+
         t.Section("RazerHid: the bundle reports a Razer device it CANNOT drive");
         {
             // Chris's Kraken V3 X, as Windows describes it. The probe used to list

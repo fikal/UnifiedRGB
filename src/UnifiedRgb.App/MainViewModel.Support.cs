@@ -103,7 +103,11 @@ public sealed partial class MainViewModel
                     + $" speed {c.Speed:0.##}{(c.Canvas ? " desk-mapped" : "")}"));
             var frame = _lighting.ComposedFrame(d);
             string first = frame.Length > 0 ? frame[0].ToHex() : "------";
-            Say($"  {d.Name} ({d.Vendor}, {d.Type}, {d.LedCount} LEDs): {what}; led0 #{first}");
+            // "#000000" on a device nothing has written to is OUR zeroed default,
+            // not the colour on the user's desk - say which, or a report reads as
+            // "the app blacked my headset" when the app never touched it.
+            string note = _lighting.HasBeenWritten(d) ? "" : "   (nothing written to it yet; this is our default, not what it is showing)";
+            Say($"  {d.Name} ({d.Vendor}, {d.Type}, {d.LedCount} LEDs): {what}; led0 #{first}{note}");
         }
         Say();
 

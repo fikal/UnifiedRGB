@@ -37,6 +37,7 @@ public sealed class DeviceManager : IDisposable
         LogitechG403.TryOpen,
         MsiGpu.TryOpen,
         SayoDevice.TryOpen,
+        RazerKraken.TryOpen,
         LianLiWireless.TryOpen,
         LianLiUniHub.TryOpen,
     };

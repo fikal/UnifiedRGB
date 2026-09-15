@@ -30,6 +30,11 @@ public static class OpenRgbLink
         (0x1532, 0x00AA),          // Razer Basilisk V3 Pro (wired)
         (0x1532, 0x00AB),          // Razer Basilisk V3 Pro (HyperSpeed dongle)
         (0x1532, 0x00CF),          // Razer HyperFlux V2 pad (paired mouse behind it)
+        // Kraken V3 X: ours now, and it MUST be skipped here rather than left to
+        // both. OpenRGB reports it in Direct and accepts colours the headset never
+        // shows, so a bridged copy beside the native one is a second entry in the
+        // list that looks identical and does nothing.
+        (0x1532, 0x0537),          // Razer Kraken V3 X
     };
 
     /// <summary>Names of remote devices skipped during the last detect —
