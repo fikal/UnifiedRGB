@@ -629,21 +629,58 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
     | Diagnostics probe (read-only)                         |
     \*-----------------------------------------------------*/
 
-    /// <summary>For the support bundle: every Razer control collection, asked
-    /// for firmware/serial/mode/DPI/battery on each transaction id. Reads
-    /// only. This is what tells us how a pad or dongle routes commands.</summary>
+    /// <summary>One product's collections, as the bundle prints them: what each one
+    /// is, and - when none of them carries the protocol this driver speaks - why it
+    /// is going to be somebody else's job to light it.
+    ///
+    /// Separated from the enumeration so the harness can hand it a device shape
+    /// without needing that device plugged in.</summary>
+    internal static string DescribeCollections(ushort pid, IEnumerable<HidNative.HidInfo> collections)
+    {
+        var sb = new StringBuilder();
+        var list = collections.ToList();
+        string product = list.Select(h => h.Product).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n)) ?? "";
+        sb.AppendLine($"{VID:X4}:{pid:X4}{(product.Length > 0 ? "  " + product : "")}");
+        foreach (var c in list.OrderBy(h => h.UsagePage).ThenBy(h => h.Usage))
+            sb.AppendLine($"    usage 0x{c.UsagePage:X4}/0x{c.Usage:X4}  in={c.InputLength} out={c.OutputLength} feat={c.FeatureLength}"
+                        + (IsControlCollection(c) ? "   <- control collection"
+                           : c.UsagePage >= 0xFF00 && c.FeatureLength > 0
+                             ? $"   <- vendor collection, but a {c.FeatureLength - 1}-byte report; the driver speaks {FEATURE_LEN - 1}"
+                             : ""));
+        if (!list.Any(IsControlCollection))
+            sb.AppendLine("    -> no collection this driver can speak to; if it lights at all it is bridged through OpenRGB");
+        return sb.ToString();
+    }
+
+    /// <summary>For the support bundle: EVERY Razer collection this machine has,
+    /// and for the ones we can actually drive, firmware/serial/mode/DPI/battery on
+    /// each transaction id. Reads only.
+    ///
+    /// Every collection, not just the drivable ones. This used to list only
+    /// collections carrying the 90-byte report the driver speaks, so a machine with
+    /// a Razer device of any other shape - a Kraken headset, whose vendor collection
+    /// carries a 40-byte feature report - printed "no Razer control collections".
+    /// That reads as "no Razer hardware here" and sent a real investigation down the
+    /// wrong path for an afternoon. A device we cannot drive is a fact worth
+    /// reporting, with the reason, so the next person can tell "not present" from
+    /// "present, different protocol, bridged through OpenRGB instead".</summary>
     public static string ProbeAll()
     {
         var sb = new StringBuilder();
         List<HidNative.HidInfo> all;
         try { all = HidNative.FindAll(); }
         catch (Exception ex) { return $"(HID enumeration failed: {ex.Message})"; }
-        var seen = new HashSet<ushort>();
-        foreach (var iface in all.Where(IsControlCollection).OrderBy(h => h.ProductId))
+
+        // Grouped by product: one Razer device is several collections, and what
+        // matters is which of them (if any) carries the control protocol.
+        var byPid = all.Where(h => h.VendorId == VID)
+                       .GroupBy(h => h.ProductId)
+                       .OrderBy(g => g.Key);
+        foreach (var group in byPid)
         {
-            if (!seen.Add(iface.ProductId)) continue;
-            string product = string.IsNullOrWhiteSpace(iface.Product) ? "" : $"  {iface.Product}";
-            sb.AppendLine($"{VID:X4}:{iface.ProductId:X4}{product}  (usage 0x{iface.UsagePage:X4}/0x{iface.Usage:X4})");
+            var iface = group.FirstOrDefault(IsControlCollection);
+            sb.Append(DescribeCollections(group.Key, group));
+            if (iface == null) continue;
             IHidTransport hid;
             try { hid = HidNative.Open(iface.Path); }
             catch (Exception ex) { sb.AppendLine($"    open failed: {ex.Message}"); continue; }
@@ -676,7 +713,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
                 }
             }
         }
-        return sb.Length == 0 ? "(no Razer control collections)" : sb.ToString().TrimEnd();
+        return sb.Length == 0 ? "(no Razer devices)" : sb.ToString().TrimEnd();
     }
 
     /*-----------------------------------------------------*\

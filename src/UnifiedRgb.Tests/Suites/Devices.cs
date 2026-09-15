@@ -536,6 +536,41 @@ static class DevicesSuite
             t.Check(RazerHid.ResolveCount(0x0FFF, 19) == (19, "probed") && RazerHid.ResolveCount(0x0FFF, 999).Count == RazerHid.MaxLeds, "razer pad: probe wins over the guess and is capped");
         }
 
+        t.Section("RazerHid: the bundle reports a Razer device it CANNOT drive");
+        {
+            // Chris's Kraken V3 X, as Windows describes it. The probe used to list
+            // only collections carrying the 90-byte report this driver speaks, so a
+            // machine with this headset printed "no Razer control collections" - which
+            // reads as "no Razer hardware here" and sent a real investigation down the
+            // wrong path for an afternoon. Present-but-undrivable is a fact worth
+            // reporting, with the reason.
+            var kraken = new[]
+            {
+                new UnifiedRgb.Core.Native.HidNative.HidInfo("p1", 0x000C, 0x0001, 37, 33, 0x1532, 0x0537, 0,  "Razer Kraken V3 X"),
+                new UnifiedRgb.Core.Native.HidNative.HidInfo("p2", 0x000B, 0x0005, 2,  2,  0x1532, 0x0537, 0,  "Razer Kraken V3 X"),
+                new UnifiedRgb.Core.Native.HidNative.HidInfo("p3", 0xFFA0, 0x0001, 0,  0,  0x1532, 0x0537, 41, "Razer Kraken V3 X"),
+            };
+            string text = RazerHid.DescribeCollections(0x0537, kraken);
+            t.Check(text.Contains("1532:0537") && text.Contains("Razer Kraken V3 X"),
+                "razer probe: the device is named even though nothing here can drive it");
+            t.Check(text.Contains("feat=41"), "razer probe: every collection is listed, whatever its report size");
+            t.Check(text.Contains("40-byte report") && text.Contains("speaks 90"),
+                "razer probe: a vendor collection of the wrong size says so, with both sizes");
+            t.Check(text.Contains("bridged through OpenRGB"),
+                "razer probe: and says where the lighting would have to come from instead");
+            t.Check(!text.Contains("<- control collection"), "razer probe: none of these is a control collection");
+
+            // A device the driver CAN speak to is marked, and gets no such warning.
+            var mouse = new[]
+            {
+                new UnifiedRgb.Core.Native.HidNative.HidInfo("p1", 0x0001, 0x0002, 0, 8, 0x1532, 0x0043, 0,  "Razer DeathAdder"),
+                new UnifiedRgb.Core.Native.HidNative.HidInfo("p2", 0xFF00, 0x0002, 0, 0, 0x1532, 0x0043, 91, "Razer DeathAdder"),
+            };
+            string ok = RazerHid.DescribeCollections(0x0043, mouse);
+            t.Check(ok.Contains("<- control collection"), "razer probe: a 90-byte vendor collection is marked as the control one");
+            t.Check(!ok.Contains("bridged through OpenRGB"), "razer probe: ...and is not written off as undrivable");
+        }
+
         t.Section("RazerHid: a pad configured as having no lights at all");
         {
             // Some pads advertise a strip the hardware does not have: the frame probe
