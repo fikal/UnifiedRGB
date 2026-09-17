@@ -372,6 +372,9 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
         lock (_writeLock) { _last = null; _lastSendTick = 0; _nextRetryTick = 0; _failures = 0; }
     }
 
+    // ~the first minute of failures stays at the quick cadence, then backs off.
+    const int QuickRetryMs = 2000, SlowRetryMs = 30_000, QuickRetries = 30;
+
     public bool SetColors(IReadOnlyList<Rgb> colors)
     {
         // No color to send is not a delivery.
@@ -395,7 +398,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
             if (!changed && now - _lastSendTick < 5000) return true;
 
             // A sleeping wireless mouse fails every write; don't hammer the
-            // dongle at frame rate - retry every 2 s (the engine keepalive).
+            // dongle at frame rate - retry on a clock.
             // Backing off is knowingly NOT delivering: say false, or a caller
             // that must land this frame would stop at the one moment the mouse
             // is definitely showing something else.
@@ -404,15 +407,32 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
             bool ok = SendFrameOf(_frame, _model.Rows, wantReply: !_verified, out byte st);
             if (ok && !_verified)
             {
-                if (st != ST_OK) { Log.Warn("Razer", $"{Name}: frame answered status 0x{st:X2} ({StatusName(st)})"); ok = false; }
+                if (st != ST_OK)
+                {
+                    // Occasional, not Warn. This fires while the device has not yet
+                    // ACCEPTED a frame, so a device that never will - a HyperFlux pad
+                    // whose strip we only guessed at - logged one line per retry for as
+                    // long as the app ran. A field log came back 5,546 lines of this and
+                    // 21 lines of everything else, having already rotated away the
+                    // history that would have explained what the user actually reported.
+                    // Keyed by status so a CHANGE of answer still gets through.
+                    Log.Occasional($"razer-status:{Name}:{st:X2}", "Razer",
+                                   $"{Name}: frame answered status 0x{st:X2} ({StatusName(st)})");
+                    ok = false;
+                }
                 else { _verified = true; Log.Info("Razer", $"{Name}: custom frames accepted (transaction 0x{_tid:X2})"); }
             }
             if (!ok)
             {
                 _last = null;
                 if (++_failures == 3)
-                    Log.Occasional($"razer:{Name}", "Razer", "frames not accepted (mouse asleep or protocol mismatch) - retrying every 2 s");
-                _nextRetryTick = now + 2000;
+                    Log.Occasional($"razer:{Name}", "Razer", "frames not accepted (mouse asleep or protocol mismatch) - retrying");
+                // Two seconds is right for a mouse that dozed off and will wake in a
+                // moment. It is wrong for a device that is never going to answer: the
+                // field log above spent three hours doing a blocking HID exchange every
+                // two seconds, under the write lock, for a strip that may not exist. So
+                // the first minute stays responsive and after that it backs right off.
+                _nextRetryTick = now + (_failures < QuickRetries ? QuickRetryMs : SlowRetryMs);
                 return false;
             }
             _failures = 0;
