@@ -369,11 +369,15 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
         // at or above the threshold meant the "frames not accepted" and
         // "answering again" lines fired once per process and never again,
         // so a second outage on the same device was silent in the log.
-        lock (_writeLock) { _last = null; _lastSendTick = 0; _nextRetryTick = 0; _failures = 0; }
+        lock (_writeLock) { _last = null; _lastSendTick = 0; _nextRetryTick = 0; _failures = 0; _persisted = null; }
     }
 
     // ~the first minute of failures stays at the quick cadence, then backs off.
     const int QuickRetryMs = 2000, SlowRetryMs = 30_000, QuickRetries = 30;
+
+    // The colour currently in the device's onboard storage, so a repeat costs no
+    // flash write. Cleared by InvalidateCache with everything else.
+    Rgb? _persisted;
 
     public bool SetColors(IReadOnlyList<Rgb> colors)
     {
@@ -468,6 +472,60 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
         if (!Send(apply, wantReply, out byte st2)) return false;
         if (st2 != ST_OK) status = st2;
         return true;
+    }
+
+    /// <summary>Write the device's CURRENT colour into its onboard storage, so it
+    /// survives the device sleeping.
+    ///
+    /// Our frames are custom-frame (effect 0x08), and a custom frame cannot be
+    /// stored by anyone: the pixel data arrives in separate packets, so the effect
+    /// report only selects the mode and there is nothing for the device to save.
+    /// OpenRazer's razer_chroma_extended_matrix_effect_custom_frame takes no storage
+    /// argument at all, which is the same statement made in code. That is why a
+    /// wireless mouse that dozes off comes back on its onboard profile and not on
+    /// the colour the user picked - and why Synapse, which stores, does not.
+    ///
+    /// The STATIC effect (0x01) does take storage, so a device showing ONE flat
+    /// colour can be made durable. Only that case: a per-LED frame has no single
+    /// colour to store, and nothing in the protocol can keep one.
+    ///
+    /// Byte layout corroborated by two independent implementations - OpenRazer's
+    /// razer_chroma_extended_matrix_effect_static and OpenRGB's
+    /// razer_create_mode_static_extended_matrix_report - which agree exactly:
+    ///     class 0x0F cmd 0x02 size 0x09, args[0]=storage [1]=led [2]=0x01
+    ///                                         [5]=0x01 [6..8]=R,G,B
+    ///
+    /// Returns false when there is nothing storable (no uniform colour yet, or a
+    /// per-LED frame) or the device refused. Writes FLASH, so a caller must not
+    /// put this on a frame path - see the callers, which debounce it.</summary>
+    public bool PersistCurrentColor()
+    {
+        lock (_writeLock)
+        {
+            // No disposed flag here: the handle refuses writes once closed, so a
+            // call that outlives Dispose fails at Send and reports false.
+            if (_last == null || _last.Length == 0) return false;
+            var c = _last[0];
+            for (int i = 1; i < _last.Length; i++)
+                if (_last[i] != c) return false;          // per-LED: nothing to store
+            if (_persisted == c) return true;             // already in flash: a skip is a success
+
+            var rep = FillReport(new byte[FEATURE_LEN], _tid, 0x0F, 0x02, 0x09);
+            rep[ARGS] = VARSTORE;
+            rep[ARGS + 1] = ZERO_LED;
+            rep[ARGS + 2] = 0x01;                          // static
+            rep[ARGS + 5] = 0x01;
+            rep[ARGS + 6] = c.R; rep[ARGS + 7] = c.G; rep[ARGS + 8] = c.B;
+            if (!Send(rep, wantReply: true, out byte st) || st != ST_OK)
+            {
+                Log.Occasional($"razer-persist:{Name}", "Razer",
+                               $"{Name}: could not store the colour onboard (status 0x{st:X2})");
+                return false;
+            }
+            _persisted = c;
+            Log.Info("Razer", $"{Name}: stored #{c.ToHex()} onboard, so it survives the device sleeping");
+            return true;
+        }
     }
 
     /// <summary>Layout dialog: light LEDs 0..count-1 one at a time (white on

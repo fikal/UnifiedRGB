@@ -536,6 +536,66 @@ static class DevicesSuite
             t.Check(RazerHid.ResolveCount(0x0FFF, 19) == (19, "probed") && RazerHid.ResolveCount(0x0FFF, 999).Count == RazerHid.MaxLeds, "razer pad: probe wins over the guess and is capped");
         }
 
+        t.Section("RazerHid: a flat colour can be stored onboard, a per-LED frame cannot");
+        {
+            // Why this exists: our frames are custom-frame (0x08), which no
+            // implementation can store - OpenRazer's custom_frame helper takes no
+            // storage argument at all. So a wireless mouse that sleeps comes back on
+            // its onboard profile instead of the colour the user picked. The STATIC
+            // effect does take storage, for the one case that has a colour to store.
+            const int ARGS = 9;
+            // The mouse has to ANSWER, or no frame is ever verified and there is
+            // nothing recorded to store.
+            byte[] Answering(byte[] req)
+            {
+                var r = new byte[91];
+                r[1] = 0x02; r[7] = req[7]; r[8] = req[8];   // ST_OK, echo class/cmd
+                return r;
+            }
+            var hid = new FakeHid { Respond = Answering };
+            using var mouse = RazerHid.OpenKnown(() => hid, 0x00AA, RazerHid.BasiliskV3Pro);
+            if (mouse == null) { t.Check(false, "razer persist: the test mouse opened"); return; }
+
+            t.Check(!mouse.PersistCurrentColor(), "razer persist: nothing to store before any frame");
+
+            var flat = Enumerable.Repeat(new Rgb(10, 20, 30), mouse.LedCount).ToArray();
+            mouse.SetColors(flat);
+            hid.Features.Clear();
+            t.Check(mouse.PersistCurrentColor(), "razer persist: a flat colour is stored");
+            var rep = hid.Features.SingleOrDefault(f => f[7] == 0x0F && f[8] == 0x02 && f[6] == 0x09);
+            t.Check(rep != null, "razer persist: one static-effect report, class 0x0F cmd 0x02 size 0x09");
+            if (rep != null)
+            {
+                // Corroborated by OpenRazer AND OpenRGB, which agree exactly.
+                t.Equal((byte)0x01, rep[ARGS],     "razer persist: args[0] = VARSTORE");
+                t.Equal((byte)0x00, rep[ARGS + 1], "razer persist: args[1] = led id");
+                t.Equal((byte)0x01, rep[ARGS + 2], "razer persist: args[2] = static effect");
+                t.Equal((byte)0x01, rep[ARGS + 5], "razer persist: args[5] = 1");
+                t.Check(rep[ARGS + 6] == 10 && rep[ARGS + 7] == 20 && rep[ARGS + 8] == 30,
+                    "razer persist: args[6..8] = R,G,B");
+            }
+
+            // Flash is not written twice for the same colour.
+            hid.Features.Clear();
+            t.Check(mouse.PersistCurrentColor() && hid.Features.Count == 0,
+                "razer persist: the same colour again writes no flash, and is still a success");
+
+            // A per-LED frame has no single colour, and nothing can keep one.
+            var mixed = Enumerable.Range(0, mouse.LedCount).Select(i => new Rgb((byte)i, 0, 0)).ToArray();
+            mouse.SetColors(mixed);
+            hid.Features.Clear();
+            t.Check(!mouse.PersistCurrentColor() && hid.Features.Count == 0,
+                "razer persist: a per-LED frame stores nothing and says so");
+
+            // A refused store is reported, not swallowed.
+            mouse.SetColors(flat);
+            mouse.InvalidateCache();
+            mouse.SetColors(flat);
+            hid.AcceptFeature = (_, p) => !(p[7] == 0x0F && p[8] == 0x02 && p[6] == 0x09);
+            t.Check(!mouse.PersistCurrentColor(), "razer persist: a refused store reports false");
+            hid.AcceptFeature = null;
+        }
+
         t.Section("RazerKraken: the mode is part of delivery, and it is re-armed");
         {
             // Every byte here was confirmed against the real headset on two machines.
