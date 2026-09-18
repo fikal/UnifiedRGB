@@ -35,7 +35,7 @@ namespace UnifiedRgb.Core.Devices;
 /// when the firmware accepts anything, the count comes from hardware.json
 /// (`RazerLedCounts`, set from the Lighting pane's Razer… dialog) or a guess.
 /// Everything a new pad needs is therefore discoverable from one build.</summary>
-public sealed class RazerHid : IRgbDevice, IBatteryDevice
+public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
 {
     public const ushort VID = 0x1532;
     const int WIRE_LEN = 90;

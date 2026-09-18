@@ -254,3 +254,20 @@ sealed class CountingEffect : IEffect
         Array.Fill(buf, bc);
     }
 }
+
+/// <summary>A device that can keep its colour onboard, so the debounce policy can
+/// be tested without a Razer mouse on the desk.</summary>
+sealed class FakePersistDevice : IRgbDevice, IPersistableLighting
+{
+    public string Name { get; init; } = "Persistable";
+    public string Vendor => "Test";
+    public DeviceType Type => DeviceType.Mouse;
+    public int LedCount { get; init; } = 2;
+    public IReadOnlyList<RgbZone> Zones => new[] { new RgbZone { Name = "All", Offset = 0, Count = LedCount } };
+    public Rgb[]? Last;
+    public int Persists;
+    public bool SetColors(IReadOnlyList<Rgb> colors) { Last = colors.ToArray(); return true; }
+    public bool PersistCurrentColor() { Persists++; return true; }
+    public void InvalidateCache() { }
+    public void Dispose() { }
+}

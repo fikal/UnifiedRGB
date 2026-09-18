@@ -81,6 +81,12 @@ public sealed class LightingController
 
     void NoteWritten(IRgbDevice d) => _written[d] = true;
 
+    /// <summary>Raised when the USER's own static lighting is pushed - not an SDK
+    /// client's, and not an effect frame, which never comes through here. One place
+    /// rather than a call beside each of the push sites, because the one that gets
+    /// missed is the one somebody reports.</summary>
+    public event Action? StaticPushed;
+
     /// <summary>An SDK client gave a device back. The next client starts from
     /// the user's lighting again instead of inheriting the last one's pixels.</summary>
     public void ForgetExternal(IRgbDevice dev) => _external.TryRemove(dev, out _);
@@ -136,6 +142,7 @@ public sealed class LightingController
     public void PushFrame(IRgbDevice dev)
     {
         NoteWritten(dev);
+        StaticPushed?.Invoke();
         var snap = (Rgb[])FrameFor(dev).Clone();
         Engine.InvalidateBase(dev);   // running non-zone channels re-snapshot the edited statics
         Applier.Post(LaneOf(dev), dev, () =>
@@ -168,6 +175,7 @@ public sealed class LightingController
     public void PushZone(IZoneWritable zw, IRgbDevice dev, int off, int count)
     {
         NoteWritten(dev);
+        StaticPushed?.Invoke();
         var frame = FrameFor(dev);
         var slice = new Rgb[count];
         for (int i = 0; i < count; i++) slice[i] = off + i < frame.Length ? frame[off + i] : Rgb.Black;

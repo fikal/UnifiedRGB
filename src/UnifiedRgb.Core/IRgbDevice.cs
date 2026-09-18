@@ -120,6 +120,25 @@ public enum DeviceType
     Other,
 }
 
+/// <summary>A device that can keep its CURRENT colour in its own memory, so the
+/// colour survives the device losing power - a wireless mouse dozing off, or
+/// being switched off and on.
+///
+/// Only a flat colour can be kept: a per-LED frame is streamed, so there is
+/// nothing for a device to store. An implementation returns false when there is
+/// nothing storable rather than inventing something to save.
+///
+/// This writes FLASH. Callers must debounce it and must never put it on a frame
+/// path - see MainViewModel.PersistLightingDebounced, which also refuses while an
+/// effect is running, because an animation has no colour worth keeping.</summary>
+public interface IPersistableLighting
+{
+    /// <summary>Store the current colour, or false when there is nothing to store
+    /// or the device refused. A colour already stored is a success and costs no
+    /// write.</summary>
+    bool PersistCurrentColor();
+}
+
 /// <summary>Keyboards that can resolve a Windows virtual-key code to the LED
 /// under that physical key — powers the reactive typing effects.</summary>
 public interface IKeyMappedDevice

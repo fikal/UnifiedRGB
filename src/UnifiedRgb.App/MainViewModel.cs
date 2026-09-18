@@ -730,6 +730,50 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         _settingsSaveTimer.Stop(); _settingsSaveTimer.Start();
     }
 
+    /*--- keep a settled flat colour in the device's own memory ---*/
+
+    /// <summary>Long enough that setting a colour is not a flash write, short
+    /// enough to beat a mouse going to sleep. A Razer mouse idles out in minutes,
+    /// so half a minute after the user stops changing things is ample.</summary>
+    const int PersistAfterMs = 30_000;
+    DispatcherTimer? _persistTimer;
+
+    /// <summary>A wireless mouse that dozes off comes back on its ONBOARD profile,
+    /// not on the colour the user picked, because our frames are streamed and
+    /// cannot be stored. Synapse does not have that problem because it writes the
+    /// colour into the device. So do we, once the user has settled.
+    ///
+    /// Debounced, because it writes flash. Restarted by every static apply, so a
+    /// drag across the colour wheel stores once at the end rather than per frame.
+    /// An effect is skipped entirely at the tick: an animation has no colour worth
+    /// keeping, and the engine writes straight to the device without coming
+    /// through here, so its frames never restart this timer either.</summary>
+    void PersistLightingDebounced()
+    {
+        if (_persistTimer == null)
+        {
+            _persistTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(PersistAfterMs) };
+            _persistTimer.Tick += (_, _) => { _persistTimer!.Stop(); PersistSettledLighting(); };
+        }
+        _persistTimer.Stop(); _persistTimer.Start();
+    }
+
+    void PersistSettledLighting()
+    {
+        foreach (var d in Devices)
+        {
+            if (d is not IPersistableLighting p) continue;
+            // Mid-animation there is no colour to keep, and the device is being
+            // written every frame anyway.
+            if (_engine.ChannelsFor(d).Count > 0) continue;
+            // A device an SDK client holds is showing the client's picture, not
+            // the user's - storing that would outlive the client.
+            if (_sdkHeld.Contains(d) || _lighting.IsClaimed(d)) continue;
+            try { p.PersistCurrentColor(); }
+            catch (Exception ex) { UnifiedRgb.Core.Log.Warn("lighting", $"{d.Name}: storing the colour failed: {ex.Message}"); }
+        }
+    }
+
     /*--- master brightness: scales every hardware write, stored unscaled ---*/
     public double MasterBrightness
     {
@@ -1533,6 +1577,9 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // lights dropdowns, app-rule pickers); without this they stay frozen at
         // whatever existed at launch.
         Profiles.CollectionChanged += (_, _) => { Shows.NotifyProfilesChanged(); OnChanged(nameof(ProfileNames)); };
+        // A settled flat colour goes into the device's own memory, so it survives
+        // the device losing power. See PersistLightingDebounced.
+        _lighting.StaticPushed += PersistLightingDebounced;
     }
 
     bool _initializing = true;

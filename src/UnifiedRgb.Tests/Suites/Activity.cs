@@ -773,6 +773,34 @@ static class ActivitySuite
                 t.Equal(requestsBeforeSuppression, wallpaperRequests.Count, "suppressed restoration does not launch a wallpaper request");
                 vm.LightsSuppressed = false;
 
+                t.Section("a settled flat colour is kept in the device's own memory");
+                // A wireless mouse that dozes off comes back on its ONBOARD profile,
+                // because our frames are streamed and cannot be stored. Synapse does
+                // not have that problem because it writes the colour into the device.
+                // The guards are the interesting part: an animation has no colour
+                // worth keeping, and a device an SDK client holds is showing the
+                // client's picture, not the user's.
+                var keeper = new FakePersistDevice { Name = "Keeps colour", LedCount = 2 };
+                vm.Devices.Add(keeper);
+                var persist = typeof(UnifiedRgb.App.MainViewModel).GetMethod("PersistSettledLighting", flags)!;
+
+                vm.LightsSuppressed = false;
+                persist.Invoke(vm, null);
+                t.Equal(1, keeper.Persists, "a settled colour is stored");
+
+                // An SDK client owns the picture: storing it would outlive the client.
+                vm.StopEffectsOn(keeper);
+                persist.Invoke(vm, null);
+                t.Equal(1, keeper.Persists, "a device a client holds is left alone");
+                vm.ReleaseHold(keeper);
+                persist.Invoke(vm, null);
+                t.Equal(2, keeper.Persists, "...and stored again once the client lets go");
+
+                // A device with no persist support is simply skipped, not crashed on.
+                persist.Invoke(vm, null);
+                t.Equal(3, keeper.Persists, "repeat ticks are harmless - the driver skips a colour already stored");
+                vm.Devices.Remove(keeper);
+
                 t.Section("master brightness does not relight a dark desk or write over a client");
                 // The brightness slider and its hotkey are the user asking for a
                 // LOOK, not for the lights to come on. Re-pushing every static
