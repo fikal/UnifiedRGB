@@ -797,6 +797,15 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
                     else if (d != null) line.Append($"  dpi: status 0x{d[1]:X2}");
                     var b = Exchange(hid, NewReport(t, 0x07, 0x80, 0x02));
                     if (b != null && b[1] == ST_OK) line.Append($"  battery {Math.Round(b[ARGS + 1] * 100.0 / 255.0)}%");
+                    // How long the device waits before it powersaves and drops its
+                    // lighting. A DEVICE setting, stored on the device, which we never
+                    // write - but vendor software does, so "my lighting used to stay
+                    // on" and "my lighting comes back wrong" are different complaints
+                    // with different causes, and this is the number that tells them
+                    // apart. 300 s is the factory default on a Basilisk V3 Pro 35K.
+                    var idle = Exchange(hid, NewReport(t, 0x07, 0x83, 0x02));
+                    if (idle != null && idle[1] == ST_OK)
+                        line.Append($"  idle {(idle[ARGS] << 8 | idle[ARGS + 1])}s");
                     sb.AppendLine(line.ToString());
                 }
             }
