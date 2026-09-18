@@ -117,6 +117,14 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice
         // exit behaviour, "it has gone" notes) - two devices sharing one used
         // to land those on whichever instance came first.
         BasiliskV3Pro with { Pid = 0x00AB, Name = "Razer Basilisk V3 Pro (dongle)" },
+        // The 35K is a separate product with its own ids, and without these it
+        // was not recognised at all off the pad: on a HyperFlux it enumerates
+        // under the PAD's id and we assume a Basilisk there, which is the only
+        // reason it appeared to work. Same shape as the original by OpenRGB's
+        // table and confirmed here - transaction 0x1F, 1x13, wheel/logo/underglow
+        // 1/1/11 - so it reuses the model rather than duplicating the layout.
+        BasiliskV3Pro with { Pid = 0x00CC, Name = "Razer Basilisk V3 Pro 35K" },
+        BasiliskV3Pro with { Pid = 0x00CD, Name = "Razer Basilisk V3 Pro 35K (dongle)" },
     };
 
     /// <summary>HyperFlux V2 charging pad + built-in receiver. Whatever mouse is
