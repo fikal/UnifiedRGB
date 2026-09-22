@@ -789,8 +789,13 @@ if (args.Length >= 1 && args[0] == "--razer")
             if (sub == "color")
             {
                 var col = Rgb.FromHex(args[2]);
-                Console.WriteLine($"  holding {col} for 3 s...");
-                d.SetColors(Enumerable.Repeat(col, d.LedCount).ToArray());
+                // SAY whether it landed. This printed "holding ..." either way, so a
+                // device that refuses every frame looked exactly like one that took
+                // it - which is how a pad that answers 0x04 to all of them got
+                // written up as having ACKed a red frame.
+                bool lit = d.SetColors(Enumerable.Repeat(col, d.LedCount).ToArray());
+                Console.WriteLine($"  {col}: {(lit ? "accepted, holding for 3 s..." : "REFUSED by the device")}");
+                if (!lit) { Environment.ExitCode = 1; continue; }
                 Sleep(3000);   // cooperative: Ctrl+C restores instead of being swallowed
                 continue;
             }
