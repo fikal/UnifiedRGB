@@ -83,7 +83,7 @@ public sealed class RazerLayoutDialog
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 18, 0, 0) };
         buttons.Children.Add(Dialogs.Btn("Cancel", false, () => win.Close()));
-        buttons.Children.Add(Dialogs.Btn("Save && Rescan", true, () =>
+        buttons.Children.Add(Dialogs.Btn("Save & Rescan", true, () =>
         {
             if (busy) { status.Text = "Wait for the chase to finish."; return; }
             foreach (var (dev, leds) in rows)

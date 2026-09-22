@@ -93,7 +93,7 @@ public sealed class HeaderConfigDialog
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 18, 0, 0) };
         buttons.Children.Add(Dialogs.Btn("Cancel", false, () => win.Close()));
-        buttons.Children.Add(Dialogs.Btn("Save && Rescan", true, () =>
+        buttons.Children.Add(Dialogs.Btn("Save & Rescan", true, () =>
         {
             // Only the header list is edited here; every other section of
             // hardware.json (the Razer LED counts) rides along untouched.
