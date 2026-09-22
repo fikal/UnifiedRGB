@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using UnifiedRgb.Core.Native;
 
 namespace UnifiedRgb.Core.Devices;
@@ -44,6 +44,21 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
     const int MAX_LEDS_PER_PACKET = 25;  // (80 - 5) / 3
     public const int MaxLeds = 64;       // sanity cap for configured/probed counts
     const int DefaultPadLeds = 20;
+
+    /// <summary>Pads we know have no addressable lighting, so the guess must not
+    /// be applied to them.
+    ///
+    /// The HyperFlux V2 is a charger and a receiver; the only LED on it is a
+    /// battery indicator its own firmware drives, and Razer's specification lists
+    /// no Chroma. Its firmware accepts custom-frame columns anyway, so the width
+    /// probe learns nothing and we fell through to the guess - inventing a 20-LED
+    /// strip that appeared in the device list, accepted colours, reported success
+    /// and lit nothing. Verified on the hardware: the pad ACKed a full red frame
+    /// and stayed dark.
+    ///
+    /// Still overridable, because this is a statement about a model and the user
+    /// is holding the thing: a configured count above 0 wins, as it always did.</summary>
+    static readonly HashSet<ushort> UnlitPads = new() { HYPERFLUX_V2 };
 
     // response status
     const byte ST_BUSY = 0x01, ST_OK = 0x02, ST_FAIL = 0x03, ST_TIMEOUT = 0x04, ST_UNSUPPORTED = 0x05;
@@ -279,14 +294,17 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
                 (int count, source) = ResolveCount(HYPERFLUX_V2, probed);
                 if (count == 0)
                 {
-                    // Told, by the user, that this pad has no lighting. Adding it
-                    // anyway means an entry in their device list that can never do
-                    // anything. Recorded rather than dropped silently, so it does not
-                    // read as "the app stopped supporting my pad".
-                    Log.Info("Razer", "HyperFlux V2 pad: configured as having no lighting; not adding it as a device");
+                    // No lighting: either this model has none, or the user said so.
+                    // Adding it anyway means an entry in their device list that can
+                    // never do anything - it takes colours, reports success and stays
+                    // dark. Recorded rather than dropped silently, so it does not read
+                    // as "the app stopped supporting my pad".
+                    Log.Info("Razer", $"HyperFlux V2 pad: {source}; not adding it as a device (charging and the paired mouse are unaffected)");
                     DetectionNotes.Report("Razer", "Razer HyperFlux V2 pad", BlockReason.PartlyWorking,
-                        "set to no lighting, so only its charging is in use",
-                        "Lighting > Razer… - set its LED count above 0 if it does have a strip");
+                        source == "configured as unlit"
+                            ? "set to no lighting, so only its charging is in use"
+                            : "this model has no lighting - it charges your mouse and acts as its receiver",
+                        "Lighting > Razer… - set its LED count above 0 if yours does have a strip");
                     hid.Dispose();
                     continue;
                 }
@@ -353,6 +371,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
             if (n == 0) return (0, "configured as unlit");
             if (n > 0) return (Math.Clamp(n, 1, MaxLeds), "configured");
         }
+        if (UnlitPads.Contains(pid)) return (0, "no lighting on this model");
         if (probed is int p && p > 0) return (Math.Clamp(p, 1, MaxLeds), "probed");
         return (DefaultPadLeds, "guessed");
     }

@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using UnifiedRgb.Core;
 using UnifiedRgb.Core.Devices;
 using UnifiedRgb.Core.Input;
@@ -533,6 +533,17 @@ static class DevicesSuite
             t.Check(pad[0] == new LedPos(0, 0) && pad[5].Y == 0 && pad[10].X > 0.99f && pad.Distinct().Count() == 20, "razer pad: clockwise from the top-left corner, all distinct");
             var (guess, src) = RazerHid.ResolveCount(0x0FFF, null);
             t.Check(guess == 20 && src == "guessed", "razer pad: no config, no probe -> 20 guessed");
+            // ...but never for a model we KNOW has none. The HyperFlux V2 is a
+            // charger and a receiver; its only LED is a battery indicator its own
+            // firmware drives. Its firmware accepts custom-frame columns anyway, so
+            // the width probe learns nothing and the guess used to invent a 20-LED
+            // strip: it appeared in the device list, took colours, reported success
+            // and stayed dark. Checked on the pad itself - it ACKed a full red frame
+            // and did not light.
+            t.Equal((0, "no lighting on this model"), RazerHid.ResolveCount(RazerHid.HYPERFLUX_V2, null),
+                "razer pad: a model known to have no lighting is not guessed a strip");
+            t.Equal(0, RazerHid.ResolveCount(RazerHid.HYPERFLUX_V2, 20).Count,
+                "...even when the frame probe accepts columns, which it does on this pad");
             t.Check(RazerHid.ResolveCount(0x0FFF, 19) == (19, "probed") && RazerHid.ResolveCount(0x0FFF, 999).Count == RazerHid.MaxLeds, "razer pad: probe wins over the guess and is capped");
         }
 
@@ -780,11 +791,25 @@ static class DevicesSuite
             var opened = new List<FakeHid>();
             FakeHid Open() { var h = new FakeHid { Respond = Pad, FeatureOnly = true }; opened.Add(h); return h; }
 
+            // Chris's firmware refuses columns from 20 on, so the frame probe comes
+            // back with a confident 20 - and it is wrong. The mat has no lighting at
+            // all; the matrix is advertised, not wired. So the probe does NOT get to
+            // build a device for this model, however sure it sounds.
+            var original = HardwareConfig.Load();
+            try {
+            new HardwareConfig().Save();
+            t.Equal(0, RazerHid.OpenPad(Open).Count,
+                "a confident frame probe does not override what is known about the model");
+
+            // Everything below is the protocol itself, which is worth pinning whatever
+            // the count came from - so say the owner has a pad that does have a strip.
+            new HardwareConfig { RazerLedCounts = new() { ["00CF"] = PadLeds } }.Save();
+            opened.Clear();
             var found = RazerHid.OpenPad(Open);
-            t.Equal(1, found.Count, "the pad is found with no mouse paired: one device");
+            t.Equal(1, found.Count, "a configured strip length brings the pad back: one device");
             var pad = found[0];
             t.Equal("Razer HyperFlux V2 pad", pad.Name, "identified as the pad, not as a mouse");
-            t.Equal(PadLeds, pad.LedCount, "the strip length comes from the frame probe (columns refused from 20 on)");
+            t.Equal(PadLeds, pad.LedCount, "...with the length its owner gave it");
             t.Check(opened.Count >= 2, "the probe handle and the device's own handle are separate opens");
             t.Check(opened[0].IsDisposed, "the probe handle is closed once enumeration is done");
 
@@ -809,6 +834,7 @@ static class DevicesSuite
             pad.SetColors(colors);
             t.Equal(before, hid.Features.Count, "an identical frame is deduped");
             pad.Dispose();
+            } finally { original.Save(); }
         }
 
         t.Section("RazerHid: nobody home on the pad");
