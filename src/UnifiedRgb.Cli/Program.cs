@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using UnifiedRgb.Core;
 using UnifiedRgb.Core.Audio;
 using UnifiedRgb.Core.Devices;
@@ -767,10 +767,10 @@ if (args.Length >= 1 && args[0] == "--mouse")
 // Exit code 1 when a device refused, 2 for a bad command line.
 if (args.Length >= 1 && args[0] == "--razer")
 {
-    const string razerUsage = "usage: --razer [color RRGGBB | dpi X [Y] | stages A X1 X2.. | poll 125|500|1000]";
+    const string razerUsage = "usage: --razer [color RRGGBB | persist RRGGBB | dpi X [Y] | stages A X1 X2.. | poll 125|500|1000]";
     string sub = args.Length >= 2 ? args[1] : "";
-    bool known = sub is "" or "color" or "dpi" or "stages" or "poll";
-    bool enoughArgs = sub switch { "" => true, "color" => args.Length >= 3, "dpi" => args.Length >= 3, "stages" => args.Length >= 4, "poll" => args.Length >= 3, _ => false };
+    bool known = sub is "" or "color" or "persist" or "dpi" or "stages" or "poll";
+    bool enoughArgs = sub switch { "" => true, "color" => args.Length >= 3, "persist" => args.Length >= 3, "dpi" => args.Length >= 3, "stages" => args.Length >= 4, "poll" => args.Length >= 3, _ => false };
     if (!known || !enoughArgs)
     {
         Console.WriteLine(razerUsage);
@@ -792,6 +792,19 @@ if (args.Length >= 1 && args[0] == "--razer")
                 Console.WriteLine($"  holding {col} for 3 s...");
                 d.SetColors(Enumerable.Repeat(col, d.LedCount).ToArray());
                 Sleep(3000);   // cooperative: Ctrl+C restores instead of being swallowed
+                continue;
+            }
+            // Write the colour into the device's OWN memory, which is what keeps
+            // it through an idle sleep: the app does this on a 30 s debounce, and
+            // there was no way to ask for it directly. Holds afterwards so the
+            // colour can be watched across the idle timeout the probe prints.
+            if (sub == "persist")
+            {
+                var col = Rgb.FromHex(args[2]);
+                d.SetColors(Enumerable.Repeat(col, d.LedCount).ToArray());
+                bool stored = d.PersistCurrentColor();
+                Console.WriteLine($"  {col} written to onboard memory: {(stored ? "ok" : "FAILED")}");
+                if (!stored) Environment.ExitCode = 1;
                 continue;
             }
             if (sub == "") continue;
