@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.IO;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -8,6 +8,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Microsoft.Win32;
+using UnifiedRgb.App.Services;
 using UnifiedRgb.Core;
 using UnifiedRgb.Core.Devices;
 using UnifiedRgb.Core.Effects;
@@ -81,6 +82,17 @@ public sealed partial class MainViewModel
     /// valid for the hardware it was saved on.</summary>
     readonly List<string> _staleRanges = new();
 
+    /// <summary>How each device's saved LED numbering lines up with its numbering
+    /// now. Built once per apply and shared by both halves, because the frame and
+    /// the effect ranges have to move together or they describe different desks.</summary>
+    readonly Dictionary<string, HardwareRemap> _remap = new();
+
+    /// <summary>How this device's saved numbering lines up with its numbering now.
+    /// Nothing recorded means nothing to correct: an identity remap, which is what
+    /// every path that is not applying a saved profile wants.</summary>
+    HardwareRemap RemapFor(IRgbDevice d)
+        => _remap.TryGetValue(d.Name, out var r) ? r : _remap[d.Name] = new HardwareRemap(d, null, 0);
+
     void RestoreEffects(List<EffectAssignment>? saved)
     {
         _staleRanges.Clear();
@@ -96,19 +108,23 @@ public sealed partial class MainViewModel
             var dev = Devices.FirstOrDefault(d => d.Name == a.Device);
             var choice = ChoiceByName(a.Effect);
             if (dev == null || choice?.Effect == null) continue;
-            if (a.Offset < 0 || a.Count <= 0 || (long)a.Offset + a.Count > dev.LedCount)
+            // Re-anchor through the zone NAME. A saved range is where the user put
+            // the effect, not which integers it happened to be: adding a strip to a
+            // board renumbers every LED after it, and taking the integers literally
+            // is how "Matrix on the GPU ribbon" became "Matrix on the new strip,
+            // ribbon dark" with nothing anywhere saying why.
+            var placed = RemapFor(dev).Map(a.Offset, a.Count);
+            if (placed == null)
             {
-                // A range that no longer fits is DROPPED, and used to be dropped in
-                // silence. Adding a strip to a board renumbers every LED after it, so
-                // this is what a saved effect does the moment somebody changes their
-                // hardware: part of the device goes dark and nothing says why.
+                // Still dropped when it cannot be placed - but said out loud now.
                 if (a.Count > 0 && a.Offset >= 0)
                     _staleRanges.Add($"{a.Effect} on {dev.Name} covered LEDs {a.Offset}-{a.Offset + a.Count - 1}, "
-                                   + $"but it only has {dev.LedCount}");
+                                   + $"which is not part of it any more");
                 continue;
             }
+            (int offset, int count) = placed.Value;
 
-            var fx = FxFor(dev, a.Offset, a.Count);
+            var fx = FxFor(dev, offset, count);
             fx.Choice = choice;
             fx.Speed = a.Speed;
             fx.Reverse = a.Reverse;
@@ -144,9 +160,9 @@ public sealed partial class MainViewModel
             // returns null when the desk is off or this device has no place on
             // it, so the effect then runs per-device exactly as before.
             fx.Channel = EffectBlockedByClient(dev) ? null
-                       : _engine.Start(dev, a.Offset, a.Count, FrameFor(dev), effect,
+                       : _engine.Start(dev, offset, count, FrameFor(dev), effect,
                                        SignedSpeed(fx), baseColor,
-                                       CanvasPositions(dev, a.Offset, a.Count));
+                                       CanvasPositions(dev, offset, count));
         }
         NotifyModeChanged();
         RequestLianRebake();
@@ -590,26 +606,41 @@ public sealed partial class MainViewModel
         // effect frame could land after the static write below and leave a
         // range frozen mid-effect until the next write.
         _engine.StopAll();
-        // Devices whose LED COUNT has changed since this profile was saved. A
-        // profile stores positions, so a board that gained a strip renumbers every
-        // LED after it and the saved colours land on the wrong ones.
-        var resized = new List<string>();
+        // Devices laid out differently than when this profile was saved. A profile
+        // stores positions, so a board that gained a strip renumbers every LED
+        // after it; the saved colours are moved back onto the zones they were
+        // picked for, and whatever is genuinely new is named below.
+        _remap.Clear();
+        foreach (var d in Devices)
+        {
+            p.DeviceZones.TryGetValue(d.Name, out var savedZones);
+            _remap[d.Name] = new HardwareRemap(d, savedZones,
+                p.DeviceFrames.TryGetValue(d.Name, out var savedHex) && savedHex != null ? savedHex.Length : 0);
+        }
+        var newHardware = new List<string>();
         foreach (var d in Devices)
         {
             if (!p.DeviceFrames.TryGetValue(d.Name, out var hex) || hex == null) continue;   // "Device": null keeps its current colors
-            if (hex.Length != d.LedCount)
-                resized.Add($"{d.Name} had {hex.Length} LEDs when {p.Name} was saved and has {d.LedCount} now");
-            // An unparseable entry keeps that LED's current color (as before).
+            var map = RemapFor(d);
             var frame = FrameFor(d);
-            var saved = new Rgb[Math.Min(frame.Length, hex.Length)];
+            // An unparseable entry keeps that LED's current color (as before).
+            var saved = new Rgb[hex.Length];
             for (int i = 0; i < saved.Length; i++)
-                saved[i] = Rgb.TryFromHex(hex[i], out var c) ? c : frame[i];
+                saved[i] = Rgb.TryFromHex(hex[i], out var c) ? c
+                         : i < frame.Length ? frame[i] : default;
+            if (map.LayoutChanged)
+            {
+                var zones = map.UnknownZones.ToList();
+                newHardware.Add(zones.Count > 0
+                    ? $"{d.Name} has {string.Join(", ", zones)}, which did not exist when {p.Name} was saved"
+                    : $"{d.Name} had {hex.Length} LEDs when {p.Name} was saved and has {d.LedCount} now");
+            }
             if (_sdkHeld.Contains(d) || _lighting.IsClaimed(d))
             {
-                Array.Copy(saved, frame, saved.Length);
+                map.MapFrame(saved, frame);
                 _engine.InvalidateBase(d);
             }
-            else RestoreFrame(d, saved);
+            else RestoreFrame(d, map, saved);
         }
         ApplyCustomColors(p.CustomColors);
         RestoreEffects(p.Effects);
@@ -618,14 +649,14 @@ public sealed partial class MainViewModel
         // a board gained a 30-LED strip, every zone after it moved, and a saved
         // effect kept painting the LEDs that used to be somewhere else while a
         // third of the board sat dark with nothing anywhere saying why.
-        if (!fromShow && (resized.Count > 0 || _staleRanges.Count > 0))
+        if (!fromShow && (newHardware.Count > 0 || _staleRanges.Count > 0))
         {
-            string detail = string.Join("; ", resized.Concat(_staleRanges));
+            string detail = string.Join("; ", newHardware.Concat(_staleRanges));
             UnifiedRgb.Core.Log.Warn("lighting", $"profile '{p.Name}' does not match this hardware: {detail}");
             UnifiedRgb.Core.Automation.ActivityLog.Note(UnifiedRgb.Core.Automation.ActivityKind.Problem,
-                $"'{p.Name}' was saved for different hardware, so part of your lighting is not being set. "
-                + "A profile remembers LED positions, and adding or removing a strip moves them. "
-                + $"Set this profile up the way you want it now and save it again. ({detail})");
+                $"'{p.Name}' was saved before your hardware changed. Your colours and effects have been "
+                + "moved back onto the zones they were picked for, but anything new to this machine is not "
+                + $"set by this profile. Set it up the way you want it now and save it again. ({detail})");
         }
         SyncWheelToSelection();     // wheel reflects what the profile applied
         // The pump screen too. Every profile apply comes through here - the

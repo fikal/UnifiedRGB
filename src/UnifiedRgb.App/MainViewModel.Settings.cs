@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.IO;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -315,6 +315,11 @@ public sealed partial class MainViewModel
     {
         bool suppressed = honorSuppression && LightsSuppressed;
         _recoveryLighting.Restore(s.Frames, s.Effects);
+        // A snapshot is THIS hardware as it stood a moment ago, so its ranges need
+        // no correcting - but the remaps left over from the last profile apply do,
+        // or the ad-hoc lighting we are putting back gets shifted by somebody
+        // else's saved layout.
+        _remap.Clear();
         _engine.StopAll();   // before the static writes (see LoadProfile)
         foreach (var d in Devices)
             if (s.Frames.TryGetValue(d.Name, out var saved))
@@ -832,6 +837,7 @@ public sealed partial class MainViewModel
     public void ReapplyEffects()
     {
         var saved = CaptureEffects();
+        _remap.Clear();   // captured from the live devices: the ranges are already current
         RestoreEffects(saved);
     }
 

@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using System.Runtime.CompilerServices;
 using UnifiedRgb.App;
 using UnifiedRgb.Core;
@@ -7,6 +7,25 @@ namespace UnifiedRgb.Tests;
 
 static class LcdScenesSuite
 {
+    /// <summary>The LED ranges a view-model is actually running effects on, read
+    /// back from its per-target state. The keys carry the range, which is the
+    /// whole point of the hardware-remap tests: a saved range is where the user
+    /// put the effect, and the test has to see where it ended up.</summary>
+    static HashSet<(int Offset, int Count)> LiveRanges(MainViewModel vm, string device)
+    {
+        const BindingFlags f = BindingFlags.Instance | BindingFlags.NonPublic;
+        var map = (System.Collections.IDictionary)typeof(MainViewModel).GetField("_targetFx", f)!.GetValue(vm)!;
+        var live = new HashSet<(int, int)>();
+        foreach (System.Collections.DictionaryEntry e in map)
+        {
+            var parts = ((string)e.Key).Split('|');
+            if (parts.Length != 3 || parts[0] != device) continue;
+            var ch = e.Value!.GetType().GetField("Channel")!.GetValue(e.Value);
+            if (ch != null) live.Add((int.Parse(parts[1]), int.Parse(parts[2])));
+        }
+        return live;
+    }
+
     public static void Run(Harness t)
     {
         // WPF editor state needs an STA. No panel is opened: this controller
@@ -292,6 +311,76 @@ static class LcdScenesSuite
                          .Count(e => e.Kind == UnifiedRgb.Core.Automation.ActivityKind.Problem),
                     "a profile that matches the hardware says nothing");
                 vm.Devices.Remove(grown);
+            }
+
+            t.Section("saved effects follow their zone, not its LED numbers");
+            {
+                // The board this was found on, to the LED. A 30-LED strip went onto
+                // the one free ARGB header; because the header list is walked in
+                // file order, the new strip took LEDs 0-29 and pushed every existing
+                // zone down by 30. "Meteor on 8..37" was the GPU ribbon when it was
+                // saved and is the tail of the NEW strip now, so the ribbon went
+                // dark and the strip ran somebody else's effect.
+                RgbZone Z(string n, int o, int c) => new() { Name = n, Offset = o, Count = c };
+                var before = new[] { Z("AIO Fans 1+2", 0, 8), Z("GPU Ribbon", 8, 30), Z("AIO Fan 3", 38, 8),
+                                     Z("ARGB Header 1", 46, 1), Z("LED_C", 47, 1), Z("I/O Cover", 48, 1),
+                                     Z("Chipset Accent", 49, 1) };
+                var after  = new[] { Z("MOBO Ribbon", 0, 30), Z("AIO Fans 1+2", 30, 8), Z("GPU Ribbon", 38, 30),
+                                     Z("AIO Fan 3", 68, 8), Z("LED_C", 76, 1), Z("I/O Cover", 77, 1),
+                                     Z("Chipset Accent", 78, 1) };
+                var board = new FakeDevice { Name = "Board", LedCount = 79, ZoneSpec = after };
+                vm.Devices.Add(board);
+
+                var was = new Profile { Name = "Signal Path" };
+                was.DeviceZones["Board"] = before
+                    .Select(z => new ZoneSpan { Name = z.Name, Offset = z.Offset, Count = z.Count }).ToArray();
+                // Ribbon LEDs blue, everything else red, so where the colours land is visible.
+                was.DeviceFrames["Board"] = Enumerable.Range(0, 50)
+                    .Select(i => i is >= 8 and < 38 ? "0000FF" : "FF0000").ToArray();
+                was.Effects = new()
+                {
+                    new EffectAssignment { Device = "Board", Effect = "Meteor",    Offset = 8,  Count = 30 },
+                    new EffectAssignment { Device = "Board", Effect = "Breathing", Offset = 0,  Count = 8  },
+                    new EffectAssignment { Device = "Board", Effect = "Breathing", Offset = 38, Count = 8  },
+                };
+                vm.Profiles.Add(was); profiles.Profiles.Add(was);
+                UnifiedRgb.Core.Automation.ActivityLog.Shared.Clear();
+                vm.ApplyProfile(was);
+
+                var ranges = LiveRanges(vm, "Board");
+                t.Check(ranges.Contains((38, 30)), "the ribbon's effect moved with the ribbon, to 38..67");
+                t.Check(ranges.Contains((30, 8)), "AIO Fans 1+2 followed its zone too");
+                t.Check(ranges.Contains((68, 8)), "...and AIO Fan 3");
+                t.Check(!ranges.Contains((8, 30)), "nothing is left running on the LED numbers the ribbon used to have");
+
+                var frame = vm.Lighting.FrameFor(board);
+                t.Equal(new Rgb(0, 0, 255), frame[38], "the ribbon's saved colour moved with it");
+                t.Equal(new Rgb(0, 0, 255), frame[67], "...for the whole ribbon");
+                t.Equal(new Rgb(255, 0, 0), frame[30], "the fan zone kept its own saved colour");
+
+                // The strip is new, so the profile has nothing to say about it - and
+                // says so rather than leaving the user to work out why it is dark.
+                var said = UnifiedRgb.Core.Automation.ActivityLog.Shared.Snapshot()
+                    .Where(e => e.Kind == UnifiedRgb.Core.Automation.ActivityKind.Problem).ToList();
+                t.Equal(1, said.Count, "one notice about hardware this profile has never seen");
+                t.Check(said.Count > 0 && said[0].Text.Contains("MOBO Ribbon"),
+                    "...naming the zone that is new, not just a pair of LED counts");
+
+                // Same board, same profile, saved AFTER the strip went on: silent,
+                // and nothing moves. This runs on every apply.
+                var current = new Profile { Name = "Signal Path (resaved)" };
+                current.DeviceZones["Board"] = after
+                    .Select(z => new ZoneSpan { Name = z.Name, Offset = z.Offset, Count = z.Count }).ToArray();
+                current.DeviceFrames["Board"] = Enumerable.Repeat("00FF00", 79).ToArray();
+                current.Effects = new() { new EffectAssignment { Device = "Board", Effect = "Meteor", Offset = 38, Count = 30 } };
+                vm.Profiles.Add(current); profiles.Profiles.Add(current);
+                UnifiedRgb.Core.Automation.ActivityLog.Shared.Clear();
+                vm.ApplyProfile(current);
+                t.Check(LiveRanges(vm, "Board").Contains((38, 30)), "a profile saved for this hardware is left exactly where it is");
+                t.Equal(0, UnifiedRgb.Core.Automation.ActivityLog.Shared.Snapshot()
+                         .Count(e => e.Kind == UnifiedRgb.Core.Automation.ActivityKind.Problem),
+                    "and says nothing");
+                vm.Devices.Remove(board);
             }
 
             t.Section("a running show cannot write its step into the user's profile");

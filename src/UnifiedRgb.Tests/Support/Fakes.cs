@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using UnifiedRgb.Core;
 using UnifiedRgb.Core.Devices;
 using UnifiedRgb.Core.Effects;
@@ -145,7 +145,11 @@ sealed class FakeDevice : IRgbDevice
     public string Vendor => "Test";
     public DeviceType Type => DeviceType.Other;
     public int LedCount { get; init; } = 2;
-    public IReadOnlyList<RgbZone> Zones => new[] { new RgbZone { Name = "All", Offset = 0, Count = LedCount } };
+    /// <summary>Named zones, for the tests about hardware whose LED numbering
+    /// moved. Unset means one zone covering everything, as before.</summary>
+    public IReadOnlyList<RgbZone>? ZoneSpec { get; init; }
+    public IReadOnlyList<RgbZone> Zones
+        => ZoneSpec ?? new[] { new RgbZone { Name = "All", Offset = 0, Count = LedCount } };
     public int WriteDelayMs { get; init; }
     public readonly List<(long Start, Rgb[] Frame)> Writes = new();
     public int WriteCount { get { lock (Writes) return Writes.Count; } }

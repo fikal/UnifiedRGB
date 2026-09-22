@@ -1,10 +1,26 @@
-using System.IO;
+﻿using System.IO;
 using System.Text.Json;
 using Microsoft.Win32;
 using UnifiedRgb.Core;
 using UnifiedRgb.Core.Automation;
 
 namespace UnifiedRgb.App;
+
+/// <summary>One device zone as it stood when a profile was saved: the name the
+/// user sees, and where that zone's LEDs sat in the device-wide array.
+///
+/// A profile stores LED POSITIONS, and positions are not stable: putting a
+/// 30-LED strip on a spare board header renumbers every LED after it, so every
+/// saved frame and every saved effect range silently starts describing somebody
+/// else's LEDs. The NAME is the stable thing, so the layout is written down
+/// next to the frame and the ranges are re-anchored to it on the way back in.
+/// See Services/HardwareRemap.cs.</summary>
+public sealed class ZoneSpan
+{
+    public string Name { get; set; } = "";
+    public int Offset { get; set; }
+    public int Count { get; set; }
+}
 
 /// <summary>A saved effect assignment: which effect runs on which LED range of
 /// which device, with its speed / tint / custom-pattern settings.</summary>
@@ -68,6 +84,11 @@ public sealed class Profile
     /// view-model constructor, i.e. the app would not launch until the file was fixed.</summary>
     public Dictionary<string, string[]> DeviceFrames { get => _frames; set => _frames = value ?? new(); }
     Dictionary<string, string[]> _frames = new();
+    /// <summary>deviceName -> the zone layout that device had when this profile
+    /// was saved. Additive: absent from every profile written before this existed,
+    /// and an apply without it falls back to raw LED indices exactly as before.</summary>
+    public Dictionary<string, ZoneSpan[]> DeviceZones { get => _zones; set => _zones = value ?? new(); }
+    Dictionary<string, ZoneSpan[]> _zones = new();
     public string[]? CustomColors { get; set; }                              // user swatches (hex)
     public List<EffectAssignment>? Effects { get; set; }                     // running effects per target
     /// <summary>The saved pump-LCD screen this profile was saved with, so one
@@ -423,6 +444,8 @@ public sealed class ProfileStore
         foreach (var (dev, frame) in frames)
         {
             p.DeviceFrames[dev.Name] = frame.Select(c => c.ToHex()).ToArray();
+            p.DeviceZones[dev.Name] = (dev.Zones ?? Array.Empty<RgbZone>())
+                .Select(z => new ZoneSpan { Name = z.Name, Offset = z.Offset, Count = z.Count }).ToArray();
             present.Add(dev.Name);
         }
 
@@ -431,6 +454,9 @@ public sealed class ProfileStore
             foreach (var kv in old.DeviceFrames)
                 if (!present.Contains(kv.Key))
                     p.DeviceFrames[kv.Key] = kv.Value;
+            foreach (var kv in old.DeviceZones)
+                if (!present.Contains(kv.Key))
+                    p.DeviceZones[kv.Key] = kv.Value;
             var absent = old.Effects?.Where(e => !present.Contains(e.Device)).ToList();
             if (absent is { Count: > 0 })
             {

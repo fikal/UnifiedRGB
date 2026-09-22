@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.IO;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -8,6 +8,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Microsoft.Win32;
+using UnifiedRgb.App.Services;
 using UnifiedRgb.Core;
 using UnifiedRgb.Core.Devices;
 using UnifiedRgb.Core.Effects;
@@ -922,10 +923,11 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     /// shorter of the two, so a changed LED count never overruns) and push it.
     /// The one shape behind Rescan, RestoreState and LoadProfile - three pasted
     /// copies before.</summary>
-    void RestoreFrame(IRgbDevice d, Rgb[] saved)
+    void RestoreFrame(IRgbDevice d, Rgb[] saved) => RestoreFrame(d, RemapFor(d), saved);
+
+    void RestoreFrame(IRgbDevice d, HardwareRemap map, Rgb[] saved)
     {
-        var frame = FrameFor(d);
-        Array.Copy(saved, frame, Math.Min(saved.Length, frame.Length));
+        map.MapFrame(saved, FrameFor(d));
         _lighting.PushFrame(d);
     }
 
@@ -1976,6 +1978,14 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // not a cost worth thinking about.
         var savedEffects = new List<EffectAssignment>(_recoveryLighting.Effects);
         var savedFrames = new Dictionary<string, Rgb[]>(_recoveryLighting.Frames, StringComparer.Ordinal);
+        // A rescan is the OTHER way the numbering moves: the user edits their ARGB
+        // headers and presses it, and every LED after the edited one shifts. Keep
+        // the layout these frames were captured against so the colours can follow
+        // their zones instead of their indices.
+        var savedZones = Devices.ToDictionary(d => d.Name,
+            d => (d.Zones ?? Array.Empty<RgbZone>())
+                 .Select(z => new ZoneSpan { Name = z.Name, Offset = z.Offset, Count = z.Count }).ToArray(),
+            StringComparer.Ordinal);
 
         // The SDK server goes first. StopAndDrain below is the guard against
         // writing to a handle that is about to close, and a socket thread posts
@@ -2012,12 +2022,18 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             Devices.Add(d);
         }
 
-        // Repaint statics on the fresh device instances.
+        // Repaint statics on the fresh device instances, through the layout they
+        // were captured against - the effects below read the same remaps.
+        _remap.Clear();
+        foreach (var d in Devices)
+            _remap[d.Name] = new HardwareRemap(d, savedZones.GetValueOrDefault(d.Name),
+                savedFrames.TryGetValue(d.Name, out var had) ? had.Length : 0);
         foreach (var d in Devices)
             if (savedFrames.TryGetValue(d.Name, out var old))
             {
-                if (LightsSuppressed) Array.Copy(old, FrameFor(d), Math.Min(old.Length, d.LedCount));
-                else RestoreFrame(d, old);
+                var map = RemapFor(d);
+                if (LightsSuppressed) map.MapFrame(old, FrameFor(d));
+                else RestoreFrame(d, map, old);
             }
 
         RefreshBlockedDevices();                               // what this scan saw but could not use
