@@ -76,8 +76,14 @@ public sealed partial class MainViewModel
         ?? (EffectAliases.TryGetValue(name, out var alias) ? Effects.FirstOrDefault(e => e.Name == alias) : null);
 
     /// <summary>Stop everything and start the profile's saved assignments.</summary>
+    /// <summary>Saved ranges this apply could not use, filled by RestoreEffects and
+    /// read by whoever called it. A profile stores LED POSITIONS, so it is only
+    /// valid for the hardware it was saved on.</summary>
+    readonly List<string> _staleRanges = new();
+
     void RestoreEffects(List<EffectAssignment>? saved)
     {
+        _staleRanges.Clear();
         _engine.StopAll();
         foreach (var fx in _targetFx.Values) { fx.Channel = null; fx.Choice = Effects[0]; }
 
@@ -90,7 +96,17 @@ public sealed partial class MainViewModel
             var dev = Devices.FirstOrDefault(d => d.Name == a.Device);
             var choice = ChoiceByName(a.Effect);
             if (dev == null || choice?.Effect == null) continue;
-            if (a.Offset < 0 || a.Count <= 0 || (long)a.Offset + a.Count > dev.LedCount) continue;
+            if (a.Offset < 0 || a.Count <= 0 || (long)a.Offset + a.Count > dev.LedCount)
+            {
+                // A range that no longer fits is DROPPED, and used to be dropped in
+                // silence. Adding a strip to a board renumbers every LED after it, so
+                // this is what a saved effect does the moment somebody changes their
+                // hardware: part of the device goes dark and nothing says why.
+                if (a.Count > 0 && a.Offset >= 0)
+                    _staleRanges.Add($"{a.Effect} on {dev.Name} covered LEDs {a.Offset}-{a.Offset + a.Count - 1}, "
+                                   + $"but it only has {dev.LedCount}");
+                continue;
+            }
 
             var fx = FxFor(dev, a.Offset, a.Count);
             fx.Choice = choice;
@@ -574,9 +590,15 @@ public sealed partial class MainViewModel
         // effect frame could land after the static write below and leave a
         // range frozen mid-effect until the next write.
         _engine.StopAll();
+        // Devices whose LED COUNT has changed since this profile was saved. A
+        // profile stores positions, so a board that gained a strip renumbers every
+        // LED after it and the saved colours land on the wrong ones.
+        var resized = new List<string>();
         foreach (var d in Devices)
         {
             if (!p.DeviceFrames.TryGetValue(d.Name, out var hex) || hex == null) continue;   // "Device": null keeps its current colors
+            if (hex.Length != d.LedCount)
+                resized.Add($"{d.Name} had {hex.Length} LEDs when {p.Name} was saved and has {d.LedCount} now");
             // An unparseable entry keeps that LED's current color (as before).
             var frame = FrameFor(d);
             var saved = new Rgb[Math.Min(frame.Length, hex.Length)];
@@ -591,6 +613,20 @@ public sealed partial class MainViewModel
         }
         ApplyCustomColors(p.CustomColors);
         RestoreEffects(p.Effects);
+        // Said ONCE, after both halves, because they are two symptoms of one thing
+        // and the user does not care which fired. Silence here cost an afternoon:
+        // a board gained a 30-LED strip, every zone after it moved, and a saved
+        // effect kept painting the LEDs that used to be somewhere else while a
+        // third of the board sat dark with nothing anywhere saying why.
+        if (!fromShow && (resized.Count > 0 || _staleRanges.Count > 0))
+        {
+            string detail = string.Join("; ", resized.Concat(_staleRanges));
+            UnifiedRgb.Core.Log.Warn("lighting", $"profile '{p.Name}' does not match this hardware: {detail}");
+            UnifiedRgb.Core.Automation.ActivityLog.Note(UnifiedRgb.Core.Automation.ActivityKind.Problem,
+                $"'{p.Name}' was saved for different hardware, so part of your lighting is not being set. "
+                + "A profile remembers LED positions, and adding or removing a strip moves them. "
+                + $"Set this profile up the way you want it now and save it again. ({detail})");
+        }
         SyncWheelToSelection();     // wheel reflects what the profile applied
         // The pump screen too. Every profile apply comes through here - the
         // button, a hotkey, an app rule, a schedule, a show step - so this is

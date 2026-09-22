@@ -256,6 +256,44 @@ static class LcdScenesSuite
             t.Equal("Screen", b.Screen, "legacy migration preserves the independent startup screen");
             vm.Shows.Stop();
 
+            t.Section("a profile saved for different hardware says so");
+            {
+                // Real case: a board gained a 30-LED strip, every zone after it moved,
+                // and the saved effect kept painting LEDs that used to be somewhere
+                // else while a third of the board sat dark. Both halves were silent -
+                // the frame was truncated to the saved length, and an effect whose
+                // range no longer fitted was dropped with a bare continue.
+                var grown = new FakeDevice { Name = "Grown board", LedCount = 79 };
+                vm.Devices.Add(grown);
+                var stale = new Profile { Name = "Saved at 50" };
+                stale.DeviceFrames["Grown board"] = Enumerable.Repeat("FF0000", 50).ToArray();
+                stale.Effects = new() { new EffectAssignment { Device = "Grown board", Effect = "Matrix", Offset = 0, Count = 50 },
+                                        new EffectAssignment { Device = "Grown board", Effect = "Matrix", Offset = 60, Count = 40 } };
+                vm.Profiles.Add(stale); profiles.Profiles.Add(stale);
+                UnifiedRgb.Core.Automation.ActivityLog.Shared.Clear();
+                vm.ApplyProfile(stale);
+
+                var said = UnifiedRgb.Core.Automation.ActivityLog.Shared.Snapshot()
+                    .Where(e => e.Kind == UnifiedRgb.Core.Automation.ActivityKind.Problem).ToList();
+                t.Equal(1, said.Count, "one notice, not one per symptom");
+                string text = said.Count > 0 ? said[0].Text : "";
+                t.Check(text.Contains("50") && text.Contains("79"),
+                    "...naming both counts, so the user can see what changed");
+                t.Check(text.Contains("save it again"), "...and what to do about it");
+                t.Check(text.Contains("60-99"), "...including the effect whose range no longer fits");
+
+                // A profile that DOES match is silent - this fires on every apply.
+                var fits = new Profile { Name = "Saved at 79" };
+                fits.DeviceFrames["Grown board"] = Enumerable.Repeat("00FF00", 79).ToArray();
+                vm.Profiles.Add(fits); profiles.Profiles.Add(fits);
+                UnifiedRgb.Core.Automation.ActivityLog.Shared.Clear();
+                vm.ApplyProfile(fits);
+                t.Equal(0, UnifiedRgb.Core.Automation.ActivityLog.Shared.Snapshot()
+                         .Count(e => e.Kind == UnifiedRgb.Core.Automation.ActivityKind.Problem),
+                    "a profile that matches the hardware says nothing");
+                vm.Devices.Remove(grown);
+            }
+
             t.Section("a running show cannot write its step into the user's profile");
             // While a show runs, the desk is whatever STEP is up - and a step is
             // somebody else's profile. SaveActiveProfile is reached from the close
