@@ -1,4 +1,4 @@
-namespace UnifiedRgb.Core.Net;
+﻿namespace UnifiedRgb.Core.Net;
 
 /// <summary>Opt-in installer for the UnifiedRGB Chroma interop shim, so Chroma
 /// SDK apps (Wallpaper Engine, Chroma games) drive UnifiedRGB devices. Chroma
@@ -54,7 +54,7 @@ public static class ChromaShimInstaller
             var vi = System.Diagnostics.FileVersionInfo.GetVersionInfo(path);
             return (vi.ProductName ?? "").Contains("UnifiedRGB", StringComparison.OrdinalIgnoreCase);
         }
-        catch { return false; }
+        catch { return false; }   // cannot read the installed shim's version, so treat it as needing replacement
     }
 
     /// <summary>Install the shim. Backs up a real Razer DLL first so its gear

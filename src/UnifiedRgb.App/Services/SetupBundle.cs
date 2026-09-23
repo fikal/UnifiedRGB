@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
@@ -514,14 +514,14 @@ public static class SetupBundle
             }
             catch
             {
-                try { File.Delete(temp); } catch { }
+                try { File.Delete(temp); } catch { }   // the export already failed and is rethrown below; do not mask it
                 throw;
             }
 
             result.Ok = true;
             result.FileCount = texts.Count;
             result.AssetCount = assets.Count;
-            try { result.Bytes = new FileInfo(destinationPath).Length; } catch { }
+            try { result.Bytes = new FileInfo(destinationPath).Length; } catch { }   // size is for the summary line; the export itself succeeded
             Log.Info("bundle", $"exported {result.FileCount} file(s) and {result.AssetCount} image(s) to {destinationPath}");
             return result;
         }
@@ -1189,7 +1189,7 @@ public static class SetupBundle
                 string.Equals(x.OriginalPath, b.BackgroundImagePath, StringComparison.OrdinalIgnoreCase));
             if (asset == null || !preview.AssetBytes.TryGetValue(asset.Path, out var bytes)) return false;
             try { if (!File.ReadAllBytes(a.BackgroundImagePath!).AsSpan().SequenceEqual(bytes)) return false; }
-            catch { return false; }
+            catch { return false; }   // unreadable on disk: treat as different, which is the safe answer
         }
         return a.BgX == b.BgX && a.BgY == b.BgY && a.BgW == b.BgW && a.BgH == b.BgH;
     }
@@ -1310,6 +1310,8 @@ public static class SetupBundle
             string? target = TargetPathFor(e);
             if (target == null) continue;
             string current = "";
+            // Unreadable counts as "" and therefore as different, so the import
+            // writes rather than skipping a file it could not compare.
             try { if (File.Exists(target)) current = File.ReadAllText(target); } catch { }
             if (!string.Equals(current, p.Texts[KeyOf(e)], StringComparison.Ordinal)) { anyDifferent = true; break; }
         }
@@ -1478,6 +1480,8 @@ public static class SetupBundle
         }
         catch (Exception ex)
         {
+            // Rolling back what we unpacked. result.Problem below is what the
+            // user sees; a file we cannot remove is not worth a second message.
             foreach (string f in extracted) { try { File.Delete(f); } catch { } }
             result.Problem = $"a screen background could not be saved: {ex.Message}";
             return result;
@@ -1537,7 +1541,7 @@ public static class SetupBundle
             // nothing: the names are content-addressed, so a re-import matches
             // them rather than piling up copies.
             if (stranded.Count == 0)
-                foreach (string f in extracted) { try { File.Delete(f); } catch { } }
+                foreach (string f in extracted) { try { File.Delete(f); } catch { } }   // content-addressed names: a leftover is matched, not duplicated
 
             // Only claim the rollback worked when it did. A failed undo used to
             // report the same reassuring sentence as a clean one, so the user was
@@ -1752,7 +1756,7 @@ public static class SetupBundle
 
         JsonObject? incoming;
         try { incoming = JsonNode.Parse(text) as JsonObject; }
-        catch { return; }
+        catch { return; }   // a bundle whose settings blob is not JSON: keep ours, change nothing
         if (incoming == null) return;
 
         // Work on the file as NODES, not as SettingsData, so a setting this
@@ -1765,7 +1769,7 @@ public static class SetupBundle
                 ? File.ReadAllText(AppPaths.Config("settings.json")) : "{}";
             mine = JsonNode.Parse(currentText) as JsonObject ?? new JsonObject();
         }
-        catch { mine = new JsonObject(); }
+        catch { mine = new JsonObject(); }   // our own settings.json is unreadable; merge onto empty rather than refuse the import
 
         var applied = new List<string>();
 

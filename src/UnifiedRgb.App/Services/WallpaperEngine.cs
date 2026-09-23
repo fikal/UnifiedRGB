@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using Microsoft.Win32;
@@ -105,7 +105,7 @@ public static class WallpaperEngine
         // parser: "path"  "D:\\SteamLibrary".
         string text;
         try { text = File.ReadAllText(vdf); }
-        catch { yield break; }
+        catch { yield break; }   // Wallpaper Engine's config is absent or not the shape we expect: no profiles, rather than a crash
 
         foreach (System.Text.RegularExpressions.Match m in
                  System.Text.RegularExpressions.Regex.Matches(text, "\"path\"\\s*\"([^\"]+)\""))
@@ -131,7 +131,7 @@ public static class WallpaperEngine
                 Path.TrimEndingDirectorySeparator(Path.GetFullPath(b)),
                 StringComparison.OrdinalIgnoreCase);
         }
-        catch { return string.Equals(a, b, StringComparison.OrdinalIgnoreCase); }
+        catch { return string.Equals(a, b, StringComparison.OrdinalIgnoreCase); }   // not comparable as paths (a device path, a bad character): fall back to comparing the names
     }
 
     static string? SteamRoot()

@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using UnifiedRgb.Core.Native;
 
 namespace UnifiedRgb.Core.Devices;
@@ -1025,7 +1025,7 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         {
             for (int k = 0; k < 4; k++)
             {
-                try { SendPwmFrame(target); } catch { break; }
+                try { SendPwmFrame(target); } catch { break; }   // the dongle went away mid-handoff; stop following rather than spin on a dead handle
                 Thread.Sleep(80);
             }
         }

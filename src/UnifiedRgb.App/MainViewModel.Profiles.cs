@@ -162,7 +162,7 @@ public sealed partial class MainViewModel
             fx.Reverse = a.Reverse;
 
             Rgb baseColor = Current;
-            try { if (a.BaseColor != null) baseColor = Rgb.FromHex(a.BaseColor); } catch { }
+            try { if (a.BaseColor != null) baseColor = Rgb.FromHex(a.BaseColor); } catch { }   // a saved tint that is not a hex colour falls back to the current pick, above
 
             // Restore per-target settings, then resolve through the ONE shared
             // instance-resolution path (ResolveEffect) — no third copy.

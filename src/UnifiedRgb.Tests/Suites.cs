@@ -1,4 +1,4 @@
-namespace UnifiedRgb.Tests;
+﻿namespace UnifiedRgb.Tests;
 
 /*-----------------------------------------------------------*\
 | The suite table: the one place that says what exists and     |
@@ -61,5 +61,8 @@ static class Suites
         ("Net",           NetSuite.Run),
         ("OpenRgbBridge", OpenRgbBridgeSuite.Run),
         ("SupportBundle", SupportBundleSuite.Run),
+
+        // Reads the SOURCE, so it depends on nothing and goes last.
+        ("SilentFailure", SilentFailureSuite.Run),
     };
 }

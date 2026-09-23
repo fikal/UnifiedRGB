@@ -9,6 +9,17 @@ namespace UnifiedRgb.App.Services;
 /// status flows back through the two callbacks.</summary>
 public sealed class UpdateService(Action<string> setText, Action<bool> setAvailable)
 {
+
+    /// <summary>Delete a file we are finished with. A failure here is the one
+    /// kind genuinely not worth a word: every caller is cleaning up a temp
+    /// payload or a marker AFTER the real outcome has already been logged, and
+    /// a file left behind is swept by PruneStale on the next launch. Said once,
+    /// here, rather than nine bare catches that a reader has to judge one by one.</summary>
+    static void TryDelete(string? path)
+    {
+        if (string.IsNullOrEmpty(path)) return;
+        try { File.Delete(path); } catch { /* see the summary: cleanup only, and PruneStale gets it later */ }
+    }
     bool _running;
 
     // Every install-attempt file lives NEXT TO the exe (see InstallAsync for
@@ -68,7 +79,7 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
                     Log.Info("update", $"self-update to {wanted} completed");
                 else
                     Log.Warn("update", $"previous self-update to {wanted} did NOT take effect (still {local.ToString(3)})");
-                try { File.Delete(marker); } catch { }
+                TryDelete(marker);
             }
 
             // The swap script reports how its run ended ("ok N" = swapped on
@@ -77,10 +88,11 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             foreach (string f in Directory.EnumerateFiles(dir, SwapResultPattern))
             {
                 string result;
-                try { result = File.ReadAllText(f).Trim(); } catch { continue; }
+                try { result = File.ReadAllText(f).Trim(); }
+                catch { continue; }   // the swap script is still writing it; read it next launch
                 if (result.StartsWith("ok", StringComparison.Ordinal)) Log.Info("update", $"swap script: {result}");
                 else Log.Warn("update", $"swap script FAILED: {result} — exe was not replaced (still locked, or the folder needs admin rights)");
-                try { File.Delete(f); } catch { }
+                TryDelete(f);
             }
 
             // Leftovers: a download that died mid-way, or a swap that gave up
@@ -90,7 +102,8 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             var cutoff = DateTime.UtcNow - TimeSpan.FromHours(1);
             foreach (string pattern in new[] { "UnifiedRGB-update-*.exe", "unifiedrgb-update-*.bat" })
                 foreach (string f in Directory.EnumerateFiles(dir, pattern))
-                    try { if (File.GetLastWriteTimeUtc(f) < cutoff) File.Delete(f); } catch { }
+                    try { if (File.GetLastWriteTimeUtc(f) < cutoff) File.Delete(f); }
+                    catch { }   // a leftover being read or written right now; it will age out again
         }
         catch (Exception ex) { Log.Warn("update", $"previous-install cleanup failed: {ex.Message}"); }
     }
@@ -153,7 +166,7 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             {
                 // A dropped connection leaves a partial payload; never strand
                 // it beside the exe (every retry would add another).
-                try { File.Delete(temp); } catch { }
+                TryDelete(temp);
                 setText(err); _running = false; return;
             }
 
@@ -164,7 +177,7 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             if (!string.Equals(got, sha, StringComparison.OrdinalIgnoreCase))
             {
                 Log.Error("update", $"download hash mismatch: expected {sha}, got {got}");
-                try { File.Delete(temp); } catch { }
+                TryDelete(temp);
                 setText("update failed integrity check — try again");
                 _running = false;
                 return;
@@ -183,7 +196,7 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
                 if (!Version.TryParse(vi.FileVersion, out var raw))
                 {
                     Log.Error("update", $"downloaded build has no readable version ('{vi.FileVersion}') — refusing swap");
-                    try { File.Delete(temp); } catch { }
+                    TryDelete(temp);
                     setText("update payload looked wrong — not installed");
                     _running = false;
                     return;
@@ -192,7 +205,7 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
                 if (dl <= LocalVersion)
                 {
                     Log.Error("update", $"downloaded build is {dl} — not newer than installed {LocalVersion}; the '{latest?.Version}' feed entry points at a stale binary. Refusing swap (bad publish).");
-                    try { File.Delete(temp); } catch { }
+                    TryDelete(temp);
                     setText($"update payload was v{dl}, not newer — not installed");
                     _running = false;
                     return;
@@ -285,8 +298,8 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             }
             void Abandon()
             {
-                try { File.Delete(temp); } catch { }
-                try { File.Delete(bat); } catch { }
+                TryDelete(temp);
+                TryDelete(bat);
                 _running = false;
                 setText($"Update v{latest?.Version} — install");
                 Log.Info("update", "install cancelled at the close prompt - nothing swapped");
@@ -319,8 +332,8 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             // write, cmd start): the staged payload must not stay behind.
             if (!handedOff)
             {
-                try { if (staged != null) File.Delete(staged); } catch { }
-                try { if (script != null) File.Delete(script); } catch { }
+                TryDelete(staged);
+                TryDelete(script);
             }
             _running = false;
             throw;

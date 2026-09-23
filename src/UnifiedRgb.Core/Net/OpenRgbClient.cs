@@ -1,4 +1,4 @@
-using System.Net.Sockets;
+﻿using System.Net.Sockets;
 using System.Text;
 
 namespace UnifiedRgb.Core.Net;
@@ -86,7 +86,7 @@ public sealed class OpenRgbClient : IDisposable
         }
         catch
         {
-            try { c.Dispose(); } catch { }
+            try { c.Dispose(); } catch { }   // the connect already failed and is rethrown below; do not mask it
             throw;
         }
     }
@@ -99,7 +99,7 @@ public sealed class OpenRgbClient : IDisposable
             using var probe = new TcpClient();
             return probe.ConnectAsync(host, port).Wait(timeoutMs) && probe.Connected;
         }
-        catch { return false; }
+        catch { return false; }   // a probe: unreachable, refused and timed out all mean the same 'no'
     }
 
     public int GetControllerCount()
@@ -320,7 +320,7 @@ public sealed class OpenRgbClient : IDisposable
 
     public void Dispose()
     {
-        try { _s?.Dispose(); } catch { }
-        try { _tcp.Dispose(); } catch { }
+        try { _s?.Dispose(); } catch { }   // teardown; a stream that already faulted has nothing left to release
+        try { _tcp.Dispose(); } catch { }   // ...and the socket with it
     }
 }

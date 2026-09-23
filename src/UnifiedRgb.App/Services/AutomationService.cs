@@ -704,7 +704,7 @@ public sealed class AutomationService : IDisposable
                     if (cpid != 0 && cpid != framePid)
                     {
                         try { using var cp = Process.GetProcessById((int)cpid); hosted = cp.ProcessName; }
-                        catch { }
+                        catch { }   // the hosted child exited while we were resolving it; hosted stays null and the scan continues
                         return hosted == null;   // stop once resolved
                     }
                     return true;
@@ -714,7 +714,7 @@ public sealed class AutomationService : IDisposable
             _lastHwnd = h; _lastPid = pid; _lastName = name; _lastAt = now;
             return name;
         }
-        catch { _lastHwnd = IntPtr.Zero; _lastPid = 0; _lastName = null; return null; }
+        catch { _lastHwnd = IntPtr.Zero; _lastPid = 0; _lastName = null; return null; }   // the foreground window went away mid-query; drop the cache and report 'no app' rather than a stale one
     }
 
     public void Dispose()
@@ -726,7 +726,7 @@ public sealed class AutomationService : IDisposable
         SystemEvents.SessionSwitch -= OnSessionSwitch;
         // Never leave the lights off because we're exiting mid-state.
         if (_mode is AutomationMode.Locked or AutomationMode.ScheduleOff && _returnPoint != null)
-            try { _vm.RestoreState(_returnPoint); } catch { }
+            try { _vm.RestoreState(_returnPoint); } catch { }   // we are being disposed; a failed restore must not stop the rest of the teardown
         // And never leave the gate SHUT. LightsOff sets LightsSuppressed and
         // only this service clears it, so a disposed service left it true - which
         // also mutes the SDK bridge. Harmless while the only Dispose is process

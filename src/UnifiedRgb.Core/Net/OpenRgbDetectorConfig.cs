@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace UnifiedRgb.Core.Net;
@@ -25,7 +25,7 @@ static class OpenRgbDetectorConfig
             if (JsonNode.Parse(File.ReadAllText(path))?["Detectors"]?["detectors"] is not JsonObject det) return new();
             return det.Where(kv => kv.Value?.GetValue<bool>() != false).Select(kv => kv.Key).ToList();
         }
-        catch { return new(); }
+        catch { return new(); }   // absent or malformed detector config: start from an empty set, which is the default anyway
     }
 
     /// <summary>Run <paramref name="mutate"/> over the detector map and write

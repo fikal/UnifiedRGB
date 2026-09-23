@@ -314,7 +314,7 @@ public sealed class ProfileStore
     internal static T? PeekJson<T>(string path) where T : class
     {
         try { return File.Exists(path) ? JsonSerializer.Deserialize<T>(File.ReadAllText(path)) : null; }
-        catch { return null; }
+        catch { return null; }   // a PEEK: absent, unreadable and malformed are all 'nothing to show'. The loading path says so loudly; this one must not.
     }
 
     internal static T? LoadJson<T>(string path, string what) where T : class
@@ -339,7 +339,7 @@ public sealed class ProfileStore
         catch (Exception ex)
         {
             string backup = path + $".corrupt-{DateTime.Now:yyyyMMdd-HHmmss}";
-            try { File.Copy(path, backup, overwrite: true); } catch { backup = "(backup failed)"; }
+            try { File.Copy(path, backup, overwrite: true); } catch { backup = "(backup failed)"; }   // the corrupt original could not be copied aside; the warning below prints this instead of a path
             Log.Warn("store", $"{what} unreadable ({ex.Message}) - starting from defaults; original kept at {backup}");
             return null;
         }
@@ -564,7 +564,7 @@ public sealed class ProfileStore
             p!.WaitForExit(4000);
             if (p.ExitCode == 0) return true;
         }
-        catch { }
+        catch { }   // schtasks is absent or refused; fall through to the legacy Run entry below
         // Legacy: the old HKCU Run entry.
         using var key = Registry.CurrentUser.OpenSubKey(RunKey);
         return key?.GetValue(RunValue) != null;

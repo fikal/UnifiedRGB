@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using UnifiedRgb.Core.Native;
 
 namespace UnifiedRgb.Core.Devices;
@@ -156,7 +156,7 @@ public sealed class LogitechG403 : IRgbDevice
         {
             if (!tried.Add(iface.ProductId)) continue;   // one probe per device
             IHidTransport? hid = null;
-            try { hid = HidNative.Open(iface.Path); } catch { continue; }
+            try { hid = HidNative.Open(iface.Path); } catch { continue; }   // another process owns this collection; try the next one rather than claim nothing
             if (hid.FeatureOnly)
             {
                 // Open for feature reports only: HID++ needs the output/input

@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 
 namespace UnifiedRgb.Core.Net;
 
@@ -39,13 +39,13 @@ static class OpenRgbCrashBisect
             if (File.Exists(StatePath(configDir)))
                 return JsonSerializer.Deserialize<State>(File.ReadAllText(StatePath(configDir))) ?? new State();
         }
-        catch { }
+        catch { }   // no bisect state yet, or it is unreadable: start the search from scratch
         return new State();
     }
 
     static void SaveState(string configDir, State s)
     {
-        try { SafeFile.WriteAllText(StatePath(configDir), JsonSerializer.Serialize(s)); } catch { }
+        try { SafeFile.WriteAllText(StatePath(configDir), JsonSerializer.Serialize(s)); } catch { }   // the state is a hint for the next run; losing it costs one extra bisect step
     }
 
     /// <summary>Detectors the bisect has convicted on this machine.</summary>

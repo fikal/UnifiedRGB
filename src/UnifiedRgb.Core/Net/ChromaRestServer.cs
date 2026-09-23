@@ -71,7 +71,7 @@ public static class ChromaRestServer
             var l = _listener;
             _listener = null;
             if (l == null) return;
-            try { l.Stop(); l.Close(); } catch { }
+            try { l.Stop(); l.Close(); } catch { }   // already faulted or closed; the field is nulled above either way
             Log.Info("chroma", "REST server stopped");
         }
     }
@@ -82,7 +82,7 @@ public static class ChromaRestServer
         {
             HttpListenerContext ctx;
             try { ctx = l.GetContext(); }
-            catch { break; }
+            catch { break; }   // the listener was stopped underneath us: that IS the exit signal
             // Off-thread: a slow frame parse must not delay the next accept.
             ThreadPool.QueueUserWorkItem(static c =>
             {
@@ -216,7 +216,7 @@ public static class ChromaRestServer
             // showing its "waiting" breath while a host is clearly present.
             ChromaFeed.PushGrid(new[] { new Rgb(0, 0, 0) }, 1, 1, type);
         }
-        catch { }
+        catch { }   // a malformed effect body from a game: drop the frame, keep serving
     }
 
     // Chroma color int = COLORREF 0x00BBGGRR (R low byte).
@@ -240,7 +240,7 @@ public static class ChromaRestServer
             }
             return sb.Length == 0 ? "?" : sb.ToString();
         }
-        catch { return "?"; }
+        catch { return "?"; }   // unparseable request body; "?" is what the log line prints
     }
 
     static void Json(HttpListenerContext ctx, byte[] bytes)

@@ -213,7 +213,7 @@ public sealed class OpenRgbServer : IDisposable
         _stopping = true;
         _sweep?.Dispose(); _sweep = null;
         bool wasListening = _listener != null;
-        try { _listener?.Stop(); } catch { }
+        try { _listener?.Stop(); } catch { }   // already stopped or faulted; the field is nulled either way so Running goes false
         _listener = null;
         // Off the registry before the clients are torn down, so a bridge probe
         // racing this Stop sees the port as free-to-be-OpenRGB's, not ours.
@@ -646,6 +646,6 @@ public sealed class OpenRgbServer : IDisposable
         // Per-client scratch for the write path (see ApplyWrite / ApplySingleLed).
         public Rgb[] Colors = new Rgb[64];
         public readonly Rgb[] OneColor = new Rgb[1];
-        public void Close() { try { Tcp.Close(); } catch { } }
+        public void Close() { try { Tcp.Close(); } catch { } }   // a client socket that is already gone; Close is the last thing we do to it
     }
 }

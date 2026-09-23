@@ -584,7 +584,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         if (hex is not { Length: > 0 }) return;
         fx.Palette.Clear();
-        foreach (var h in hex) { try { fx.Palette.Add(Rgb.FromHex(h)); } catch { } }
+        foreach (var h in hex) { try { fx.Palette.Add(Rgb.FromHex(h)); } catch { } }   // a hand-edited swatch that is not a hex colour is skipped, not fatal (the fallback below covers an empty palette)
         if (fx.Palette.Count == 0) fx.Palette.Add(SafeWhite);
     }
 
@@ -753,7 +753,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         if (hex == null) return;
         CustomColors.Clear();
-        foreach (var h in hex) { try { CustomColors.Add(Rgb.FromHex(h)); } catch { } }
+        foreach (var h in hex) { try { CustomColors.Add(Rgb.FromHex(h)); } catch { } }   // ...same for the saved custom swatches
         PersistCustomColors();
     }
 
@@ -2220,7 +2220,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // Wireless fans: optionally follow the SYS fan header's hardware curve
         // while the app is away (must run before the device is disposed).
         if (_store.Settings.LianHandoffOnExit)
-            try { LianLiWireless.Instance?.FollowPwmLine(); } catch { }
+            try { LianLiWireless.Instance?.FollowPwmLine(); } catch { }   // best effort on the way out: the handoff is a nicety and the device is about to close
         Cooling.Stop(); _bake.Stop();
         _battery.Stop();          // no more polls onto handles that are about to close
         // Flush a pending debounced settings save so a drag right before exit sticks.

@@ -149,7 +149,7 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IH
             for (int i = 0; i < 4; i++) rpm[i] = (data[i * 2] << 8) | data[i * 2 + 1];
             return rpm;
         }
-        catch { return null; }
+        catch { return null; }   // no hub on this interface; the caller tries the next one
     }
 
     /// <summary>Send a short command as a feature report, padded to the device's
@@ -265,7 +265,7 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IH
             Log.Info("LianLiUni", "layout file changed - asking for a rescan");
             LayoutFileChanged?.Invoke();
         }
-        catch { }
+        catch { }   // the hub stopped answering mid-write; the next frame re-sends in full
     }
 
     /// <summary>The optional layout file was edited. Raised on the hub's own
@@ -276,7 +276,7 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IH
     /// writes so the feature-report read never overlaps an output-report burst.</summary>
     void RefreshSpeeds()
     {
-        try { lock (_lock) _lastSpeeds = ReadGroupSpeeds(); } catch { }
+        try { lock (_lock) _lastSpeeds = ReadGroupSpeeds(); } catch { }   // a speed read is telemetry only, and a stale number is better than a torn one
     }
 
     /// <summary>Last-read fan RPM for one connector (0 = stopped/absent).

@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO.Compression;
 using System.Net.Http;
 using System.Text.Json.Nodes;
@@ -149,9 +149,9 @@ public static class OpenRgbManager
         // Clear the previous build but keep config/ (detector state).
         foreach (var dir in Directory.GetDirectories(Root))
             if (!string.Equals(dir, ConfigDir, StringComparison.OrdinalIgnoreCase))
-                try { Directory.Delete(dir, recursive: true); } catch { }
+                try { Directory.Delete(dir, recursive: true); } catch { }   // a file still held: the fresh unpack overwrites it anyway
         foreach (var file in Directory.GetFiles(Root))
-            try { File.Delete(file); } catch { }
+            try { File.Delete(file); } catch { }   // ...same: leftovers are overwritten, and a half-cleared root is not a reason to refuse the install
 
         status?.Invoke("downloading OpenRGB...");
         string zipPath = Path.Combine(Root, "openrgb.zip");
@@ -362,7 +362,7 @@ public static class OpenRgbManager
     {
         if (_proc is not { HasExited: true }) return true;   // port gone but process alive: hung mid-scan, as before
         int code;
-        try { code = _proc.ExitCode; } catch { return true; }
+        try { code = _proc.ExitCode; } catch { return true; }   // race: it exited between the check and here. Treat as "worth retrying".
         if (code == 3) return true;                            // CRT abort()
         uint u = (uint)code;
         if (u < 0x80000000) return false;                      // ordinary exit code
@@ -373,7 +373,7 @@ public static class OpenRgbManager
     static string ExitCodeText()
     {
         try { return _proc is { HasExited: true } p ? $"exit code 0x{(uint)p.ExitCode:X8}" : "server port closed"; }
-        catch { return "exit code unknown"; }
+        catch { return "exit code unknown"; }   // this string only ever goes INTO a log line the caller writes
     }
 
     /// <summary>Wait for the device list to settle. False = the server died
@@ -523,7 +523,7 @@ public static class OpenRgbManager
                 var running = new List<string>();
                 foreach (var p in Process.GetProcesses())
                 {
-                    try { running.Add(p.ProcessName); } catch { }
+                    try { running.Add(p.ProcessName); } catch { }   // process died mid-enumeration; it is not a conflict if it is gone
                     finally { p.Dispose(); }
                 }
                 foreach (var (procPrefix, detPrefix, reason) in ConflictPolicies)
@@ -610,7 +610,7 @@ public static class OpenRgbManager
 
     static bool HasExited(Process p)
     {
-        try { return p.HasExited; } catch { return true; }
+        try { return p.HasExited; } catch { return true; }   // no handle or access: cannot be waited on, so treat it as gone
     }
 
     /// <summary>Tail of the newest log OpenRGB wrote in our managed config dir.

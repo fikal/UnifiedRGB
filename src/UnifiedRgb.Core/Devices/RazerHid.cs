@@ -277,7 +277,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
     {
         List<HidNative.HidInfo> all;
         try { all = HidNative.FindAll(); }
-        catch { return false; }
+        catch { return false; }   // the handle went away between the open and the exchange; treat as 'not this one'
         foreach (var iface in all.Where(IsControlCollection).Where(h => h.ProductId == HYPERFLUX_V2))
         {
             try
