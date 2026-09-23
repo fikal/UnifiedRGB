@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
@@ -34,6 +34,17 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         AddDateCommand     = new RelayCommand(_ => AddElement(LcdElementKind.Date), _ => Available);
         AddTempCommand     = new RelayCommand(_ => AddElement(LcdElementKind.CpuTemp), _ => Available);
         AddTextCommand     = new RelayCommand(_ => AddElement(LcdElementKind.Text), _ => Available);
+
+        // Buttons whose handler was one line of "call this". No CanExecute
+        // added: Undo and Redo are already gated by IsEnabled="{Binding CanUndo}"
+        // in the XAML, and adding a second gate would be two places to be wrong.
+        UndoCommand        = new RelayCommand(_ => Undo());
+        RedoCommand        = new RelayCommand(_ => Redo());
+        BgFillCommand      = new RelayCommand(_ => BgFill());
+        BgFitCommand       = new RelayCommand(_ => BgFit());
+        BgCenterCommand    = new RelayCommand(_ => BgCenter());
+        SaveSceneCommand   = new RelayCommand(_ => SaveScene());
+        DeleteSceneCommand = new RelayCommand(_ => DeleteScene());
         AddGpuTempCommand  = new RelayCommand(_ => AddElement(LcdElementKind.GpuTemp), _ => Available);
         AddFanRpmCommand   = new RelayCommand(_ => AddElement(LcdElementKind.FanRpm), _ => Available);
         AddNetSpeedCommand = new RelayCommand(_ => AddElement(LcdElementKind.NetSpeed), _ => Available);
@@ -46,6 +57,14 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         ClearBackgroundCommand  = new RelayCommand(_ => ClearBackground(), _ => Available);
         PickElementColorCommand = new RelayCommand(o => { if (_selectedElement != null && o is Rgb c) _selectedElement.ColorHex = c.ToString().TrimStart('#'); });
     }
+
+    public ICommand UndoCommand { get; }
+    public ICommand RedoCommand { get; }
+    public ICommand BgFillCommand { get; }
+    public ICommand BgFitCommand { get; }
+    public ICommand BgCenterCommand { get; }
+    public ICommand SaveSceneCommand { get; }
+    public ICommand DeleteSceneCommand { get; }
 
     public ICommand AddTimeCommand { get; }
     public ICommand AddDateCommand { get; }

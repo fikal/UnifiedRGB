@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 
 namespace UnifiedRgb.App.Views;
@@ -40,8 +40,6 @@ public partial class SettingsPane : UserControl
         catch (Exception ex) { UnifiedRgb.Core.Log.Warn("ui", $"could not open {e.Uri}: {ex.Message}"); }
         e.Handled = true;
     }
-
-    void SaveProfileAsNew_Click(object sender, RoutedEventArgs e) => VM.SaveProfileAsNew();
 
     void PauseShow_Click(object sender, RoutedEventArgs e) => VM.Shows.TogglePaused();
 
@@ -192,5 +190,4 @@ public partial class SettingsPane : UserControl
         Dialogs.ShowBlurred(owner, new ExitBehaviorWindow(VM) { Owner = owner });
     }
 
-    void SendSupport_Click(object sender, RoutedEventArgs e) => VM.SendToSupport();
 }

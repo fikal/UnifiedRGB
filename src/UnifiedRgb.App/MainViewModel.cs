@@ -1443,6 +1443,24 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         _store.SaveSettings();
     }
 
+    /*-----------------------------------------------------*    | Buttons whose handler was one line of "call this".      |
+    |                                                         |
+    | A Click handler that does nothing but forward to the     |
+    | view-model is wiring pretending to be code: the XAML can  |
+    | say the same thing directly, and the code-behind then has |
+    | nothing in it that a reader has to check. The handlers    |
+    | that open a dialog, flip a popup or need the Window stay  |
+    | where they are - moving those would put a Window in the   |
+    | view-model, which is worse than the handler was.          |
+    \*-----------------------------------------------------*/
+    public ICommand EnableDeviceCommand { get; }
+    public ICommand InstallUpdateCommand { get; }
+    public ICommand DisableDeviceCommand { get; }
+    public ICommand WakeLightsCommand { get; }
+    public ICommand ToggleFavoriteCommand { get; }
+    public ICommand SaveProfileAsNewCommand { get; }
+    public ICommand SendToSupportCommand { get; }
+
     public ICommand ApplyToTargetCommand { get; }
     public ICommand ApplyToAllCommand { get; }
     public ICommand ApplyToDeskCommand { get; }
@@ -1488,6 +1506,17 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             applyProfile: n => ApplyProfileByName(n, fromShow: true),
             profileNames: () => Profiles.Select(p => p.Name),
             currentProfile: () => _appliedProfile);
+        // The one-line handlers, verbatim: same call, no CanExecute added, so
+        // every one of these behaves exactly as the Click it replaced. The
+        // buttons that were already disabled by an IsEnabled binding keep it.
+        EnableDeviceCommand     = new RelayCommand(_ => EnableSelectedDevice());
+        InstallUpdateCommand    = new RelayCommand(_ => InstallUpdate());
+        DisableDeviceCommand    = new RelayCommand(_ => DisableSelectedDevice());
+        WakeLightsCommand       = new RelayCommand(_ => WakeLights());
+        ToggleFavoriteCommand   = new RelayCommand(_ => ToggleCurrentEffectFavorite());
+        SaveProfileAsNewCommand = new RelayCommand(_ => SaveProfileAsNew());
+        SendToSupportCommand    = new RelayCommand(_ => SendToSupport());
+
         ApplyToTargetCommand = new RelayCommand(_ => ApplyToTarget(), _ => HasSelection);
         ApplyToAllCommand    = new RelayCommand(_ => ApplyModeToAll(), _ => Devices.Count > 0);
         ApplyToDeskCommand   = new RelayCommand(_ => ApplyModeToDesk(), _ => Devices.Count > 0);

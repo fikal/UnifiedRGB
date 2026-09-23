@@ -257,7 +257,6 @@ public partial class MainWindow : Window
     /*-----------------------------------------------------*\
     | Custom title bar + the shell-level buttons             |
     \*-----------------------------------------------------*/
-    void EnableDevice_Click(object sender, RoutedEventArgs e) => _vm.EnableSelectedDevice();
 
     // Open-only: pressing the gear while already on Settings stays put
     // (Back and the nav list are the ways out) — the old toggle bounced
@@ -265,8 +264,6 @@ public partial class MainWindow : Window
     void Settings_Click(object sender, RoutedEventArgs e) => _vm.IsSettingsOpen = true;
 
     void Show_Click(object sender, RoutedEventArgs e) => _vm.IsShowOpen = true;
-
-    void Update_Click(object sender, RoutedEventArgs e) => _vm.InstallUpdate();
 
     void Min_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
     void Max_Click(object sender, RoutedEventArgs e) =>

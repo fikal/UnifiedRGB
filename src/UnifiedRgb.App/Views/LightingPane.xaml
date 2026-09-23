@@ -40,7 +40,7 @@
                                 Click="ArrangeFans_Click"
                                 ToolTip="Drag the fans into the order they sit in your case; split them into groups"/>
                         <Button Content="Disable" Style="{StaticResource Danger}" Height="28" Padding="12,0"
-                                Margin="0,0,14,0" Click="DisableDevice_Click"
+                                Margin="0,0,14,0" Command="{Binding DisableDeviceCommand}"
                                 ToolTip="Stop controlling this device so other RGB software can own it. Profiles keep its saved colors and effects."/>
                         <Button Content="Headers…" Height="28" Padding="12,0" Margin="0,0,14,0"
                                 Visibility="{Binding IsGigabyteSelected, Converter={StaticResource BoolToVis}}"
@@ -63,7 +63,7 @@
                         <TextBlock Text="Night mode has the lights off. Changing anything wakes them."
                                    VerticalAlignment="Center" Opacity="0.9"/>
                         <Button Content="Wake lights" Style="{StaticResource Accent}" Padding="12,4"
-                                Margin="12,0,0,0" Click="WakeLights_Click"/>
+                                Margin="12,0,0,0" Command="{Binding WakeLightsCommand}"/>
                     </StackPanel>
                 </Border>
 
@@ -176,7 +176,7 @@
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
                                 <TextBlock Text="{Binding CurrentEffectName}" FontSize="17" FontWeight="SemiBold"
                                            VerticalAlignment="Center"/>
-                                <Button Click="TitleStar_Click" Cursor="Hand" VerticalAlignment="Center" Margin="8,1,0,0"
+                                <Button Command="{Binding ToggleFavoriteCommand}" Cursor="Hand" VerticalAlignment="Center" Margin="8,1,0,0"
                                         Visibility="{Binding ShowCurrentEffectStar, Converter={StaticResource BoolToVis}}"
                                         ToolTip="Favorite = shows as a pill">
                                     <Button.Template>

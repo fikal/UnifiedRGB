@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Text.RegularExpressions;
 
 namespace UnifiedRgb.Tests;
@@ -69,6 +69,56 @@ static class BindingsSuite
         }
 
         t.Check(checkedCount > 0, $"the scan found window-relative bindings to check ({checkedCount})");
+
+        CommandsExist(t);
+    }
+
+    /// <summary>A Command binding that does not resolve is the same silent
+    /// failure one floor down: the button simply does nothing, with no
+    /// exception and nothing in the log. Every one of these replaced a Click
+    /// handler that definitely worked, so a typo in the property name or in
+    /// WHICH view-model it went on would be a button that quietly stopped
+    /// working - and the compiler cannot see it, because XAML binds by name.
+    ///
+    /// Each pane's DataContext is its own view-model (LcdDesignerPane gets the
+    /// designer, CoolingPane the cooling one), which is the part easiest to get
+    /// wrong, so the expected type is named here rather than inferred.</summary>
+    static void CommandsExist(Harness t)
+    {
+        t.Section("every converted button still has something to call");
+
+        (Type Owner, string Command)[] expected =
+        {
+            (typeof(UnifiedRgb.App.MainViewModel), "EnableDeviceCommand"),
+            (typeof(UnifiedRgb.App.MainViewModel), "InstallUpdateCommand"),
+            (typeof(UnifiedRgb.App.MainViewModel), "DisableDeviceCommand"),
+            (typeof(UnifiedRgb.App.MainViewModel), "WakeLightsCommand"),
+            (typeof(UnifiedRgb.App.MainViewModel), "ToggleFavoriteCommand"),
+            (typeof(UnifiedRgb.App.MainViewModel), "SaveProfileAsNewCommand"),
+            (typeof(UnifiedRgb.App.MainViewModel), "SendToSupportCommand"),
+            (typeof(UnifiedRgb.App.CoolingViewModel), "ApplyToAllFansCommand"),
+            (typeof(UnifiedRgb.App.LcdDesignerViewModel), "UndoCommand"),
+            (typeof(UnifiedRgb.App.LcdDesignerViewModel), "RedoCommand"),
+            (typeof(UnifiedRgb.App.LcdDesignerViewModel), "BgFillCommand"),
+            (typeof(UnifiedRgb.App.LcdDesignerViewModel), "BgFitCommand"),
+            (typeof(UnifiedRgb.App.LcdDesignerViewModel), "BgCenterCommand"),
+            (typeof(UnifiedRgb.App.LcdDesignerViewModel), "SaveSceneCommand"),
+            (typeof(UnifiedRgb.App.LcdDesignerViewModel), "DeleteSceneCommand"),
+        };
+
+        foreach (var (owner, name) in expected)
+        {
+            var prop = owner.GetProperty(name);
+            t.Check(prop != null && typeof(System.Windows.Input.ICommand).IsAssignableFrom(prop.PropertyType),
+                $"{owner.Name}.{name} exists and is an ICommand");
+        }
+
+        // ...and nothing still points at a handler that has been deleted. A
+        // leftover Click= naming a method that no longer exists does not
+        // compile, so the risk runs the other way: a Command binding whose
+        // property was never added. The names above cover that; this counts
+        // them so the list cannot silently empty itself.
+        t.Equal(15, expected.Length, "all fifteen converted buttons are covered");
     }
 
     /// <summary>Every {Binding ...} in the text, with nested braces respected.

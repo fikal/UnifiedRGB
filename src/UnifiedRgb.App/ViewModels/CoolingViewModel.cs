@@ -1,7 +1,8 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows;
+using System.Windows.Input;
 using System.Windows.Threading;
 using UnifiedRgb.Core.Devices;
 using UnifiedRgb.Core.Sensors;
@@ -28,7 +29,11 @@ public sealed class CoolingViewModel : INotifyPropertyChanged
     {
         _settings = settings; _saveSettings = saveSettings;
         _isGigabyteBoard = isGigabyteBoard; _pawnIoMissing = pawnIoMissing; _isOnScreen = isOnScreen;
+        // Was a one-line Click handler; the XAML can say it directly.
+        ApplyToAllFansCommand = new RelayCommand(_ => ApplyToAllFans());
     }
+
+    public ICommand ApplyToAllFansCommand { get; }
 
     /// <summary>Start the 1.5 s refresh (pane shown). It self-stops when the
     /// pane leaves the screen or the window hides to the tray, so it never

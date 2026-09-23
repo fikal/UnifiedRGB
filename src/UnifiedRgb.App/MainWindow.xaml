@@ -1,4 +1,4 @@
-<Window x:Class="UnifiedRgb.App.MainWindow"
+﻿<Window x:Class="UnifiedRgb.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:UnifiedRgb.App"
@@ -38,7 +38,7 @@
                            Margin="7,1,0,0" VerticalAlignment="Center"/>
                 <Button Content="{Binding UpdateText}" Style="{StaticResource Accent}"
                         FontSize="11" Padding="10,4" Margin="14,0,0,0" VerticalAlignment="Center"
-                        WindowChrome.IsHitTestVisibleInChrome="True" Click="Update_Click"
+                        WindowChrome.IsHitTestVisibleInChrome="True" Command="{Binding InstallUpdateCommand}"
                         Visibility="{Binding UpdateAvailable, Converter={StaticResource BoolToVis}}"
                         ToolTip="Download the new build and restart"/>
             </StackPanel>
@@ -88,7 +88,7 @@
                 <TextBlock Text="This device is disabled. Other RGB software can control it. Its colors stay saved in your profiles."
                            Opacity="0.6" TextWrapping="Wrap" TextAlignment="Center" Margin="0,12,0,0"/>
                 <Button Content="Enable device" Style="{StaticResource Accent}"
-                        HorizontalAlignment="Center" Margin="0,20,0,0" Click="EnableDevice_Click"/>
+                        HorizontalAlignment="Center" Margin="0,20,0,0" Command="{Binding EnableDeviceCommand}"/>
             </StackPanel>
 
             <views:SettingsPane/>

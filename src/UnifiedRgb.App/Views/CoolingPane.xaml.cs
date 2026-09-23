@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 
@@ -26,8 +26,6 @@ public partial class CoolingPane : UserControl
     {
         if ((sender as FrameworkElement)?.DataContext is FanRowModel fan) fan.Identify();
     }
-
-    void ApplyToAllFans_Click(object sender, RoutedEventArgs e) => VM.ApplyToAllFans();
 
     void Pills_PreviewKeyDown(object sender, KeyEventArgs e) => KeyPolicy.MouseFirst(e);
 

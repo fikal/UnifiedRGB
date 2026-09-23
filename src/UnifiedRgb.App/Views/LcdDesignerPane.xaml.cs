@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -77,9 +77,6 @@ public partial class LcdDesignerPane : UserControl
                       Clamp(_bgStartY + (p.Y - _dragOrigin.Y), -VM.LcdBgH + 24, 216));
         }
     }
-
-    void Undo_Click(object sender, RoutedEventArgs e) => VM.Undo();
-    void Redo_Click(object sender, RoutedEventArgs e) => VM.Redo();
 
     void Design_Up(object sender, MouseButtonEventArgs e)
     {
@@ -219,13 +216,7 @@ public partial class LcdDesignerPane : UserControl
         VM.TouchLcd();
     }
 
-    void BgFill_Click(object sender, RoutedEventArgs e) => VM.BgFill();
-    void BgFit_Click(object sender, RoutedEventArgs e) => VM.BgFit();
-    void BgCenter_Click(object sender, RoutedEventArgs e) => VM.BgCenter();
-
     /*--- scenes & sequences ---*/
-    void SaveScene_Click(object sender, RoutedEventArgs e) => VM.SaveScene();
-    void DeleteScene_Click(object sender, RoutedEventArgs e) => VM.DeleteScene();
     // The show handlers left with the show: see ShowPane.
 
     static double Clamp(double v, double lo, double hi) => v < lo ? lo : v > hi ? hi : v;

@@ -58,10 +58,6 @@ public partial class LightingPane : UserControl
         if (Owner is { } owner) HeaderConfigDialog.Show(owner, VM);   // blurs + pauses the previews itself
     }
 
-    void DisableDevice_Click(object sender, RoutedEventArgs e) => VM.DisableSelectedDevice();
-
-    void WakeLights_Click(object sender, RoutedEventArgs e) => VM.WakeLights();
-
     /*--- All-effects browser: pick applies, star pins to the pills ---*/
     void AllEffects_Click(object sender, RoutedEventArgs e)
     {
@@ -99,8 +95,6 @@ public partial class LightingPane : UserControl
     }), System.Windows.Threading.DispatcherPriority.Background);
 
     void Pills_PreviewKeyDown(object sender, KeyEventArgs e) => KeyPolicy.MouseFirst(e);
-
-    void TitleStar_Click(object sender, RoutedEventArgs e) => VM.ToggleCurrentEffectFavorite();
 
     void PaletteLibrary_Click(object sender, RoutedEventArgs e)
         => new PaletteLibraryWindow(VM) { Owner = Owner }.ShowDialog();
