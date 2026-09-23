@@ -309,20 +309,11 @@ public sealed partial class MainViewModel
         return (slice, sel);
     }
 
-    // Preview geometry cache. Positions, footprints, style and aspect depend
-    // only on the selected (device, zone), so the 30 Hz preview pull hands back
-    // the SAME instances until the selection changes: LedPreview's
-    // ReferenceEquals fast path then skips its per-tick array compares, and the
-    // per-pull LedPositions/LedGeometry copies + bounds pass are gone. Only the
-    // colors buffer is refilled per pull (in place - the preview copies what it
-    // shows into its own array).
-    IRgbDevice? _viewDev; RgbZone? _viewZone;
-    IReadOnlyList<LedPos>? _viewSrcPos; IReadOnlyList<LedRect>? _viewSrcGeo;
-    Rgb[] _viewColors = Array.Empty<Rgb>();
-    LedPos[] _viewPos = Array.Empty<LedPos>();
-    LedRect[]? _viewRects;
-    PreviewStyle _viewStyle;
-    double _viewAspect;
+    /// <summary>The preview's geometry cache. Its own object because those
+    /// seven fields were only ever read and written together, and because the
+    /// contract it keeps - same instances until the selection changes - is
+    /// worth being able to test on its own. See TargetPreview.</summary>
+    readonly TargetPreview _preview = new();
 
     /// <summary>Live view of the selected target for the preview: per-LED colors
     /// (with any running effect composited over its range), positions normalized
@@ -330,45 +321,8 @@ public sealed partial class MainViewModel
     public (Rgb[] Colors, LedPos[] Pos, PreviewStyle Style, double Aspect, LedRect[]? Rects) CurrentTargetView()
     {
         var dev = SelectedDevice;
-        if (dev == null || _isLcdSelected)
-            return (Array.Empty<Rgb>(), Array.Empty<LedPos>(), PreviewStyle.Dots, 1.6, null);
-        var zone = SelectedTarget?.Zone;
-        int off = zone?.Offset ?? 0;
-        int count = zone?.Count ?? dev.LedCount;
-
-        if (!ReferenceEquals(dev, _viewDev) || !ReferenceEquals(zone, _viewZone) || _viewPos.Length != count
-            || !ReferenceEquals(dev.LedPositions, _viewSrcPos) || !ReferenceEquals(dev.LedGeometry, _viewSrcGeo))
-            RebuildViewGeometry(dev, zone, off, count);
-
-        var frame = ComposedFrame(dev);
-        var colors = _viewColors;
-        for (int i = 0; i < count; i++)
-            colors[i] = off + i < frame.Length ? frame[off + i] : Rgb.Black;
-        return (colors, _viewPos, _viewStyle, _viewAspect, _viewRects);
-    }
-
-    void RebuildViewGeometry(IRgbDevice dev, RgbZone? zone, int off, int count)
-    {
-        _viewDev = dev; _viewZone = zone;
-        _viewSrcPos = dev.LedPositions; _viewSrcGeo = dev.LedGeometry;
-        _viewColors = new Rgb[count];
-
-        // Positions normalized to the target's bounding box - the engine's own
-        // math, so the preview geometry can never drift from what effects render.
-        var pos = EffectEngine.ZonePositions(dev, off, count);
-
-        var style = zone?.IsFan == true ? PreviewStyle.Fan
-                  : dev.Type == DeviceType.Keyboard ? PreviewStyle.Keys
-                  : PreviewStyle.Dots;
-        double aspect = style == PreviewStyle.Fan ? 1.0
-                      : dev.PreviewAspect ?? (style == PreviewStyle.Keys ? 3.2 : 1.6);
-
-        // Exact per-LED footprints, only when the target is the whole device
-        // (zone slices fall back to the position-based heuristic).
-        LedRect[]? rects = null;
-        if (zone == null && dev.LedGeometry is { } g && g.Count == dev.LedCount)
-            rects = g.ToArray();
-        _viewPos = pos; _viewStyle = style; _viewAspect = aspect; _viewRects = rects;
+        if (dev == null || _isLcdSelected) return TargetPreview.Empty;
+        return _preview.Of(dev, SelectedTarget?.Zone, ComposedFrame(dev));
     }
 
     /// <summary>Click-to-paint one LED of the selected target with the current color.</summary>
