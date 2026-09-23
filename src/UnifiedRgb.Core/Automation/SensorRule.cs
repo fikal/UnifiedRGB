@@ -31,12 +31,25 @@ public sealed class SensorRule : System.ComponentModel.INotifyPropertyChanged
     /// <summary>True: fire at or above Threshold. False: at or below.</summary>
     public bool Above { get => _above; set => Set(ref _above, value, nameof(Above)); }
 
-    public double Threshold { get => _threshold; set => Set(ref _threshold, value, nameof(Threshold)); }
+    /// <summary>Finite only, here in the model and not just in the dialog.
+    /// double.TryParse accepts "NaN" and overflows "1e999" to infinity, and a
+    /// rule carrying either could not be written: the JSON serializer refuses
+    /// non-finite numbers, the settings save failed, and because the rules share
+    /// settings.json with everything else, NO preference persisted from then on
+    /// while the previous file sat on disk looking fine. A non-finite value is
+    /// dropped and the old one re-announced, so a bound box snaps back to it.</summary>
+    public double Threshold { get => _threshold; set => SetFinite(ref _threshold, value, nameof(Threshold)); }
 
     /// <summary>How far past the threshold the value must come back before the
     /// rule releases, so a reading sitting on the line cannot chatter. Applied
     /// on the far side of the threshold from the trigger direction.</summary>
-    public double ClearMargin { get => _clearMargin; set => Set(ref _clearMargin, value, nameof(ClearMargin)); }
+    public double ClearMargin { get => _clearMargin; set => SetFinite(ref _clearMargin, value, nameof(ClearMargin)); }
+
+    void SetFinite(ref double field, double value, string name)
+    {
+        if (double.IsFinite(value)) Set(ref field, value, name);
+        else Changed(name);   // refused: whoever is bound re-reads the value that stands
+    }
 
     /// <summary>The condition must hold this long before the rule flips, in
     /// EITHER direction. With ClearMargin this makes a toggle faster than once

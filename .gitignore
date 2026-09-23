@@ -20,3 +20,7 @@ native/chroma-shim/version32.res
 # and now does so in CI too - a tracked copy makes release.ps1 refuse to
 # release on a "dirty tree" for a file nobody edited)
 native/chroma-shim/version.res
+
+# Review write-ups: working notes, not part of the shipped source.
+CODE_REVIEW_*.md
+RELEASE_REVIEW_*.md

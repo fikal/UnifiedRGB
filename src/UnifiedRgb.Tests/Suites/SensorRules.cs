@@ -181,5 +181,30 @@ static class SensorRulesSuite
             var hit = new SensorHit(SensorSources.CpuTemp, "Alert", 87.4, 85, true);
             t.Equal("CPU temp 87°C at or above 85°C", hit.Describe(), "sensor hit describes itself");
         }
+
+        t.Section("Sensor rules: a non-finite threshold is refused (2026-09-23 review, finding 8)");
+        {
+            // The hazard: the serializer will not write these, so a rule carrying
+            // one made settings.json unsaveable - every preference after it
+            // looked saved and was not, while the old file sat there intact.
+            bool refusedByJson = false;
+            try { JsonSerializer.Serialize(new SensorRule().Threshold * double.NaN); }
+            catch (ArgumentException) { refusedByJson = true; }
+            t.Check(refusedByJson, "the serializer refuses a NaN, which is why the model must");
+
+            var r = new SensorRule { Threshold = 70, ClearMargin = 3 };
+            int announced = 0;
+            r.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(SensorRule.Threshold)) announced++; };
+            r.Threshold = double.NaN;
+            t.Equal(70.0, r.Threshold, "NaN is refused and the old threshold stands (was: accepted)");
+            t.Equal(1, announced, "...and re-announced, so a bound box snaps back to it");
+            r.Threshold = double.PositiveInfinity;
+            t.Equal(70.0, r.Threshold, "an overflow to infinity is refused too");
+            r.ClearMargin = double.NegativeInfinity;
+            t.Equal(3.0, r.ClearMargin, "the clear margin has the same invariant");
+            r.Threshold = 72.5;
+            t.Equal(72.5, r.Threshold, "an ordinary number still goes in");
+            t.Check(JsonSerializer.Serialize(r).Contains("72.5"), "and the rule serializes");
+        }
     }
 }

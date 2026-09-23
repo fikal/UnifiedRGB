@@ -160,6 +160,19 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         public double Speed = 1.0;
         public bool Reverse;
         public EffectEngine.Channel? Channel;
+        /// <summary>The range this state is for, so a device's intent can be
+        /// found without parsing the key. Null on the placeholder state used
+        /// while nothing is selected.</summary>
+        public string? Device;
+        public int Offset, Count;
+        /// <summary>The base colour of an effect wanted on this range but not
+        /// running because an SDK client holds the device: the one the claim
+        /// stopped (StopEffectsOn), or one chosen while the client held on
+        /// (ApplyFxRange, RestoreEffects, the wizard). Non-null IS the marker
+        /// that the range has a start pending. RestoreDevice consumes it when
+        /// the client lets go, and CaptureEffects records it so a profile saved
+        /// meanwhile keeps the choice rather than filing the device as static.</summary>
+        public Rgb? HeldBase;
     }
 
     // Direction is expressed as the sign of the speed the engine runs at: a
@@ -187,7 +200,12 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
 
     /// <summary>The per-range effect state for a device range, created on first
     /// use (was five hand-rolled key-format + TryGetValue copies).</summary>
-    TargetFx FxFor(IRgbDevice dev, int off, int count) => FxForKey($"{dev.Name}|{off}|{count}");
+    TargetFx FxFor(IRgbDevice dev, int off, int count)
+    {
+        var fx = FxForKey($"{dev.Name}|{off}|{count}");
+        fx.Device = dev.Name; fx.Offset = off; fx.Count = count;
+        return fx;
+    }
 
     TargetFx FxForKey(string key)
     {
@@ -1034,9 +1052,13 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         RequestLianRebake();
     }
 
-    /// <summary>Raised whenever a profile is applied; the automation uses it
-    /// to stop protecting a stale snapshot after the user picks something new
-    /// mid-override (its own applies are guarded out).</summary>
+    /// <summary>Raised whenever the user changes the lighting: a profile applied
+    /// by button or hotkey (ApplyProfile), or a colour, effect, palette or speed
+    /// changed by hand (MarkDirty). The automation uses it to stop protecting a
+    /// stale snapshot after the user picks something new mid-override (its own
+    /// applies are guarded out). Hand edits used to be silent here, so ending
+    /// an app rule restored the baseline from before it over the colour the
+    /// user had just chosen during it.</summary>
     public event Action? LightingApplied;
 
     /// <summary>Select + load a profile (the hotkey/automation entry point).</summary>
@@ -1108,7 +1130,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             try
             {
                 _selected = value;
-                OnChanged(); OnChanged(nameof(HasSelection)); OnChanged(nameof(ShowPreview)); OnChanged(nameof(ShowGenericPreview)); OnChanged(nameof(ShowLianEditor)); OnChanged(nameof(IsGigabyteSelected)); OnChanged(nameof(IsRazerSelected)); OnChanged(nameof(ShowLianSpeed)); OnChanged(nameof(LianSpeedScale)); OnChanged(nameof(LianSpeedText)); OnChanged(nameof(ShowLianUni)); OnChanged(nameof(LianUniFanCount)); OnChanged(nameof(LianUniChannel)); OnChanged(nameof(LianUniChannelOptions)); OnChanged(nameof(ShowLianUniChannel));
+                OnChanged(); OnChanged(nameof(HasSelection)); OnChanged(nameof(ShowPreview)); OnChanged(nameof(ShowGenericPreview)); OnChanged(nameof(ShowLianEditor)); OnChanged(nameof(IsGigabyteSelected)); OnChanged(nameof(ShowLianSpeed)); OnChanged(nameof(LianSpeedScale)); OnChanged(nameof(LianSpeedText)); OnChanged(nameof(ShowLianUni)); OnChanged(nameof(LianUniFanCount)); OnChanged(nameof(LianUniChannel)); OnChanged(nameof(LianUniChannelOptions)); OnChanged(nameof(ShowLianUniChannel));
                 // Pills follow the device's fan list (wireless carries the
                 // user's arranged stack order; wired is Fan 1..N).
                 LianFanNames = (value as ILianFanDevice)?.LianFanNames.ToList() ?? new List<string>();
@@ -1382,12 +1404,16 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
 
             if (choice.Effect is { } fx)
             {
-                tfx.Channel = EffectBlockedByClient(d) ? null
-                            : _engine.Start(d, 0, d.LedCount, FrameFor(d), fx, 1.0, new Rgb(255, 255, 255));
+                var starterBase = new Rgb(255, 255, 255);
+                bool blocked = EffectBlockedByClient(d);
+                tfx.HeldBase = blocked ? starterBase : null;
+                tfx.Channel = blocked ? null
+                            : _engine.Start(d, 0, d.LedCount, FrameFor(d), fx, 1.0, starterBase);
             }
             else
             {
                 tfx.Channel = null;                         // Static: paint a solid frame
+                tfx.HeldBase = null;
                 Array.Fill(FrameFor(d), color);
                 _lighting.PushFrame(d);
             }
@@ -1787,15 +1813,21 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
                       bool canvas = false)
     {
         // Assignments this range replaces (overlap on the same device) fall
-        // back to Static so their pills read correctly when revisited.
+        // back to Static so their pills read correctly when revisited. A start
+        // still pending behind an SDK client counts as much as a running one:
+        // both would come back on the same LEDs when the client lets go.
         foreach (var other in _targetFx.Values)
         {
-            if (other == fx || other.Channel == null) continue;
-            var c = other.Channel;
-            if (ReferenceEquals(c.Device, dev) && off < c.Offset + c.Count && c.Offset < off + count)
+            if (other == fx) continue;
+            bool overlaps = other.Channel is { } c
+                ? ReferenceEquals(c.Device, dev) && off < c.Offset + c.Count && c.Offset < off + count
+                : other.HeldBase != null && other.Device == dev.Name
+                  && off < other.Offset + other.Count && other.Offset < off + count;
+            if (overlaps)
             {
                 other.Choice = Effects[0];
                 other.Channel = null;
+                other.HeldBase = null;
             }
         }
 
@@ -1803,8 +1835,14 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             _engine.StopRange(dev, off, count);
             fx.Channel = null;
+            fx.HeldBase = null;
             _lighting.RestoreStatics(dev, off, count);
             RequestLianRebake();
+            // A change like any other: Breathing to Static returned here before
+            // the dirty mark, so the profile still read as applied and unchanged,
+            // the close prompt never asked, and the automation was not told
+            // that the desk had moved on from its baseline.
+            MarkDirty();
             return;
         }
 
@@ -1826,7 +1864,9 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // The desk is a mode: with it on, every effect renders across it. The
         // canvas argument is what turns it ON for a "Whole desk" apply; once on,
         // it applies to everything.
-        fx.Channel = EffectBlockedByClient(dev) ? null
+        bool blocked = EffectBlockedByClient(dev);
+        fx.HeldBase = blocked ? bc : null;
+        fx.Channel = blocked ? null
                    : _engine.Start(dev, off, count, FrameFor(dev), effect, SignedSpeed(fx), bc,
                                    CanvasPositions(dev, off, count));
         RequestLianRebake();
@@ -1838,11 +1878,10 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     /// would be repainted over at the client's rate (a flicker fight, and on
     /// the board a fan header re-streamed per SDK write). The client took the
     /// device with our effects stopped (BeginExternal); starting one now is
-    /// refused the same way. The assignment is NOT kept: the client's release
-    /// restores the snapshot taken when it claimed the device, which predates
-    /// this choice, and a profile saved meanwhile records the device as static
-    /// (CaptureEffects skips a target with no channel) - the same outcome as
-    /// picking the effect before the client arrived.</summary>
+    /// refused the same way. The choice IS kept, as a pending start with its
+    /// base colour (TargetFx.HeldBase): the client's release brings the device
+    /// back from what the user wants for it NOW (RestoreDevice), and a profile
+    /// saved meanwhile records the effect they chose, not "static".</summary>
     bool EffectBlockedByClient(IRgbDevice dev)
     {
         if (!_sdkHeld.Contains(dev) && !_lighting.IsClaimed(dev)) return false;
@@ -1946,7 +1985,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // the click look like it did nothing. Stop every channel and reset
         // every target's mode to Static first, then paint.
         _engine.StopAll();
-        foreach (var fx in _targetFx.Values) { fx.Channel = null; fx.Choice = Effects[0]; }
+        foreach (var fx in _targetFx.Values) { fx.Channel = null; fx.Choice = Effects[0]; fx.HeldBase = null; }
         NotifyModeChanged();
 
         foreach (var d in Devices)

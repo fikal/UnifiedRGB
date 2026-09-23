@@ -40,7 +40,22 @@ public sealed class LcdController : IDisposable
     /// <summary>Raised on the UI thread each refresh, so the editor can update.</summary>
     public event Action? Ticked;
 
-    LcdController(ThermalrightLcd lcd) { _lcd = lcd; }
+    /// <summary>Raised on the UI thread once the panel has refused
+    /// LostAfterFailures frames in a row: the handle is dead (the panel was
+    /// unplugged, or re-enumerated under a new path after a resume) and no
+    /// amount of resyncing the same handle will bring it back. The designer
+    /// answers by letting this controller go and looking for the panel afresh.
+    /// Raised once; the loop keeps retrying quietly until it is stopped, so a
+    /// listener that chooses not to reopen loses nothing.</summary>
+    public event Action? Lost;
+
+    /// <summary>Consecutive failed frames before the panel is declared lost.
+    /// Each failure already costs a 500 ms pause and a handshake, so four is
+    /// a few seconds of a panel that answers nothing - not a single bad
+    /// report. Settable so the harness does not have to wait that long.</summary>
+    internal int LostAfterFailures = 4;
+
+    internal LcdController(ThermalrightLcd lcd) { _lcd = lcd; }
 
     public static LcdController? TryStart()
     {
@@ -51,6 +66,7 @@ public sealed class LcdController : IDisposable
     /// <summary>Begin the 1 Hz refresh loop (call after Design is assigned).</summary>
     public void Start()
     {
+        _ui = Dispatcher.CurrentDispatcher;
         var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         timer.Tick += (_, _) => Tick();
         timer.Start();
@@ -61,6 +77,7 @@ public sealed class LcdController : IDisposable
         _streamThread.Start();
     }
     DispatcherTimer? _timerRef;
+    Dispatcher? _ui;   // the thread Start ran on, where Lost is delivered
 
     /// <summary>Send frames back-to-back, TRCC-style. The panel firmware falls
     /// back to its built-in screen whenever the stream goes idle for a few
@@ -77,6 +94,8 @@ public sealed class LcdController : IDisposable
         int sent = 0; long msSum = 0;
         var report = DateTime.UtcNow;
         byte[]? lastSent = null;
+        int failures = 0;
+        bool lostSaid = false;
         while (!_stop)
         {
             byte[]? frame;
@@ -92,6 +111,15 @@ public sealed class LcdController : IDisposable
             catch (Exception ex)
             {
                 UnifiedRgb.Core.Log.Occasional("lcd", "lcd", $"frame send failed: {ex.Message}");
+                // A run of refusals is not a bad report, it is a handle with no
+                // panel behind it any more. Resync cannot fix that: it talks to
+                // the same handle. Say so, once, to whoever can reopen it.
+                if (++failures >= LostAfterFailures && !lostSaid && !_stop)
+                {
+                    lostSaid = true;
+                    UnifiedRgb.Core.Log.Warn("lcd", $"the panel refused {failures} frames in a row; treating it as unplugged");
+                    _ui?.BeginInvoke(new Action(() => { if (!_stop) Lost?.Invoke(); }));
+                }
                 Thread.Sleep(500);
                 // A frame that stopped part way left the panel's parser waiting
                 // for the rest of it, so the next frame's header would be eaten
@@ -100,6 +128,7 @@ public sealed class LcdController : IDisposable
                 continue;   // lastSent untouched: a failed frame is retried promptly
             }
             finally { Volatile.Write(ref _sending, null); }
+            failures = 0;
             lastSent = frame;
             long ms = Environment.TickCount64 - t0;
             sent++; msSum += ms;
@@ -643,7 +672,10 @@ public sealed class LcdController : IDisposable
     /// element's ClockSize (diameter). Refreshed each tick alongside the text.</summary>
     public static ImageSource RenderClockImage(LcdElement e)
     {
-        double r = Math.Max(4, e.FontSize);
+        // Bounded here as well as at load: this allocates a bitmap twice the
+        // radius on a side, every second the designer is open, and the element
+        // may have arrived through an import that never saw the slider.
+        double r = double.IsFinite(e.FontSize) ? Math.Clamp(e.FontSize, 4, LcdDesign.MaxFontSize) : 40;
         int d = (int)Math.Ceiling(r * 2);
         var visual = new DrawingVisual();
         using (var dc = visual.RenderOpen())
@@ -652,6 +684,18 @@ public sealed class LcdController : IDisposable
         rtb.Render(visual);
         rtb.Freeze();
         return rtb;
+    }
+
+    /// <summary>Stop rendering and publishing, on the thread that started it.
+    /// The stream thread notices on its next slice. Split from Dispose so a
+    /// designer letting a dead panel go can do the dispatcher-bound half here
+    /// and the blocking half (the join, the handle close) off the UI thread:
+    /// the join can wait out a stalled write, and the whole window stalling
+    /// with it is the one visible cost of an unplug.</summary>
+    public void Detach()
+    {
+        _stop = true;
+        _timerRef?.Stop();
     }
 
     public void Dispose()

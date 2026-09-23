@@ -165,10 +165,28 @@ public sealed class LcdDesign
         return d == null ? Default() : Normalize(d);
     }
 
+    /// <summary>The largest size an element can be. The slider stops at 120 and
+    /// the panel is 320 x 240, so nothing above this is a design choice; it is
+    /// a number from a file. The editor rasterizes a clock face into a bitmap
+    /// TWICE this wide, so the bound is what keeps an imported design from
+    /// asking for a bitmap the size of a wall - or, past int.MaxValue, for an
+    /// impossible one, which threw on every refresh tick.</summary>
+    public const double MaxFontSize = 400;
+
+    /// <summary>The farthest an element or the background may sit from the
+    /// panel. Same reasoning: off the panel is off the panel, and a coordinate
+    /// in the billions only exercises WPF's layout in ways nobody meant.</summary>
+    public const double MaxOffset = 10_000;
+
+    /// <summary>The largest background rect, the editor's own limit.</summary>
+    public const double MaxBgSize = 2000;
+
     /// <summary>Same treatment the scene store gets: an explicit null in the
     /// JSON defeats the property initializer, and every consumer here walks
     /// Elements without checking. Non-finite coordinates are dropped too - they
-    /// survive a JSON round-trip and then poison WPF layout with NaN.</summary>
+    /// survive a JSON round-trip and then poison WPF layout with NaN - and
+    /// finite ones are clamped to the limits the editor's own controls impose,
+    /// because an import is the one way past the sliders.</summary>
     internal static LcdDesign Normalize(LcdDesign? d)
     {
         d ??= new LcdDesign();
@@ -177,16 +195,21 @@ public sealed class LcdDesign
         {
             e.Text ??= "";
             e.ColorHex ??= "FFFFFF";
-            if (!double.IsFinite(e.X)) e.X = 0;
-            if (!double.IsFinite(e.Y)) e.Y = 0;
-            if (!double.IsFinite(e.FontSize) || e.FontSize <= 0) e.FontSize = 40;
+            e.X = Bounded(e.X, -MaxOffset, MaxOffset, 0);
+            e.Y = Bounded(e.Y, -MaxOffset, MaxOffset, 0);
+            e.FontSize = e.FontSize <= 0 ? 40 : Bounded(e.FontSize, 1, MaxFontSize, 40);
         }
-        if (!double.IsFinite(d.BgX)) d.BgX = 0;
-        if (!double.IsFinite(d.BgY)) d.BgY = 0;
-        if (!double.IsFinite(d.BgW) || d.BgW < 0) d.BgW = 0;   // 0 = "not set yet", re-derived on load
-        if (!double.IsFinite(d.BgH) || d.BgH < 0) d.BgH = 0;
+        d.BgX = Bounded(d.BgX, -MaxOffset, MaxOffset, 0);
+        d.BgY = Bounded(d.BgY, -MaxOffset, MaxOffset, 0);
+        d.BgW = Bounded(d.BgW, 0, MaxBgSize, 0);   // 0 = "not set yet", re-derived on load
+        d.BgH = Bounded(d.BgH, 0, MaxBgSize, 0);
         return d;
     }
+
+    /// <summary>A finite value clamped to [min, max]; a non-finite one becomes
+    /// the fallback.</summary>
+    static double Bounded(double v, double min, double max, double fallback)
+        => double.IsFinite(v) ? Math.Clamp(v, min, max) : fallback;
 
     /// <summary>Through the shared store writer (same indented JSON), so a
     /// file that could not be READ at launch is never overwritten with the

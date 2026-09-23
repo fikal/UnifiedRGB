@@ -82,6 +82,14 @@ public partial class SensorRulesWindow : Window
             AddHint.Text = "That threshold is not a number.";
             return;
         }
+        if (!double.IsFinite(threshold))
+        {
+            // TryParse takes "NaN" and turns "1e999" into infinity. Neither can
+            // be saved - the serializer refuses them - and a rule carrying one
+            // silently stopped every settings save from then on.
+            AddHint.Text = "That threshold is not a usable number.";
+            return;
+        }
         if (ProfilePick.SelectedItem is not string profile || profile.Length == 0)
         {
             AddHint.Text = "Choose which profile to apply. Save one first if the list is empty.";

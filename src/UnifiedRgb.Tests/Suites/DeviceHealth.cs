@@ -452,6 +452,38 @@ static class DeviceHealthSuite
             "after a bounded wait the recovery happens anyway - a permanently dark device is worse");
         t.Check(guard <= RecoveryPolicy.MaxBusyDeferrals + 1,
             "...and the bound is the one the policy advertises");
+
+        t.Section("recovery: a calibration session is waited for as long as it runs");
+        // The aid paints reference patches on device INSTANCES, and a rescan
+        // replaces every one of them: the patch vanishes and each slider move
+        // afterwards retries a dead handle. It used to share the client bound,
+        // so a calibration a minute long was rescanned out from under.
+        var calibrating = new RecoveryConditions(SdkClientHolds: false, LightsSuppressed: false, CalibrationRunning: true);
+        var r = new RecoveryPolicy();
+        r.Note(RecoveryReason.DeviceArrived, 0);
+        long at = RecoveryPolicy.DeviceSettleMs;
+        bool rescanned = false;
+        for (int i = 0; i < RecoveryPolicy.MaxBusyDeferrals * 3; i++)
+        {
+            if (r.Claim(at, calibrating).Action == RecoveryAction.Rescan) { rescanned = true; break; }
+            at += RecoveryPolicy.BusyRetryMs;
+        }
+        t.Check(!rescanned, "three times the client bound later, a running calibration is still deferred to (was: rescanned at about a minute)");
+        t.Check(r.Pending, "...with the recovery still pending, not dropped");
+        t.Equal(RecoveryAction.Rescan, r.Claim(at, Calm).Action, "and it runs the moment the session ends");
+
+        // A client hold is still bounded once the calibration is over: the two
+        // deferrals are independent, and the calibration wait does not use up
+        // the client's allowance either.
+        var both = new RecoveryConditions(SdkClientHolds: true, LightsSuppressed: false, CalibrationRunning: true);
+        var s = new RecoveryPolicy();
+        s.Note(RecoveryReason.DeviceArrived, 0);
+        long tick = RecoveryPolicy.DeviceSettleMs;
+        for (int i = 0; i < RecoveryPolicy.MaxBusyDeferrals * 2; i++) { s.Claim(tick, both); tick += RecoveryPolicy.BusyRetryMs; }
+        int clientWaits = 0;
+        while (s.Claim(tick, busy).Action == RecoveryAction.Wait && clientWaits++ < RecoveryPolicy.MaxBusyDeferrals + 5)
+            tick += RecoveryPolicy.BusyRetryMs;
+        t.Equal(RecoveryPolicy.MaxBusyDeferrals, clientWaits, "after the calibration ends the client still gets its full, bounded wait");
     }
 
     static void NeverRelightsADarkWindow(Harness t)

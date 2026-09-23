@@ -118,8 +118,8 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     }
 
     public string LcdBackgroundName =>
-        string.IsNullOrEmpty(_lcd?.Design.BackgroundImagePath) ? ""
-        : System.IO.Path.GetFileName(_lcd!.Design.BackgroundImagePath!);
+        string.IsNullOrEmpty(LiveDesign?.BackgroundImagePath) ? ""
+        : System.IO.Path.GetFileName(LiveDesign!.BackgroundImagePath!);
 
     /// <summary>Open the panel (if present), load the saved design and start
     /// rendering. Called once from the main view model's constructor.</summary>
@@ -135,17 +135,44 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         new() { Interval = TimeSpan.FromSeconds(3) };
     int _findAttempts;
 
+    /// <summary>How the panel is opened. The real one talks to HID; the harness
+    /// hands in controllers built on a fake transport, which is the only way
+    /// the unplug-and-return path can be driven without a panel to pull.</summary>
+    internal Func<LcdController?> OpenPanel = LcdController.TryStart;
+
+    /// <summary>The design the panel was showing when it stopped answering,
+    /// edits and all, kept while the panel is away so it goes straight back up
+    /// when the panel returns. Null when the panel has never been lost, in
+    /// which case an attach loads the design from disk as it always did.</summary>
+    LcdDesign? _retainedDesign;
+    bool _retainedOn = true;
+
+    /// <summary>The last thing asked of the panel while it was away - a
+    /// profile's screen, a pick from the Screens dropdown, an automation
+    /// restore, an imported current screen - replayed once the panel is back.
+    /// One request, the newest: each supersedes the one before, exactly as it
+    /// would have on a panel that was there. Without this a profile applied
+    /// during an unplug advanced the lighting to B while the returning panel
+    /// came back on A, the design it had retained, and a panel that turned up
+    /// late at startup never learned what the startup profile wanted.</summary>
+    Action? _whenBack;
+
+    void ReplayWhenBack()
+    {
+        var request = _whenBack;
+        _whenBack = null;
+        request?.Invoke();
+    }
+
     public void Start()
     {
-        _lcdSave.Tick += (_, _) => { _lcdSave.Stop(); _lcd?.Design.Save(); };
+        _lcdSave.Tick += (_, _) => { _lcdSave.Stop(); LiveDesign?.Save(); };
         // Editing has paused: the design as it stands is what the next undo
         // should return to.
         _undoSettle.Tick += (_, _) => SettleUndo();
         _history.Changed += NotifyHistory;
-
-        if (TryAttach(late: false)) return;
-
-        UnifiedRgb.Core.Log.Info("lcd", "no pump LCD yet, still looking");
+        // Wired before the first attempt, not only after a failed one: the
+        // finder also runs again after a panel that WAS open goes away.
         _find.Tick += (_, _) =>
         {
             if (TryAttach(late: true)) { _find.Stop(); return; }
@@ -157,8 +184,18 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
                 UnifiedRgb.Core.Log.Info("lcd", "still no pump LCD after a minute, checking occasionally from here");
             }
         };
+
+        if (TryAttach(late: false)) return;
+
+        UnifiedRgb.Core.Log.Info("lcd", "no pump LCD yet, still looking");
         _find.Start();
     }
+
+    /// <summary>The design the debounced save and the exit save write: the
+    /// panel's while it is open, the retained one while it is away. An edit
+    /// made in the last 700 ms before an unplug used to miss its save because
+    /// the tick found no panel to ask.</summary>
+    LcdDesign? LiveDesign => _lcd?.Design ?? _retainedDesign;
 
     /// <summary>Open the panel and bring everything that depends on it to life,
     /// or false when it is not there. Safe to call repeatedly.</summary>
@@ -169,31 +206,92 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     bool TryAttach(bool late)
     {
         if (_lcd != null) return true;
-        var lcd = LcdController.TryStart();
+        var lcd = OpenPanel();
         if (lcd == null) return false;
 
         _lcd = lcd;
-        _lcd.Design = LcdDesign.Load();
-        _cpuTemp = new PawnIoCpuTempProvider();
+        _cpuTemp ??= new PawnIoCpuTempProvider();
         _lcd.Temp = _cpuTemp;
-        foreach (var e in _lcd.Design.Elements) { LcdElements.Add(e); Hook(e); }
-        EnsureBgRect();   // migrate pre-rect designs to an explicit cover rect
-        _baseline = Snapshot();   // the loaded design is what the first edit undoes back to
+        _lcd.Lost += OnPanelLost;
+        bool returning = _retainedDesign != null;
+        if (returning)
+        {
+            // The panel is back: what it showed before it went, edits included.
+            // The editor still holds those elements, hooked, so nothing is
+            // reloaded or re-listed - the panel just resumes drawing it.
+            _lcd.Design = _retainedDesign!;
+            _lcd.On = _retainedOn;
+            _retainedDesign = null;
+        }
+        else
+        {
+            _lcd.Design = LcdDesign.Load();
+            foreach (var e in _lcd.Design.Elements) { LcdElements.Add(e); Hook(e); }
+            EnsureBgRect();   // migrate pre-rect designs to an explicit cover rect
+            _baseline = Snapshot();   // the loaded design is what the first edit undoes back to
+        }
         _lcd.Ticked += RefreshDisplays;
         _lcd.Start();
         OnChanged(nameof(Available));
         OnChanged(nameof(CpuTempUnavailable));
-        SelectLoadedScene();
-
-        UnifiedRgb.Core.Log.Info("lcd",
-            $"pump LCD opened, {_lcd.Design.Elements.Count} element(s)"
-            + (_findAttempts > 0 ? $" (after {_findAttempts} retr{(_findAttempts == 1 ? "y" : "ies")})" : ""));
+        OnChanged(nameof(LcdBackground)); OnChanged(nameof(LcdBackgroundName)); OnChanged(nameof(LcdHasBackground));
+        if (returning)
+        {
+            UnifiedRgb.Core.Log.Info("lcd",
+                $"pump LCD is back after {_findAttempts} probe{(_findAttempts == 1 ? "" : "s")}, showing the design it had");
+        }
+        else
+        {
+            SelectLoadedScene();
+            UnifiedRgb.Core.Log.Info("lcd",
+                $"pump LCD opened, {_lcd.Design.Elements.Count} element(s)"
+                + (_findAttempts > 0 ? $" (after {_findAttempts} retr{(_findAttempts == 1 ? "y" : "ies")})" : ""));
+        }
+        // What was asked for while there was no panel to ask, on top of what
+        // it had or what was on disk: the newest intent wins, as it would have
+        // with the panel present.
+        ReplayWhenBack();
 
         // The left list only grows a Pump LCD row when this is available, so a
-        // panel that turns up late has to ask for the list to be rebuilt.
-        if (late) Attached?.Invoke();
+        // panel that turns up late has to ask for the list to be rebuilt. A
+        // panel that is BACK kept its row while it was away.
+        if (late && !returning) Attached?.Invoke();
         return true;
     }
+
+    /// <summary>The panel stopped taking frames (LcdController.Lost): unplugged,
+    /// or re-enumerated under a new path after a sleep. The stale handle used
+    /// to be retried for the rest of the session - Resync talks to the same
+    /// handle, the finder had stopped once the panel was found, and the RGB
+    /// rescan knows nothing about this controller - so a replugged panel stayed
+    /// dark until the app was restarted. Let the dead controller go, keep the
+    /// design as it stands, and look for the panel again the way startup does.
+    /// The row stays in the left list: the panel is expected back.</summary>
+    internal void OnPanelLost()
+    {
+        var old = _lcd;
+        if (old == null) return;
+        UnifiedRgb.Core.Log.Warn("lcd", "pump LCD stopped answering; letting it go and looking for it again");
+        _retainedDesign = old.Design;
+        _retainedOn = old.On;
+        old.Ticked -= RefreshDisplays;
+        old.Lost -= OnPanelLost;
+        old.Detach();                       // the timer half, here on the UI thread
+        _lcd = null;                        // Available and every setter short-circuit from here on
+        // The join and the handle close can each wait out a stalled write;
+        // off the UI thread so the window does not freeze for the unplug.
+        Task.Run(() => { try { old.Dispose(); } catch (Exception ex) { UnifiedRgb.Core.Log.Warn("lcd", $"closing the lost panel: {ex.Message}"); } });
+        _history.EndGesture();              // a drag on a panel that just vanished is over
+        OnChanged(nameof(Available));
+        OnChanged(nameof(CpuTempUnavailable));
+        _findAttempts = 0;
+        _find.Interval = TimeSpan.FromSeconds(3);
+        _find.Start();
+    }
+
+    /// <summary>One probe of the finder, for the harness: the timer that runs
+    /// it in the app needs a pumped dispatcher and a real wait.</summary>
+    internal bool TryReattach() => TryAttach(late: true);
 
     /// <summary>Raised once the panel is open, however long that took.</summary>
     public event Action? Attached;
@@ -206,7 +304,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     /// log could not tell them apart either.</summary>
     public void SetOn(bool on)
     {
-        if (_lcd == null) return;
+        if (_lcd == null) { _retainedOn = on; return; }   // remembered for the panel's return
         bool was = _lcd.On;
         _lcd.On = on;
         _lcd.Refresh();
@@ -564,17 +662,17 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
 
     public double LcdBgX
     {
-        get => _lcd?.Design.BgX ?? 0;
+        get => LiveDesign?.BgX ?? 0;
         set { if (_lcd == null) return; _lcd.Design.BgX = Math.Round(value); NotifyBgRect(); TouchLcd(); }
     }
     public double LcdBgY
     {
-        get => _lcd?.Design.BgY ?? 0;
+        get => LiveDesign?.BgY ?? 0;
         set { if (_lcd == null) return; _lcd.Design.BgY = Math.Round(value); NotifyBgRect(); TouchLcd(); }
     }
     public double LcdBgW
     {
-        get => _lcd?.Design.BgW ?? 0;
+        get => LiveDesign?.BgW ?? 0;
         set
         {
             if (_lcd == null) return;
@@ -587,7 +685,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     }
     public double LcdBgH
     {
-        get => _lcd?.Design.BgH ?? 0;
+        get => LiveDesign?.BgH ?? 0;
         set
         {
             if (_lcd == null) return;
@@ -600,7 +698,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     }
     public bool LcdBgAspectLock
     {
-        get => _lcd?.Design.BgAspectLock ?? true;
+        get => LiveDesign?.BgAspectLock ?? true;
         set
         {
             if (_lcd == null) return;
@@ -695,6 +793,9 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
             var sc = _scenes.Scenes.FirstOrDefault(x => x.Name == value);
             if (sc != null)
             {
+                // No panel yet, or not right now: the pick is what it must show
+                // when it is back, through this same setter.
+                if (_lcd == null) { _whenBack = () => SelectedSceneName = value; return; }
                 CaptureUndoNow();   // picking a screen replaces the canvas: one undo step
                 LoadDesignIntoEditor(FromScene(sc));
             }
@@ -703,13 +804,16 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
 
     /// <summary>The saved screen the pump is showing, or null when the canvas
     /// is not one. What a profile records at save time.</summary>
-    public string? CurrentScreen => _lcd?.Design.SceneName;
+    public string? CurrentScreen => LiveDesign?.SceneName;
 
     /// <summary>Put a saved screen up because a profile asked for it. False
     /// when there is no panel or no such screen - the profile's lighting has
-    /// already applied by then, so this is reported, not thrown. A screen that
-    /// is already up is left alone, edits and all: switching profiles must not
-    /// stomp on a design someone is in the middle of.</summary>
+    /// already applied by then, so this is reported, not thrown. With no panel
+    /// the request is KEPT, though, and goes up the moment the panel is back
+    /// (or first turns up): a profile applied during an unplug used to advance
+    /// the lighting while the returning panel put its old design back. A
+    /// screen that is already up is left alone, edits and all: switching
+    /// profiles must not stomp on a design someone is in the middle of.</summary>
     /// <param name="fromShow">A running show is asking, rather than a profile
     /// applied by hand. That flips which "already up" counts as nothing to do,
     /// and the two cases genuinely differ:
@@ -722,11 +826,18 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     /// live here, which is the one place both callers pass through.</param>
     public bool ShowScreen(string name, bool fromShow = false)
     {
-        if (_lcd == null) return false;
         var sc = _scenes.Scenes.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
         if (sc == null)
         {
             Log.Warn("scenes", $"a profile asked for pump screen '{name}', which does not exist");
+            return false;
+        }
+        if (_lcd == null)
+        {
+            // Nothing to put it on. Not dropped: the panel is expected back, or
+            // has not turned up yet, and this is the newest thing asked of it.
+            _whenBack = () => ShowScreen(sc.Name, fromShow);
+            Log.Info("scenes", $"no pump LCD right now - screen '{sc.Name}' goes up when it is back");
             return false;
         }
         // Nothing to do only when the CURRENT owner is the one asking again.
@@ -773,8 +884,13 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         _scenes = SceneStore.Load();
         _selectedSceneName = null;
         OnChanged(nameof(SelectedSceneName));
-        if (currentScreenChanged && _lcd != null)
-            LoadDesignIntoEditor(LcdDesign.Load());
+        if (currentScreenChanged)
+        {
+            // The imported screen replaces whatever the panel had - including
+            // the design a panel that is away right now retained.
+            if (_lcd != null) LoadDesignIntoEditor(LcdDesign.Load());
+            else _whenBack = () => LoadDesignIntoEditor(LcdDesign.Load());
+        }
         InitScenes();
         OnChanged(nameof(SceneChoices));
     }
@@ -800,7 +916,9 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     /// debounced save, on disk.</summary>
     public void RestoreDesign(LcdSnapshot snap)
     {
-        if (_lcd == null) return;
+        // The rule ended while the panel was away: what the panel shows when
+        // it is back is the screen from before the rule, not the rule's.
+        if (_lcd == null) { _whenBack = () => RestoreDesign(snap); return; }
         if (_userEdits != snap.Edits)
         {
             Log.Info("lcd", "keeping the screen you set during the override");
@@ -954,10 +1072,15 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     {
         _lcdSave.Stop();
         _find.Stop();   // no more panel probes once the app is on its way out
+        // The canvas, not the show's last scene - and the retained design of a
+        // panel that went away mid-session counts, edits and all.
+        if (!_liveIsShowScene) LiveDesign?.Save();
+        _retainedDesign = null;
+        _whenBack = null;
         if (_lcd != null)
         {
             _lcd.Ticked -= RefreshDisplays;
-            if (!_liveIsShowScene) _lcd.Design.Save();   // the canvas, not the show's last scene
+            _lcd.Lost -= OnPanelLost;
             _lcd.Dispose();
             _lcd = null;          // Available and every setter short-circuit from here on
         }

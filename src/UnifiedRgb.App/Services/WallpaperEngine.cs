@@ -508,20 +508,40 @@ public static class WallpaperEngine
 
         try
         {
-            // ArgumentList rather than one string: a profile called "Night Sky"
-            // has a space in it, and quoting by hand is how that turns into two
-            // arguments and a silent no-op.
-            var psi = new ProcessStartInfo(exe)
+            // A LIST of arguments rather than one string: a profile called
+            // "Night Sky" has a space in it, and quoting by hand is how that
+            // turns into two arguments and a silent no-op.
+            string[] args = { "-control", "openProfile", "-profile", profile };
+            string workingDir = Path.GetDirectoryName(exe) ?? "";
+            if (UnifiedRgb.Core.Native.DesktopProcess.IsElevated)
             {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WorkingDirectory = Path.GetDirectoryName(exe) ?? "",
-            };
-            psi.ArgumentList.Add("-control");
-            psi.ArgumentList.Add("openProfile");
-            psi.ArgumentList.Add("-profile");
-            psi.ArgumentList.Add(profile);
-            using var p = Process.Start(psi);
+                // NOT with this process's token. The app runs elevated, and this
+                // executable was found by following the user's own Steam
+                // registry value and library list - places any process of the
+                // user can write. Started with our token it would run as
+                // administrator, and so would anything planted in its place.
+                // The control channel needs no elevation (it hands a request to
+                // the Wallpaper Engine already running on the desktop), so it
+                // gets the desktop shell's token: the user's own. And if that
+                // token cannot be had, nothing is started - the fallback would
+                // be the hole.
+                if (!UnifiedRgb.Core.Native.DesktopProcess.Start(exe, args, workingDir, out string? why))
+                {
+                    Log.Warn("wallpaper", $"could not ask Wallpaper Engine for profile '{profile}' as the desktop user: {why}");
+                    return false;
+                }
+            }
+            else
+            {
+                var psi = new ProcessStartInfo(exe)
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WorkingDirectory = workingDir,
+                };
+                foreach (string a in args) psi.ArgumentList.Add(a);
+                using var p = Process.Start(psi);
+            }
             // Remember it OPTIMISTICALLY. Wallpaper Engine rewrites config.json
             // when it gets round to it, and until it does, ActiveProfile still
             // names the previous one - so a show whose next step wants the same

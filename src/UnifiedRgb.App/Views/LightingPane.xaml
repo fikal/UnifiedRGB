@@ -1,4 +1,4 @@
-<UserControl x:Class="UnifiedRgb.App.Views.LightingPane"
+﻿<UserControl x:Class="UnifiedRgb.App.Views.LightingPane"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:UnifiedRgb.App"
@@ -46,10 +46,6 @@
                                 Visibility="{Binding IsGigabyteSelected, Converter={StaticResource BoolToVis}}"
                                 Click="ConfigureHeaders_Click"
                                 ToolTip="Configure which ARGB headers have addressable fans"/>
-                        <Button Content="Razer…" Height="28" Padding="12,0" Margin="0,0,14,0"
-                                Visibility="{Binding IsRazerSelected, Converter={StaticResource BoolToVis}}"
-                                Click="ConfigureRazer_Click"
-                                ToolTip="Check the LED order with a chase, set the pad's LED count"/>
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
                                     Visibility="{Binding ShowZonePicker, Converter={StaticResource BoolToVis}}">
                             <TextBlock Text="Zone" Opacity="0.7" VerticalAlignment="Center" Margin="0,0,8,0"/>

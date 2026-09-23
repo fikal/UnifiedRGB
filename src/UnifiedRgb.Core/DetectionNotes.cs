@@ -1,4 +1,4 @@
-namespace UnifiedRgb.Core;
+﻿namespace UnifiedRgb.Core;
 
 /// <summary>Why something we can SEE is not something we can drive.</summary>
 public enum BlockReason
@@ -13,6 +13,15 @@ public enum BlockReason
     PartlyWorking,
     /// <summary>It is there and the attempt failed for a reason we can name.</summary>
     Failed,
+    /// <summary>It is present, it works, and it simply has no lights. Not a
+    /// fault and not something the user can act on - it is here so a pad that
+    /// never appears in the device list does not read as the app having
+    /// dropped support for it.</summary>
+    NoLighting,
+    /// <summary>It is there but dozed off, so it cannot be enumerated yet. It
+    /// comes back on its own, which is what separates this from NotResponding:
+    /// nothing is wrong and nothing needs fixing.</summary>
+    Asleep,
     /// <summary>It was here on the last scan and it is not here now.
     ///
     /// The one reason that is about a CHANGE rather than a state, and the one
@@ -38,6 +47,8 @@ public sealed record BlockedDevice(string Family, string What, BlockReason Reaso
         BlockReason.NeedsAdministrator => "needs administrator",
         BlockReason.DriverMissing => "a driver is missing",
         BlockReason.PartlyWorking => "partly working",
+        BlockReason.NoLighting => "no lights",
+        BlockReason.Asleep => "asleep",
         BlockReason.WentAway => "it has gone",
         _ => "failed",
     };
@@ -51,10 +62,17 @@ public sealed record BlockedDevice(string Family, string What, BlockReason Reaso
     /// coincidence, it is the reason this maps at all rather than a parallel
     /// enum being invented next to it. Everything else here is hardware the
     /// app cannot currently drive, which is what "not responding" means to a
-    /// person.</summary>
+    /// person.
+    ///
+    /// Except the two that are not faults. A pad with no lights is answering
+    /// everything we ask it, and a sleeping mouse is going to answer the moment
+    /// it is touched; badging either "not responding" told the user something
+    /// was broken when nothing was.</summary>
     public DeviceHealthState Health => Reason switch
     {
         BlockReason.HeldByOtherSoftware => DeviceHealthState.ControlledElsewhere,
+        BlockReason.NoLighting => DeviceHealthState.Connected,
+        BlockReason.Asleep => DeviceHealthState.Retrying,
         _ => DeviceHealthState.NotResponding,
     };
 

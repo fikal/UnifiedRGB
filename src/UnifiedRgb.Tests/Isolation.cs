@@ -39,6 +39,7 @@ public static class Isolation
             $"{Environment.ProcessId}-{Guid.NewGuid():N}");
         Environment.SetEnvironmentVariable("UNIFIEDRGB_CONFIG_DIR", Path.Combine(Root, "config"));
         Environment.SetEnvironmentVariable("UNIFIEDRGB_LOCAL_DIR", Path.Combine(Root, "local"));
+        Environment.SetEnvironmentVariable("UNIFIEDRGB_MACHINE_DIR", Path.Combine(Root, "machine"));
 
         // A run that is killed before its cleanup leaves one directory behind
         // under the OS temp tree, which is the right place for it to be swept up.
@@ -49,13 +50,15 @@ public static class Isolation
         };
 
         if (AppPaths.ConfigDir.StartsWith(Root, StringComparison.OrdinalIgnoreCase) &&
-            AppPaths.LocalDir.StartsWith(Root, StringComparison.OrdinalIgnoreCase))
+            AppPaths.LocalDir.StartsWith(Root, StringComparison.OrdinalIgnoreCase) &&
+            AppPaths.MachineDir.StartsWith(Root, StringComparison.OrdinalIgnoreCase))
             return true;
 
         Console.Error.WriteLine("REFUSING TO RUN: the test config redirect is not in effect.");
         Console.Error.WriteLine($"  expected under : {Root}");
         Console.Error.WriteLine($"  ConfigDir      : {AppPaths.ConfigDir}");
         Console.Error.WriteLine($"  LocalDir       : {AppPaths.LocalDir}");
+        Console.Error.WriteLine($"  MachineDir     : {AppPaths.MachineDir}");
         Console.Error.WriteLine("Tests write real files. Running now would edit the user's own settings,");
         Console.Error.WriteLine("profiles, screens and layouts. Fix AppPaths.Redirect before running.");
         return false;

@@ -180,10 +180,16 @@ public sealed class AutomationService : IDisposable
         Current = this;
     }
 
-    /// <summary>The user (UI, hotkey, or a scene sequence) changed the
-    /// lighting while an override was active: their choice is the new
-    /// baseline. Drop the stale snapshot so leaving the override doesn't
-    /// stomp it — the field bug: return-to-Base applied an old profile.</summary>
+    /// <summary>The user changed the lighting - a profile by button or hotkey,
+    /// or a colour, effect, palette or speed by hand - while an override was
+    /// active: their choice is the new baseline. Drop the stale snapshot so
+    /// leaving the override doesn't stomp it — the field bug: return-to-Base
+    /// applied an old profile.
+    ///
+    /// Hand edits arrive as a stream (a wheel drag raises one per move), so the
+    /// first one during an override says so and every one after it quietly
+    /// moves the baseline along with the drag: the capture is what has to
+    /// follow the hand, the sentence does not need repeating.</summary>
     void OnUserLighting()
     {
         if (_paused && !_selfApplying)
@@ -199,7 +205,7 @@ public sealed class AutomationService : IDisposable
             return;
         }
         if (_selfApplying || _mode == AutomationMode.Base) return;
-        if (_mode == AutomationMode.ScheduleOff)
+        if (_mode == AutomationMode.ScheduleOff && !_scheduleOverride)
         {
             // Someone changing colors at 11 PM clearly wants lights.
             _scheduleOverride = true;
@@ -211,8 +217,9 @@ public sealed class AutomationService : IDisposable
         // dark window) before the rule ended left the desk BLACK on the way
         // back: the Base branch had nothing to restore and nothing to apply.
         _returnPoint = _vm.CaptureState();
-        _userTookOver = true;
         _lightsOff = false;   // the user has just lit things up
+        if (_userTookOver) return;   // the same edit continuing: the baseline moved, nothing new to say
+        _userTookOver = true;
         Log.Info("auto", "lighting changed during an override, keeping it as the new baseline");
         ActivityLog.Note(ActivityKind.UserOverride,
             "You changed the lighting while a rule was running, so that is your baseline from now on.");

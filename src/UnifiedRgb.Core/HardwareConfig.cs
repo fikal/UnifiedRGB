@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 
 namespace UnifiedRgb.Core;
 
@@ -29,9 +29,11 @@ public sealed class HardwareConfig
     };
 
     /// <summary>LED counts for Razer devices whose shape the firmware won't
-    /// reveal (the HyperFlux V2 pad's strip), keyed by product id in hex
-    /// ("00CF"). Set from the Lighting pane's Razer… dialog after a Test chase;
-    /// a configured value beats the frame-width probe and the guess.</summary>
+    /// reveal, keyed by product id in hex ("00CF"). Hand-edited: there is no UI
+    /// for it, because the one model it existed for turned out to have no lights
+    /// at all and guessing a count is what produced a device that could never
+    /// light. A configured value still beats the probe, the guess, and what the
+    /// driver knows about the model - including 0, meaning "no lighting".</summary>
     public Dictionary<string, int> RazerLedCounts { get; set; } = new();
 
     /// <summary>What each device is left showing when the app closes, keyed by

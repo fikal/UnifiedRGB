@@ -33,13 +33,173 @@ static class LcdScenesSuite
         Exception? failure = null;
         var thread = new Thread(() =>
         {
-            try { CheckScenes(t); ShowThatContainsItsOwnStarter(t); PausingAShow(t); PauseResumeTiming(t); DeletedProfileStep(t); ProfileShowIntegration(t); SnapshotPlayback(t); DragIsOneUndoStep(t); }
+            try { CheckScenes(t); ShowThatContainsItsOwnStarter(t); PausingAShow(t); PauseResumeTiming(t); DeletedProfileStep(t); ProfileShowIntegration(t); SnapshotPlayback(t); DragIsOneUndoStep(t); PanelLossAndReturn(t); ScreenAskedForWhileAway(t); ImportedClockIsBounded(t); }
             catch (Exception ex) { failure = ex; }
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
         thread.Join();
         if (failure != null) throw new Exception("LCD scene regression failed", failure);
+    }
+
+    /// <summary>A panel that stops taking frames is let go and looked for
+    /// again, and comes back showing the design it had. The stale handle used
+    /// to be retried for the rest of the session: Resync talks to the same
+    /// handle, the finder stopped once the panel was found, and the RGB rescan
+    /// knows nothing about this controller (2026-09-22 review, finding 8).</summary>
+    static void PanelLossAndReturn(Harness t)
+    {
+        t.Section("pump LCD: a panel that stops answering is declared lost");
+        // (a) The controller: a run of refused frames is a dead handle, not a
+        // bad report, and it says so once on the thread that started it.
+        var dead = new FakeHid { Accept = (_, _) => false };
+        var dying = new LcdController(new UnifiedRgb.Core.Devices.ThermalrightLcd(dead)) { On = false, LostAfterFailures = 2 };
+        bool lost = false;
+        var wait = new System.Windows.Threading.DispatcherFrame();
+        dying.Lost += () => { lost = true; wait.Continue = false; };
+        var guard = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(8) };
+        guard.Tick += (_, _) => { guard.Stop(); wait.Continue = false; };
+        dying.Start();
+        guard.Start();
+        System.Windows.Threading.Dispatcher.PushFrame(wait);
+        guard.Stop();
+        dying.Dispose();
+        t.Check(lost, "a panel refusing every frame is declared lost after a few refusals");
+
+        t.Section("pump LCD: the designer lets a lost panel go and takes it back, design intact");
+        // (b) The designer: the dead controller is released, the design (edits
+        // included) is kept while the panel is away, and the next probe puts
+        // it straight back up.
+        using var vm = new LcdDesignerViewModel(() => false);
+        var firstHid = new FakeHid();
+        var first = new LcdController(new UnifiedRgb.Core.Devices.ThermalrightLcd(firstHid)) { On = false };
+        vm.OpenPanel = () => first;
+        vm.Start();
+        t.Check(vm.Available, "the panel opened at startup");
+        int before = vm.LcdElements.Count;
+        vm.AddTextCommand.Execute(null);      // an edit made before the unplug
+        t.Equal(before + 1, vm.LcdElements.Count, "an element was added before the unplug");
+        var design = first.Design;
+        design.BgX = 17;                      // something a read-only getter can be seen to answer from
+
+        vm.OnPanelLost();
+        t.Check(!vm.Available, "the dead panel is let go");
+        t.Check(SpinWait.SpinUntil(() => firstHid.IsDisposed, 4000), "...and its handle is closed, off the UI thread");
+        t.Equal(before + 1, vm.LcdElements.Count, "the editor keeps the design while the panel is away");
+        t.Equal(17.0, vm.LcdBgX, "the retained design is what the designer answers for meanwhile");
+        vm.SetOn(false);                      // a dark window while it is away
+
+        int probes = 0;
+        vm.OpenPanel = () => ++probes < 2 ? null : new LcdController(new UnifiedRgb.Core.Devices.ThermalrightLcd(new FakeHid()));
+        t.Check(!vm.TryReattach(), "a probe while the panel is still away finds nothing");
+        t.Check(!vm.Available, "...and changes nothing");
+        t.Check(vm.TryReattach(), "the next probe takes the panel back");
+        t.Check(vm.Available, "...and it is available again");
+        var second = (LcdController)typeof(LcdDesignerViewModel).GetField("_lcd", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(vm)!;
+        t.Check(ReferenceEquals(second.Design, design), "the returned panel shows the design it had, edits and all");
+        t.Equal(before + 1, second.Design.Elements.Count, "...including the element added before the unplug");
+        t.Equal(before + 1, vm.LcdElements.Count, "and the editor was not re-listed on top of itself");
+        t.Check(!second.On, "the blank asked for while it was away is honoured on its return");
+        t.Check(SpinWait.SpinUntil(() => second.Design.Elements.Count == before + 1 && vm.LcdBgX == 17.0, 1000),
+            "...and so is the edit: the panel draws the design as it stood, not the one on disk");
+    }
+
+    static LcdController FakePanel() => new(new UnifiedRgb.Core.Devices.ThermalrightLcd(new FakeHid())) { On = false };
+
+    /// <summary>What a profile, a show, a restore or the dropdown asks of the
+    /// panel while it is away is kept and goes up when the panel is back.
+    /// ShowScreen used to return at once with no panel, and the returning panel
+    /// restored the design it had retained - so RGB profile B applied during
+    /// an unplug came back next to screen A - and a panel that turned up late
+    /// at startup never learned what the startup profile wanted (2026-09-23
+    /// review, finding 10).</summary>
+    static void ScreenAskedForWhileAway(Harness t)
+    {
+        t.Section("pump LCD: a screen asked for while the panel is away goes up when it is back");
+        using var vm = new LcdDesignerViewModel(() => false);
+        vm.OpenPanel = FakePanel;
+        vm.Start();
+        vm.InitScenes();
+        vm.SceneNameInput = "Away A"; vm.SaveScene();
+        vm.AddTextCommand.Execute(null);   // B differs from A in content, not only in name: a restore compares content
+        vm.SceneNameInput = "Away B"; vm.SaveScene();
+        t.Check(vm.ShowScreen("Away A") && vm.CurrentScreen == "Away A", "screen A is up while the panel is present");
+
+        vm.OnPanelLost();
+        t.Check(!vm.ShowScreen("Away B"), "with the panel away, a profile's screen is reported as not shown right now...");
+        t.Equal("Away A", vm.CurrentScreen, "...and the retained design is still A meanwhile");
+        t.Check(!vm.ShowScreen("No such screen"), "a screen that does not exist is still refused while the panel is away");
+        t.Check(vm.TryReattach(), "the panel comes back");
+        t.Equal("Away B", vm.CurrentScreen, "...on the screen asked for while it was away (was: A, the design it had retained)");
+        t.Check(vm.SnapshotDesign() is { FromShow: false }, "a profile applied by hand owns the canvas, as it would have with the panel present");
+
+        // A show's step, with the show's ownership.
+        vm.OnPanelLost();
+        t.Check(!vm.ShowScreen("Away A", fromShow: true), "a show step while away is reported as not shown right now");
+        t.Check(vm.TryReattach() && vm.CurrentScreen == "Away A", "...and goes up on the return");
+        t.Check(vm.SnapshotDesign() is { FromShow: true }, "...as the show's, not as the canvas");
+
+        // Two requests while away: the newest is the one honoured, as it would
+        // be with the panel present.
+        vm.OnPanelLost();
+        vm.ShowScreen("Away B"); vm.ShowScreen("Away A");
+        t.Check(vm.TryReattach() && vm.CurrentScreen == "Away A", "of two requests made while away, the newest is honoured");
+        t.Check(vm.SnapshotDesign() is { FromShow: false }, "...as the canvas: the hand-applied profile came last");
+
+        // An automation restore that lands while the panel is away.
+        var beforeRule = vm.SnapshotDesign()!;
+        t.Check(vm.ShowScreen("Away B"), "a rule's profile puts B up");
+        vm.OnPanelLost();
+        vm.RestoreDesign(beforeRule);
+        t.Check(vm.TryReattach() && vm.CurrentScreen == "Away A",
+            "the rule ended while the panel was away: it comes back on the screen from before the rule (was: B)");
+
+        // The user's own pick from the Screens dropdown, made while away.
+        vm.OnPanelLost();
+        vm.SelectedSceneName = "Away B";
+        t.Check(vm.TryReattach() && vm.CurrentScreen == "Away B", "a screen picked from the dropdown while away goes up on the return");
+        t.Equal("Away B", vm.SelectedSceneName, "...and the dropdown says so");
+
+        // A panel that first turns up late learns what the startup profile asked for.
+        using var late = new LcdDesignerViewModel(() => false);
+        late.OpenPanel = () => null;
+        late.Start();
+        t.Check(!late.Available, "no panel at startup");
+        t.Check(!late.ShowScreen("Away A"), "the startup profile's screen is reported as not shown right now");
+        late.OpenPanel = FakePanel;
+        t.Check(late.TryReattach(), "the panel turns up later");
+        t.Equal("Away A", late.CurrentScreen, "...showing what the startup profile asked for (was: whatever lcd.json held)");
+    }
+
+    /// <summary>An imported design is the one way past the size slider. A clock
+    /// with an absurd size used to reach the editor's per-second bitmap render
+    /// as an impossible dimension and throw on every tick (2026-09-23 review,
+    /// finding 12).</summary>
+    static void ImportedClockIsBounded(Harness t)
+    {
+        t.Section("pump LCD: an imported element the size of a wall is bounded");
+        var d = LcdDesign.Normalize(new LcdDesign
+        {
+            Elements = new() { new LcdElement { Kind = LcdElementKind.AnalogClock, FontSize = 1e12, X = 1e300, Y = -5e9 } },
+            BgW = 1e9, BgH = double.PositiveInfinity, BgX = -1e300,
+        });
+        var e = d.Elements[0];
+        t.Equal(LcdDesign.MaxFontSize, e.FontSize, "the size is clamped to the largest meaningful one");
+        t.Equal(LcdDesign.MaxOffset, e.X, "x is clamped");
+        t.Equal(-LcdDesign.MaxOffset, e.Y, "y is clamped the other way");
+        t.Equal(LcdDesign.MaxBgSize, d.BgW, "the background width is clamped to the editor's own limit");
+        t.Equal(0.0, d.BgH, "a non-finite background height means not set");
+        t.Equal(-LcdDesign.MaxOffset, d.BgX, "the background offset is clamped");
+        var ordinary = LcdDesign.Normalize(new LcdDesign { Elements = new() { new LcdElement { Kind = LcdElementKind.Time, FontSize = 64, X = 70, Y = 70 } } });
+        t.Check(ordinary.Elements[0].FontSize == 64 && ordinary.Elements[0].X == 70, "an ordinary design is untouched");
+
+        // The bitmap is bounded on its own too, for an element that reached
+        // the editor without passing through Normalize.
+        var wall = new LcdElement { Kind = LcdElementKind.AnalogClock, FontSize = 1e12, ColorHex = "FFFFFF" };
+        var image = LcdController.RenderClockImage(wall);
+        t.Check(image.Width <= LcdDesign.MaxFontSize * 2 + 1, $"the editor's clock bitmap is bounded ({image.Width} px; was: an impossible size, thrown on every tick)");
+        var nan = new LcdElement { Kind = LcdElementKind.AnalogClock, FontSize = double.NaN, ColorHex = "FFFFFF" };
+        t.Check(LcdController.RenderClockImage(nan).Width > 0, "a NaN size renders a default face rather than throwing");
     }
 
     /// <summary>A profile that starts a show, and is also a STEP of that show,

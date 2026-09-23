@@ -73,7 +73,8 @@ public enum RecoveryAction
 /// <param name="CalibrationRunning">A calibration session has reference patches
 /// on the hardware. A rescan replaces the very instances the aid is driving:
 /// the patch would vanish and every slider move afterwards would retry a
-/// disposed handle for 400 ms per device. Deferred like a client hold.</param>
+/// disposed handle for 400 ms per device. Deferred for the whole session,
+/// however long it runs - unlike a client hold, which is bounded.</param>
 public readonly record struct RecoveryConditions(bool SdkClientHolds, bool LightsSuppressed, bool CalibrationRunning = false);
 
 /// <summary>The decision, with enough detail to log one honest sentence.</summary>
@@ -144,12 +145,13 @@ public sealed class RecoveryPolicy
     /// instant it lets go.</summary>
     public const int BusyRetryMs = 2000;
 
-    /// <summary>How many times a busy rig may push a pending recovery back
+    /// <summary>How many times an SDK client may push a pending recovery back
     /// before we do it anyway. Thirty at 2 s is about a minute. A client that
     /// holds a device forever is a normal, supported thing (that is what the
     /// SDK bridge is FOR), so waiting forever would mean a rig with OpenRGB
     /// attached never recovers a replugged device at all - and a permanently
-    /// dark device is worse than one interrupted client frame.</summary>
+    /// dark device is worse than one interrupted client frame. A running
+    /// calibration is NOT counted here: it defers unconditionally, see Claim.</summary>
     public const int MaxBusyDeferrals = 30;
 
     readonly Func<long>? _clock;
@@ -250,13 +252,27 @@ public sealed class RecoveryPolicy
             return new RecoveryPlan(RecoveryAction.Wait, _reason, relight, _events);
         }
 
+        // A calibration session is deferred for as long as it runs, with no
+        // ceiling. The aid holds the device INSTANCES it is painting reference
+        // patches on, and a rescan disposes and replaces every one of them: the
+        // patch vanishes and every slider move afterwards retries a dead handle.
+        // Unlike a client hold there is nothing to time out - the session ends
+        // when the user closes the dialog, and it is the one thing on the desk
+        // that cannot be recovered underneath. Sharing the client counter here
+        // meant a calibration a minute long got rescanned out from under.
+        if (conditions.CalibrationRunning)
+        {
+            _dueAt = now + BusyRetryMs;
+            return new RecoveryPlan(RecoveryAction.Wait, _reason, relight, _events);
+        }
+
         // An SDK client holding a device is the one caller we defer to rather
         // than override. A rescan drops every claim at once (the device
         // instances it holds are being replaced), so recovering underneath a
         // client would yank the lighting out of whatever is driving it and
         // hand the user their own profile back mid-scene. Waiting is nearly
         // always free: clients let go in seconds.
-        if ((conditions.SdkClientHolds || conditions.CalibrationRunning) && _busyDeferrals < MaxBusyDeferrals)
+        if (conditions.SdkClientHolds && _busyDeferrals < MaxBusyDeferrals)
         {
             _busyDeferrals++;
             _dueAt = now + BusyRetryMs;

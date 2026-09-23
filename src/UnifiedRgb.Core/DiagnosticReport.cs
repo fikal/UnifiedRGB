@@ -290,13 +290,13 @@ public static class DiagnosticReport
     /// <summary>Running process names matching a conflict keyword, minus the
     /// OpenRGB server the app launches itself: a USER-installed OpenRGB is the
     /// classic device-fight case and must be flagged, the bundled one runs
-    /// from our own LocalAppData tree (OpenRgbManager's install root) and its
-    /// status has a section of its own. Told apart by image path; a path we
-    /// cannot read (an elevated instance seen from a non-elevated Diag run) is
-    /// not flagged - the informational RGB SOFTWARE list still names it.</summary>
+    /// from our own tree (OpenRgbManager's install root, or the LocalAppData
+    /// root it had before the move to ProgramData) and its status has a section
+    /// of its own. Told apart by image path; a path we cannot read (an elevated
+    /// instance seen from a non-elevated Diag run) is not flagged - the
+    /// informational RGB SOFTWARE list still names it.</summary>
     static List<string> ConflictingProcesses(string[] conflicts)
     {
-        string bundleDir = AppPaths.Local("openrgb");
         var hits = new List<string>();
         foreach (var p in Process.GetProcesses())
         {
@@ -308,7 +308,7 @@ public static class DiagnosticReport
                 {
                     string? path = null;
                     try { path = p.MainModule?.FileName; } catch { }
-                    if (path == null || path.StartsWith(bundleDir, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (path == null || Net.OpenRgbManager.IsBundledPath(path)) continue;
                 }
                 hits.Add(n);
             }

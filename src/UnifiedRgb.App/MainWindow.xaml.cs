@@ -194,15 +194,40 @@ public partial class MainWindow : Window
         {
             var (r, name) = Dialogs.AskSaveFirstProfile(this);
             if (r == MessageBoxResult.Cancel) { e.Cancel = true; _closing = false; return; }
-            if (r == MessageBoxResult.Yes) _vm.SaveProfileAs(name);
+            // The view model resolves a blank name to its default, so the
+            // failure notice names what was actually attempted.
+            if (r == MessageBoxResult.Yes && !_vm.SaveProfileAs(name)) { StayOpenAfterFailedSave(e, _vm.ProfileName); return; }
         }
         else if (_vm.NeedsSavePrompt)
         {
-            var r = Dialogs.AskSaveChanges(this, _vm.SelectedProfile?.Name ?? "");
+            string name = _vm.SelectedProfile?.Name ?? "";
+            var r = Dialogs.AskSaveChanges(this, name);
             if (r == MessageBoxResult.Cancel) { e.Cancel = true; _closing = false; return; }
-            if (r == MessageBoxResult.Yes) _vm.SaveActiveProfile();
+            if (r == MessageBoxResult.Yes && !_vm.SaveActiveProfile()) { StayOpenAfterFailedSave(e, name); return; }
         }
         SaveWindowPlacement();
+    }
+
+    /// <summary>The user answered Yes to saving and the save did not happen (a
+    /// full disk, a settings folder locked by another program). Closing anyway
+    /// would throw away the very work they had just asked to keep, so the close
+    /// is cancelled and the editing session stays up for another try. The
+    /// activity history already says WHY the write failed; this says what the
+    /// app did about it, because a window that silently refuses to close looks
+    /// like a hang - and from the tray there would be nothing on screen at all.</summary>
+    void StayOpenAfterFailedSave(System.ComponentModel.CancelEventArgs e, string name)
+    {
+        e.Cancel = true;
+        _closing = false;
+        // Not here: Show() throws while the Closing event is still on the stack.
+        // One dispatcher turn later the window is an ordinary open window again.
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (!IsVisible) RestoreFromTray();
+            Dialogs.Info(this, "Nothing was saved",
+                $"'{name}' could not be saved, so UnifiedRGB is staying open with your changes. "
+                + "Check that the settings folder is writable and not locked by another program, then try again.");
+        }), System.Windows.Threading.DispatcherPriority.Background);
     }
 
     /// <summary>Logoff / shutdown. WPF only QUEUES Shutdown() from

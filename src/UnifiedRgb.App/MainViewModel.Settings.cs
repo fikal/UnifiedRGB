@@ -120,9 +120,9 @@ public sealed partial class MainViewModel
     /// frame, and BeginExternal calls StopEffectsOn before that frame arrives.
     /// Asking IsClaimed alone would therefore raise the badge and drop it
     /// again in the same breath, which is precisely the flapping the health
-    /// hysteresis exists to prevent - so the two are ORed. Cleared wholesale
-    /// in RestoreState, which is what the bridge calls when the last client
-    /// lets go and what a rescan calls when every claim dies at once.</summary>
+    /// hysteresis exists to prevent - so the two are ORed. A device leaves the
+    /// set through ReleaseHold when its client lets go, and the whole set is
+    /// cleared by Rescan, where every claim dies with the instances.</summary>
     readonly HashSet<IRgbDevice> _sdkHeld = new();
 
     /// <summary>Non-zero while a rebuild is already queued, so a burst of
@@ -175,7 +175,7 @@ public sealed partial class MainViewModel
     {
         // An SDK client holding a device IS "controlled by another app", and
         // the bridge has no event to tell us: it tells us by calling
-        // StopEffectsOn and RestoreState, both of which land here. Re-asking
+        // StopEffectsOn and ReleaseHold, both of which land here. Re-asking
         // every device whether it is still claimed is a handful of dictionary
         // probes, and it means a stale claim cannot survive a rebuild.
         foreach (var d in Devices)
@@ -281,6 +281,13 @@ public sealed partial class MainViewModel
     /// lane would just fight.</summary>
     public void StopEffectsOn(IRgbDevice device)
     {
+        // What was running is what comes back when the client lets go. The
+        // channel object survives the stop, but LiveChannel drops a dead one
+        // the first time anything asks, so the base colour is kept on the
+        // target state where the restart (RestoreDevice) will find it.
+        foreach (var fx in _targetFx.Values)
+            if (fx.Channel is { } ch && ch.Device.Name == device.Name && ChoiceOf(fx).Effect != null)
+                fx.HeldBase = ch.BaseColor;
         _engine.StopRange(device, 0, device.LedCount);
         _sdkHeld.Add(device);
         // The SDK bridge calls this and nothing else does, so it is the one
@@ -290,13 +297,14 @@ public sealed partial class MainViewModel
         UnifiedRgb.Core.DeviceHealth.Shared.SetHeldByOther(device, true, "an OpenRGB client");
     }
 
-    /// <summary>One client let go of one device. The wholesale clear in
-    /// RestoreState only runs when the LAST client leaves, so without this a
-    /// second client still holding a different device kept every released
-    /// device in _sdkHeld - and RefreshDeviceHealth ORs that set, so the
-    /// released device re-declared itself "controlled by another app", advising
-    /// the user to close a program that had already let go, for the rest of the
-    /// session.</summary>
+    /// <summary>One client let go of one device: it is no longer held, whatever
+    /// other claims are still standing. Without a per-device release, a second
+    /// client still holding a different device kept every released device in
+    /// _sdkHeld - and RefreshDeviceHealth ORs that set, so the released device
+    /// re-declared itself "controlled by another app", advising the user to
+    /// close a program that had already let go, for the rest of the session.
+    /// The lighting itself comes back through RestoreDevice, which the bridge
+    /// calls right after this.</summary>
     public void ReleaseHold(IRgbDevice device) => ReleaseHold(device, refresh: true);
 
     /// <summary><paramref name="refresh"/> false for a caller releasing SEVERAL
@@ -309,6 +317,41 @@ public sealed partial class MainViewModel
         if (!_sdkHeld.Remove(device)) return;
         UnifiedRgb.Core.DeviceHealth.Shared.SetHeldByOther(device, false, "an OpenRGB client");
         if (refresh) RefreshDeviceHealth();
+    }
+
+    /// <summary>One device coming back from an SDK client, with nothing else on
+    /// the desk touched. What comes back is the user's CURRENT intent for that
+    /// device, not a snapshot from when the client arrived: the stored frame,
+    /// which every profile apply and hand edit kept up to date under the claim
+    /// (they write the frame and leave the hardware to the client), and every
+    /// effect wanted on the device, which the claim stopped or refused to start
+    /// and which waits in its target state with its base colour (HeldBase).
+    ///
+    /// Per device on purpose. The old whole-desk snapshot, restored when the
+    /// LAST claim ended, had two ways of being wrong: a device released while
+    /// another was still held kept the client's last frame until the unrelated
+    /// claim let go, and the restore undid hand edits made meanwhile on devices
+    /// no client had touched. A dark window or a locked session is honoured -
+    /// the intent stays ready and the automation's relight brings it back - and
+    /// a device another client still holds is left to that client.</summary>
+    public void RestoreDevice(IRgbDevice device)
+    {
+        if (_sdkHeld.Contains(device) || _lighting.IsClaimed(device)) return;
+        if (LightsSuppressed) return;
+        _lighting.PushFrame(device);
+        bool started = false;
+        foreach (var fx in _targetFx.Values)
+        {
+            if (fx.Device != device.Name || fx.HeldBase is not { } baseColor) continue;
+            fx.HeldBase = null;
+            var choice = ChoiceOf(fx);
+            if (choice.Effect == null || LiveChannel(fx) != null) continue;
+            fx.Channel = _engine.Start(device, fx.Offset, fx.Count, FrameFor(device), ResolveEffect(fx, choice),
+                                       SignedSpeed(fx), baseColor, CanvasPositions(device, fx.Offset, fx.Count));
+            started = true;
+        }
+        if (started) NotifyModeChanged();
+        RequestLianRebake();
     }
 
     public void RestoreState(LightState s, bool honorSuppression = false)

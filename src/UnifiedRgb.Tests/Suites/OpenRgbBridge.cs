@@ -20,13 +20,34 @@ static class OpenRgbBridgeSuite
 {
     public static void Run(Harness t)
     {
+        BundleRootIsMachineWide(t);
         OwnListenerRegistry(t);
         BridgeProbeIgnoresOurOwnServer(t);
         LogitechCoveredOnlyWhenClaimed(t);
+        RazerCoverageFollowsTheDriver(t);
         StopWaitsForCallbacks(t);
         StopGivesUpAfterBudget(t);
         StopFromInsideCallbackReturns(t);
         ModesAreReadAndTheModeIsReAsserted(t);
+    }
+
+    /*---------------- the bundle's home ----------------*/
+    /// <summary>The bundled OpenRGB is launched from ProgramData, in a folder
+    /// only administrators can write, and never again from LocalAppData; the
+    /// old root still counts as ours for the process sweep and the conflict
+    /// report (2026-09-23 review, finding 1).</summary>
+    static void BundleRootIsMachineWide(Harness t)
+    {
+        t.Section("orgb bundle: the launch root is machine-wide and administrators-only");
+        t.Check(OpenRgbManager.IsBundledPath(System.IO.Path.Combine(AppPaths.Machine("openrgb"), "OpenRGB Windows 64-bit", "OpenRGB.exe")),
+            "the protected root is the bundle's home");
+        t.Check(OpenRgbManager.IsBundledPath(System.IO.Path.Combine(AppPaths.Local("openrgb"), "OpenRGB Windows 64-bit", "OpenRGB.exe")),
+            "...and the old per-user root still counts as ours, for the sweep and the conflict report");
+        t.Check(!OpenRgbManager.IsBundledPath(@"C:\Program Files\OpenRGB\OpenRGB.exe"), "a user's own install is not ours");
+        t.Check(AppPaths.MachineDir.StartsWith(Isolation.Root, StringComparison.OrdinalIgnoreCase),
+            "the harness keeps the machine-wide root under its own tree");
+        t.Check(!System.IO.Directory.Exists(AppPaths.MachineDir),
+            "nothing creates the machine-wide root as a plain folder: it exists only with its ACL, through ProtectedFolder");
     }
 
     /*---------------- modes: the thing a silent bridged device needs ----------------*/
@@ -190,6 +211,30 @@ static class OpenRgbBridgeSuite
         {
             LogitechG403.ClearClaimed();   // never leak a fake claim into later tests
         }
+    }
+
+    /*---------------- (c2) Razer: covered by the driver's own table ----------------*/
+    /// <summary>The bridge kept its own copy of the Razer ids, and the 35K's
+    /// were never added to it: OpenRGB could then bridge the mouse beside the
+    /// native driver and both would write to it. The ids now come from the
+    /// driver's model table, so the two cannot drift again.</summary>
+    static void RazerCoverageFollowsTheDriver(Harness t)
+    {
+        t.Section("(c2) Razer: covered by the driver's own model table");
+        foreach (var (pid, what) in new[]
+        {
+            ("00aa", "Basilisk V3 Pro"), ("00ab", "the Basilisk's dongle"),
+            ("00cc", "Basilisk V3 Pro 35K"), ("00cd", "the 35K's dongle"),
+            ("00cf", "HyperFlux V2 pad"), ("0537", "Kraken V3 X"),
+        })
+        {
+            var remote = RemoteDevice(what, $@"HID: \\?\hid#vid_1532&pid_{pid}&mi_00#{{4d1e55b2-f16f-11cf-88cb-001111000030}}");
+            t.Check(OpenRgbLink.IsNativelyCovered(remote), $"orgb razer: {what} (pid {pid}) is natively covered");
+        }
+        var other = RemoteDevice("DeathAdder", @"HID: \\?\hid#vid_1532&pid_0084&mi_00#{4d1e55b2-f16f-11cf-88cb-001111000030}");
+        t.Check(!OpenRgbLink.IsNativelyCovered(other), "orgb razer: a Razer product the driver does not open is still free for the bridge");
+        t.Check(RazerHid.IsNativePid(0x00CC) && RazerHid.IsNativePid(0x00CD) && RazerHid.IsNativePid(RazerHid.HYPERFLUX_V2),
+            "orgb razer: the driver answers for every id in its own table, pad included");
     }
 
     /*---------------- (d) Stop waits for in-flight callbacks ----------------*/

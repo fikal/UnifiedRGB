@@ -18,7 +18,10 @@ public static class OpenRgbLink
 
     /// <summary>VID:PID pairs our native drivers claim; any OpenRGB device at
     /// one of these locations is skipped even if the native device is absent
-    /// (the native driver is the one that should pick it up).</summary>
+    /// (the native driver is the one that should pick it up). Razer is not
+    /// listed here: its ids come from the driver's own model table (see
+    /// IsNativelyCovered), so a mouse added there is covered here on the same
+    /// commit rather than whenever somebody remembers this list exists.</summary>
     static readonly (int Vid, int Pid)[] NativeHardware =
     {
         (0x1B1C, 0x1B48),          // Corsair Strafe MK.2
@@ -27,14 +30,6 @@ public static class OpenRgbLink
         (0x048D, 0x5711),          // Gigabyte RGB Fusion (X870E)
         (0x048D, 0x8297),          // Gigabyte RGB Fusion (IT8297)
         (0x0416, 0x5302),          // Thermalright pump LCD
-        (0x1532, 0x00AA),          // Razer Basilisk V3 Pro (wired)
-        (0x1532, 0x00AB),          // Razer Basilisk V3 Pro (HyperSpeed dongle)
-        (0x1532, 0x00CF),          // Razer HyperFlux V2 pad (paired mouse behind it)
-        // Kraken V3 X: ours now, and it MUST be skipped here rather than left to
-        // both. OpenRGB reports it in Direct and accepts colours the headset never
-        // shows, so a bridged copy beside the native one is a second entry in the
-        // list that looks identical and does nothing.
-        (0x1532, 0x0537),          // Razer Kraken V3 X
     };
 
     /// <summary>Names of remote devices skipped during the last detect —
@@ -117,6 +112,14 @@ public static class OpenRgbLink
             int vid = Convert.ToInt32(m.Groups[1].Value, 16);
             int pid = Convert.ToInt32(m.Groups[2].Value, 16);
             if (NativeHardware.Any(h => h.Vid == vid && h.Pid == pid)) return true;
+            // Razer: whatever the native driver's model table opens - the
+            // Basilisk V3 Pro on its cable, its dongle, the 35K and its dongle,
+            // the HyperFlux V2 pad with the paired mouse behind it - plus the
+            // Kraken V3 X. The headset MUST be skipped rather than left to both:
+            // OpenRGB reports it in Direct and accepts colours the headset never
+            // shows, so a bridged copy beside the native one is a second entry
+            // in the list that looks identical and does nothing.
+            if (vid == RazerHid.VID && (RazerHid.IsNativePid((ushort)pid) || RazerKraken.Handles((ushort)pid))) return true;
             // Logitech: covered only for the product the native HID++ driver
             // actually opened this pass. It used to be "any 046D", which hid
             // every Logitech device OpenRGB could drive whenever the native

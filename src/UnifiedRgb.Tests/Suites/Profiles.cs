@@ -18,10 +18,108 @@ namespace UnifiedRgb.Tests;
 \*-----------------------------------------------------------*/
 static class ProfilesSuite
 {
+    /// <summary>A saved range that belonged to a named zone is refused when that
+    /// zone is gone or too small now - never moved onto whatever LEDs carry its
+    /// old numbers today. Both named passes failed for such a range and the
+    /// numeric fallback then accepted it, so the effect landed on a different
+    /// zone with no warning: the caller only reports a range it could not place
+    /// at all (2026-09-22 review, finding 5).</summary>
+    static void RemapRefusesVanishedZones(Harness t)
+    {
+        t.Section("hardware remap: a range tied to a zone that is gone is refused, not moved");
+        static RgbZone Z(string n, int o, int c) => new() { Name = n, Offset = o, Count = c };
+        static ZoneSpan S(string n, int o, int c) => new() { Name = n, Offset = o, Count = c };
+
+        // Saved: A at 0-9 and B at 10-29. Live: only B, at 0-19.
+        var onlyB = new FakeDevice { Name = "Board", LedCount = 20, ZoneSpec = new[] { Z("B", 0, 20) } };
+        var map = new UnifiedRgb.App.Services.HardwareRemap(onlyB, new[] { S("A", 0, 10), S("B", 10, 20) }, savedLeds: 30);
+        t.Check(map.LayoutChanged, "the layout is seen to have changed");
+        t.Check(map.Map(0, 10) == null, "A's range is refused rather than put on B because the numbers fit (was: (0,10), which is B now)");
+        t.Check(map.Map(10, 20) is (0, 20), "B's own range follows B by name");
+        t.Check(map.Map(0, 30) is (0, 20), "the whole device still re-anchors as the whole device");
+        t.Check(map.Map(5, 10) is (5, 10), "a range that spans zones and belongs to none keeps the numeric fallback");
+
+        // Saved: A at 0-19 and B at 20-39. Live: A shrank to five LEDs and B fills the old offsets.
+        var shrunk = new FakeDevice { Name = "Board", LedCount = 25, ZoneSpec = new[] { Z("A", 0, 5), Z("B", 5, 20) } };
+        var map2 = new UnifiedRgb.App.Services.HardwareRemap(shrunk, new[] { S("A", 0, 20), S("B", 20, 20) }, savedLeds: 40);
+        t.Check(map2.Map(10, 5) == null, "a sub-range of A that no longer fits A is refused (was: (10,5), which is B now)");
+        t.Check(map2.Map(0, 5) is (0, 5), "a sub-range that still fits A stays on A");
+        t.Check(map2.Map(20, 20) is (5, 20), "B follows B");
+
+        // No layout recorded at all: the numbers are all there is, as before.
+        var legacy = new UnifiedRgb.App.Services.HardwareRemap(onlyB, null, savedLeds: 30);
+        t.Check(legacy.Map(5, 10) is (5, 10), "a profile from before layouts were recorded keeps the numeric fallback");
+        t.Check(legacy.Map(0, 30) is (0, 20), "...and its whole-device range still re-anchors");
+    }
+
+    /// <summary>A profile applied while a device is absent grows the remembered
+    /// frame to the profile's length. It used to clone the old, shorter frame
+    /// and copy only the shorter of the two lengths, so a profile made for a
+    /// device that gained LEDs - or a layout changed while it was unplugged -
+    /// came back with its extra LEDs missing (2026-09-23 review, finding 9).</summary>
+    static void RecoveryFramesGrow(Harness t)
+    {
+        t.Section("recovery: a longer profile grows the frame remembered for an absent device");
+        var recovery = new UnifiedRgb.App.Services.RecoveryLightingState();
+        var two = new FakeDevice { Name = "Grown", LedCount = 2 };
+        recovery.Remember(new[] { two }, _ => new[] { Rgb.Red, Rgb.Red }, Array.Empty<EffectAssignment>());
+        t.Equal(2, recovery.Frames["Grown"].Length, "two LEDs remembered while the device was present");
+
+        recovery.ApplyProfile(new Profile { Name = "Four", DeviceFrames = new() { ["Grown"] = new[] { "0000FF", "0000FF", "0000FF", "0000FF" } } });
+        t.Equal(4, recovery.Frames["Grown"].Length, "a four-LED profile applied in its absence is remembered whole (was: cut to two)");
+        t.Check(recovery.Frames["Grown"].All(c => c == Rgb.Blue), "...with every LED the profile's colour");
+
+        recovery.ApplyProfile(new Profile { Name = "One", DeviceFrames = new() { ["Grown"] = new[] { "00FF00" } } });
+        t.Equal(4, recovery.Frames["Grown"].Length, "a shorter profile keeps the length");
+        t.Check(recovery.Frames["Grown"][0] == Rgb.Green && recovery.Frames["Grown"][3] == Rgb.Blue,
+            "...setting what it mentions and leaving the tail as it was");
+
+        recovery.ApplyProfile(new Profile { Name = "Bad", DeviceFrames = new() { ["Grown"] = new[] { "not-a-colour", "FF0000" } } });
+        t.Check(recovery.Frames["Grown"][0] == Rgb.Green && recovery.Frames["Grown"][1] == Rgb.Red,
+            "a colour that will not parse keeps what the LED had");
+
+        recovery.ApplyProfile(new Profile { Name = "New", DeviceFrames = new() { ["Never seen"] = new[] { "FF0000", "bad", "0000FF" } } });
+        var fresh = recovery.Frames["Never seen"];
+        t.Check(fresh.Length == 3 && fresh[0] == Rgb.Red && fresh[1] == Rgb.Black && fresh[2] == Rgb.Blue,
+            "a device never remembered starts from the profile, black where a colour will not parse");
+    }
+
+    /// <summary>A save that fails is said in the activity history, once per file
+    /// until it saves again - it used to be a line in a log file the user has no
+    /// reason to open, while the old file on disk looked fine (2026-09-23 review,
+    /// finding 8).</summary>
+    static void FailedSavesAreSaid(Harness t)
+    {
+        t.Section("store: a failed save is said in the activity history, once");
+        UnifiedRgb.Core.Automation.ActivityLog.Shared.Clear();
+        string blocker = Path.Combine(Isolation.Root, "a-file-not-a-folder");
+        File.WriteAllText(blocker, "in the way");
+        string path = Path.Combine(blocker, "settings.json");   // a folder that is a file: the write cannot land
+        const string what = "settings.json (harness)";
+        t.Check(!ProfileStore.TrySave(path, new SettingsData(), what), "the save fails");
+        t.Check(!ProfileStore.TrySave(path, new SettingsData(), what), "...and fails again on the retry");
+        var problems = UnifiedRgb.Core.Automation.ActivityLog.Shared.Snapshot()
+            .Where(n => n.Kind == UnifiedRgb.Core.Automation.ActivityKind.Problem && n.Text.Contains(what)).ToList();
+        t.Equal(1, problems.Count, "one Problem line for the two failures (was: none at all)");
+        t.Check(problems.Count == 1 && problems[0].Text.Contains("could not be saved"), "...that says the file could not be saved");
+        string good = Path.Combine(Isolation.Root, "config", "harness-settings.json");
+        t.Check(ProfileStore.TrySave(good, new SettingsData(), what), "a save that works");
+        t.Check(!ProfileStore.TrySave(path, new SettingsData(), what), "...then a failure again");
+        // The history folds an identical consecutive line into a repeat count,
+        // so "said again" shows as x2 on the one line rather than a second line.
+        t.Equal(2, UnifiedRgb.Core.Automation.ActivityLog.Shared.Snapshot()
+                .Where(n => n.Kind == UnifiedRgb.Core.Automation.ActivityKind.Problem && n.Text.Contains(what)).Sum(n => n.Repeats),
+            "is said again: a recovery resets the once-only");
+        try { File.Delete(good); File.Delete(blocker); } catch { }
+    }
+
     public static void Run(Harness t)
     {
         TheScreenInTheCase(t);
         ShowStepsBecomeProfiles(t);
+        RemapRefusesVanishedZones(t);
+        RecoveryFramesGrow(t);
+        FailedSavesAreSaid(t);
         var store = new ProfileStore();
         var dev = new FakeDevice { Name = "Absent-Later", LedCount = 2 };
         var frame = new[] { Rgb.Red, Rgb.Blue };

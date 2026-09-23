@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.IO;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -63,16 +63,6 @@ public sealed partial class MainViewModel
     /*-----------------------------------------------------*\
     | Razer layout (HyperFlux V2 pad LED count, chase test) |
     \*-----------------------------------------------------*/
-    public bool IsRazerSelected => SelectedDevice is RazerHid;
-
-    /// <summary>After the Razer… dialog's Test chase: re-push every Razer
-    /// device's stored static frame (the chase cleared its dedup, so the
-    /// write goes out whole); a running effect repaints on its next frame.</summary>
-    public void EndRazerTest()
-    {
-        foreach (var dev in Devices.OfType<RazerHid>()) _lighting.PushFrame(dev);
-    }
-
     void RebuildTargets()
     {
         Targets.Clear();
@@ -102,6 +92,24 @@ public sealed partial class MainViewModel
             : new List<(int off, int cnt)> { (zone?.Offset ?? 0, zone?.Count ?? dev.LedCount) };
         foreach (var (off, cnt) in ranges)
             for (int i = 0; i < cnt && off + i < frame.Length; i++) frame[off + i] = Current;
+
+        // A device an SDK client holds keeps the pick as its PENDING intent:
+        // the stored frame, which RestoreDevice pushes the moment the client
+        // lets go. It gets no write now. The client paints the whole device
+        // from its own picture on every write, so ours would interrupt it for
+        // one frame and start a colour fight - the protection every profile
+        // apply and effect start already had, and the picker did not. Both
+        // halves of "held", as everywhere else in this file: IsClaimed turns
+        // true only on the client's first painted frame, and the write
+        // boundary (LightingController.PushFrame) refuses on that half too.
+        if (_sdkHeld.Contains(dev) || _lighting.IsClaimed(dev))
+        {
+            _engine.InvalidateBase(dev);
+            UnifiedRgb.Core.Log.Occasional($"held:{dev.Name}", "lighting",
+                $"{dev.Name}: an SDK client holds this device - the colour you picked comes back when it lets go");
+            MarkDirty();
+            return;
+        }
 
         // Lian Li with baked effects running: a direct static write would
         // interrupt the hardware animation. Fold the new static base into the

@@ -225,11 +225,16 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             // taskkill is filtered to OUR image name: after a minute the PID may
             // already belong to an unrelated process (Windows recycles PIDs fast).
             string imageName = Path.GetFileName(target);
+            // Every tool by its full System32 path. The script runs elevated,
+            // and a bare name is resolved through PATH - which, in the user's
+            // half, any process of the user can extend. Bake the paths in and
+            // there is nothing to resolve.
+            string sys = Environment.SystemDirectory;
             // Re-verify the payload right before every move attempt - closes the
             // window between the managed hash check and the swap. Always
             // emitted: sha is guaranteed by the gate before the download.
             string verify =
-                $"certutil -hashfile \"{temp}\" SHA256 | findstr /i /c:\"{sha}\" >nul || goto tampered";
+                $"\"{sys}\\certutil.exe\" -hashfile \"{temp}\" SHA256 | \"{sys}\\findstr.exe\" /i /c:\"{sha}\" >nul || goto tampered";
             // The result redirect goes FIRST: cmd expands %n% before it parses
             // redirection, so `echo ok %n%>file` with n=2 became `echo ok 2>file`
             // (a stderr redirect - empty file) and n=12 became `1 0>file`
@@ -241,8 +246,8 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
                 :loop
                 set /a n+=1
                 if %n% gtr 90 goto fail
-                if %n% equ 30 taskkill /f /pid {Environment.ProcessId} /fi "IMAGENAME eq {imageName}" >nul 2>&1
-                timeout /t 2 /nobreak >nul
+                if %n% equ 30 "{sys}\taskkill.exe" /f /pid {Environment.ProcessId} /fi "IMAGENAME eq {imageName}" >nul 2>&1
+                "{sys}\timeout.exe" /t 2 /nobreak >nul
                 {verify}
                 move /y "{temp}" "{target}" >nul 2>&1
                 if errorlevel 1 goto loop
@@ -263,10 +268,16 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             {
                 // Marker: next launch verifies the swap actually took (CheckAsync).
                 try { if (latest != null) File.WriteAllText(PendingMarkerIn(targetDir), latest.Version); } catch { }
+                // The system's own cmd.exe by full path, and /d: without it cmd
+                // runs the AutoRun commands from the registry first, and the
+                // per-user AutoRun value is writable by any process of the
+                // user - a same-user path to elevated code on the day of a
+                // legitimate update, past every hash check, because it ran
+                // before the script's first line.
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
-                    FileName = "cmd.exe",
-                    Arguments = $"/c \"{bat}\"",
+                    FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+                    Arguments = $"/d /c \"{bat}\"",
                     CreateNoWindow = true,
                     UseShellExecute = false,
                 });

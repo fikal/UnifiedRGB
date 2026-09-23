@@ -225,6 +225,12 @@ static class BackupSuite
         night?.DeviceFrames.TryGetValue("K95 RGB", out frame);
         t.Check(frame is { Length: 2 } && frame[0] == "FF0000",
             "the saved colors survived the trip");
+        // The zone layout is looked up by the CURRENT device name at apply
+        // time; left under the bundle's name it was a frame with no layout.
+        t.Check(night != null && night.DeviceZones.ContainsKey("K95 RGB") && !night.DeviceZones.ContainsKey("Keeb"),
+            "the zone layout was remapped with its frame (it used to stay under the old name)");
+        t.Check(night != null && night.DeviceZones.TryGetValue("K95 RGB", out var zones) && zones is { Length: 1 } && zones[0].Name == "Keys",
+            "...and it is the layout that was saved");
 
         // Screens: back, with the background rewritten to the copy that
         // travelled inside the bundle.
@@ -422,6 +428,16 @@ static class BackupSuite
         ProfileStore.Save(path, new[] { original }, "profiles.json");
         t.Equal(ImportStatus.Same, SetupBundle.Preview(bundle).Profiles.Single().Status,
             "identical show and wallpaper remain unchanged in preview");
+
+        // The zone layout is part of the profile: on changed hardware it decides
+        // where the colours land, so two profiles that differ only there are
+        // not the same profile.
+        var relaid = new Profile { Name = "Desk", Show = "Day", Wallpaper = "Beach" };
+        relaid.DeviceZones["Board"] = new[] { new ZoneSpan { Name = "Ribbon", Offset = 0, Count = 30 } };
+        ProfileStore.Save(path, new[] { relaid }, "profiles.json");
+        t.Equal(ImportStatus.Differs, SetupBundle.Preview(bundle).Profiles.Single().Status,
+            "a different zone layout is an import conflict (it used to read as unchanged)");
+        ProfileStore.Save(path, new[] { original }, "profiles.json");
     }
 
     /*--- fixtures and helpers ---*/
@@ -432,6 +448,7 @@ static class BackupSuite
     {
         var profile = new Profile { Name = "Night", Screen = "Aurora" };
         profile.DeviceFrames["Keeb"] = new[] { "FF0000", "00FF00" };
+        profile.DeviceZones["Keeb"] = new[] { new ZoneSpan { Name = "Keys", Offset = 0, Count = 2 } };
         profile.Effects = new List<EffectAssignment>
         {
             new() { Device = "Keeb", Offset = 0, Count = 2, Effect = "Rainbow" },
@@ -525,6 +542,23 @@ static class BackupSuite
         t.Equal(ImportStatus.Differs, SetupBundle.Preview(bundle).Screens.Single().Status, "different background bytes are a conflict");
         File.WriteAllBytes(second, new byte[] { 1 });
         t.Equal(ImportStatus.Same, SetupBundle.Preview(bundle).Screens.Single().Status, "same background at another path remains identical");
+
+        // A background the bundle does not carry is cleared on import, full
+        // stop - even when a file happens to exist at that path on this
+        // machine. It used to be kept then, after asking the filesystem, and
+        // "does it exist" is a probe: a bundle naming a UNC path made the
+        // importing machine reach for that server (2026-09-23 review, finding 4).
+        string ghost = Path.Combine(temp, "ghost-background.png");   // absent at export, so not bundled
+        new SceneStore { Scenes = new() { new LcdScene { Name = "Ghost", Design = new LcdDesign { BackgroundImagePath = ghost } } } }.Save();
+        string ghostBundle = Path.Combine(temp, "ghost.urgb");
+        t.Check(SetupBundle.Export(ghostBundle).Ok, "a setup whose screen background is missing still exports");
+        File.WriteAllBytes(ghost, new byte[] { 1 });                 // and now it exists on the importing machine
+        CleanConfig();
+        var ghostPreview = SetupBundle.Preview(ghostBundle);
+        t.Check(SetupBundle.Apply(ghostPreview, ghostPreview.EverythingChoices()).Ok, "the screen imports");
+        var ghostScene = SceneStore.Load().Scenes.SingleOrDefault(s => s.Name == "Ghost");
+        t.Check(ghostScene != null && ghostScene.Design.BackgroundImagePath == null,
+            "an unbundled background is cleared even though a file exists at its path here (was: kept, after probing the path)");
 
         Exception? failure = null;
         var thread = new Thread(() =>

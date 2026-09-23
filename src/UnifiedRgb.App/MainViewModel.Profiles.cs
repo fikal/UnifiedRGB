@@ -25,29 +25,61 @@ public sealed partial class MainViewModel
     \*-----------------------------------------------------*/
     // True once colors changed since the selected profile was loaded/saved.
     bool _dirty;
+
+    /// <summary>The user changed something the profile records. When the
+    /// LIGHTING moved (a colour, an effect, a palette, a speed - anything but
+    /// the pickers), the desk is ad-hoc now rather than any named profile, and
+    /// the automation is told, exactly as it is told about a profile apply: a
+    /// colour picked by hand during an app rule is the user's new baseline,
+    /// and without this the rule's end put the snapshot from before it back
+    /// over the colour they had just chosen. Every caller is a user edit - the
+    /// programmatic paths (LoadProfile, RestoreState, Rescan) set the fields
+    /// directly and never come through here - and startup is guarded.</summary>
     void MarkDirty(bool lightingChanged = true)
     {
         if (_initializing) return;
         _dirty = true;
-        if (lightingChanged) _appliedProfile = null;
+        if (!lightingChanged) return;
+        _appliedProfile = null;
+        LightingApplied?.Invoke();
     }
 
-    /// <summary>Snapshot every running effect assignment for saving.</summary>
+    /// <summary>Snapshot every effect assignment for saving: the running ones,
+    /// and the ones an SDK client is keeping off a device it holds. The latter
+    /// are the user's choice for that device exactly as much as a running
+    /// channel is - they start the moment the client lets go - so a profile
+    /// saved or a rescan taken meanwhile carries them rather than filing the
+    /// device as static.</summary>
     List<EffectAssignment> CaptureEffects()
     {
         var list = new List<EffectAssignment>();
         foreach (var fx in _targetFx.Values)
         {
-            var ch = fx.Channel;
-            if (ch == null || ChoiceOf(fx).Effect == null) continue;
+            if (ChoiceOf(fx).Effect == null) continue;
+            string device; int offset, count; Rgb baseColor; bool canvas;
+            if (fx.Channel is { } ch)
+            {
+                // Running, or stopped by a client and still referenced: what it
+                // was started with.
+                device = ch.Device.Name; offset = ch.Offset; count = ch.Count;
+                baseColor = ch.BaseColor; canvas = ch.Canvas;
+            }
+            else if (fx.HeldBase is { } held && fx.Device != null)
+            {
+                // Chosen while a client held the device: never started, so the
+                // target state is the only record of it.
+                device = fx.Device; offset = fx.Offset; count = fx.Count;
+                baseColor = held; canvas = UnifiedRgb.Core.Effects.CanvasLayout.Current is { Enabled: true };
+            }
+            else continue;
             bool isPattern = ChoiceOf(fx).Effect is PatternEffect;
             bool isRipple = ChoiceOf(fx).Effect is KeyRipple;
             bool isPalette = ChoiceOf(fx).Effect is IPaletteEffect;   // Taichi et al.
             list.Add(new EffectAssignment
             {
-                Device = ch.Device.Name, Offset = ch.Offset, Count = ch.Count,
+                Device = device, Offset = offset, Count = count,
                 Effect = ChoiceOf(fx).Name, Speed = fx.Speed, Reverse = fx.Reverse,
-                BaseColor = ch.BaseColor.ToHex(),
+                BaseColor = baseColor.ToHex(),
                 // The ripple's color source rides the pattern fields (it uses
                 // the same PatternColor enum and shares the target's palette).
                 PatternColor = isPattern ? fx.Pattern?.Color.ToString()
@@ -57,7 +89,7 @@ public sealed partial class MainViewModel
                 PatternReverse = fx.Pattern?.Reverse ?? false,
                 PatternPalette = isPattern || isRipple || isPalette
                     ? fx.Palette.Select(c => c.ToHex()).ToArray() : null,
-                Canvas = ch.Canvas,
+                Canvas = canvas,
             });
         }
         return list;
@@ -97,7 +129,7 @@ public sealed partial class MainViewModel
     {
         _staleRanges.Clear();
         _engine.StopAll();
-        foreach (var fx in _targetFx.Values) { fx.Channel = null; fx.Choice = Effects[0]; }
+        foreach (var fx in _targetFx.Values) { fx.Channel = null; fx.Choice = Effects[0]; fx.HeldBase = null; }
 
         // Null-tolerant throughout: this runs from the constructor for the
         // startup profile, and a well-formed profiles.json with a null entry
@@ -159,7 +191,9 @@ public sealed partial class MainViewModel
             // what the switch says and what people expect from it. CanvasPositions
             // returns null when the desk is off or this device has no place on
             // it, so the effect then runs per-device exactly as before.
-            fx.Channel = EffectBlockedByClient(dev) ? null
+            bool blocked = EffectBlockedByClient(dev);
+            fx.HeldBase = blocked ? baseColor : null;
+            fx.Channel = blocked ? null
                        : _engine.Start(dev, offset, count, FrameFor(dev), effect,
                                        SignedSpeed(fx), baseColor,
                                        CanvasPositions(dev, offset, count));
@@ -451,11 +485,14 @@ public sealed partial class MainViewModel
     public bool NeedsFirstProfilePrompt => Profiles.Count == 0 && _dirty;
 
     /// <summary>Save the current state as a new profile under the given name
-    /// (first-profile close prompt).</summary>
-    public void SaveProfileAs(string name)
+    /// (first-profile close prompt). False when profiles.json could not be
+    /// written: the caller asked on the user's behalf and has to know that
+    /// nothing was kept, or a close prompt answered "Yes" would throw the work
+    /// away on the strength of a save that never happened.</summary>
+    public bool SaveProfileAs(string name)
     {
         ProfileName = string.IsNullOrWhiteSpace(name) ? "My setup" : name.Trim();
-        SaveProfile();
+        return SaveProfile();
     }
 
     /// <summary>Save the current state back into the active profile (used by
@@ -470,11 +507,16 @@ public sealed partial class MainViewModel
     /// right now" path BuildCapture already uses: every device is absent in the
     /// sense that matters, because none of them is showing this profile. The
     /// swatches and the screen/show/wallpaper choices ARE the user's and are
-    /// still saved, which is what a step must not be allowed to cost them.</summary>
-    public void SaveActiveProfile()
+    /// still saved, which is what a step must not be allowed to cost them.
+    ///
+    /// Returns whether the profile was written. The close prompt cancels the
+    /// close on false, so a full disk or a locked settings folder leaves the
+    /// editing session standing for another try instead of ending it with the
+    /// changes unsaved.</summary>
+    public bool SaveActiveProfile()
     {
         var active = SelectedProfile;
-        if (active == null) return;
+        if (active == null) return false;
         bool showOwnsLighting = Shows.Running;
         var frames = showOwnsLighting
             ? Enumerable.Empty<(IRgbDevice, Rgb[])>()
@@ -485,7 +527,7 @@ public sealed partial class MainViewModel
         var p = _store.TryCapture(active.Name, frames, CustomColorsSnapshot(),
                                    showOwnsLighting ? null : CaptureEffects(), PumpForSave,
                                    wallpaper: WallpaperForSave);
-        if (p == null) { NoteSaveFailed(active.Name); return; }
+        if (p == null) { NoteSaveFailed(active.Name); return false; }
         int idx = Profiles.IndexOf(active);
         if (idx >= 0) Profiles[idx] = p; else Profiles.Add(p);
         // Through the setter: replacing the item made the bound combo push null
@@ -503,16 +545,15 @@ public sealed partial class MainViewModel
         // colors were not captured then (see above), so the lighting still
         // belongs to whatever step is up.
         if (!showOwnsLighting) _appliedProfile = p.Name;
+        return true;
     }
 
-    void SaveProfile()
+    /// <summary>True when the profile was written. A rename whose old entry
+    /// could not be removed still counts: the new profile is on disk.</summary>
+    bool SaveProfile()
     {
         // Empty name + a selected profile = update that profile in place.
-        if (string.IsNullOrWhiteSpace(ProfileName))
-        {
-            SaveActiveProfile();
-            return;
-        }
+        if (string.IsNullOrWhiteSpace(ProfileName)) return SaveActiveProfile();
 
         // Everything this save depends on is read BEFORE the collections are
         // touched, because touching them re-enters through the bindings. The
@@ -534,7 +575,7 @@ public sealed partial class MainViewModel
         // saved reference changes when writing the replacement fails.
         var p = _store.TryCapture(newName, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), pump,
                                carryFrom: renamedFrom, wallpaper: wallpaper);
-        if (p == null) { NoteSaveFailed(newName); return; }
+        if (p == null) { NoteSaveFailed(newName); return false; }
         var existing = Profiles.FirstOrDefault(x => x.Name.Equals(p.Name, StringComparison.OrdinalIgnoreCase));
         if (existing != null) Profiles[Profiles.IndexOf(existing)] = p;
         else Profiles.Add(p);
@@ -558,6 +599,7 @@ public sealed partial class MainViewModel
         _dirty = false;
         _appliedProfile = p.Name;   // the lighting IS this profile now
         OnChanged(nameof(IsStartupProfile));
+        return true;
     }
 
     /// <summary>A save that could not be written. Every one of these paths used

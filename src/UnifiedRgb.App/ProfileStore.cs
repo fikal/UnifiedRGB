@@ -395,9 +395,31 @@ public sealed class ProfileStore
             Log.Occasional($"store-skip:{what}", "store", $"{what} save skipped: the file could not be read at startup (see above)");
             return false;
         }
-        try { SafeFile.WriteAllText(path, JsonSerializer.Serialize(data, JsonOpts)); return true; }
-        catch (Exception ex) { Log.Warn("store", $"{what} save failed: {ex.Message}"); return false; }
+        try
+        {
+            SafeFile.WriteAllText(path, JsonSerializer.Serialize(data, JsonOpts));
+            lock (Failing) Failing.Remove(what);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("store", $"{what} save failed: {ex.Message}");
+            // Said where the user looks, once per file until a save of it goes
+            // through again. A failed save used to be a line in a log file the
+            // user has no reason to open, while the previous file sat on disk
+            // looking fine: every change after it looked saved and was not.
+            bool first;
+            lock (Failing) first = Failing.Add(what);
+            if (first)
+                UnifiedRgb.Core.Automation.ActivityLog.Note(UnifiedRgb.Core.Automation.ActivityKind.Problem,
+                    $"{what} could not be saved ({ex.Message}). Changes will not survive a restart until this is fixed.");
+            return false;
+        }
     }
+
+    /// <summary>The files whose last save failed, so the activity line above
+    /// is said once per failure and not once per debounced retry.</summary>
+    static readonly HashSet<string> Failing = new(StringComparer.Ordinal);
 
     /// <summary>Capture the given frames into a named profile (replacing any
     /// same-named profile) and persist. Devices absent right now (disabled or

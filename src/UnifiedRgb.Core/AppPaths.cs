@@ -11,10 +11,23 @@ public static class AppPaths
     public static readonly string ConfigDir =
         Redirect("UNIFIEDRGB_CONFIG_DIR", Environment.SpecialFolder.ApplicationData);
 
-    /// <summary>%LOCALAPPDATA%\UnifiedRgb — machine-local state (OpenRGB bundle,
-    /// fan-config.json).</summary>
+    /// <summary>%LOCALAPPDATA%\UnifiedRgb — machine-local state (fan-config.json).</summary>
     public static readonly string LocalDir =
         Redirect("UNIFIEDRGB_LOCAL_DIR", Environment.SpecialFolder.LocalApplicationData);
+
+    /// <summary>%ProgramData%\UnifiedRgb — machine-wide state that only an
+    /// administrator may write: the bundled OpenRGB build lives here.
+    ///
+    /// Not LocalAppData, and the difference is a privilege boundary rather than
+    /// tidiness. This app runs elevated and LAUNCHES that executable, and every
+    /// process running as the user can write to LocalAppData without any
+    /// elevation at all - so a bundle kept there let an unprivileged process
+    /// swap in a binary of its own and have the administrator process run it,
+    /// at every logon. Nothing here creates this folder: it exists only once
+    /// <see cref="ProtectedFolder.Ensure"/> has made it and set its ACL, and a
+    /// copy anybody else made first is thrown away by the same call.</summary>
+    public static readonly string MachineDir =
+        Redirect("UNIFIEDRGB_MACHINE_DIR", Environment.SpecialFolder.CommonApplicationData);
 
     /// <summary>The real per-user location, unless the TEST HARNESS is what is
     /// running. The harness must not read or write the running user's settings,
@@ -54,12 +67,16 @@ public static class AppPaths
 
     public static string Config(string file) => Path.Combine(ConfigDir, file);
     public static string Local(string file) => Path.Combine(LocalDir, file);
+    public static string Machine(string file) => Path.Combine(MachineDir, file);
 
     static AppPaths()
     {
-        // Both trees, so every store can assume its parent exists: LocalDir
-        // used to be created only by the OpenRGB installer, and on a machine
-        // that never enabled the bridge fan-config.json silently failed to save.
+        // Both per-user trees, so every store can assume its parent exists:
+        // LocalDir used to be created only by the OpenRGB installer, and on a
+        // machine that never enabled the bridge fan-config.json silently failed
+        // to save. MachineDir is deliberately NOT created here: it has to come
+        // into being with its ACL, through ProtectedFolder, or it is just
+        // another folder anybody can write to.
         try { Directory.CreateDirectory(ConfigDir); } catch { }
         try { Directory.CreateDirectory(LocalDir); } catch { }
     }
@@ -69,7 +86,7 @@ public static class AppPaths
 /// carry no endpoint at all: update checks quietly skip and support bundles
 /// save to a local file. Configuration resolves in order:
 ///   1. %APPDATA%\UnifiedRgb\backend.json  →  { "url": "...", "key": "..." }
-///      (the developer machine / power-user override)
+///      (the developer's override, honoured by DEBUG private-feed builds only)
 ///   2. Build-time injection for private-feed builds:
 ///        dotnet publish -p:RgbBackendUrl=... -p:RgbBackendKey=...
 ///      (the values land in this assembly's AssemblyMetadata; nothing is
@@ -105,6 +122,19 @@ public static class Backend
         // carries no endpoint, honoring the file there buys nothing and costs
         // that. A fork wanting its own feed builds with -p:RgbBackendUrl=...,
         // which is a decision made in the build rather than in a writable file.
+        //
+        // And ignored in a RELEASE private-feed build too, for the same reason
+        // with the same file: a private build handed to somebody else runs
+        // elevated on their machine, and the hash the feed publishes proves
+        // only that the payload is the one the feed points at - not who
+        // published it. Aiming at staging is a developer's activity, done on a
+        // Debug build, so that is the only build that reads the file.
+#if DEBUG
+        const bool debugBuild = true;
+#else
+        const bool debugBuild = false;
+#endif
+        bool honourFile = privateBuild && debugBuild;
         string f = AppPaths.Config("backend.json");
         bool present = false;
         try { present = File.Exists(f); } catch { }
@@ -113,6 +143,11 @@ public static class Backend
         {
             Log.Warn("backend", $"ignoring {f}: this build has no private feed of its own, "
                               + "so updates come from GitHub and a file cannot redirect them");
+        }
+        else if (present && !honourFile)
+        {
+            Log.Warn("backend", $"ignoring {f}: a release build takes its feed from the build alone, "
+                              + "and a file writable by any process cannot redirect it");
         }
         else if (present)
         {

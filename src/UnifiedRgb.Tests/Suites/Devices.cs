@@ -531,20 +531,32 @@ static class DevicesSuite
             var pad = RazerHid.PadPositionsFor(20);
             t.Check(pad.Length == 20 && pad.All(p => p.X is >= 0 and <= 1 && p.Y is >= 0 and <= 1), "razer pad: n perimeter positions inside the unit box");
             t.Check(pad[0] == new LedPos(0, 0) && pad[5].Y == 0 && pad[10].X > 0.99f && pad.Distinct().Count() == 20, "razer pad: clockwise from the top-left corner, all distinct");
-            var (guess, src) = RazerHid.ResolveCount(0x0FFF, null);
-            t.Check(guess == 20 && src == "guessed", "razer pad: no config, no probe -> 20 guessed");
-            // ...but never for a model we KNOW has none. The HyperFlux V2 is a
-            // charger and a receiver; its only LED is a battery indicator its own
-            // firmware drives. Its firmware accepts custom-frame columns anyway, so
-            // the width probe learns nothing and the guess used to invent a 20-LED
-            // strip: it appeared in the device list, took colours, reported success
-            // and stayed dark. Checked on the pad itself - it ACKed a full red frame
-            // and did not light.
+            // Nothing has said this pad lights, so it does not get a device. There
+            // used to be a fallback here that invented 20 LEDs, and that is what
+            // put a strip on a mat with no LEDs at all: it appeared in the device
+            // list, took colours, reported success and stayed dark forever - and
+            // it flooded one user's log with 5,546 copies of the refusal. An
+            // invented device is worse than no device.
+            t.Equal((0, "nothing says it has any lights"), RazerHid.ResolveCount(0x0FFF, null),
+                "razer pad: no config, no probe, nothing known -> no lighting, not a guess");
+
+            // A model we KNOW has none beats even a probe that sounds certain.
+            // The HyperFlux V2 is a charger and a receiver; its only LED is a
+            // battery indicator its own firmware drives. This desk's pad accepts
+            // every custom-frame column so the probe learns nothing, while
+            // Chris's refuses from 20 on and returns a confident, WRONG 20.
+            // Neither mat lights. (The frame path itself answers 0x04 and
+            // refuses - the probe and the frame are different commands, and
+            // believing the probe is the whole mistake.)
             t.Equal((0, "no lighting on this model"), RazerHid.ResolveCount(RazerHid.HYPERFLUX_V2, null),
-                "razer pad: a model known to have no lighting is not guessed a strip");
+                "razer pad: a model known to have no lighting is never given a strip");
             t.Equal(0, RazerHid.ResolveCount(RazerHid.HYPERFLUX_V2, 20).Count,
                 "...even when the frame probe accepts columns, which it does on this pad");
-            t.Check(RazerHid.ResolveCount(0x0FFF, 19) == (19, "probed") && RazerHid.ResolveCount(0x0FFF, 999).Count == RazerHid.MaxLeds, "razer pad: probe wins over the guess and is capped");
+
+            // A conclusive probe is still the best evidence for a pad we know
+            // nothing about - it just no longer has a guess to beat.
+            t.Check(RazerHid.ResolveCount(0x0FFF, 19) == (19, "probed") && RazerHid.ResolveCount(0x0FFF, 999).Count == RazerHid.MaxLeds,
+                "razer pad: a conclusive probe is used, and capped");
         }
 
         t.Section("RazerHid: a flat colour can be stored onboard, a per-LED frame cannot");
@@ -745,13 +757,19 @@ static class DevicesSuite
                 UnifiedRgb.Core.DetectionNotes.Clear();
                 var found = RazerHid.OpenPad(() => new FakeHid { Respond = UnlitPad, FeatureOnly = true });
                 t.Equal(0, found.Count, "a pad set to no lighting is not added as a lighting device");
-                // By WHAT, not just by family: a pad with no mouse awake behind it
+                // By WHAT, not just by family: a mat with no mouse awake behind it
                 // now files its own note too, and they are different statements.
-                var note = UnifiedRgb.Core.DetectionNotes.Current.SingleOrDefault(n => n.What.Contains("pad"));
-                t.Check(note != null && note.Reason == UnifiedRgb.Core.BlockReason.PartlyWorking,
+                var note = UnifiedRgb.Core.DetectionNotes.Current.SingleOrDefault(n => n.What.Contains("mat"));
+                t.Check(note != null && note.Reason == UnifiedRgb.Core.BlockReason.NoLighting,
                     "...but it is RECORDED, so it does not read as the app dropping support for it");
-                t.Check(note?.Remedy != null && note.Remedy.Contains("Razer"),
-                    "...and says where to turn it back on");
+                // A mat with no lights is not a FAULT. It answers everything we
+                // ask it; there is simply nothing on it to light. Badging that
+                // "not responding" told the owner something was broken when
+                // nothing was, and offering a remedy invited them to set an LED
+                // count - which is exactly how the phantom strip got there.
+                t.Equal(UnifiedRgb.Core.DeviceHealthState.Connected, note!.Health,
+                    "...as working hardware, not as a device that is not responding");
+                t.Check(note.Remedy == null, "...and offers no remedy, because nothing is wrong");
 
                 new HardwareConfig { RazerLedCounts = new() { ["00CF"] = 20 } }.Save();
                 found = RazerHid.OpenPad(() => new FakeHid { Respond = UnlitPad, FeatureOnly = true });
@@ -859,8 +877,10 @@ static class DevicesSuite
             t.Check(note != null, "a pad with nothing answering behind it is REPORTED, not just skipped");
             t.Check(note?.Detail != null && note.Detail.Contains("asleep"),
                 "...saying it may simply be asleep, which is what it usually is");
-            t.Check(note?.Remedy != null && note.Remedy.Contains("move it"),
+            t.Check(note?.Remedy != null && note.Remedy.Contains("Move it"),
                 "...and that moving the mouse is all it takes");
+            t.Equal(UnifiedRgb.Core.BlockReason.Asleep, note!.Reason,
+                "...as ASLEEP, which fixes itself, not as a fault the user must chase");
             UnifiedRgb.Core.DetectionNotes.Clear();
 
             // ...and the shape it ACTUALLY takes on hardware, which the fake
@@ -880,8 +900,8 @@ static class DevicesSuite
             // which is always. Matching on either rescanned every five seconds
             // forever, tearing the mouse down before its lighting could settle
             // and leaving it black. Seen on hardware; this is the guard.
-            var padNote = UnifiedRgb.Core.DetectionNotes.Current.FirstOrDefault(n => n.What.Contains("pad"));
-            t.Check(padNote != null, "the pad files a note of its own");
+            var padNote = UnifiedRgb.Core.DetectionNotes.Current.FirstOrDefault(n => n.What.Contains("mat"));
+            t.Check(padNote != null, "the mat files a note of its own");
             t.Check(padNote?.What != RazerHid.SleepingMouseNote,
                 "...that is NOT the sleeping-mouse note, or the poll can never stop");
             UnifiedRgb.Core.DetectionNotes.Clear();

@@ -141,12 +141,17 @@ public sealed class LightingController
     /// a bounded deadline before saying so loudly.</summary>
     public void PushFrame(IRgbDevice dev)
     {
+        StaticPushed?.Invoke();   // the STORED frame changed, whether or not it can go out now
+        if (IsClaimed(dev)) { HeldByClient(dev); return; }
         NoteWritten(dev);
-        StaticPushed?.Invoke();
         var snap = (Rgb[])FrameFor(dev).Clone();
         Engine.InvalidateBase(dev);   // running non-zone channels re-snapshot the edited statics
         Applier.Post(LaneOf(dev), dev, () =>
         {
+            // Asked again at execution: this write may have been queued before
+            // a client claimed the device, and landing it now would paint over
+            // the client's picture - the thing the claim exists to prevent.
+            if (IsClaimed(dev)) return;
             // Calibration then master brightness, on the CLONE only. The stored
             // frame keeps the color the user actually picked, so trimming a
             // device never rewrites their saved colors.
@@ -174,13 +179,15 @@ public sealed class LightingController
     /// per (device, offset) so zones coalesce independently.</summary>
     public void PushZone(IZoneWritable zw, IRgbDevice dev, int off, int count)
     {
-        NoteWritten(dev);
         StaticPushed?.Invoke();
+        if (IsClaimed(dev)) { HeldByClient(dev); return; }
+        NoteWritten(dev);
         var frame = FrameFor(dev);
         var slice = new Rgb[count];
         for (int i = 0; i < count; i++) slice[i] = off + i < frame.Length ? frame[off + i] : Rgb.Black;
         Applier.Post(LaneOf(dev), (dev, off), () =>
         {
+            if (IsClaimed(dev)) return;   // queued before the claim: see PushFrame
             // The slice is a copy of the stored range, so finishing it here
             // trims the hardware without touching what was stored.
             // The slice starts at device LED `off`, so the trim is told
@@ -192,6 +199,16 @@ public sealed class LightingController
             lock (GateOf(dev)) WritePolicy.MustLand(dev, zw, off, slice, "static zone apply");
         }, moveToEnd: true);
     }
+
+    /// <summary>The write boundary's half of "an SDK client holds this device".
+    /// A static push arriving while a client paints the device is kept as the
+    /// user's intent in the stored frame - the client's release restores from
+    /// it - and not written, whoever asked: the colour picker used to reach
+    /// the hardware straight through here while every profile apply and effect
+    /// start was refused, and the device flickered between the two writers.</summary>
+    void HeldByClient(IRgbDevice dev) =>
+        Log.Occasional($"held:{dev.Name}", "lighting",
+            $"{dev.Name}: an SDK client holds this device - static colours are kept for when it lets go, not written");
 
     /// <summary>Repaint a range with its stored static colors: the zone alone
     /// when the device can address zones, else the whole frame.</summary>

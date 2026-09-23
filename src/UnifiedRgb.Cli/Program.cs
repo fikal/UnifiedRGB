@@ -902,14 +902,29 @@ if (args.Length == 1)
 {
     if (!Rgb.TryFromHex(args[0], out var color)) { Console.WriteLine($"Not a color: {args[0]} (want RRGGBB)"); Environment.ExitCode = 2; return; }
     Console.WriteLine($"Setting all devices to {color}...");
-    foreach (var d in manager.Devices) d.SetAll(color);
+    // Every refusal named, and exit 1 for any: a device that refused the write
+    // used to end in "Done." and exit 0, so a script had no way of knowing the
+    // colour never landed.
+    var refused = new List<string>();
+    foreach (var d in manager.Devices) if (!d.SetAll(color)) refused.Add(d.Name);
+    if (refused.Count > 0)
+    {
+        Console.WriteLine($"Refused by {refused.Count} device(s): {string.Join(", ", refused)}");
+        Environment.ExitCode = 1;
+        return;
+    }
 }
 else if (args.Length == 2 && int.TryParse(args[0], out int idx))
 {
     if (idx < 0 || idx >= manager.Devices.Count) { Console.WriteLine($"No device [{idx}]"); Environment.ExitCode = 2; return; }
     if (!Rgb.TryFromHex(args[1], out var color)) { Console.WriteLine($"Not a color: {args[1]} (want RRGGBB)"); Environment.ExitCode = 2; return; }
     Console.WriteLine($"Setting [{idx}] {manager.Devices[idx].Name} to {color}...");
-    manager.Devices[idx].SetAll(color);
+    if (!manager.Devices[idx].SetAll(color))
+    {
+        Console.WriteLine($"{manager.Devices[idx].Name} refused the write.");
+        Environment.ExitCode = 1;
+        return;
+    }
 }
 else
 {

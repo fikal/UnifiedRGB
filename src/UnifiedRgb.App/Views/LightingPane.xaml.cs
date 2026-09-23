@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 
@@ -56,11 +56,6 @@ public partial class LightingPane : UserControl
     void ConfigureHeaders_Click(object sender, RoutedEventArgs e)
     {
         if (Owner is { } owner) HeaderConfigDialog.Show(owner, VM);   // blurs + pauses the previews itself
-    }
-
-    void ConfigureRazer_Click(object sender, RoutedEventArgs e)
-    {
-        if (Owner is { } owner) RazerLayoutDialog.Show(owner, VM);
     }
 
     void DisableDevice_Click(object sender, RoutedEventArgs e) => VM.DisableSelectedDevice();

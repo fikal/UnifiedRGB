@@ -33,14 +33,23 @@ public sealed class RecoveryLightingState
         Effects.AddRange(effects);
     }
 
+    /// <summary>A profile applied while a device is absent: its colours become
+    /// what the device shows when it is back. The remembered frame GROWS to the
+    /// profile's length when the profile is longer - a profile made for a
+    /// device that gained LEDs, or a layout changed while it was unplugged,
+    /// used to have its extra LEDs cut off at the old count, and the device
+    /// came back with an incomplete picture. A shorter profile leaves the tail
+    /// it does not mention as it was, and a colour that will not parse keeps
+    /// whatever that LED had (black on an LED nothing has set).</summary>
     public void ApplyProfile(Profile profile)
     {
         foreach (var (name, hex) in profile.DeviceFrames)
         {
             if (hex == null) continue;
-            var frame = Frames.TryGetValue(name, out var old)
-                ? (Rgb[])old.Clone() : new Rgb[hex.Length];
-            for (int i = 0; i < Math.Min(frame.Length, hex.Length); i++)
+            Frames.TryGetValue(name, out var old);
+            var frame = new Rgb[Math.Max(old?.Length ?? 0, hex.Length)];
+            if (old != null) Array.Copy(old, frame, old.Length);
+            for (int i = 0; i < hex.Length; i++)
                 if (Rgb.TryFromHex(hex[i], out var color)) frame[i] = color;
             Frames[name] = frame;
         }

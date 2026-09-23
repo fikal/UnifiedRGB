@@ -1021,30 +1021,46 @@ public static class SetupBundle
     static void RemapProfile(Profile prof, Dictionary<string, string> remap, List<string>? warnings, bool strict)
     {
         if (remap.Count == 0) return;
-        var frames = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
         var dropped = new List<string>();
-        foreach (var kv in prof.DeviceFrames)
+        // The zone layout travels with the frame under the same key, and the
+        // apply looks both up by the CURRENT device name: a frame moved to the
+        // new name with its layout left under the old one is a frame with no
+        // layout, so on changed hardware the colours and effects fall back to
+        // raw LED numbers - the exact thing the layout exists to prevent.
+        prof.DeviceFrames = RemapKeys(prof.DeviceFrames, remap, strict, dropped);
+        prof.DeviceZones = RemapKeys(prof.DeviceZones, remap, strict, dropped);
+        if (dropped.Count > 0)
+        {
+            var names = dropped.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            prof.Effects?.RemoveAll(e => names.Contains(e.Device, StringComparer.OrdinalIgnoreCase));
+            warnings?.Add($"profile '{prof.Name}': its stale entry for {string.Join(", ", names)} is dropped, the mapped device wins");
+        }
+        foreach (var e in prof.Effects ?? new())
+            if (remap.TryGetValue(e.Device, out string? to)) e.Device = to;
+    }
+
+    /// <summary>One per-device table re-keyed by the mapping, with the collision
+    /// policy the summary above describes. Mapped keys land first, so a stale
+    /// unmapped entry under a target name is the one that loses.</summary>
+    static Dictionary<string, T> RemapKeys<T>(Dictionary<string, T> source, Dictionary<string, string> remap,
+                                              bool strict, List<string> dropped)
+    {
+        var result = new Dictionary<string, T>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in source)
         {
             if (!remap.TryGetValue(kv.Key, out string? to)) continue;
-            if (!frames.TryAdd(to, kv.Value))
+            if (!result.TryAdd(to, kv.Value))
                 throw new InvalidOperationException($"Device mapping sends more than one frame to '{to}'. Choose distinct target devices.");
         }
-        foreach (var kv in prof.DeviceFrames)
+        foreach (var kv in source)
         {
             if (remap.ContainsKey(kv.Key)) continue;
-            if (frames.TryAdd(kv.Key, kv.Value)) continue;
+            if (result.TryAdd(kv.Key, kv.Value)) continue;
             if (strict)
                 throw new InvalidOperationException($"Device mapping sends more than one frame to '{kv.Key}'. Choose distinct target devices.");
             dropped.Add(kv.Key);
         }
-        prof.DeviceFrames = frames;
-        if (dropped.Count > 0)
-        {
-            prof.Effects?.RemoveAll(e => dropped.Contains(e.Device, StringComparer.OrdinalIgnoreCase));
-            warnings?.Add($"profile '{prof.Name}': its stale entry for {string.Join(", ", dropped)} is dropped, the mapped device wins");
-        }
-        foreach (var e in prof.Effects ?? new())
-            if (remap.TryGetValue(e.Device, out string? to)) e.Device = to;
+        return result;
     }
 
     /// <summary>Same profile in every way a user would notice. Not a JSON
@@ -1062,6 +1078,15 @@ public static class SetupBundle
             if (!b.DeviceFrames.TryGetValue(kv.Key, out string[]? other)) return false;
             if (!SameSequence(kv.Value, other)) return false;
         }
+        // The layout decides where those frames and effects LAND on hardware
+        // that has changed, so two profiles that differ only here are not the
+        // same profile: one of them puts the colours on the right LEDs.
+        if (a.DeviceZones.Count != b.DeviceZones.Count) return false;
+        foreach (var kv in a.DeviceZones)
+        {
+            if (!b.DeviceZones.TryGetValue(kv.Key, out ZoneSpan[]? other)) return false;
+            if (!SameZones(kv.Value, other)) return false;
+        }
         var ea = a.Effects ?? new();
         var eb = b.Effects ?? new();
         if (ea.Count != eb.Count) return false;
@@ -1074,6 +1099,19 @@ public static class SetupBundle
     {
         if (a == null || b == null) return (a?.Length ?? 0) == (b?.Length ?? 0);
         return a.Length == b.Length && !a.Where((v, i) => !string.Equals(v, b[i], StringComparison.OrdinalIgnoreCase)).Any();
+    }
+
+    static bool SameZones(ZoneSpan[]? a, ZoneSpan[]? b)
+    {
+        if (a == null || b == null) return (a?.Length ?? 0) == (b?.Length ?? 0);
+        if (a.Length != b.Length) return false;
+        for (int i = 0; i < a.Length; i++)
+        {
+            var x = a[i]; var y = b[i];
+            if (x == null || y == null) { if (x != y) return false; continue; }
+            if (!string.Equals(x.Name, y.Name, StringComparison.Ordinal) || x.Offset != y.Offset || x.Count != y.Count) return false;
+        }
+        return true;
     }
 
     static void DiffScenes(ImportPreview p)
@@ -1651,14 +1689,17 @@ public static class SetupBundle
     /// path and the screen renders with a hole where the picture was.
     ///
     /// A path with no bundled image (it was missing or too large at export
-    /// time) is CLEARED rather than left pointing at a folder that does not
-    /// exist here, so the screen is deliberately plain instead of subtly
-    /// broken.</summary>
+    /// time) is CLEARED, always, without so much as asking the filesystem
+    /// whether it exists here. It used to be kept when it did, and "does it
+    /// exist" is a probe: a bundle naming a UNC path made this machine reach
+    /// out to that server, credentials first, on import. And a path that does
+    /// exist here is a file the bundle's author chose, which a later export
+    /// would then pack and share. The only picture an import brings is the one
+    /// that travelled inside it.</summary>
     static void RewriteBackground(LcdDesign design, Dictionary<string, string> assetMap)
     {
         if (design == null || string.IsNullOrWhiteSpace(design.BackgroundImagePath)) return;
-        if (assetMap.TryGetValue(design.BackgroundImagePath!, out string? here)) design.BackgroundImagePath = here;
-        else if (!File.Exists(design.BackgroundImagePath!)) design.BackgroundImagePath = null;
+        design.BackgroundImagePath = assetMap.TryGetValue(design.BackgroundImagePath!, out string? here) ? here : null;
     }
 
     static void BuildCanvas(ImportPreview p, ImportChoices c, Dictionary<string, string> remap,

@@ -25,9 +25,77 @@ public static class OpenRgbManager
     const string LatestUrl = "https://gitlab.com/CalcProgrammer1/OpenRGB/-/jobs/artifacts/master/download?job=Windows+64";
     public const int Port = 6742;
 
-    static readonly string Root = AppPaths.Local("openrgb");
+    // ProgramData, administrators only - not LocalAppData. This process runs
+    // elevated and LAUNCHES what it finds under Root, and every process of the
+    // user can write to LocalAppData without elevation: the bundle there was a
+    // binary of anyone's choosing, run as administrator at every logon. The old
+    // per-user root is only ever looked at to carry the detector config over
+    // once and to sweep an instance still running from it (see ProtectedFolder).
+    static readonly string Root = AppPaths.Machine("openrgb");
+    static readonly string LegacyRoot = AppPaths.Local("openrgb");
     static readonly string ConfigDir = Path.Combine(Root, "config");
     static readonly string StampPath = Path.Combine(Root, "bundle-version.txt");
+
+    /// <summary>Is this image path inside a tree the app launches OpenRGB from,
+    /// now or before the move to ProgramData. For the conflict-process report,
+    /// which must flag a USER-installed OpenRGB and not the bundled one.</summary>
+    public static bool IsBundledPath(string path)
+        => path.StartsWith(Root, StringComparison.OrdinalIgnoreCase)
+        || path.StartsWith(LegacyRoot, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The root is ours - administrators only, made by us - or the
+    /// bundle is not used. Runs before every install and every launch, because
+    /// a launch trusts whatever it finds under Root: that has to have been put
+    /// there by an administrator, and a folder somebody else planted under the
+    /// name is thrown away here (after which nothing is installed, and the
+    /// install path downloads a fresh copy). False = do not launch.</summary>
+    static bool SecureRoot(Action<string>? status)
+    {
+        bool ok = ProtectedFolder.Ensure(AppPaths.MachineDir, out string? why)
+               && ProtectedFolder.Ensure(Root, out why);
+        _installedStamp = 0;   // the folder may just have been emptied: ask again
+        if (ok) return true;
+        status?.Invoke("OpenRGB could not be set up in a folder only administrators can write");
+        Log.Warn("openrgb", $"refusing to use {Root}: {why}");
+        return false;
+    }
+
+    /// <summary>The detector state the bundle kept in its old per-user home
+    /// (which detectors are off, which one crashed the scan) carried into the
+    /// protected root, once: JSON the app and OpenRGB read as data, never
+    /// anything either of them runs. The binary itself is NOT carried over -
+    /// it was in a folder anyone could write to, so it is downloaded again.</summary>
+    static void CarryOverLegacyConfig()
+    {
+        try
+        {
+            string old = Path.Combine(LegacyRoot, "config");
+            if (!Directory.Exists(old)) return;
+            Directory.CreateDirectory(ConfigDir);
+            int carried = 0;
+            foreach (string name in new[] { "OpenRGB.json", "crash-bisect.json" })
+            {
+                string from = Path.Combine(old, name), to = Path.Combine(ConfigDir, name);
+                if (File.Exists(from) && !File.Exists(to)) { File.Copy(from, to); carried++; }
+            }
+            if (carried > 0) Log.Info("openrgb", $"detector config carried over from {old}");
+        }
+        catch (Exception ex) { Log.Warn("openrgb", $"could not carry the old detector config over: {ex.Message}"); }
+    }
+
+    /// <summary>The old per-user bundle, gone once the protected one is in.
+    /// Best effort: a copy that will not delete is logged and left, and the
+    /// launch path never looks there again either way.</summary>
+    static void RetireLegacyRoot()
+    {
+        try
+        {
+            if (!Directory.Exists(LegacyRoot)) return;
+            Directory.Delete(LegacyRoot, recursive: true);
+            Log.Info("openrgb", $"removed the old per-user bundle at {LegacyRoot}");
+        }
+        catch (Exception ex) { Log.Warn("openrgb", $"old bundle at {LegacyRoot} left in place: {ex.Message}"); }
+    }
 
     static Process? _proc;
 
@@ -74,6 +142,8 @@ public static class OpenRgbManager
     {
         if (IsInstalled) return;
         Stop();                                  // never upgrade under a running instance
+        if (!SecureRoot(status))
+            throw new InvalidOperationException("the OpenRGB folder could not be made administrators-only");
         Directory.CreateDirectory(Root);
 
         // Clear the previous build but keep config/ (detector state).
@@ -112,6 +182,8 @@ public static class OpenRgbManager
             "Source: https://gitlab.com/CalcProgrammer1/OpenRGB\r\n" +
             "UnifiedRGB communicates with it over its SDK network protocol only.\r\n");
         Log.Info("openrgb", $"installed {BundleVersion} to {Root}");
+        CarryOverLegacyConfig();
+        RetireLegacyRoot();
     }
 
     /// <summary>Ensure a server is running: reuse an existing one, else launch
@@ -180,6 +252,10 @@ public static class OpenRgbManager
 
     static LaunchResult LaunchOnce(Action<string>? status, ref bool policyRestartDone)
     {
+        // Every launch, not only the install: what is about to run is whatever
+        // sits under Root, and this is what says that only an administrator
+        // could have put it there.
+        if (!SecureRoot(status)) return LaunchResult.Failed;
         var exe = FindExe();
         if (exe == null)
         {
@@ -328,9 +404,9 @@ public static class OpenRgbManager
     }
 
     /// <summary>Stop every OpenRGB running from OUR install dir (never someone's
-    /// own install). Sweeping by path is what actually guarantees the port is
-    /// free — a tracked-handle kill alone can miss a survivor and leave the old
-    /// instance owning 6742 with stale config.</summary>
+    /// own install), the old per-user one included. Sweeping by path is what
+    /// actually guarantees the port is free — a tracked-handle kill alone can
+    /// miss a survivor and leave the old instance owning 6742 with stale config.</summary>
     public static void Stop()
     {
         foreach (var p in Process.GetProcessesByName("OpenRGB"))
@@ -338,7 +414,7 @@ public static class OpenRgbManager
             try
             {
                 string? path = p.MainModule?.FileName;
-                if (path != null && path.StartsWith(Root, StringComparison.OrdinalIgnoreCase))
+                if (path != null && IsBundledPath(path))
                 {
                     p.Kill();
                     p.WaitForExit(3000);

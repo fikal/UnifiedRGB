@@ -30,11 +30,11 @@ namespace UnifiedRgb.Core.Devices;
 /// razermouse_driver.c / mouse.py). The HyperFlux V2 charging pad (0x00CF)
 /// hides the paired mouse behind its own USB identity: every known
 /// transaction id is asked for firmware/serial, an answer that also has a DPI
-/// is the mouse, one without is the pad itself. The pad's LED count is probed
-/// by frame width (firmware that refuses an out-of-range column reveals it);
-/// when the firmware accepts anything, the count comes from hardware.json
-/// (`RazerLedCounts`, set from the Lighting pane's Razer… dialog) or a guess.
-/// Everything a new pad needs is therefore discoverable from one build.</summary>
+/// is the mouse, one without is the pad itself. A pad's LED count is probed by
+/// frame width (firmware that refuses an out-of-range column reveals it), but
+/// the probe is not trusted over what is KNOWN about a model - see UnlitPads,
+/// where the HyperFlux V2's advertised matrix turned out not to be wired to
+/// anything. hardware.json (`RazerLedCounts`) overrides both, by hand.</summary>
 public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
 {
     public const ushort VID = 0x1532;
@@ -43,8 +43,6 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
     const int ARGS = 9;                  // buffer index of arguments[0]
     const int MAX_LEDS_PER_PACKET = 25;  // (80 - 5) / 3
     public const int MaxLeds = 64;       // sanity cap for configured/probed counts
-    const int DefaultPadLeds = 20;
-
     /// <summary>Pads we know have no addressable lighting, so the guess must not
     /// be applied to them.
     ///
@@ -89,7 +87,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
         p[1] = new LedPos(0.5f, 0.62f);   // logo under the palm
         // Underglow: a U around the base — down the left flank, across the
         // rear, up the right flank. Mirrored on real hardware it still reads
-        // as one strip; the Razer… dialog's Test chase shows the real order.
+        // as one strip. Confirmed on a Basilisk V3 Pro and a V3 Pro 35K.
         for (int i = 0; i < 11; i++)
         {
             double t = i / 10.0;                    // 0 = left front, 1 = right front
@@ -145,6 +143,14 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
     /// <summary>HyperFlux V2 charging pad + built-in receiver. Whatever mouse is
     /// paired sits behind this pid; probed, never assumed.</summary>
     public const ushort HYPERFLUX_V2 = 0x00CF;
+
+    /// <summary>Every Razer product id this driver opens: the model table plus
+    /// the pad. The OpenRGB bridge asks this rather than keeping its own list
+    /// of the same numbers, which is how the 35K's ids went missing from it -
+    /// the table grew and the copy did not, and a bridged proxy then sat
+    /// beside the native mouse with both writing to it.</summary>
+    internal static bool IsNativePid(ushort pid)
+        => pid == HYPERFLUX_V2 || Models.Any(m => m.Pid == pid);
 
     /// <summary>Serialises every feature-report exchange — the driver's frames,
     /// a diagnostic probe and the layout dialog may hold the same collection
@@ -251,9 +257,9 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
     public const string SleepingMouseNote = "the mouse on your HyperFlux V2";
 
     static void ReportNoMouse()
-        => DetectionNotes.Report("Razer", SleepingMouseNote, BlockReason.PartlyWorking,
-            "asleep or not paired, so it is not in the list yet",
-            "move it - it is picked up within a few seconds of waking");
+        => DetectionNotes.Report("Razer", SleepingMouseNote, BlockReason.Asleep,
+            "Your mouse is asleep, so there is nothing to light yet.",
+            "Move it and it will be back in a few seconds. If it stays away, it is not paired to the mat.");
 
     /// <summary>Is a mouse awake behind a pad right now?
     ///
@@ -362,11 +368,12 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
                     // dark. Recorded rather than dropped silently, so it does not read
                     // as "the app stopped supporting my pad".
                     Log.Info("Razer", $"HyperFlux V2 pad: {source}; not adding it as a device (charging and the paired mouse are unaffected)");
-                    DetectionNotes.Report("Razer", "Razer HyperFlux V2 pad", BlockReason.PartlyWorking,
+                    DetectionNotes.Report("Razer", "Razer HyperFlux V2 mat", BlockReason.NoLighting,
                         source == "configured as unlit"
-                            ? "set to no lighting, so only its charging is in use"
-                            : "this model has no lighting - it charges your mouse and acts as its receiver",
-                        "Lighting > Razer… - set its LED count above 0 if yours does have a strip");
+                            ? "You have set this mat to no lighting, so only its charging is in use."
+                            : "This mat has no RGB - it charges your mouse and is its wireless receiver. "
+                            + "Both are working; there is just nothing on it to light.",
+                        null);
                     hid.Dispose();
                     continue;
                 }
@@ -416,8 +423,9 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
         return lo + 1;
     }
 
-    /// <summary>Configured (hardware.json RazerLedCounts["00CF"]) beats probed
-    /// beats the guess.
+    /// <summary>Configured (hardware.json RazerLedCounts["00CF"]) beats what the
+    /// model is KNOWN to be, which beats what the frame probe managed to work
+    /// out. Nothing left over means no lighting - never a guess.
     ///
     /// A configured ZERO is an answer, not an absent setting: "this device has no
     /// lighting". Some pads advertise a strip their hardware does not have - the
@@ -435,7 +443,12 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
         }
         if (UnlitPads.Contains(pid)) return (0, "no lighting on this model");
         if (probed is int p && p > 0) return (Math.Clamp(p, 1, MaxLeds), "probed");
-        return (DefaultPadLeds, "guessed");
+        // Nothing has said it lights. Do not invent a count: a guess of 20 is
+        // what put a strip on a mat that has no LEDs at all, and an invented
+        // device accepts colours, reports success and stays dark forever. If a
+        // pad really does light and its firmware will not say so, hardware.json
+        // takes the number by hand.
+        return (0, "nothing says it has any lights");
     }
 
     /// <summary>The vendor control collection: any Razer collection carrying
@@ -614,32 +627,6 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
             _persisted = c;
             Log.Info("Razer", $"{Name}: stored #{c.ToHex()} onboard, so it survives the device sleeping");
             return true;
-        }
-    }
-
-    /// <summary>Layout dialog: light LEDs 0..count-1 one at a time (white on
-    /// black) so the user can see how many exist and in what order, then
-    /// clear. Holds the write lock for the whole chase, so an effect channel
-    /// simply waits and repaints afterwards. Returns the status text.</summary>
-    public string TestChase(int count, int holdMs = 180)
-    {
-        count = Math.Clamp(count, 1, MaxLeds);
-        var frame = new Rgb[count];
-        lock (_writeLock)
-        {
-            byte worst = ST_OK;
-            for (int i = 0; i < count; i++)
-            {
-                Array.Clear(frame);
-                frame[i] = Rgb.White;
-                if (!SendFrameOf(frame, 1, wantReply: true, out byte st)) { _last = null; return "no reply from the device"; }
-                if (st != ST_OK && worst == ST_OK) worst = st;
-                Thread.Sleep(holdMs);
-            }
-            Array.Clear(frame);
-            SendFrameOf(frame, 1, wantReply: false, out _);
-            _last = null;   // the next engine/static frame is re-sent whole
-            return worst == ST_OK ? $"{count} LEDs accepted" : $"status 0x{worst:X2} ({StatusName(worst)}) on the way - the real count is lower";
         }
     }
 

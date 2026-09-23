@@ -88,6 +88,18 @@ public sealed class HardwareRemap
         // three on my desk were all "this effect, everywhere".
         if (offset == 0 && count == _savedLeds) return (0, _liveLeds);
 
+        // The range sat inside a zone the profile knew by name, and neither pass
+        // above could place it: the zone is gone, or it shrank under the range.
+        // The integers are the one thing NOT to trust then - they were that
+        // zone's numbers, and today they are somebody else's. Taking them
+        // literally is exactly how a saved "Matrix on the GPU ribbon" ran on
+        // the strip that moved into its old slot, with no warning, because the
+        // caller only reports a range it could not place at all.
+        if (_saved.Any(s => offset >= s.Offset && offset + count <= s.Offset + s.Count)) return null;
+
+        // No layout to anchor to (a profile from before layouts were recorded),
+        // or a range that spans zones and belongs to none of them: the numbers
+        // are all there is, as before.
         return offset + count <= _liveLeds ? (offset, count) : null;
     }
 

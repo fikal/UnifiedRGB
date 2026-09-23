@@ -36,6 +36,10 @@ static class ActivitySuite
         AShowDoesNotTakeTheSelection(t);
         TimedShowsAndProfileRename(t);
         SdkOwnershipAndSuppression(t);
+        ManualEditsBecomeTheBaseline(t);
+        SdkReleaseIsPerDevice(t);
+        ManualEditsKeepOffAHeldDevice(t);
+        SwitchingToStaticMarksDirty(t);
         t.Section("Ring bounds itself (#f1)");
         {
             var log = new ActivityLog();
@@ -511,6 +515,311 @@ static class ActivitySuite
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start(); thread.Join();
         if (failure != null) throw new Exception("White guard regression", failure);
+    }
+
+    /// <summary>Run this thread's dispatcher until everything already queued
+    /// on it has run: the SDK host marshals releases through InvokeAsync, and a
+    /// test that reads the outcome before that lands is testing the old state.</summary>
+    static void PumpDispatcher(System.Windows.Threading.Dispatcher dispatcher)
+    {
+        var frame = new System.Windows.Threading.DispatcherFrame();
+        dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background,
+            new Action(() => frame.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(frame);
+    }
+
+    /// <summary>A colour picked by hand while an app rule is running is the
+    /// user's new baseline, exactly as a profile applied by hand is. Hand edits
+    /// never told the automation, so the rule's end restored the snapshot from
+    /// before it - over the colour the user had just chosen (2026-09-22 review,
+    /// finding 2).</summary>
+    static void ManualEditsBecomeTheBaseline(Harness t)
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            UnifiedRgb.App.MainViewModel? vm = null;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            try
+            {
+                t.Section("a hand edit during a rule is the new baseline");
+                vm = new UnifiedRgb.App.MainViewModel(startServices: false);
+                var dev = new FakeDevice { Name = "Edited mid-rule", LedCount = 2 };
+                vm.Devices.Add(dev); vm.Profiles.Clear();
+                var baseline = new UnifiedRgb.App.Profile { Name = "Baseline", DeviceFrames = new() { [dev.Name] = new[] { "FF0000", "FF0000" } } };
+                var rule = new UnifiedRgb.App.Profile { Name = "Rule", DeviceFrames = new() { [dev.Name] = new[] { "00FF00", "00FF00" } } };
+                vm.Profiles.Add(baseline); vm.Profiles.Add(rule);
+                vm.SettingsData.ReturnToStartupProfile = false;
+                vm.ApplyProfile(baseline); vm.Lighting.Applier.Drain(2000);
+                vm.SelectedDevice = dev;
+                using var automation = new UnifiedRgb.App.Services.AutomationService(vm, monitor: false);
+                var transition = typeof(UnifiedRgb.App.Services.AutomationService).GetMethod("Transition", flags)!;
+                transition.Invoke(automation, new object?[] { AutomationMode.App, rule.Name, "App rule" });
+                vm.Lighting.Applier.Drain(2000);
+                t.Equal("00FF00", vm.Lighting.FrameFor(dev)[0].ToHex(), "the rule's profile is on");
+
+                ActivityLog.Shared.Clear();
+                vm.Hex = "0000FF";            // the user picks blue by hand while the rule runs
+                vm.Lighting.Applier.Drain(2000);
+                t.Equal("0000FF", dev.Last![0].ToHex(), "the hand-picked colour landed on the device");
+                vm.Hex = "0000FE";            // ...and nudges it: a wheel drag is a stream of these
+                vm.Lighting.Applier.Drain(2000);
+                t.Equal(1, ActivityLog.Shared.Snapshot().Count(n => n.Kind == ActivityKind.UserOverride),
+                    "one history line for the whole edit, not one per wheel move");
+
+                transition.Invoke(automation, new object?[] { AutomationMode.Base, null, null });
+                vm.Lighting.Applier.Drain(2000);
+                t.Equal("0000FE", vm.Lighting.FrameFor(dev)[0].ToHex(),
+                    "ending the rule keeps the colour picked during it (was: the red baseline came back)");
+                t.Equal("0000FE", dev.Last![0].ToHex(), "...on the hardware too");
+                t.Check(vm.AppliedProfileName == null, "the desk is ad-hoc lighting now, not the rule's profile");
+            }
+            catch (Exception ex) { failure = ex; }
+            finally
+            {
+                if (vm != null)
+                {
+                    vm.Shows.Dispose(); vm.Lighting.StopAndDrain(); vm.Lcd.Dispose();
+                    ((UnifiedRgb.App.Services.LianBakeService)typeof(UnifiedRgb.App.MainViewModel).GetField("_bake", flags)!.GetValue(vm)!).Stop();
+                }
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA); thread.Start(); thread.Join();
+        if (failure != null) throw new Exception("Manual edit baseline regression", failure);
+    }
+
+    /// <summary>An SDK release puts back the released device, from what the user
+    /// wants for it now, and nothing else. The whole-desk snapshot restored at
+    /// the LAST release had two ways of being wrong: a device released while
+    /// another was still held kept the client's frame until the unrelated claim
+    /// ended, and the restore reverted hand edits on devices no client had held
+    /// (2026-09-22 review, findings 3 and 4).</summary>
+    static void SdkReleaseIsPerDevice(Harness t)
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            UnifiedRgb.App.MainViewModel? vm = null;
+            UnifiedRgb.App.Services.OpenRgbHost? host = null;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            try
+            {
+                vm = new UnifiedRgb.App.MainViewModel(startServices: false);
+                var a = new FakeDevice { Name = "Held A", LedCount = 2 };
+                var b = new FakeDevice { Name = "Held B", LedCount = 2 };
+                var c = new FakeDevice { Name = "Never held", LedCount = 2 };
+                var e = new FakeDevice { Name = "Animated", LedCount = 2 };
+                foreach (var d in new[] { a, b, c, e }) vm.Devices.Add(d);
+                vm.Profiles.Clear();
+                var red = new UnifiedRgb.App.Profile
+                {
+                    Name = "Red",
+                    DeviceFrames = new()
+                    {
+                        [a.Name] = new[] { "FF0000", "FF0000" }, [b.Name] = new[] { "FF0000", "FF0000" },
+                        [c.Name] = new[] { "FF0000", "FF0000" }, [e.Name] = new[] { "FF0000", "FF0000" },
+                    },
+                    Effects = new() { new UnifiedRgb.App.EffectAssignment { Device = e.Name, Offset = 0, Count = 2, Effect = "Breathing", BaseColor = "FF0000" } },
+                };
+                vm.Profiles.Add(red);
+                vm.ApplyProfile(red); vm.Lighting.Applier.Drain(2000);
+                var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+                host = new UnifiedRgb.App.Services.OpenRgbHost(vm, vm.Lighting, dispatcher);
+                static bool All(FakeDevice d, UnifiedRgb.Core.Rgb colour) => d.Last?.All(x => x == colour) == true;
+
+                t.Section("a device released while another is still held comes back at once");
+                host.BeginExternal(a); host.BeginExternal(b);
+                host.PushExternal(a, 0, new[] { UnifiedRgb.Core.Rgb.White, UnifiedRgb.Core.Rgb.White });
+                host.PushExternal(b, 0, new[] { UnifiedRgb.Core.Rgb.White, UnifiedRgb.Core.Rgb.White });
+                vm.Lighting.Applier.Drain(2000);
+                t.Check(All(a, UnifiedRgb.Core.Rgb.White) && All(b, UnifiedRgb.Core.Rgb.White), "the client painted both devices white");
+                host.EndExternal(a); PumpDispatcher(dispatcher); vm.Lighting.Applier.Drain(2000);
+                t.Check(All(a, UnifiedRgb.Core.Rgb.Red), "A is red again the moment its own claim ends (was: white until B's claim ended too)");
+                t.Check(All(b, UnifiedRgb.Core.Rgb.White), "B, still held, is left to its client");
+                t.Check(vm.Lighting.IsClaimed(b), "...and still claimed");
+                t.Check(vm.HealthOf(b) == UnifiedRgb.Core.DeviceHealthState.ControlledElsewhere, "...and still shown as controlled by another app");
+                t.Check(vm.HealthOf(a) != UnifiedRgb.Core.DeviceHealthState.ControlledElsewhere, "A is no longer shown as controlled by another app");
+                host.EndExternal(b); PumpDispatcher(dispatcher); vm.Lighting.Applier.Drain(2000);
+                t.Check(All(b, UnifiedRgb.Core.Rgb.Red), "B comes back when its own claim ends");
+
+                t.Section("a hand edit on a device no client held survives the release");
+                host.BeginExternal(a);
+                vm.SelectedDevice = c; vm.Hex = "00FF00"; vm.Lighting.Applier.Drain(2000);
+                t.Equal("00FF00", c.Last![0].ToHex(), "the unclaimed device took the hand-picked green");
+                host.EndExternal(a); PumpDispatcher(dispatcher); vm.Lighting.Applier.Drain(2000);
+                t.Equal("00FF00", c.Last![0].ToHex(), "...and keeps it when the claim on A ends (was: reverted to red from the whole-desk snapshot)");
+                t.Equal("00FF00", vm.Lighting.FrameFor(c)[0].ToHex(), "the stored frame agrees");
+                t.Check(All(a, UnifiedRgb.Core.Rgb.Red), "A itself came back red");
+
+                t.Section("an effect the claim stopped restarts with its own colour");
+                t.Equal(1, vm.Lighting.Engine.ChannelsFor(e).Count, "the profile's effect is running on the animated device");
+                host.BeginExternal(e);
+                t.Equal(0, vm.Lighting.Engine.ChannelsFor(e).Count, "the claim stopped it");
+                t.Check(vm.CaptureState().Effects.Any(x => x.Device == e.Name && x.Effect == "Breathing"),
+                    "a capture taken under the claim still records it as the device's lighting");
+                host.EndExternal(e); PumpDispatcher(dispatcher); vm.Lighting.Applier.Drain(2000);
+                var restarted = vm.Lighting.Engine.ChannelsFor(e);
+                t.Equal(1, restarted.Count, "it restarts when the client lets go");
+                t.Check(restarted.Count == 1 && restarted[0].BaseColor == UnifiedRgb.Core.Rgb.Red, "...with the base colour it had");
+
+                t.Section("an effect chosen for a held device starts when the client lets go");
+                host.BeginExternal(b);
+                vm.SelectedDevice = b;
+                vm.SelectedEffectChoice = vm.Effects.First(x => x.Name == "Rainbow Wave");
+                t.Equal(0, vm.Lighting.Engine.ChannelsFor(b).Count, "not started while the client holds the device");
+                t.Check(vm.CaptureState().Effects.Any(x => x.Device == b.Name && x.Effect == "Rainbow Wave"),
+                    "but recorded as the user's choice, so a save or a rescan keeps it (was: filed as static)");
+                host.EndExternal(b); PumpDispatcher(dispatcher); vm.Lighting.Applier.Drain(2000);
+                t.Equal(1, vm.Lighting.Engine.ChannelsFor(b).Count, "...and it starts on release");
+                t.Check(vm.HealthOf(b) != UnifiedRgb.Core.DeviceHealthState.ControlledElsewhere, "the badge is gone with the claim");
+            }
+            catch (Exception ex) { failure = ex; }
+            finally
+            {
+                host?.Shutdown();
+                if (vm != null)
+                {
+                    vm.Shows.Dispose(); vm.Lighting.StopAndDrain(); vm.Lcd.Dispose();
+                    ((UnifiedRgb.App.Services.LianBakeService)typeof(UnifiedRgb.App.MainViewModel).GetField("_bake", flags)!.GetValue(vm)!).Stop();
+                }
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA); thread.Start(); thread.Join();
+        if (failure != null) throw new Exception("SDK per-device release regression", failure);
+    }
+
+    /// <summary>The colour picker used to write straight through to a device an
+    /// SDK client holds - the one path that did, every profile apply and effect
+    /// start being refused - and the device flickered between the two writers.
+    /// The pick is now kept as the device's intent and lands when the client
+    /// lets go; the write boundary refuses a write queued before the claim too
+    /// (2026-09-23 review, finding 7).</summary>
+    static void ManualEditsKeepOffAHeldDevice(Harness t)
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            UnifiedRgb.App.MainViewModel? vm = null;
+            UnifiedRgb.App.Services.OpenRgbHost? host = null;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            try
+            {
+                t.Section("a colour picked by hand stays off a device an SDK client holds");
+                vm = new UnifiedRgb.App.MainViewModel(startServices: false);
+                var dev = new FakeDevice { Name = "Held by a client", LedCount = 2 };
+                var slow = new FakeDevice { Name = "Slow and then held", LedCount = 2, WriteDelayMs = 300 };
+                vm.Devices.Add(dev); vm.Devices.Add(slow); vm.Profiles.Clear();
+                var red = new UnifiedRgb.App.Profile
+                {
+                    Name = "Red",
+                    DeviceFrames = new() { [dev.Name] = new[] { "FF0000", "FF0000" }, [slow.Name] = new[] { "FF0000", "FF0000" } },
+                };
+                vm.Profiles.Add(red);
+                vm.ApplyProfile(red); vm.Lighting.Applier.Drain(3000);
+                var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+                host = new UnifiedRgb.App.Services.OpenRgbHost(vm, vm.Lighting, dispatcher);
+                static bool All(FakeDevice d, UnifiedRgb.Core.Rgb colour) => d.Last?.All(x => x == colour) == true;
+
+                host.BeginExternal(dev);
+                host.PushExternal(dev, 0, new[] { UnifiedRgb.Core.Rgb.White, UnifiedRgb.Core.Rgb.White });
+                vm.Lighting.Applier.Drain(2000);
+                t.Check(All(dev, UnifiedRgb.Core.Rgb.White), "the client painted the device white");
+                int writes = dev.WriteCount;
+                vm.SelectedDevice = dev;
+                vm.Hex = "0000FF";
+                vm.Lighting.Applier.Drain(2000);
+                t.Equal(writes, dev.WriteCount, "the colour picked by hand did not reach the held device (was: written straight through)");
+                t.Check(All(dev, UnifiedRgb.Core.Rgb.White), "...so the client's picture is untouched");
+                t.Check(vm.Lighting.IsClaimed(dev), "...and the claim stands");
+                t.Equal("0000FF", vm.Lighting.FrameFor(dev)[0].ToHex(), "the pick is kept as the device's intent");
+                host.EndExternal(dev); PumpDispatcher(dispatcher); vm.Lighting.Applier.Drain(2000);
+                t.Check(All(dev, UnifiedRgb.Core.Rgb.Blue), "...and lands the moment the client lets go");
+
+                t.Section("a static write queued before the claim does not land after it");
+                // The slow device takes 300 ms per write. A second pick queues
+                // behind the first; the client claims and paints while it waits;
+                // the queued pick then finds the device held and stands down.
+                vm.SelectedDevice = slow;
+                vm.Hex = "FF00FF";                 // the write in flight
+                Thread.Sleep(100);                 // long enough for the lane to have started it
+                vm.Hex = "00FF00";                 // queued behind it
+                host.BeginExternal(slow);
+                host.PushExternal(slow, 0, new[] { UnifiedRgb.Core.Rgb.White, UnifiedRgb.Core.Rgb.White });
+                vm.Lighting.Applier.Drain(4000);
+                bool greenLanded;
+                lock (slow.Writes) greenLanded = slow.Writes.Any(w => w.Frame[0] == UnifiedRgb.Core.Rgb.Green);
+                t.Check(!greenLanded, "the pick queued before the claim was dropped at the write boundary (was: painted over the client's frame)");
+                t.Check(All(slow, UnifiedRgb.Core.Rgb.White), "the client's frame is what shows");
+                t.Equal("00FF00", vm.Lighting.FrameFor(slow)[0].ToHex(), "the pick is still the device's intent for the release");
+                host.EndExternal(slow); PumpDispatcher(dispatcher); vm.Lighting.Applier.Drain(4000);
+                t.Check(All(slow, UnifiedRgb.Core.Rgb.Green), "...and comes back when the client lets go");
+            }
+            catch (Exception ex) { failure = ex; }
+            finally
+            {
+                if (vm != null)
+                {
+                    vm.Shows.Dispose(); vm.Lighting.StopAndDrain(); vm.Lcd.Dispose();
+                    ((UnifiedRgb.App.Services.LianBakeService)typeof(UnifiedRgb.App.MainViewModel).GetField("_bake", flags)!.GetValue(vm)!).Stop();
+                }
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA); thread.Start(); thread.Join();
+        if (failure != null) throw new Exception("Held-device manual edit regression", failure);
+    }
+
+    /// <summary>Switching an effect back to Static is a change like any other.
+    /// The Static branch returned before the dirty mark, so a profile still
+    /// read as applied and unchanged, the close prompt never asked, and the
+    /// automation kept the old baseline (2026-09-23 review, finding 6).</summary>
+    static void SwitchingToStaticMarksDirty(Harness t)
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            UnifiedRgb.App.MainViewModel? vm = null;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            try
+            {
+                t.Section("switching an effect to Static marks the profile dirty");
+                vm = new UnifiedRgb.App.MainViewModel(startServices: false);
+                var dev = new FakeDevice { Name = "Breathes", LedCount = 2 };
+                vm.Devices.Add(dev); vm.Profiles.Clear();
+                var breathe = new UnifiedRgb.App.Profile
+                {
+                    Name = "Breathe",
+                    DeviceFrames = new() { [dev.Name] = new[] { "FF0000", "FF0000" } },
+                    Effects = new() { new UnifiedRgb.App.EffectAssignment { Device = dev.Name, Offset = 0, Count = 2, Effect = "Breathing", BaseColor = "FF0000" } },
+                };
+                vm.Profiles.Add(breathe);
+                vm.SelectedProfile = breathe;
+                vm.ApplyProfile(breathe); vm.Lighting.Applier.Drain(2000);
+                t.Equal(1, vm.Lighting.Engine.ChannelsFor(dev).Count, "the profile's effect is running");
+                t.Check(!vm.NeedsSavePrompt, "an applied profile has nothing to save");
+                t.Equal("Breathe", vm.AppliedProfileName, "...and is the applied profile");
+                int told = 0;
+                vm.LightingApplied += () => told++;
+
+                vm.SelectedDevice = dev;
+                vm.SelectedEffectChoice = vm.Effects[0];   // Static
+                vm.Lighting.Applier.Drain(2000);
+                t.Equal(0, vm.Lighting.Engine.ChannelsFor(dev).Count, "the effect stopped");
+                t.Check(vm.NeedsSavePrompt, "the switch to Static needs saving (was: not dirty, and the close prompt never asked)");
+                t.Check(vm.AppliedProfileName == null, "the desk is ad-hoc lighting now, not the profile (was: still 'Breathe')");
+                t.Equal(1, told, "the automation was told the baseline moved");
+            }
+            catch (Exception ex) { failure = ex; }
+            finally
+            {
+                if (vm != null)
+                {
+                    vm.Shows.Dispose(); vm.Lighting.StopAndDrain(); vm.Lcd.Dispose();
+                    ((UnifiedRgb.App.Services.LianBakeService)typeof(UnifiedRgb.App.MainViewModel).GetField("_bake", flags)!.GetValue(vm)!).Stop();
+                }
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA); thread.Start(); thread.Join();
+        if (failure != null) throw new Exception("Static-choice dirty regression", failure);
     }
 
     static void SdkOwnershipAndSuppression(Harness t)

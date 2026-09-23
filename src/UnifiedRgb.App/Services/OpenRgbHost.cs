@@ -12,11 +12,16 @@ namespace UnifiedRgb.App.Services;
 /// goes straight out, and that goes through the applier lane like every other
 /// write so an SDK client and an effect can never interleave on one transport.
 ///
-/// Takeover is all-or-nothing by design. The first device a client claims
-/// snapshots the whole lighting state, and the last one released puts it back.
-/// Per-device restore would need per-device effect surgery the view model does
-/// not do, and getting that subtly wrong means the user's rig comes back
-/// almost right, which is worse than the pause.</summary>
+/// Takeover and release are per device. A claim stops our effects on that one
+/// device and nothing else; a release puts that one device back from what the
+/// user wants for it NOW (MainViewModel.RestoreDevice), leaving every other
+/// claim and every other device alone. It used to snapshot the whole desk at
+/// the first claim and restore all of it at the last release, which had two
+/// ways of being wrong: a device released while another was still held kept
+/// the client's last frame until the unrelated claim ended, and the restore
+/// undid hand edits made meanwhile on devices no client had touched - a null
+/// applied-profile name was read as "nothing changed" when it meant the exact
+/// opposite.</summary>
 public sealed class OpenRgbHost : IOpenRgbHost
 {
     readonly MainViewModel _vm;
@@ -24,8 +29,10 @@ public sealed class OpenRgbHost : IOpenRgbHost
     readonly Dispatcher _ui;
     readonly object _gate = new();
 
-    MainViewModel.LightState? _snapshot;
-    int _externalCount;
+    /// <summary>Claims standing right now. Only the rescan note reads it:
+    /// "every client lost its claim" is worth a history line only when one
+    /// actually held something, and every rescan calls ResetExternal.</summary>
+    int _claims;
 
     /// <summary>The app is going down. Restoring is both pointless and unsafe
     /// from here: the callback is queued to a dispatcher that will not pump
@@ -36,7 +43,7 @@ public sealed class OpenRgbHost : IOpenRgbHost
     public void Shutdown()
     {
         _shuttingDown = true;
-        lock (_gate) { _snapshot = null; _externalCount = 0; }
+        lock (_gate) _claims = 0;
     }
 
     public OpenRgbHost(MainViewModel vm, LightingController lighting, Dispatcher ui)
@@ -74,17 +81,11 @@ public sealed class OpenRgbHost : IOpenRgbHost
         // mention it, and the user is left thinking their effects broke.
         ActivityLog.Note(ActivityKind.SdkClient,
             $"An OpenRGB client took control of {device.Name}. Your lighting is saved and comes back when it lets go.");
-        _ui.Invoke(() =>
-        {
-            lock (_gate)
-            {
-                // First device taken: remember everything, once.
-                _snapshot ??= _vm.CaptureState();
-                _externalCount++;
-            }
-            // Our effects on this device would fight the client for the lane.
-            _vm.StopEffectsOn(device);
-        });
+        lock (_gate) _claims++;
+        // Our effects on this device would fight the client for the lane. The
+        // view model keeps what was running as the device's pending intent,
+        // which is what the release restores.
+        _ui.Invoke(() => _vm.StopEffectsOn(device));
     }
 
     public void PushExternal(IRgbDevice device, int offset, IReadOnlyList<Rgb> colors)
@@ -94,9 +95,11 @@ public sealed class OpenRgbHost : IOpenRgbHost
         _lighting.PushExternalFrame(device, offset, colors);
     }
 
-    /// <summary>A rescan dropped every claim at once. Put the user's lighting
-    /// back and forget the takeover: the snapshot is keyed by device name, and
-    /// names are stable across a rescan, so it lands on the new instances.</summary>
+    /// <summary>A rescan dropped every claim at once. Nothing to put back from
+    /// here: the device instances are being replaced, and Rescan itself carries
+    /// the stored frames and every effect assignment - the ones a client had
+    /// stopped included, CaptureEffects records those - onto the new instances
+    /// by name. What is left is to forget the takeover.</summary>
     public void ResetExternal()
     {
         if (_shuttingDown) return;
@@ -104,7 +107,7 @@ public sealed class OpenRgbHost : IOpenRgbHost
         // every rescan calls this, and a rescan with no SDK client attached is
         // not a lighting event.
         bool held;
-        lock (_gate) held = _externalCount > 0;
+        lock (_gate) { held = _claims > 0; _claims = 0; }
         if (held)
             ActivityLog.Note(ActivityKind.SdkClient,
                 "Devices were rescanned, so every OpenRGB client lost its claim and your lighting is back.");
@@ -113,18 +116,9 @@ public sealed class OpenRgbHost : IOpenRgbHost
         _lighting.ForgetExternalAll();
         _ui.InvokeAsync(() =>
         {
-            MainViewModel.LightState? restore;
-            lock (_gate)
-            {
-                restore = _snapshot;
-                _snapshot = null;
-                _externalCount = 0;
-            }
-            // One refresh for the whole set: RestoreState ends with one anyway,
-            // and without a restore we do it ourselves below.
+            // One refresh for the whole set rather than one per device.
             foreach (var device in _vm.Devices) _vm.ReleaseHold(device, refresh: false);
-            if (restore != null) PutBack(restore);
-            else _vm.RefreshDeviceHealth();
+            _vm.RefreshDeviceHealth();
         });
     }
 
@@ -134,47 +128,17 @@ public sealed class OpenRgbHost : IOpenRgbHost
         Log.Info("lighting", $"{device.Name}: SDK client done, your lighting coming back");
         ActivityLog.Note(ActivityKind.SdkClient,
             $"The OpenRGB client released {device.Name}, so your lighting is coming back.");
+        lock (_gate) { if (_claims > 0) _claims--; }
         // The next client to claim this device starts from the user's lighting,
         // not from where the departing one left the pixels.
         _lighting.ForgetExternal(device);
         _ui.InvokeAsync(() =>
         {
-            // Per device, before the count is even consulted: this device is
-            // no longer held whether or not it was the last client to leave.
+            // This device, now, whatever else is still held: the hold ends and
+            // the user's own lighting for it comes back. Another claim on some
+            // other device is that device's business.
             _vm.ReleaseHold(device);
-            MainViewModel.LightState? restore = null;
-            lock (_gate)
-            {
-                if (_externalCount > 0) _externalCount--;
-                if (_externalCount == 0 && _snapshot != null)
-                {
-                    restore = _snapshot;
-                    _snapshot = null;
-                }
-            }
-            if (restore != null) PutBack(restore);
+            _vm.RestoreDevice(device);
         });
-    }
-
-    /// <summary>The user's lighting after the last claim ends. The snapshot was
-    /// taken at the FIRST claim, and the desk may have moved on while the client
-    /// held a device: an app rule, a schedule, a hotkey. Restoring the snapshot
-    /// then undid all of that for every device - the game exited, the startup
-    /// profile came back, and seconds later the whole desk snapped to what was
-    /// on before the game. When a profile was applied meanwhile, that profile is
-    /// what the desk should show, held device included, which is why it is
-    /// re-applied whole rather than patched per device; the snapshot serves only
-    /// when nothing was applied. A lock or a dark window is honoured either way.</summary>
-    void PutBack(MainViewModel.LightState snapshot)
-    {
-        string? applied = _vm.AppliedProfileName;
-        bool movedOn = applied != null
-            && !string.Equals(applied, snapshot.AppliedProfileName, StringComparison.OrdinalIgnoreCase);
-        if (movedOn && !_vm.LightsSuppressed && _vm.ApplyProfileByName(applied!, fromShow: true))
-        {
-            Log.Info("lighting", $"SDK client gone: profile '{applied}' was applied while it held a device, so that is what comes back");
-            return;
-        }
-        _vm.RestoreState(snapshot, honorSuppression: true);
     }
 }
