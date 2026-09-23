@@ -71,6 +71,71 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     /// not something to recover from.</summary>
     Services.DeviceWatchdog? _watchdog;
 
+    /*-----------------------------------------------------*    | Hardware that is PRESENT but asleep.                   |
+    |                                                        |
+    | A Razer mouse on a HyperFlux pad has no USB identity of |
+    | its own - it answers behind the PAD's, and the pad is   |
+    | enumerated whether the mouse is awake, asleep, or in    |
+    | another room. So the watchdog's two signals both miss   |
+    | it: nothing arrives when the mouse wakes, because as far |
+    | as the bus is concerned it never left.                  |
+    |                                                        |
+    | Detection asks once and gives up. Doze off before a     |
+    | rescan - which is exactly what an overnight sleep does - |
+    | and the mouse is absent until the app is restarted, with |
+    | nothing saying why. So: ask again, but only while the   |
+    | driver has told us there IS something asleep out there. |
+    | The usual state is no timer at all.                     |
+    \*-----------------------------------------------------*/
+    const int SleepingDevicePollMs = 5000;
+    System.Windows.Threading.DispatcherTimer? _sleepWatch;
+    bool _sleepProbeRunning;
+
+    void StartSleepingDeviceWatch()
+    {
+        _sleepWatch = new System.Windows.Threading.DispatcherTimer
+            { Interval = TimeSpan.FromMilliseconds(SleepingDevicePollMs) };
+        _sleepWatch.Tick += (_, _) => PollSleepingDevices();
+        _sleepWatch.Start();
+    }
+
+    void PollSleepingDevices()
+    {
+        if (_watchdog == null || _sleepProbeRunning) return;
+        // Only while something is actually reported asleep. Every other launch
+        // this costs one list scan every five seconds and no I/O at all.
+        //
+        // Match the MOUSE's note, not merely a Razer one mentioning the pad: the
+        // pad files its own note (no lighting on this model) and that one is
+        // there whenever the pad is, which is always. Matching loosely made this
+        // fire forever - it rescanned every five seconds even with the mouse
+        // present and lit, so the device was torn down and rebuilt before its
+        // lighting could settle and the mouse just sat black.
+        if (!UnifiedRgb.Core.DetectionNotes.Current.Any(n => n.What == UnifiedRgb.Core.Devices.RazerHid.SleepingMouseNote)) return;
+        // A calibration session drives device INSTANCES a rescan would replace,
+        // and an SDK client's claims would all drop at once - the same two
+        // reasons the recovery policy defers, so do not even ask.
+        if (Services.CalibrationAid.AnyActive || Devices.Any(d => _sdkHeld.Contains(d) || _lighting.IsClaimed(d))) return;
+        _sleepProbeRunning = true;
+        // Feature exchanges with a reply wait: never on the UI thread.
+        Task.Run(() =>
+        {
+            bool awake = false;
+            try { awake = UnifiedRgb.Core.Devices.RazerHid.MouseAwakeBehindPad(); }
+            catch (Exception ex) { UnifiedRgb.Core.Log.Warn("watchdog", $"sleeping-device probe failed: {ex.Message}"); }
+            _dispatcher.BeginInvoke(() =>
+            {
+                _sleepProbeRunning = false;
+                // _watchdog is nulled on dispose, and this hop can land after it.
+                if (awake && _watchdog != null)
+                {
+                    UnifiedRgb.Core.Log.Info("watchdog", "a device that was asleep is answering again - redetecting");
+                    _watchdog.NoteDeviceWoke();
+                }
+            });
+        });
+    }
+
     /*-----------------------------------------------------*\
     | Per-target effect state: every device/zone remembers  |
     | its own mode, speed, and pattern settings, and runs   |
@@ -1560,6 +1625,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             // a rescan would replace, so the policy waits for the session to end.
             CalibrationRunning: Services.CalibrationAid.AnyActive));
         _watchdog.Start();
+        StartSleepingDeviceWatch();
         Lcd.InitScenes();
         Shows.Init();
         MigrateShowsToProfiles();
@@ -2095,6 +2161,8 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // the handback).
         // Before anything else: a recovery that fired while the app was
         // shutting down would rescan onto handles that are about to close.
+        _sleepWatch?.Stop();
+        _sleepWatch = null;
         _watchdog?.Dispose();
         _watchdog = null;
         LianLiUniHub.LayoutFileChanged -= OnUniHubLayoutFileChanged;

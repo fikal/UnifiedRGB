@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using System.Windows.Interop;
 using System.Windows.Threading;
 using Microsoft.Win32;
@@ -354,6 +354,11 @@ public sealed class DeviceWatchdog : IDisposable
     /// <summary>A rescan the user asked for, or one anything else performed,
     /// counts as the recovery: dropping the pending one avoids doing the whole
     /// teardown twice for one gesture.</summary>
+    /// <summary>Something that was present but asleep has answered. Goes through
+    /// the same debounce as a replug, so a mouse that wakes and dozes twice in a
+    /// second costs one rescan.</summary>
+    public void NoteDeviceWoke() => Note(RecoveryReason.DeviceWoke);
+
     public void NoteRescanHappened() { _policy.Cancel(Environment.TickCount64); _timer.Stop(); _armedFor = long.MinValue; }
 
     public void Dispose()

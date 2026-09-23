@@ -241,6 +241,55 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
     /// pad's own controller. Each gets its own handle so Dispose stays simple.</summary>
     static List<IRgbDevice> OpenPad(HidNative.HidInfo iface) => OpenPad(() => HidNative.Open(iface.Path));
 
+    /// <summary>Nothing with a DPI is answering behind the pad, which is what
+    /// an asleep mouse looks like and also what an unpaired one looks like. We
+    /// cannot tell those apart, so the note says both and the poll keeps asking.</summary>
+    /// <summary>The note's subject, shared so the poller that clears it cannot
+    /// drift from the driver that files it - matching this loosely (on "Razer",
+    /// or on "HyperFlux", which the PAD's own note also contains) rescanned
+    /// every five seconds forever.</summary>
+    public const string SleepingMouseNote = "the mouse on your HyperFlux V2";
+
+    static void ReportNoMouse()
+        => DetectionNotes.Report("Razer", SleepingMouseNote, BlockReason.PartlyWorking,
+            "asleep or not paired, so it is not in the list yet",
+            "move it - it is picked up within a few seconds of waking");
+
+    /// <summary>Is a mouse awake behind a pad right now?
+    ///
+    /// The mouse has no USB identity of its own - it lives behind the PAD's, and
+    /// the pad stays enumerated whether the mouse is awake, asleep or in another
+    /// room. So a mouse waking up raises no device-arrival, and the one signal
+    /// the watchdog listens for never comes. Detection has to be ASKED again,
+    /// which is what this is for: a handful of feature exchanges, cheap enough
+    /// to poll, and false the moment no pad is present at all.
+    ///
+    /// A mouse is an identity that answers WITH a DPI; the pad itself answers
+    /// without one. Same rule OpenPad uses, so the two cannot disagree about
+    /// what counts as a mouse.</summary>
+    public static bool MouseAwakeBehindPad()
+    {
+        List<HidNative.HidInfo> all;
+        try { all = HidNative.FindAll(); }
+        catch { return false; }
+        foreach (var iface in all.Where(IsControlCollection).Where(h => h.ProductId == HYPERFLUX_V2))
+        {
+            try
+            {
+                using var hid = HidNative.Open(iface.Path);
+                foreach (byte t in TransactionCandidates)
+                {
+                    if (Identify(hid, t) == null) continue;
+                    var dq = NewReport(t, 0x04, 0x85, 0x07); dq[ARGS] = VARSTORE;
+                    var dpi = Exchange(hid, dq);
+                    if (dpi != null && dpi[1] == ST_OK) return true;
+                }
+            }
+            catch { }   // a handle we cannot open tells us nothing, so it is not a "no"
+        }
+        return false;
+    }
+
     /// <summary>Same injection as OpenKnown: a test can stand in for the pad and
     /// whatever mouse is paired to it, transaction id by transaction id.</summary>
     internal static List<IRgbDevice> OpenPad(Func<IHidTransport> open)
@@ -264,10 +313,23 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
         }
         if (answers.Count == 0)
         {
+            // The pad is on the bus; whatever is paired to it is not answering.
+            // We cannot tell an asleep mouse from an absent one - both are
+            // silence - so say so and let the app keep asking. Silence here used
+            // to be total: the mouse simply was not in the device list, with
+            // nothing anywhere saying why, and it could never come back on its
+            // own because the PAD never disconnects and so no device-arrival
+            // ever fires for the mouse waking up behind it.
             Log.Info("Razer", "HyperFlux V2 pad (00CF): no transaction id answered - mouse asleep or not paired; leaving it");
+            ReportNoMouse();
             return list;
         }
         Log.Info("Razer", "HyperFlux V2 pad answers: " + string.Join("; ", answers.Select(a => $"0x{a.Tid:X2} fw {a.Fw}{(a.HasDpi ? " (mouse)" : " (pad)")}")));
+        // The pad answering is not the mouse answering. This is the ordinary
+        // shape of "my mouse is missing": the pad replies on its own id all day
+        // because it is mains-powered, and the mouse - the thing with a battery,
+        // and the only identity that answers WITH a DPI - has dozed off.
+        if (!answers.Any(a => a.HasDpi)) ReportNoMouse();
 
         // One identity may answer on several ids (a dongle relaying everything):
         // keep the first id per serial. An identity whose serial read FAILED

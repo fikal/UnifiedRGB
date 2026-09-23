@@ -745,7 +745,9 @@ static class DevicesSuite
                 UnifiedRgb.Core.DetectionNotes.Clear();
                 var found = RazerHid.OpenPad(() => new FakeHid { Respond = UnlitPad, FeatureOnly = true });
                 t.Equal(0, found.Count, "a pad set to no lighting is not added as a lighting device");
-                var note = UnifiedRgb.Core.DetectionNotes.Current.SingleOrDefault(n => n.Family == "Razer");
+                // By WHAT, not just by family: a pad with no mouse awake behind it
+                // now files its own note too, and they are different statements.
+                var note = UnifiedRgb.Core.DetectionNotes.Current.SingleOrDefault(n => n.What.Contains("pad"));
                 t.Check(note != null && note.Reason == UnifiedRgb.Core.BlockReason.PartlyWorking,
                     "...but it is RECORDED, so it does not read as the app dropping support for it");
                 t.Check(note?.Remedy != null && note.Remedy.Contains("Razer"),
@@ -842,8 +844,65 @@ static class DevicesSuite
             // The other thing Chris's log could have said: the pad enumerates but no
             // transaction id answers (mouse asleep, nothing paired). That must be
             // "no device", quietly - not an exception, not a phantom entry.
+            UnifiedRgb.Core.DetectionNotes.Clear();
             var found = RazerHid.OpenPad(() => new FakeHid { Respond = _ => null });
             t.Equal(0, found.Count, "a pad that answers nothing yields no device");
+
+            // Quietly is not the same as SILENTLY. The mouse has no USB identity
+            // of its own - it answers behind the pad's, and the pad stays
+            // enumerated whether the mouse is awake, asleep or in another room.
+            // So nothing arrives when it wakes, and before this the mouse was
+            // absent until the app was restarted with nothing saying why. Seen
+            // on this desk: 11 minutes after the app stopped writing, all three
+            // mouse transaction ids answered 0x04 and the pad answered fine.
+            var note = UnifiedRgb.Core.DetectionNotes.Current.SingleOrDefault(n => n.Family == "Razer");
+            t.Check(note != null, "a pad with nothing answering behind it is REPORTED, not just skipped");
+            t.Check(note?.Detail != null && note.Detail.Contains("asleep"),
+                "...saying it may simply be asleep, which is what it usually is");
+            t.Check(note?.Remedy != null && note.Remedy.Contains("move it"),
+                "...and that moving the mouse is all it takes");
+            UnifiedRgb.Core.DetectionNotes.Clear();
+
+            // ...and the shape it ACTUALLY takes on hardware, which the fake
+            // above does not produce and which shipped broken because of it: the
+            // pad is mains-powered and answers on its own id all day, so
+            // "nothing answered" is never true. Only the MOUSE goes quiet. The
+            // test that mattered was the one where the pad talks and the thing
+            // with a battery does not.
+            var found2 = RazerHid.OpenPad(() => new FakeHid { Respond = UnlitPad, FeatureOnly = true });
+            foreach (var d in found2) d.Dispose();
+            t.Check(UnifiedRgb.Core.DetectionNotes.Current.Any(n => n.What == RazerHid.SleepingMouseNote),
+                "a pad that answers while the MOUSE stays quiet reports the missing mouse");
+
+            // The poller stops when this note goes away, so the note has to be
+            // TELLABLE from the pad's own. They both say "HyperFlux" and both
+            // have Family "Razer", and the pad's is there whenever the pad is -
+            // which is always. Matching on either rescanned every five seconds
+            // forever, tearing the mouse down before its lighting could settle
+            // and leaving it black. Seen on hardware; this is the guard.
+            var padNote = UnifiedRgb.Core.DetectionNotes.Current.FirstOrDefault(n => n.What.Contains("pad"));
+            t.Check(padNote != null, "the pad files a note of its own");
+            t.Check(padNote?.What != RazerHid.SleepingMouseNote,
+                "...that is NOT the sleeping-mouse note, or the poll can never stop");
+            UnifiedRgb.Core.DetectionNotes.Clear();
+        }
+
+        t.Section("RazerHid: a mouse waking up behind the pad");
+        {
+            // The recovery reason this drives has to carry its own sentence, or
+            // the activity history says "something happened" for the one event
+            // the user is most likely to be staring at.
+            string woke = UnifiedRgb.Core.RecoveryPolicy.Sentence(UnifiedRgb.Core.RecoveryReason.DeviceWoke, 3, relight: true);
+            t.Check(woke.Contains("woke") && woke.Contains("3"), "a device waking says so, and how many came back");
+            t.Check(!UnifiedRgb.Core.RecoveryPolicy.Sentence(UnifiedRgb.Core.RecoveryReason.DeviceWoke, 3, relight: false).Contains("put back"),
+                "...and does not claim to have relit anything when the lights stay off");
+
+            // It settles like a replug, not like a resume: the device is already
+            // there and answering, so there is nothing to wait six seconds for.
+            var p = new UnifiedRgb.Core.RecoveryPolicy();
+            p.Note(UnifiedRgb.Core.RecoveryReason.DeviceWoke, 0);
+            t.Equal(UnifiedRgb.Core.RecoveryPolicy.DeviceSettleMs, p.DelayFrom(0),
+                "a wake settles on the device clock, not the resume clock");
         }
 
         t.Section("RazerHid: a known mouse over a feature-only handle");

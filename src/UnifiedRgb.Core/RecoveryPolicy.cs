@@ -1,4 +1,4 @@
-namespace UnifiedRgb.Core;
+﻿namespace UnifiedRgb.Core;
 
 /*-----------------------------------------------------------*\
 | WHEN to put the lighting back, and when to keep out of the   |
@@ -46,6 +46,10 @@ public enum RecoveryReason
     DeviceRemoved,
     /// <summary>The machine woke up (PowerModes.Resume).</summary>
     SystemResumed,
+    /// <summary>Hardware that was present but ASLEEP has started answering.
+    /// It raises no arrival of its own - it never went away, as far as the bus
+    /// is concerned - so something has to go looking and say so.</summary>
+    DeviceWoke,
 }
 
 /// <summary>What the app decides to do when the debounce expires.</summary>
@@ -287,6 +291,9 @@ public sealed class RecoveryPolicy
         RecoveryReason.SystemResumed => relight
             ? $"Your PC woke up, so the lighting was put back on {devices} device(s)."
             : $"Your PC woke up and {devices} device(s) came back, but the lights stay off for now.",
+        RecoveryReason.DeviceWoke => relight
+            ? $"A device woke up, so the lighting was put back on {devices} device(s)."
+            : $"A device woke up; {devices} device(s) are ready and the lights stay off for now.",
         RecoveryReason.DeviceRemoved => relight
             ? $"A device was unplugged, so the lighting was rebuilt across {devices} device(s)."
             : $"A device was unplugged; {devices} device(s) are still here and the lights stay off for now.",
