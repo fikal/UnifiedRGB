@@ -4,6 +4,8 @@ using System.Windows.Input;
 using SD = System.Drawing;
 using WF = System.Windows.Forms;
 
+using UnifiedRgb.Core;
+
 namespace UnifiedRgb.App;
 
 /// <summary>The shell: custom title bar, window placement, global hotkeys, the
@@ -194,24 +196,64 @@ public partial class MainWindow : Window
         // center on screen when the owner isn't visible, so a tray-exit still
         // shows them fine.
         _closing = true;
-        if (_sessionEnding) { SaveWindowPlacement(); return; }   // saved already; a modal would never be answered
-        if (_vm.NeedsFirstProfilePrompt)
+
+        // The window owns the modal, the dispatcher and the CancelEventArgs.
+        // What to ask, and what the answer MEANS, is CloseDecision's - pure, and
+        // covered in the harness, because this is the path where getting it
+        // wrong either discards the user's work or leaves an app that will not
+        // close. See Core/CloseDecision.cs.
+        CloseAnswer answer;
+        bool saved;
+        string attempted;
+        switch (CloseDecision.WhatToAsk(_sessionEnding, _vm.NeedsFirstProfilePrompt, _vm.NeedsSavePrompt))
         {
-            var (r, name) = Dialogs.AskSaveFirstProfile(this);
-            if (r == MessageBoxResult.Cancel) { e.Cancel = true; _closing = false; return; }
-            // The view model resolves a blank name to its default, so the
-            // failure notice names what was actually attempted.
-            if (r == MessageBoxResult.Yes && !_vm.SaveProfileAs(name)) { StayOpenAfterFailedSave(e, _vm.ProfileName); return; }
+            case ClosePrompt.FirstProfile:
+            {
+                var (r, name) = Dialogs.AskSaveFirstProfile(this);
+                answer = ToAnswer(r);
+                // The view model resolves a blank name to its default, so the
+                // failure notice names what was actually attempted.
+                saved = answer == CloseAnswer.Save && _vm.SaveProfileAs(name);
+                attempted = _vm.ProfileName;
+                break;
+            }
+            case ClosePrompt.SaveChanges:
+            {
+                attempted = _vm.SelectedProfile?.Name ?? "";
+                answer = ToAnswer(Dialogs.AskSaveChanges(this, attempted));
+                saved = answer == CloseAnswer.Save && _vm.SaveActiveProfile();
+                break;
+            }
+            default:
+                SaveWindowPlacement();
+                return;
         }
-        else if (_vm.NeedsSavePrompt)
+
+        switch (CloseDecision.Resolve(answer, saved))
         {
-            string name = _vm.SelectedProfile?.Name ?? "";
-            var r = Dialogs.AskSaveChanges(this, name);
-            if (r == MessageBoxResult.Cancel) { e.Cancel = true; _closing = false; return; }
-            if (r == MessageBoxResult.Yes && !_vm.SaveActiveProfile()) { StayOpenAfterFailedSave(e, name); return; }
+            case CloseAction.StayOpen:
+                e.Cancel = true;
+                _closing = false;
+                return;
+            case CloseAction.StayOpenAndExplain:
+                StayOpenAfterFailedSave(e, attempted);
+                return;
+            default:
+                SaveWindowPlacement();
+                return;
         }
-        SaveWindowPlacement();
     }
+
+    /// <summary>The themed prompts answer in WPF's vocabulary; the decision is
+    /// written in the app's. Anything that is not an explicit Yes or Cancel -
+    /// including a prompt dismissed with the close button - is "do not save",
+    /// which is what the buttons say.</summary>
+    static CloseAnswer ToAnswer(MessageBoxResult r) => r switch
+    {
+        MessageBoxResult.Yes => CloseAnswer.Save,
+        MessageBoxResult.Cancel => CloseAnswer.Cancel,
+        _ => CloseAnswer.Discard,
+    };
 
     /// <summary>The user answered Yes to saving and the save did not happen (a
     /// full disk, a settings folder locked by another program). Closing anyway

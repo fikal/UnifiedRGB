@@ -26,6 +26,7 @@ static class Suites
         ("ProfileBindings", ProfileBindingSuite.Run),
         ("Bindings",      BindingsSuite.Run),
         ("PreviewCache",  PreviewCacheSuite.Run),
+        ("Closing",       ClosingSuite.Run),
         ("Backup",        BackupSuite.Run),
         ("Fans",          FansSuite.Run),
         ("SensorRules",   SensorRulesSuite.Run),
