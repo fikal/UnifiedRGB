@@ -1,4 +1,4 @@
-namespace UnifiedRgb.Core.Native;
+﻿namespace UnifiedRgb.Core.Native;
 
 /// <summary>System SMBus access through a signed PawnIO module. The namazso
 /// modules share one contract (ioctl_smbus_xfer; block = 33 bytes [len,data…]
@@ -177,6 +177,17 @@ public abstract class PawnSmbus : IDisposable
     /// throwing.</summary>
     public void Dispose()
     {
+        Dispose(disposing: true);
+        GC.SuppressFinalize(this);
+    }
+
+    /// <summary>Overridable because this type is ABSTRACT: a chipset subclass
+    /// that acquires anything of its own has somewhere to release it without
+    /// re-implementing IDisposable and losing the flag-then-release order
+    /// above, which is what keeps a straggling transaction from throwing.</summary>
+    protected virtual void Dispose(bool disposing)
+    {
+        if (!disposing) return;
         _disposed = true;
         _io.Dispose();
         _smbusMutex.Dispose();

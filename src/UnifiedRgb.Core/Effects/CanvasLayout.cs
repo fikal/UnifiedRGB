@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace UnifiedRgb.Core.Effects;
@@ -69,7 +69,8 @@ public sealed class CanvasLayout
     /// on every edit. Static because ZonePositions is static and is called from
     /// effect workers, the preview and the app alike; a null here is simply
     /// "no canvas", which is the default state.</summary>
-    public static CanvasLayout? Current;
+    static volatile CanvasLayout? _current;
+    public static CanvasLayout? Current { get => _current; set => _current = value; }
 
     static string Path => AppPaths.Config("canvas.json");
 

@@ -1,4 +1,4 @@
-using UnifiedRgb.Core.Automation;
+﻿using UnifiedRgb.Core.Automation;
 
 namespace UnifiedRgb.Tests;
 
@@ -459,8 +459,8 @@ static class ActivitySuite
             "the address is an absolute https URL, which is what NavigateUri needs");
         t.Check(url.Contains(UnifiedRgb.Core.UpdateClient.GitHubRepo),
             "built from the repo constant the update check uses, not typed out a second time");
-        t.Check(url.EndsWith("/releases"), "and points at the releases page");
-        t.Check(!label.StartsWith("http"), "the label drops the scheme, the way a link reads");
+        t.Check(url.EndsWith("/releases", StringComparison.Ordinal), "and points at the releases page");
+        t.Check(!label.StartsWith("http", StringComparison.Ordinal), "the label drops the scheme, the way a link reads");
     }
 
     /// <summary>The white the app chooses ON YOUR BEHALF has to be the same

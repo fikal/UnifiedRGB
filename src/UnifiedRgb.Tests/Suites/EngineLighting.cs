@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using UnifiedRgb.Core;
 using UnifiedRgb.Core.Effects;
 using UnifiedRgb.App.Services;
@@ -320,7 +320,8 @@ static class EngineLightingSuite
             lock (_writes) _writes.Add(colors.ToArray());
             return true;   // canned success: slow, but never refused
         }
-        public void Dispose() { }
+        // The gates own wait handles; the engine disposes every device it holds.
+        public void Dispose() { Entered.Dispose(); Release.Dispose(); }
     }
 
     /// <summary>Renders a different color every call, so the engine's

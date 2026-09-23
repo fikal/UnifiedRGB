@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using SD = System.Drawing;
@@ -9,6 +9,11 @@ namespace UnifiedRgb.App;
 /// <summary>The shell: custom title bar, window placement, global hotkeys, the
 /// tray icon and the close prompt. Everything inside the two cards lives in the
 /// pane UserControls under Views/ (each owns its own x:Names and handlers).</summary>
+// A Window is not disposable and should not become one: its lifetime is the
+// Closed event, and that is where these three are released
+// (_automation.Dispose(); UnregisterHotkeys(); _tray?.Dispose(); _vm.Dispose()).
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA1001:Types that own disposable fields should be disposable",
+    Justification = "Released in the Closed handler, which is a Window's disposal point.")]
 public partial class MainWindow : Window
 {
     readonly MainViewModel _vm = new();

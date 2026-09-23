@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Text;
 using System.Text.Json;
 using UnifiedRgb.Core.Effects;
@@ -118,7 +118,7 @@ public static class ChromaRestServer
         }
 
         // Init: POST /razer/chromasdk
-        if (req.HttpMethod == "POST" && path.EndsWith("/razer/chromasdk"))
+        if (req.HttpMethod == "POST" && path.EndsWith("/razer/chromasdk", StringComparison.Ordinal))
         {
             int id = Interlocked.Increment(ref _session);
             if (_initLog.Allow()) Log.Info("chroma", $"REST init: session {id} ({AppTitle(body, bodyLen)})");

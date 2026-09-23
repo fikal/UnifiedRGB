@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using UnifiedRgb.Core.Native;
 
 namespace UnifiedRgb.Core.Devices;
@@ -55,9 +55,11 @@ public sealed class LianLiUniHub : IRgbDevice, IZoneWritable, ILianFanDevice, IH
     /// <summary>How many fans are daisy-chained on the ACTIVE connector. The hub
     /// can't report this (chained fans share one tach), so the app sets it from
     /// the saved per-channel count before detection. 1..4.</summary>
-    public static int ConfiguredFanCount = 1;
+    static volatile int _configuredFanCount = 1;
+    public static int ConfiguredFanCount { get => _configuredFanCount; set => _configuredFanCount = value; }
     /// <summary>Which connector (0..3) the app is driving. Set before detection.</summary>
-    public static int ConfiguredChannel = 0;
+    static volatile int _configuredChannel;
+    public static int ConfiguredChannel { get => _configuredChannel; set => _configuredChannel = value; }
     public int FanCount => _fans;
     public int Channel => _group;
     /// <summary>Connectors with a spinning fan chain (from the tach read). These

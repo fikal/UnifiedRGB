@@ -964,7 +964,7 @@ static class DevicesSuite
             t.Check(names.Count == names.Distinct().Count(), "every detector family has a distinct name");
             t.Check(all.All(d => d.Method.IsStatic), "every factory is a static method");
             t.Check(all.All(d => !d.Method.DeclaringType!.Name.Contains('<')), "no factory is a lambda (compiler-generated declaring type)");
-            t.Check(all.All(d => d.Method.DeclaringType!.Namespace!.StartsWith("UnifiedRgb.Core")),
+            t.Check(all.All(d => d.Method.DeclaringType!.Namespace!.StartsWith("UnifiedRgb.Core", StringComparison.Ordinal)),
                 "every factory lives on a class in the Core assembly");
         }
 

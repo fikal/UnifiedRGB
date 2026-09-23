@@ -1,4 +1,4 @@
-using UnifiedRgb.Core.Games;
+﻿using UnifiedRgb.Core.Games;
 
 namespace UnifiedRgb.Core.Effects;
 
@@ -21,7 +21,8 @@ public sealed class Cs2Effect : IEffect
 {
     /// <summary>Set by the app when it starts the GSI server. Static because an
     /// effect instance is created per channel and they all read one game.</summary>
-    public static GsiServer? Server;
+    static volatile GsiServer? _server;
+    public static GsiServer? Server { get => _server; set => _server = value; }
 
     public string Name => "CS2";
     public bool UsesBaseColor => false;

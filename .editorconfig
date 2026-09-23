@@ -1,0 +1,50 @@
+root = true
+
+[*.cs]
+
+# ---------------------------------------------------------------------------
+# The enforced rules. Errors, not warnings: a warning nobody has to act on is a
+# warning that accumulates, and the point of a short list is that it stays at
+# zero. See Directory.Build.props for why the rest of the analyzers are off.
+# ---------------------------------------------------------------------------
+
+# Resource lifetime. This app holds HID handles, device handles, timers and
+# file streams for its whole run; leaking one means a device nobody else can
+# open until the process dies, which is exactly the class of bug users report
+# as "I have to reboot before Synapse will see my mouse".
+dotnet_diagnostic.CA1001.severity = error   # owns disposable fields, is not disposable
+dotnet_diagnostic.CA2213.severity = error   # disposable field never disposed
+dotnet_diagnostic.CA1063.severity = error   # Dispose(bool) pattern implemented wrongly
+dotnet_diagnostic.CA1816.severity = error   # Dispose does not call GC.SuppressFinalize
+
+# Mutable statics visible outside their type. Frames go out at 60 Hz from a
+# worker while the UI thread reads the same state; a public static field is a
+# race with no lock to point at.
+dotnet_diagnostic.CA2211.severity = error
+
+# Culture-sensitive string comparison. These are all machine strings - device
+# names, paths, registry values, header keys - and comparing them by the user's
+# locale is how software works everywhere except the one machine that reports
+# it broken. Ordinal is what was always meant.
+dotnet_diagnostic.CA1310.severity = error
+
+# ---------------------------------------------------------------------------
+# Deliberately NOT enabled, with the reason, so nobody re-litigates these:
+#
+#   CA2000 (276) dispose before losing scope. Cannot tell ownership transfer
+#          from a leak, and this code returns open handles by design
+#          (HidNative.Open -> IHidTransport the caller owns). Mostly false.
+#   CA1305 (178) specify IFormatProvider. Sounds like a culture bug and is not:
+#          there are EIGHT non-invariant number parses in the whole app, and
+#          SensorRulesWindow uses CurrentCulture ON PURPOSE so a German user
+#          typing "0,5" is understood. The rest is log formatting.
+#   CA1806  (26) ignored return values. The flagged WinVerifyTrust call is the
+#          WTD_STATEACTION_CLOSE cleanup in a finally; the REAL verification
+#          captures hr and returns null on failure. Authenticode is sound.
+#   CA2011   (1) "assigning the property within its setter". It stores a
+#          DEFERRED callback (_whenBack = () => SelectedSceneName = value)
+#          replayed when the pump LCD comes back. Not recursion.
+#   CA2201  (34) throwing System.Exception. Fair, but churn without a bug
+#          behind it; revisit when something needs to CATCH one of them.
+#   CA1725, CA1861, CA1822, CA1859 - cosmetic or micro-perf.
+# ---------------------------------------------------------------------------

@@ -182,7 +182,7 @@ public sealed partial class MainViewModel
     /// <summary>User-defined fan groups (from the Arrange fans dialog): each
     /// is its own effect canvas spanning just its fans.</summary>
     public List<string> LianGroupNames => (SelectedDevice as LianLiWireless)?.Zones
-        .Where(z => z.Name.StartsWith("Group ")).Select(z => z.Name).ToList() ?? new();
+        .Where(z => z.Name.StartsWith("Group ", StringComparison.Ordinal)).Select(z => z.Name).ToList() ?? new();
     public bool HasLianGroups => LianGroupNames.Count > 0;
 
     /// <summary>Arrange only matters with 2+ fans to order.</summary>

@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Media;
 using System.Windows.Threading;
 using UnifiedRgb.Core;
@@ -20,8 +20,11 @@ public enum PreviewStyle { Dots, Keys, Fan }
 /// layout computed once per (positions, size) instead of per frame.</summary>
 public sealed class LedPreview : FrameworkElement
 {
-    /// <summary>True while the window is mid-drag/resize; freezes the preview.</summary>
-    public static bool GlobalPause;
+    /// <summary>True while the window is mid-drag/resize; freezes the preview.
+    /// Volatile: the UI thread sets it and the render pass reads it, and a
+    /// cached read is a preview that keeps painting through a resize.</summary>
+    static volatile bool _globalPause;
+    public static bool GlobalPause { get => _globalPause; set => _globalPause = value; }
 
     public Func<(Rgb[] Colors, LedPos[] Pos, PreviewStyle Style, double Aspect, LedRect[]? Rects)>? Source { get; set; }
     public event Action<int>? LedClicked;

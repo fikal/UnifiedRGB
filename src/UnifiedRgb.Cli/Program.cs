@@ -483,7 +483,7 @@ if (args.Length >= 1 && args[0] == "--superio")
     // especially) put extra fan headers on a second ITE chip at 0x4E.
     {
         var blob = typeof(UnifiedRgb.Core.Sensors.IteSuperIo).Assembly.GetManifestResourceNames()
-            .Where(n => n.EndsWith("LpcIO.bin"))
+            .Where(n => n.EndsWith("LpcIO.bin", StringComparison.Ordinal))
             .Select(n => { using var s = typeof(UnifiedRgb.Core.Sensors.IteSuperIo).Assembly.GetManifestResourceStream(n)!; var ms = new MemoryStream(); s.CopyTo(ms); return ms.ToArray(); })
             .FirstOrDefault();
         using var raw = blob != null ? UnifiedRgb.Core.Native.PawnIO.LoadModule(blob) : null;
@@ -869,7 +869,7 @@ if (args.Length > 0 && args[0] == "--scan")
 // unknown or a known option with the wrong argument count (the exact-arity
 // handlers such as --argb/--lcd simply don't match on a miscount). Reject it
 // here, before the generic path opens every device and reports "Done.".
-if (args.Length > 0 && args[0].StartsWith("--"))
+if (args.Length > 0 && args[0].StartsWith("--", StringComparison.Ordinal))
 {
     Console.WriteLine(args[0] is "--help" or "-h" or "/?" ? "UnifiedRgb CLI"
                     : $"Unknown option or wrong argument count: {string.Join(' ', args)}");

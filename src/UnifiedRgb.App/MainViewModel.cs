@@ -32,6 +32,12 @@ public readonly record struct LianPartButton(string Name, int Tag);
 
 public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
 {
+    // Disposed by Safely(_manager.Dispose) in Dispose(), in a deliberate order
+    // with the other teardown steps - each one isolated, because a throw part
+    // way through used to leave :54235 bound and device handles open. The
+    // analyser cannot see a disposal that goes through a delegate.
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2213:Disposable fields should be disposed",
+        Justification = "Disposed via Safely(_manager.Dispose) in Dispose(); the call goes through a delegate.")]
     readonly DeviceManager _manager = new();
     readonly ProfileStore _store = new();
     // Engine + static frames + applier live in the controller (it owns HOW a

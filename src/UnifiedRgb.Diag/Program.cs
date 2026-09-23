@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using UnifiedRgb.Core;
 
 /*-----------------------------------------------------------*\
@@ -88,7 +88,7 @@ Console.WriteLine("==============================================");
 if (saved.Count == 0) Console.WriteLine(">>> COULD NOT SAVE the report anywhere (copy it from the window above).");
 else foreach (var p in saved) Console.WriteLine($">>> Report saved to: {p}");
 Console.WriteLine("==============================================");
-if (report.StartsWith("!!! DIAGNOSTIC CRASHED") || saved.Count == 0) Environment.ExitCode = 1;
+if (report.StartsWith("!!! DIAGNOSTIC CRASHED", StringComparison.Ordinal) || saved.Count == 0) Environment.ExitCode = 1;
 
 // Public builds have no support endpoint: the upload prompt could only ever
 // answer "Could not send", so don't ask.

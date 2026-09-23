@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Windows;
 using UnifiedRgb.Core;
 
@@ -78,7 +78,7 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             {
                 string result;
                 try { result = File.ReadAllText(f).Trim(); } catch { continue; }
-                if (result.StartsWith("ok")) Log.Info("update", $"swap script: {result}");
+                if (result.StartsWith("ok", StringComparison.Ordinal)) Log.Info("update", $"swap script: {result}");
                 else Log.Warn("update", $"swap script FAILED: {result} — exe was not replaced (still locked, or the folder needs admin rights)");
                 try { File.Delete(f); } catch { }
             }

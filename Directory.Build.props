@@ -1,0 +1,23 @@
+<Project>
+
+  <!--
+    Analysis is OPT-IN, rule by rule.
+
+    Turning the standard set on wholesale produces about 1,266 warnings here, and
+    almost all of it is noise: 636 CA1725 (parameter names differing from an
+    interface), 152 CA1861, 112 CA1822. Nobody reads 1,266 warnings, so a build
+    that emits them is a build whose warnings mean nothing - which is how the
+    real ones hide.
+
+    So AnalysisMode is None and .editorconfig turns on a short list, as ERRORS.
+    Every rule on that list was checked against this code before being enabled;
+    the ones that sounded alarming and turned out to be false positives are
+    written down there rather than left for somebody to rediscover.
+  -->
+  <PropertyGroup>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <AnalysisMode>None</AnalysisMode>
+  </PropertyGroup>
+
+</Project>

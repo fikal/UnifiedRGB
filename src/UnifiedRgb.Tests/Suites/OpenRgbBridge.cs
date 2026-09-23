@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Sockets;
 using UnifiedRgb.Core;
 using UnifiedRgb.Core.Devices;
@@ -242,11 +242,13 @@ static class OpenRgbBridgeSuite
     /// <summary>A host whose PushExternal parks until the test says go, so the
     /// test can hold a client thread INSIDE a host callback deterministically:
     /// no sleeping and hoping.</summary>
-    sealed class BlockingHost : IOpenRgbHost
+    sealed class BlockingHost : IOpenRgbHost, IDisposable
     {
         readonly List<IRgbDevice> _devices = new();
         public readonly ManualResetEventSlim Entered = new();
         public readonly ManualResetEventSlim Release = new();
+        // The gates are wait handles; three tests build one of these each.
+        public void Dispose() { Entered.Dispose(); Release.Dispose(); }
         public volatile bool Exited;
         /// <summary>When set, PushExternal calls Stop on it (the "host reacts
         /// by stopping the server" case) instead of parking.</summary>
@@ -280,7 +282,7 @@ static class OpenRgbBridgeSuite
     static void StopWaitsForCallbacks(Harness t)
     {
         t.Section("(d) Stop waits for in-flight callbacks");
-        var host = new BlockingHost();
+        using var host = new BlockingHost();
         host.Add(new FakeZonedDevice { Name = "Board", Zones2 = new[] { ("Header", 3) } });
         var server = new OpenRgbServer(host);
         int port = server.Start(listenOnLan: false, port: FreePort());
@@ -307,7 +309,7 @@ static class OpenRgbBridgeSuite
     static void StopGivesUpAfterBudget(Harness t)
     {
         t.Section("Stop gives up after its budget");
-        var host = new BlockingHost();
+        using var host = new BlockingHost();
         host.Add(new FakeZonedDevice { Name = "Board", Zones2 = new[] { ("Header", 1) } });
         var server = new OpenRgbServer(host);
         int port = server.Start(listenOnLan: false, port: FreePort());
@@ -333,7 +335,7 @@ static class OpenRgbBridgeSuite
     static void StopFromInsideCallbackReturns(Harness t)
     {
         t.Section("Stop called from inside a host callback returns");
-        var host = new BlockingHost();
+        using var host = new BlockingHost();
         host.Add(new FakeZonedDevice { Name = "Board", Zones2 = new[] { ("Header", 1) } });
         var server = new OpenRgbServer(host);
         host.StopFromCallback = server;

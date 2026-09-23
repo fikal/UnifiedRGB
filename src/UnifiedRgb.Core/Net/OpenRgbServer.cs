@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
@@ -115,6 +115,10 @@ public sealed class OpenRgbServer : IDisposable
     /// the way out; both under _gate.</summary>
     readonly List<Thread> _serving = new();
 
+    // Released by _listener?.Stop() in the stop path, which disposes the
+    // underlying socket; the field is then nulled so Running goes false.
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2213:Disposable fields should be disposed",
+        Justification = "Stop() releases the socket and the field is nulled; there is no second owner.")]
     TcpListener? _listener;
     Thread? _accept;
     System.Threading.Timer? _sweep;

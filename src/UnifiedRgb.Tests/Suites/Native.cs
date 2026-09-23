@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using UnifiedRgb.Core;
 using UnifiedRgb.Core.Native;
@@ -76,7 +76,7 @@ static class NativeSuite
         {
             foreach (var m in new[] { "LpcIO.bin", "AMDFamily17.bin", "IsaBridgeEC.bin" })
                 t.Check(PawnIO.ReadEmbeddedModule(m) is { Length: > 100 }, $"{m} embedded in Core");
-            int copies = typeof(PawnIO).Assembly.GetManifestResourceNames().Count(n => n.EndsWith("SmbusI801.bin"));
+            int copies = typeof(PawnIO).Assembly.GetManifestResourceNames().Count(n => n.EndsWith("SmbusI801.bin", StringComparison.Ordinal));
             t.Equal(1, copies, "exactly one SmbusI801.bin manifest resource in Core");
         }
 
@@ -105,7 +105,7 @@ static class NativeSuite
         {
             t.Equal("ok", DiagnosticReport.Ps("'ok'"), "Ps plain output");
             string r = DiagnosticReport.Ps("'ok'; Write-Error 'boom'");
-            t.Check(r.StartsWith("ok") && r.Contains("(errors:") && r.Contains("boom"), $"Ps keeps partial stdout and appends stderr ({r.Replace("\r\n", " / ")})");
+            t.Check(r.StartsWith("ok", StringComparison.Ordinal) && r.Contains("(errors:") && r.Contains("boom"), $"Ps keeps partial stdout and appends stderr ({r.Replace("\r\n", " / ")})");
             t.Check(!r.Contains("(errors: \r") && !r.Contains("(errors: \n"), "Ps collapses stderr line breaks");
         }
 

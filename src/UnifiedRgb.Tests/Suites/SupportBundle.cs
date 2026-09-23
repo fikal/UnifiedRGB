@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.Json;
@@ -57,7 +57,7 @@ static class SupportBundleSuite
 
             byte[] body = Encoding.UTF8.GetBytes("{\"title\":\"a\\n09-02 12:00:00 ERR forged\\ttab\\r\"}");
             string title = ChromaRestServer.AppTitle(body, body.Length);
-            t.Check(!title.Contains('\n') && !title.Contains('\r') && !title.Contains('\t') && title.StartsWith("a 09-02"), $"AppTitle strips control characters ('{title}')");
+            t.Check(!title.Contains('\n') && !title.Contains('\r') && !title.Contains('\t') && title.StartsWith("a 09-02", StringComparison.Ordinal), $"AppTitle strips control characters ('{title}')");
             byte[] longBody = Encoding.UTF8.GetBytes("{\"title\":\"" + new string('x', 200) + "\"}");
             t.Equal(64, ChromaRestServer.AppTitle(longBody, longBody.Length).Length, "AppTitle caps at 64 chars");
             t.Equal("?", ChromaRestServer.AppTitle(null, 0), "AppTitle null body -> ?");
@@ -210,7 +210,7 @@ static class SupportBundleSuite
             // And when it does redact, it says so, so a maintainer reading the bundle
             // knows a gap is deliberate rather than a device that failed to report.
             string scrubbed = Redaction.Scrub(@"path USB\VID_1532&PID_00CF\ABCDEF0123");
-            t.Check(scrubbed.StartsWith("[redacted before saving:"), "redact: it says what it took out");
+            t.Check(scrubbed.StartsWith("[redacted before saving:", StringComparison.Ordinal), "redact: it says what it took out");
             t.Check(scrubbed.Contains("<instance>"), "redact: and it took it out");
         }
     }
