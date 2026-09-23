@@ -1,3 +1,6 @@
+﻿using Microsoft.Win32;
+using System.Reflection;
+using UnifiedRgb.App;
 using System.Text.Json;
 using UnifiedRgb.Core.Automation;
 
@@ -32,6 +35,7 @@ static class AutomationSuite
 {
     public static void Run(Harness t)
     {
+        LostUnlock(t);
         t.Section("App rule matching (#f1)");
         {
             var rules = new List<AutomationRule>
@@ -310,4 +314,57 @@ static class AutomationSuite
             t.Check(seen.TrueForAll(s => !s.Contains('\u2014')), "automation status copy has no em dashes");
         }
     }
+    /// <summary>A lock notification that never gets its matching unlock - what a
+    /// suspend does. Measured on this desk: locked 23:11:46, slept 23:11:49,
+    /// resumed 23:11:57, unlocked 23:12:26, and the app never heard the unlock.
+    /// Windows reported UNLOCKED while the lights had been off for three
+    /// minutes and every device had fallen back to its firmware default.
+    ///
+    /// The flag was set ONLY by the notification, so nothing could undo it: the
+    /// two-second re-evaluation kept re-reading the same stale field, and the
+    /// desk stayed dark until the app was restarted.</summary>
+    public static void LostUnlock(Harness t)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        t.Section("a lock whose unlock never arrives");
+        bool? reported = null;
+        using var vm = new MainViewModel(startServices: false);
+        vm.SettingsData.LockLightsOff = true;
+        using var auto = new UnifiedRgb.App.Services.AutomationService(vm, false, () => reported);
+        var tick = typeof(UnifiedRgb.App.Services.AutomationService).GetMethod("Tick", flags)!;
+        var modeField = typeof(UnifiedRgb.App.Services.AutomationService).GetField("_mode", flags)!;
+        var lockedField = typeof(UnifiedRgb.App.Services.AutomationService).GetField("_locked", flags)!;
+        AutomationMode Mode() => (AutomationMode)modeField.GetValue(auto)!;
+
+        // The LOCK arrives as a notification, the way it really does on the way
+        // into sleep. Windows agrees at this point.
+        var onSwitch = typeof(UnifiedRgb.App.Services.AutomationService)
+            .GetMethod("OnSessionSwitch", flags)!;
+        void Notify(SessionSwitchReason why)
+            => onSwitch.Invoke(auto, new object?[] { null, new SessionSwitchEventArgs(why) });
+
+        reported = true;
+        Notify(SessionSwitchReason.SessionLock);
+        t.Equal(AutomationMode.Locked, Mode(), "a locked session turns the lights off");
+
+        // Now the suspend eats the unlock: Windows says unlocked, and NOTHING
+        // tells the app. This is the whole bug - the only writer of the flag is
+        // the notification that never came, so the desk stayed dark and the
+        // two-second re-evaluation kept re-reading the same stale field.
+        reported = false;
+        tick.Invoke(auto, null);
+        t.Equal(false, lockedField.GetValue(auto), "the stale flag is reconciled with what Windows says");
+        t.Check(Mode() != AutomationMode.Locked, "...so the lights come back without the notification");
+
+        // And when Windows will not answer, the last thing we heard still stands
+        // - null is "no information", never a guess. Guessing unlocked lights a
+        // desk its owner walked away from.
+        reported = true;
+        Notify(SessionSwitchReason.SessionLock);
+        t.Equal(AutomationMode.Locked, Mode(), "locked again");
+        reported = null;
+        tick.Invoke(auto, null);
+        t.Equal(AutomationMode.Locked, Mode(), "an unanswerable query changes nothing");
+    }
+
 }

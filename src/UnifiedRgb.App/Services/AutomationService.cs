@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using UnifiedRgb.Core;
@@ -158,8 +158,18 @@ public sealed class AutomationService : IDisposable
 
     public AutomationService(MainViewModel vm) : this(vm, monitor: true) { }
 
+    /// <summary>What Windows says about the lock, or null for "cannot tell".
+    /// Injected so a test can lose an unlock the way a suspend does; the real
+    /// one is asked of the OS every tick, because a missed notification used to
+    /// be permanent. See Core/Native/SessionState.cs.</summary>
+    readonly Func<bool?> _askLocked;
+
     internal AutomationService(MainViewModel vm, bool monitor)
+        : this(vm, monitor, monitor ? UnifiedRgb.Core.Native.SessionState.IsLocked : () => (bool?)null) { }
+
+    internal AutomationService(MainViewModel vm, bool monitor, Func<bool?> askLocked)
     {
+        _askLocked = askLocked;
         _vm = vm;
         _vm.WakeLightsHook = Wake;
         _vm.LightingApplied += OnUserLighting;
@@ -244,6 +254,14 @@ public sealed class AutomationService : IDisposable
     {
         try
         {
+            // Reconcile with the OS before deciding anything. The notification
+            // is the fast path, not the record: it is lost across a suspend, and
+            // the field it sets is the only thing this whole class knows about
+            // the lock - so a lost unlock left the desk dark until a restart.
+            // Null means Windows would not say, and then whatever we last heard
+            // stands, which is exactly the old behaviour.
+            if (_askLocked() is bool reported) _locked = reported;
+
             var s = _vm.SettingsData;
 
             // Before anything else, and regardless of the pause: the fans going
