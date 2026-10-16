@@ -281,7 +281,13 @@ public sealed class ShowViewModel : INotifyPropertyChanged, IDisposable
         // return point, so the unlock had nothing to restore and left the pump
         // panel blank. The timer keeps ticking; the next step after the lights
         // return applies normally.
-        if (_lightsSuppressed()) return;
+        //
+        // A colour calibration holds it the same way. Its window is modal, but
+        // a modal loop pumps the dispatcher, so the show's timer kept stepping:
+        // each step painted over the reference patches being compared, and a
+        // step carrying an effect started a worker streaming over them at
+        // 60 fps. The automation and the settled save already wait for it.
+        if (_lightsSuppressed() || Services.CalibrationAid.AnyActive) return;
 
         // A step IS a profile. Everything a step used to set separately travels
         // on the profile, and the screen in the case comes with it for free.

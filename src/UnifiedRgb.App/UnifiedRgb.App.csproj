@@ -13,6 +13,12 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
+    <!-- Program.Main runs before WPF's generated App.Main: see AppInstall. -->
+    <StartupObject>UnifiedRgb.App.Program</StartupObject>
+    <!-- The logon task's process is administrator and inherits the user's
+         environment: DOTNET_STARTUP_HOOKS there would run any assembly inside
+         it. Off at build time (AppInstall has the rest of that story). -->
+    <StartupHookSupport>false</StartupHookSupport>
     <TargetFramework>net10.0-windows10.0.22621.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>

@@ -10,24 +10,10 @@ public sealed class PawnIO : IDisposable
 {
     IntPtr _handle;
 
-    static PawnIO()
-    {
-        // PawnIOLib.dll installs to Program Files, which is not on the DLL search
-        // path, so resolve it explicitly.
-        NativeLibrary.SetDllImportResolver(typeof(PawnIO).Assembly, (name, _, _) =>
-        {
-            if (name == "PawnIOLib")
-            {
-                foreach (var p in new[]
-                {
-                    @"C:\Program Files\PawnIO\PawnIOLib.dll",
-                    @"C:\Program Files (x86)\PawnIO\PawnIOLib.dll",
-                })
-                    if (File.Exists(p) && NativeLibrary.TryLoad(p, out var h)) return h;
-            }
-            return IntPtr.Zero;
-        });
-    }
+    // PawnIOLib.dll installs to Program Files, which is not on the DLL search
+    // path, so it is resolved by absolute path - and ONLY there: see
+    // NativeLibraries for why a miss must not fall back to the search.
+    static PawnIO() => NativeLibraries.Register();
 
     public static bool IsAvailable
     {
@@ -81,7 +67,7 @@ public sealed class PawnIO : IDisposable
         Interlocked.Increment(ref _inFlight);
         try
         {
-            if (_disposed || _handle == IntPtr.Zero) return -1;
+            if (Volatile.Read(ref _disposed) != 0 || _handle == IntPtr.Zero) return -1;
             int hr = pawnio_execute(_handle, name, input, (UIntPtr)input.Length,
                 output, (UIntPtr)output.Length, out UIntPtr ret);
             return hr == 0 ? (int)ret : -1;
@@ -90,7 +76,8 @@ public sealed class PawnIO : IDisposable
         finally { Interlocked.Decrement(ref _inFlight); }
     }
 
-    volatile bool _disposed;
+    // An int for Interlocked: see Dispose.
+    int _disposed;
     int _inFlight;
 
     /// <summary>How long to wait for a call already inside the driver. Matches
@@ -100,10 +87,17 @@ public sealed class PawnIO : IDisposable
 
     public void Dispose()
     {
-        if (_disposed) return;
         // Set FIRST: a call that has not entered yet now bails without touching
         // the handle, so the count can only fall from here.
-        _disposed = true;
+        //
+        // With a full fence. Execute increments its count and THEN reads the
+        // flag; this sets the flag and THEN reads the count. That handshake
+        // only holds if neither side's store can move after its load, and a
+        // volatile write followed by a volatile read is exactly the pair the
+        // memory model lets the CPU swap - both sides could then miss each
+        // other and the handle be closed under a call. Interlocked.Exchange is
+        // a full barrier, and also makes a second Dispose a clean no-op.
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
 
         long deadline = Environment.TickCount64 + CloseWaitMs;
         while (Volatile.Read(ref _inFlight) > 0 && Environment.TickCount64 < deadline)

@@ -56,19 +56,36 @@ public partial class LianLayoutWindow : Window
     {
         var order = _slots.Select(s => s.Chain).ToArray();
         var breaks = _slots.Select((s, i) => (s, i)).Where(x => x.i > 0 && x.s.NewGroup).Select(x => x.i).ToArray();
+        // A failed save used to be logged, then the window closed and the
+        // rescan ran on the OLD layout, which looked exactly like a save that
+        // had been ignored. Now the user is told why and keeps the order they
+        // just dragged into place to try again.
+        if (WriteLayout(AppPaths.Config("lianli-layout.json"), order, breaks) is string why)
+        {
+            Dialogs.Info(this, "Fan order not saved", $"The fan order could not be saved: {why}");
+            return;
+        }
+        Close();
+        _onSaved();
+    }
+
+    /// <summary>Write the layout file. Null on success, otherwise the reason it
+    /// failed (already logged), for the window to show.</summary>
+    internal static string? WriteLayout(string path, int[] order, int[] breaks)
+    {
         var json = JsonSerializer.Serialize(new { order, breaks });
         try
         {
             // Atomic like every other store: a crash mid-write used to leave a
             // truncated file, and LoadLayout then silently fell back to chain order.
-            SafeFile.WriteAllText(AppPaths.Config("lianli-layout.json"), json);
+            SafeFile.WriteAllText(path, json);
+            return null;
         }
         catch (Exception ex)
         {
             Log.Warn("LianLi", $"layout save failed: {ex.Message}");
+            return ex.Message;
         }
-        Close();
-        _onSaved();
     }
 
     /*--- drag-to-reorder (same feel as the app-rules dialog) ---*/

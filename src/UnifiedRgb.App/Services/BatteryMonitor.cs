@@ -29,6 +29,13 @@ public sealed class BatteryMonitor
     /// name), and one shared slot made them overwrite each other every poll.</summary>
     readonly Dictionary<IRgbDevice, SensorHub.BatteryLevel> _levels = new();
 
+    /// <summary>Which device list the readings belong to: bumped by Rescan and
+    /// Stop, under _lock. A poll still queued on a slow lane when a rescan
+    /// replaced its device used to add the OLD instance's reading back into
+    /// the table the rescan had just cleared - a stale row, and the disposed
+    /// device pinned with it.</summary>
+    int _epoch;
+
     public BatteryMonitor(CoalescingApplier applier, Func<IReadOnlyList<IRgbDevice>> devices, Action changed)
     {
         _applier = applier;
@@ -46,7 +53,7 @@ public sealed class BatteryMonitor
         foreach (var d in _devices())
             if (d is IBatteryDevice) { any = true; break; }
 
-        lock (_lock) _levels.Clear();
+        lock (_lock) { _levels.Clear(); _epoch++; }
         Publish();
 
         _timer.Stop();
@@ -61,7 +68,7 @@ public sealed class BatteryMonitor
     public void Stop()
     {
         _timer.Stop();
-        lock (_lock) _levels.Clear();
+        lock (_lock) { _levels.Clear(); _epoch++; }
     }
 
     /// <summary>Latest charge for a device, or null when it has no battery or
@@ -73,6 +80,8 @@ public sealed class BatteryMonitor
 
     void Poll()
     {
+        int epoch;
+        lock (_lock) epoch = _epoch;
         foreach (var d in _devices())
         {
             if (d is not IBatteryDevice batt) continue;
@@ -81,10 +90,17 @@ public sealed class BatteryMonitor
             // the one already waiting rather than piling up.
             _applier.Post(LightingController.LaneOf(dev), ("battery", dev), () =>
             {
+                // Replaced (or shut down) while this waited on the lane: the
+                // read would go to a handle that is closing, and its answer
+                // belongs to a device that is no longer in the list.
+                lock (_lock) if (epoch != _epoch) return;
                 var reading = batt.ReadBattery();
                 bool changed;
                 lock (_lock)
                 {
+                    // Asked again with the answer in hand: the read itself can
+                    // take a while on a dozing mouse.
+                    if (epoch != _epoch) return;
                     _levels.TryGetValue(dev, out var was);
                     if (reading is BatteryReading b)
                     {

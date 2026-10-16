@@ -14,6 +14,11 @@ public static class NvApi
     const uint ID_I2CWriteEx = 0x283AC65A;
     const uint ID_I2CReadEx = 0x4D7B0709;
 
+    // nvapi64.dll is loaded from System32 by absolute path, never searched
+    // for: on a PC without the NVIDIA driver the search reached user-writable
+    // PATH folders, from which this elevated process would load a planted copy.
+    static NvApi() => NativeLibraries.Register();
+
     [DllImport("nvapi64.dll", EntryPoint = "nvapi_QueryInterface", CallingConvention = CallingConvention.Cdecl)]
     static extern IntPtr QueryInterface(uint id);
 

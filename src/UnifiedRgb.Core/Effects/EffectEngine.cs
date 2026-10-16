@@ -86,6 +86,32 @@ public sealed class EffectEngine
     /// gate first, then the finer one.</summary>
     public static object WriteGateFor(IRgbDevice dev) => _gates.GetValue(dev, static _ => new object());
 
+    volatile bool _lightsOff;
+
+    /// <summary>The lights are deliberately off (LightingController.Suppressed
+    /// sets this with its own flag): no worker puts a frame on any device, and
+    /// the workers nap instead of rendering. The view model already keeps every
+    /// effect it starts in the dark pending instead of running it; this is the
+    /// engine's own floor under that, so a channel started by any other path -
+    /// a future caller, a straggler that got in first - writes nothing either.
+    /// Coming back on, the next frame is written (the dedup is reset), so a
+    /// channel that kept running needs no restart.</summary>
+    public bool LightsOff
+    {
+        get => _lightsOff;
+        set
+        {
+            if (_lightsOff == value) return;
+            _lightsOff = value;
+            if (value) return;
+            // The devices show black now, whatever the dedup remembers: let the
+            // first frame after the dark through.
+            lock (_lock)
+                foreach (var shared in _deviceWrites.Values)
+                    lock (shared) shared.HaveLast = false;
+        }
+    }
+
     /// <summary>Start an effect on [offset, offset+count) of a device, replacing
     /// any overlapping channel on that device.</summary>
     /// <summary>positions overrides the device-local coordinates, which is how
@@ -96,6 +122,22 @@ public sealed class EffectEngine
                          IEffect effect, double speed, Rgb baseColor,
                          LedPos[]? positions = null)
     {
+        // An empty range is refused. It overlaps nothing, so StopRange could
+        // never replace it: every re-apply onto a 0-LED OpenRGB zone started
+        // one more worker beside the last, rendering nothing, forever. The
+        // channel handed back is already stopped (never listed, no worker),
+        // which every caller reads as "nothing running here".
+        if (count <= 0)
+        {
+            Log.Occasional($"fx-empty:{dev.Name}", "engine",
+                $"'{dev.Name}': not starting {effect.Name} on an empty range (offset {offset}, {count} LEDs)");
+            return new Channel
+            {
+                Device = dev, Offset = offset, Count = Math.Max(0, count), Effect = effect,
+                Speed = speed, BaseColor = baseColor, Canvas = positions != null, BaseFrame = baseFrame,
+            };
+        }
+
         StopRange(dev, offset, count);
 
         var ch = new Channel
@@ -119,8 +161,12 @@ public sealed class EffectEngine
         return ch;
     }
 
-    /// <summary>Stop every channel overlapping [offset, offset+count) on a device.</summary>
-    public void StopRange(IRgbDevice dev, int offset, int count)
+    /// <summary>Stop every channel overlapping [offset, offset+count) on a device,
+    /// and say which ones. A stopped channel can reach well outside the range
+    /// that stopped it (a whole-device effect replaced on one zone), and on a
+    /// zone device nothing else will ever repaint the rest of it: the caller
+    /// needs the old ranges to put the statics back there.</summary>
+    public IReadOnlyList<Channel> StopRange(IRgbDevice dev, int offset, int count)
     {
         List<Channel> victims;
         lock (_lock)
@@ -129,7 +175,7 @@ public sealed class EffectEngine
                                            offset < c.Offset + c.Count && c.Offset < offset + count).ToList();
             foreach (var c in victims) { c.Running = false; _channels.Remove(c); }
         }
-        foreach (var c in victims) JoinWorker(c);
+        JoinWorkers(victims);
         // Pruned only AFTER the joins. Dropping it while a worker was still
         // inside a slow write let the replacement worker allocate a DIFFERENT
         // state object for the same device - two independent dedups, and
@@ -142,6 +188,7 @@ public sealed class EffectEngine
         // device with it) for every device that ever ran an effect.
         lock (_lock)
             if (!_channels.Any(c => ReferenceEquals(c.Device, dev))) _deviceWrites.Remove(dev);
+        return victims;
     }
 
     public void StopAll()
@@ -149,11 +196,11 @@ public sealed class EffectEngine
         List<Channel> all;
         lock (_lock) { all = new(_channels); _channels.Clear(); }
         foreach (var c in all) c.Running = false;
-        foreach (var c in all) JoinWorker(c);
+        JoinWorkers(all);
         lock (_lock) _deviceWrites.Clear();   // after the joins, as above
     }
 
-    /// <summary>Wait for a stopped channel's worker, bounded. One device write
+    /// <summary>Wait for stopped channels' workers, bounded. One device write
     /// can outlast the bound (HID write timeouts, the wireless receiver's paced
     /// transmit), and a timed-out join is NOT treated as teardown complete:
     /// the worker may still be inside the write it started before the stop.
@@ -163,12 +210,22 @@ public sealed class EffectEngine
     /// under the gate so it never starts ANOTHER write. So at most one
     /// already-started frame is still landing, and it cannot be the final one.
     /// Logged all the same so a "switched effect but the device kept the old
-    /// one" report has a trace pointing at the slow driver.</summary>
-    static void JoinWorker(Channel c)
+    /// one" report has a trace pointing at the slow driver.
+    ///
+    /// ONE 300 ms deadline for all of them, not 300 ms each: every one was told
+    /// to stop before the first wait, so they wind down together. Joined one at a time, a stop of n channels whose device was
+    /// busy (identify holds its gate for the whole blink) parked the UI thread
+    /// for n x 300 ms - about 0.8 s for four, seconds for a fan group.</summary>
+    static void JoinWorkers(IEnumerable<Channel> stopped)
     {
-        if (c.Worker is { } w && !w.Join(300))
-            Log.Occasional($"fx-join:{c.Device.Name}@{c.Offset}", "engine",
-                $"'{c.Device.Name}' effect worker still inside a device write 300 ms after stop");
+        long deadline = Environment.TickCount64 + 300;
+        foreach (var c in stopped)
+        {
+            int left = (int)Math.Max(0, deadline - Environment.TickCount64);
+            if (c.Worker is { } w && !w.Join(left))
+                Log.Occasional($"fx-join:{c.Device.Name}@{c.Offset}", "engine",
+                    $"'{c.Device.Name}' effect worker had not finished its last frame 300 ms after stop (a slow write, or waiting for the device)");
+        }
     }
 
     /// <summary>The channel exactly matching a target range, if any.</summary>
@@ -372,6 +429,9 @@ public sealed class EffectEngine
         // instance (see Calibration), so holding the instance here is also
         // what keeps the per-frame path off the allocator.
         var dev = ch.Device;
+        // Wireless fans only (null for everything else), hoisted for the same
+        // reason: the baked-mode flag is asked twice a frame on this device.
+        var lian = ch.Device as Devices.LianLiWireless;
         bool haveLast = false;
         long lastWrite = 0;
         int idleStreak = 0;   // consecutive unchanged frames — throttles the render rate
@@ -392,10 +452,13 @@ public sealed class EffectEngine
             // stop is seen within 100 ms: JoinWorker's 300 ms bound must be
             // met here, or its "still inside a device write" WARN fires for a
             // worker that was merely asleep.
-            if (ch.Device is Devices.LianLiWireless { SuppressStreaming: true })
+            if (lian is { SuppressStreaming: true } || _lightsOff)
             {
                 ch.HasFrame = false;
                 for (int i = 0; i < 4 && ch.Running; i++) Thread.Sleep(100);
+                // Out of the dark: this channel's own dedup describes a frame
+                // the device has not shown since the black.
+                if (!_lightsOff) haveLast = false;
                 continue;
             }
             frame.Restart();
@@ -474,6 +537,18 @@ public sealed class EffectEngine
                         lock (gate)
                         {
                             if (!ch.Running) stop = true;
+                            // The lights went off while this frame rendered:
+                            // not sent, dedup untouched (see LightsOff).
+                            else if (_lightsOff) { }
+                            // Baked mode switched on while this frame rendered
+                            // (or while it waited here behind the bake's own
+                            // upload). The check at the top of the loop is long
+                            // past, and a streamed frame landing now is a static
+                            // write, which cancels the animation just uploaded
+                            // and leaves the fans on this one frame. Not sent,
+                            // and the dedup cache is left alone: the next pass
+                            // sees the flag and naps.
+                            else if (lian is { SuppressStreaming: true }) { }
                             // The engine keeps a dedup cache of its own on top
                             // of each driver's, and it used to commit that
                             // cache whether or not the driver had delivered
@@ -513,6 +588,7 @@ public sealed class EffectEngine
                         {
                             // Same re-check as the zone path, same reason.
                             if (!ch.Running) stop = true;
+                            else if (_lightsOff) { }   // see the zone path
                             // And the same dedup-after-success rule: a frame
                             // the device refused must not be recorded as the
                             // one it is showing, or every identical frame

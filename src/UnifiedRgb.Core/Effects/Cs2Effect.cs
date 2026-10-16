@@ -45,29 +45,67 @@ public sealed class Cs2Effect : IEffect
     long _hurtAtTicks, _killAtTicks, _diedAtTicks;
     double _hurtAmount;                  // 0..1, how hard the last hit landed
 
+    /// <summary>Everything above is written only under this lock, by exactly
+    /// one render per game snapshot.
+    ///
+    /// The effect list holds ONE instance, so every device running CS2 renders
+    /// through these fields from its own worker thread, and the preview from
+    /// the UI thread. They used to diff unguarded: a worker still holding the
+    /// previous snapshot could write the old health back after another had
+    /// moved on, and the next render then "saw" the same hit again - a second
+    /// red flash, or a kill flash for a kill already counted. Now the snapshot
+    /// is read INSIDE the lock, where reads come in the order the server
+    /// published them, and a snapshot already diffed is not diffed again.</summary>
+    readonly object _events = new();
+    GameState? _seen;                    // the last snapshot diffed, by reference
+
+    /// <summary>Stands in for the GSI server in the harness, which cannot make
+    /// a game post. Null in the app.</summary>
+    internal Func<GameState>? StateSource;
+
+    /// <summary>How many hits and kills have been detected. For the harness,
+    /// which pins that each one is counted once however many renders see it.</summary>
+    internal int HurtEvents, KillEvents;
+
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb baseColor)
     {
         var server = Server;
-        var state = server?.State ?? GameState.Empty;
-        bool live = server is { Connected: true };
+        var source = StateSource;
+        bool live = source != null || server is { Connected: true };
+
+        GameState state;
+        lock (_events)
+        {
+            if (!live)
+            {
+                Forget();
+                state = GameState.Empty;
+            }
+            else
+            {
+                state = source?.Invoke() ?? server?.State ?? GameState.Empty;
+                if (!ReferenceEquals(state, _seen))
+                {
+                    _seen = state;
+                    // The plant time has to be inferred: GSI says the bomb is
+                    // planted, not when. First sighting starts the clock, and it
+                    // only resets when the bomb is no longer planted, so a round
+                    // restart cannot leave a stale one.
+                    if (state.Bomb == BombState.Planted)
+                    {
+                        if (_plantedAtTicks == 0) _plantedAtTicks = Environment.TickCount64;
+                    }
+                    else _plantedAtTicks = 0;
+                    NoteEvents(state);
+                }
+            }
+        }
 
         if (!live)
         {
-            Forget();
             Fill(buf, Idle(t));
             return;
         }
-
-        // The plant time has to be inferred: GSI says the bomb is planted, not
-        // when. First sighting starts the clock, and it only resets when the
-        // bomb is no longer planted, so a round restart cannot leave a stale one.
-        if (state.Bomb == BombState.Planted)
-        {
-            if (_plantedAtTicks == 0) _plantedAtTicks = Environment.TickCount64;
-        }
-        else _plantedAtTicks = 0;
-
-        NoteEvents(state);
 
         // An event covers the whole device, because half a device flashing red
         // is not something you catch out of the corner of an eye.
@@ -82,7 +120,7 @@ public sealed class Cs2Effect : IEffect
 
     /// <summary>Spot the things worth reacting to by comparing against the last
     /// state we saw. Only while actually playing: a spectated player's health
-    /// dropping is not you being shot.</summary>
+    /// dropping is not you being shot. Caller holds _events, once per snapshot.</summary>
     void NoteEvents(GameState s)
     {
         if (!s.Playing) { _lastHealth = -1; _lastKills = -1; return; }
@@ -94,9 +132,10 @@ public sealed class Cs2Effect : IEffect
             // shot takes, so that is where it maxes out.
             _hurtAmount = Math.Clamp((_lastHealth - s.Health) / 50.0, 0.25, 1.0);
             _hurtAtTicks = now;
+            HurtEvents++;
             if (s.Health <= 0) _diedAtTicks = now;
         }
-        if (_lastKills >= 0 && s.RoundKills > _lastKills) _killAtTicks = now;
+        if (_lastKills >= 0 && s.RoundKills > _lastKills) { _killAtTicks = now; KillEvents++; }
 
         _lastHealth = s.Health;
         _lastKills = s.RoundKills;
@@ -104,6 +143,7 @@ public sealed class Cs2Effect : IEffect
 
     void Forget()
     {
+        _seen = null;
         _plantedAtTicks = 0;
         _lastHealth = -1; _lastKills = -1;
         _hurtAtTicks = _killAtTicks = _diedAtTicks = 0;

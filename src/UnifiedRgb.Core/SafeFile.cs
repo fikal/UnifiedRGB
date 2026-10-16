@@ -2,7 +2,7 @@ using System.Text;
 
 namespace UnifiedRgb.Core;
 
-/// <summary>Atomic text-file writes: write a temp file, flush it to disk, then
+/// <summary>Atomic file writes: write a temp file, flush it to disk, then
 /// swap it into place. A crash or power cut mid-save leaves either the old
 /// file or the new one — never a truncated husk. Used for everything the user
 /// would cry about losing (profiles, settings, hardware config, LCD designs).</summary>
@@ -10,7 +10,10 @@ public static class SafeFile
 {
     static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
-    public static void WriteAllText(string path, string contents)
+    public static void WriteAllText(string path, string contents) => WriteAllBytes(path, Utf8NoBom.GetBytes(contents));
+
+    /// <summary>The same for bytes (LCD background images an import extracts).</summary>
+    public static void WriteAllBytes(string path, byte[] bytes)
     {
         // Every store may assume its folder exists (fan-config.json's did not
         // on a machine that never enabled the OpenRGB bridge).
@@ -21,7 +24,7 @@ public static class SafeFile
         {
             using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
             {
-                fs.Write(Utf8NoBom.GetBytes(contents));
+                fs.Write(bytes);
                 // FlushFileBuffers: NTFS journals the rename below but not the
                 // data, so without this a power cut could commit the new name
                 // over an empty file. Saves are debounced; one sync is cheap.
@@ -35,7 +38,7 @@ public static class SafeFile
         catch
         {
             // Never leave a half-written .tmp for the next save to trip over.
-            try { File.Delete(tmp); } catch { }
+            try { File.Delete(tmp); } catch { /* best effort: the original failure is rethrown below */ }
             throw;
         }
     }

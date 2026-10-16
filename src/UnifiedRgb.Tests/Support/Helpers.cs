@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.CompilerServices;
 using UnifiedRgb.Core;
 using UnifiedRgb.Core.Effects;
 
@@ -60,5 +61,41 @@ public static class TestHelpers
         string d = Path.Combine(Path.GetTempPath(), "unifiedrgb-tests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(d);
         return d;
+    }
+
+    /// <summary>Make a bundle this machine exported read as made somewhere else.
+    /// The manifest's MachineName is the only thing that says where a bundle came
+    /// from (ImportPreview.SameMachine), and an Export in the harness always
+    /// writes this machine's, which is the trusted case.</summary>
+    public static void MadeOn(string bundlePath, string machine)
+    {
+        using var zip = System.IO.Compression.ZipFile.Open(bundlePath, System.IO.Compression.ZipArchiveMode.Update);
+        var entry = zip.GetEntry("manifest.json") ?? throw new InvalidDataException("the bundle has no manifest");
+        System.Text.Json.Nodes.JsonObject manifest;
+        using (var reader = new StreamReader(entry.Open()))
+            manifest = System.Text.Json.Nodes.JsonNode.Parse(reader.ReadToEnd())!.AsObject();
+        manifest["MachineName"] = machine;
+        entry.Delete();
+        using var writer = new StreamWriter(zip.CreateEntry("manifest.json").Open(), new System.Text.UTF8Encoding(false));
+        writer.Write(manifest.ToJsonString());
+    }
+
+    /// <summary>The repo root, found from THIS file's compile-time path rather
+    /// than the working directory: the harness runs from bin/, and CI runs it
+    /// from somewhere else again. Null for a harness built outside a source tree.</summary>
+    public static string? RepoRoot([CallerFilePath] string here = "")
+    {
+        var dir = new DirectoryInfo(Path.GetDirectoryName(here) ?? ".");
+        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "UnifiedRgb.slnx"))) dir = dir.Parent;
+        return dir?.FullName;
+    }
+
+    /// <summary>A repo file's text ('/'-separated path from the root); null
+    /// outside a source tree or when the file is not there.</summary>
+    public static string? SourceOf(string rel)
+    {
+        if (RepoRoot() is not string root) return null;
+        string path = Path.Combine(root, rel.Replace('/', Path.DirectorySeparatorChar));
+        return File.Exists(path) ? File.ReadAllText(path) : null;
     }
 }

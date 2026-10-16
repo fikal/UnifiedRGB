@@ -90,6 +90,10 @@ public sealed partial class MainViewModel
                 PatternPalette = isPattern || isRipple || isPalette
                     ? fx.Palette.Select(c => c.ToHex()).ToArray() : null,
                 Canvas = canvas,
+                // A new entry, so the loaded one's unknown fields come from the
+                // range it was restored onto (see TargetFx.Extra); without them
+                // every save in a rollback build stripped them.
+                Extra = fx.Extra,
             });
         }
         return list;
@@ -108,7 +112,6 @@ public sealed partial class MainViewModel
         : Effects.FirstOrDefault(e => e.Name == name)
         ?? (EffectAliases.TryGetValue(name, out var alias) ? Effects.FirstOrDefault(e => e.Name == alias) : null);
 
-    /// <summary>Stop everything and start the profile's saved assignments.</summary>
     /// <summary>Saved ranges this apply could not use, filled by RestoreEffects and
     /// read by whoever called it. A profile stores LED POSITIONS, so it is only
     /// valid for the hardware it was saved on.</summary>
@@ -125,11 +128,14 @@ public sealed partial class MainViewModel
     HardwareRemap RemapFor(IRgbDevice d)
         => _remap.TryGetValue(d.Name, out var r) ? r : _remap[d.Name] = new HardwareRemap(d, null, 0);
 
+    /// <summary>Stop everything and start the profile's saved assignments.</summary>
     void RestoreEffects(List<EffectAssignment>? saved)
     {
         _staleRanges.Clear();
         _engine.StopAll();
-        foreach (var fx in _targetFx.Values) { fx.Channel = null; fx.Choice = Effects[0]; fx.HeldBase = null; }
+        // Extra too: a range the new list does not name must not hand the last
+        // profile's unknown fields to an effect the user starts on it later.
+        foreach (var fx in _targetFx.Values) { fx.Channel = null; fx.Choice = Effects[0]; fx.HeldBase = null; fx.Extra = null; }
 
         // Null-tolerant throughout: this runs from the constructor for the
         // startup profile, and a well-formed profiles.json with a null entry
@@ -160,6 +166,7 @@ public sealed partial class MainViewModel
             fx.Choice = choice;
             fx.Speed = a.Speed;
             fx.Reverse = a.Reverse;
+            fx.Extra = a.Extra;
 
             Rgb baseColor = Current;
             try { if (a.BaseColor != null) baseColor = Rgb.FromHex(a.BaseColor); } catch { }   // a saved tint that is not a hex colour falls back to the current pick, above
@@ -191,12 +198,13 @@ public sealed partial class MainViewModel
             // what the switch says and what people expect from it. CanvasPositions
             // returns null when the desk is off or this device has no place on
             // it, so the effect then runs per-device exactly as before.
-            bool blocked = EffectBlockedByClient(dev);
+            bool blocked = EffectBlocked(dev);
             fx.HeldBase = blocked ? baseColor : null;
             fx.Channel = blocked ? null
                        : _engine.Start(dev, offset, count, FrameFor(dev), effect,
                                        SignedSpeed(fx), baseColor,
                                        CanvasPositions(dev, offset, count));
+            if (!blocked) _lighting.NoteOtherWrite(dev);
         }
         NotifyModeChanged();
         RequestLianRebake();
@@ -301,9 +309,6 @@ public sealed partial class MainViewModel
     /// parsing a suffix back out of display text to tell them apart is how that
     /// becomes a bug. A record, so a rebuilt list still contains an item EQUAL
     /// to the selected one and the combo box keeps its selection.</summary>
-    /// <summary>A row in the pump-panel picker. A record, so a rebuilt list still
-    /// contains an item EQUAL to the selected one and the combo box keeps its
-    /// selection.</summary>
     public sealed record PumpRow(string Label, string? Screen)
     {
         public override string ToString() => Label;
@@ -517,13 +522,16 @@ public sealed partial class MainViewModel
     {
         var active = SelectedProfile;
         if (active == null) return false;
-        bool showOwnsLighting = Shows.Running;
+        bool showOwnsLighting = ShowOwnsLighting;
         var frames = showOwnsLighting
             ? Enumerable.Empty<(IRgbDevice, Rgb[])>()
             : Devices.Select(d => (d, FrameFor(d)));
         if (showOwnsLighting)
+        {
             UnifiedRgb.Core.Log.Info("profiles",
-                $"saved '{active.Name}' without its colors: a show is running, so the lighting on the desk belongs to its current step");
+                $"saved '{active.Name}' without its colors: a show is playing, so the lighting on the desk belongs to its current step");
+            NoteSavedWithoutColors(active.Name);
+        }
         var p = _store.TryCapture(active.Name, frames, CustomColorsSnapshot(),
                                    showOwnsLighting ? null : CaptureEffects(), PumpForSave,
                                    wallpaper: WallpaperForSave);
@@ -548,6 +556,22 @@ public sealed partial class MainViewModel
         return true;
     }
 
+    /// <summary>A show is PLAYING, so the lighting on the desk is its current
+    /// step - somebody else's profile - and not the user's edit. Every save path
+    /// asks this one question (so does the settled-colour flash save); see
+    /// SaveActiveProfile for what follows from it. A PAUSED show does not own
+    /// it: pause exists so somebody can change their settings without the desk
+    /// moving underneath them, and a save then has to keep what they did.</summary>
+    bool ShowOwnsLighting => Shows.Running && !Shows.Paused;
+
+    /// <summary>A save that left the colours out says so where the user will
+    /// see it. A log line alone, followed by the dirty flag clearing, made the
+    /// edits vanish without a trace.</summary>
+    static void NoteSavedWithoutColors(string name) =>
+        UnifiedRgb.Core.Automation.ActivityLog.Note(UnifiedRgb.Core.Automation.ActivityKind.Problem,
+            $"'{name}' was saved without its colours: a show is playing, so the desk is showing its step. "
+            + "Pause or stop the show to save colours.");
+
     /// <summary>True when the profile was written. A rename whose old entry
     /// could not be removed still counts: the new profile is on disk.</summary>
     bool SaveProfile()
@@ -571,13 +595,43 @@ public sealed partial class MainViewModel
         var pump = PumpForSave;
 
         var renamedFrom = prior != null && !newName.Equals(prior.Name, StringComparison.OrdinalIgnoreCase) ? prior : null;
+
+        // The show guard from SaveActiveProfile, which this path never had. It
+        // is the one the button usually reaches: picking a profile fills the
+        // name box, and a filled box comes here. So the ordinary click during a
+        // show wrote the current step's colors and effects into the selected
+        // profile and then claimed the desk was showing it.
+        //
+        // The colors carry over from the profile being saved (or renamed) as
+        // they do for an absent device. A name that is NEITHER - a genuinely new
+        // profile - has nothing to carry, and saving it empty would make a
+        // profile that sets nothing; there the desk as it stands is the only
+        // lighting there is, and no saved profile is overwritten by taking it.
+        bool showOwnsLighting = ShowOwnsLighting;
+        bool captureDesk = !showOwnsLighting || (renamedFrom == null
+            && !_store.Profiles.Any(x => x.Name.Equals(newName, StringComparison.OrdinalIgnoreCase)));
+        if (!captureDesk)
+        {
+            UnifiedRgb.Core.Log.Info("profiles",
+                $"saved '{newName}' without its colors: a show is playing, so the lighting on the desk belongs to its current step");
+            NoteSavedWithoutColors(newName);
+        }
+
         // Persist the new profile while the old name is still valid. No view or
         // saved reference changes when writing the replacement fails.
-        var p = _store.TryCapture(newName, Devices.Select(d => (d, FrameFor(d))), CustomColorsSnapshot(), CaptureEffects(), pump,
+        var p = _store.TryCapture(newName,
+                               captureDesk ? Devices.Select(d => (d, FrameFor(d))) : Enumerable.Empty<(IRgbDevice, Rgb[])>(),
+                               CustomColorsSnapshot(), captureDesk ? CaptureEffects() : null, pump,
                                carryFrom: renamedFrom, wallpaper: wallpaper);
         if (p == null) { NoteSaveFailed(newName); return false; }
+        // In place, as the store just did, so the list on screen and the file
+        // agree on the order the Ctrl+Alt+number hotkeys follow. A rename takes
+        // the old profile's slot: it goes in just before it, and the old one is
+        // removed below.
         var existing = Profiles.FirstOrDefault(x => x.Name.Equals(p.Name, StringComparison.OrdinalIgnoreCase));
+        int renamedAt = renamedFrom == null ? -1 : Profiles.IndexOf(renamedFrom);
         if (existing != null) Profiles[Profiles.IndexOf(existing)] = p;
+        else if (renamedAt >= 0) Profiles.Insert(renamedAt, p);
         else Profiles.Add(p);
         // Both names are available while bound step/rule dropdowns move to the
         // replacement. Removing the old item first clears TwoWay selections.
@@ -597,7 +651,9 @@ public sealed partial class MainViewModel
         SelectedProfile = p;
         ProfileName = "";                       // saved: clear the name box
         _dirty = false;
-        _appliedProfile = p.Name;   // the lighting IS this profile now
+        // The lighting IS this profile now - unless a show is running, when it
+        // is still whatever step is up (see SaveActiveProfile).
+        if (!showOwnsLighting) _appliedProfile = p.Name;
         OnChanged(nameof(IsStartupProfile));
         return true;
     }
@@ -644,6 +700,10 @@ public sealed partial class MainViewModel
     {
         if (p == null) return;
         _recoveryLighting.ApplyProfile(p);
+        // Devices that were animating before this apply. One the profile does
+        // not name loses its effect here (the profile owns every effect) and,
+        // unless something writes it, keeps the stopped effect's last frame.
+        var wasAnimating = Devices.Where(d => _engine.ChannelsFor(d).Count > 0).ToHashSet();
         // Stop the channels FIRST: workers write devices directly, so a final
         // effect frame could land after the static write below and leave a
         // range frozen mid-effect until the next write.
@@ -662,7 +722,20 @@ public sealed partial class MainViewModel
         var newHardware = new List<string>();
         foreach (var d in Devices)
         {
-            if (!p.DeviceFrames.TryGetValue(d.Name, out var hex) || hex == null) continue;   // "Device": null keeps its current colors
+            if (!p.DeviceFrames.TryGetValue(d.Name, out var hex) || hex == null)
+            {
+                // "Device": null (or a device the profile never knew - saved
+                // before it was plugged in, or while another program held it)
+                // keeps its current colours. Its stored ones, that is: it was
+                // simply skipped, so a device still on the lights-off black (an
+                // unlock or a rule landing on this profile) stayed black for
+                // good, and one whose effect this apply stopped froze on the
+                // effect's last frame. Those two get their stored frame; a
+                // device already showing it is not written again.
+                if ((_lighting.IsBlackedOut(d) || wasAnimating.Contains(d)) && !_lighting.IsClientOwned(d))
+                    _lighting.PushFrame(d);
+                continue;
+            }
             var map = RemapFor(d);
             var frame = FrameFor(d);
             // An unparseable entry keeps that LED's current color (as before).
@@ -677,14 +750,20 @@ public sealed partial class MainViewModel
                     ? $"{d.Name} has {string.Join(", ", zones)}, which did not exist when {p.Name} was saved"
                     : $"{d.Name} had {hex.Length} LEDs when {p.Name} was saved and has {d.LedCount} now");
             }
-            if (_sdkHeld.Contains(d) || _lighting.IsClaimed(d))
+            if (_lighting.IsClientOwned(d))
             {
                 map.MapFrame(saved, frame);
                 _engine.InvalidateBase(d);
             }
             else RestoreFrame(d, map, saved);
         }
-        ApplyCustomColors(p.CustomColors);
+        // Not for a show step. The swatches are the user's palette, and a step is
+        // the show's lighting, not a choice of theirs: every step replaced the
+        // swatch row and rewrote settings.json (about 17,000 writes a day on a
+        // 5 s two-profile show), and a swatch the user added mid-show was gone at
+        // the next step. A save during a show records the user's swatches for
+        // the same reason (SaveActiveProfile).
+        if (!fromShow) ApplyCustomColors(p.CustomColors);
         RestoreEffects(p.Effects);
         // Said ONCE, after both halves, because they are two symptoms of one thing
         // and the user does not care which fired. Silence here cost an afternoon:
@@ -835,10 +914,15 @@ public sealed partial class MainViewModel
                 + "Check that the settings folder is writable and not locked by another program.");
             return;
         }
+        string deleted = SelectedProfile.Name;
         Profiles.Remove(SelectedProfile);
         SelectedProfile = null;
         ProfileName = "";       // the deleted name lingering in the box invites a confusing re-save
         _dirty = false;
+        // The desk no longer IS a profile by that name. Left in place, a new
+        // show step defaulted to the deleted name (AddStep takes the lit
+        // profile), and every cycle then reported the step's missing profile.
+        if (string.Equals(_appliedProfile, deleted, StringComparison.OrdinalIgnoreCase)) _appliedProfile = null;
         OnChanged(nameof(IsStartupProfile));
     }
 

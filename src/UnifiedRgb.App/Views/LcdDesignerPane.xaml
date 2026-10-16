@@ -261,6 +261,9 @@
                                     <TextBlock Text="{Binding LcdBackgroundName}" Opacity="0.6" FontSize="11"
                                                VerticalAlignment="Center"/>
                                 </WrapPanel>
+                                <TextBlock Text="{Binding LcdBackgroundProblem}" Foreground="#FFFF8A3D" FontSize="11"
+                                           TextWrapping="Wrap" Margin="0,6,0,0"
+                                           Visibility="{Binding HasLcdBackgroundProblem, Converter={StaticResource BoolToVis}}"/>
 
                                 <StackPanel Visibility="{Binding LcdHasBackground, Converter={StaticResource BoolToVis}}">
                                     <TextBlock Text="SIZE &amp; PLACEMENT" FontSize="11" FontWeight="SemiBold"

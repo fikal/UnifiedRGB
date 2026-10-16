@@ -113,15 +113,36 @@ public sealed class CoalescingApplier
                 catch (Exception ex)
                 {
                     // Keep the UI alive, but a failing write must be visible AND
-                    // attributable. This is the only line in the whole log about
-                    // lighting failing, and it used to name neither the device
-                    // nor the zone. The rate-limit key is per lane for the same
-                    // reason: it was one shared bucket, so a device failing every
-                    // frame silenced every other device for a minute at a time.
-                    UnifiedRgb.Core.Log.Occasional($"applier:{laneKey}", "lighting",
-                        $"write failed on {laneKey} ({jobKey}): {ex.Message}");
+                    // attributable. The keys are mostly device OBJECTS (alone or
+                    // inside a tuple), and formatting one directly printed its
+                    // type name: two Razer mice logged identically and, worse,
+                    // shared one rate-limit bucket, so the one failing every
+                    // frame muted the other for a minute at a time. Described by
+                    // name, element by element, both the line and the bucket
+                    // say which device and which write.
+                    string what = $"{Describe(laneKey)} ({Describe(jobKey)})";
+                    UnifiedRgb.Core.Log.Occasional($"applier:{what}", "lighting",
+                        $"write failed on {what}: {ex.Message}");
                 }
             }
         });
+    }
+
+    /// <summary>A lane or job key as a person would name it: a device by its
+    /// Name, a tuple element by element, anything else as itself. Only ever
+    /// called on the failure path.</summary>
+    internal static string Describe(object? key) => key switch
+    {
+        null => "null",
+        IRgbDevice d => d.Name,
+        System.Runtime.CompilerServices.ITuple tuple => DescribeTuple(tuple),
+        _ => key.ToString() ?? "",
+    };
+
+    static string DescribeTuple(System.Runtime.CompilerServices.ITuple tuple)
+    {
+        var parts = new string[tuple.Length];
+        for (int i = 0; i < parts.Length; i++) parts[i] = Describe(tuple[i]);
+        return "(" + string.Join(", ", parts) + ")";
     }
 }

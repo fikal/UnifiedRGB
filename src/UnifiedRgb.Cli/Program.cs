@@ -23,10 +23,11 @@ const string Usage = """
   --openrgb [echo]               OpenRGB bridge test (echo = write-path round trip)
   --razer [color|dpi|stages|poll]  Razer mice: probe, hold a colour, or write onboard settings
   --scan                         probe the board's ARGB headers for connected segments
-  --pump ...  --lcd ...  --lcdinfo   pump LCD probes
+  --pump ...  --lcd ...  --lcdinfo   pump LCD probes (--lcdusb: its USB device, read-only)
   --argb/--argball/--argbblocks/--argbrange/--argbwalk   board ARGB header probes
   --gpu --gpurgb --gpufan0 --gpufanctl                   GPU probes (NvAPI)
   --fanctl --fanmap --lhmfan --cputemp --superio --sioldn --gbecdump   fan / sensor probes
+  --wireview [seconds]           WireView Pro II GPU power connector readings
   --ram --mouse --keys --audio --staticfade              other device probes
   Exit codes: 0 ok, 1 a device refused, 2 bad command line, 130 cancelled (Ctrl+C).
 """;
@@ -237,7 +238,7 @@ if (args.Length >= 1 && args[0] == "--fanctl")
             var second = chips.Skip(1).FirstOrDefault();
             if (second != null)
             {
-                var ec = new UnifiedRgb.Core.Sensors.GigabyteEcio(second);
+                var ec = new UnifiedRgb.Cli.GigabyteEcio(second);
                 Say($"  D: ECIO status raw 0x{second.PioInb(0x3F4):X2}, version {ec.ControllerVersion}, vendor control {ec.VendorControlEnabled?.ToString() ?? "n/a"}");
                 if (ec.VendorControlEnabled == true)
                 {
@@ -320,7 +321,7 @@ if (args.Length >= 1 && args[0] == "--gbecdump")
     int start = args.Length >= 2 ? Convert.ToInt32(args[1], 16) : 0x800;
     int count = args.Length >= 3 ? int.Parse(args[2]) : 0x300;
     Console.WriteLine($"dumping 0x{start:X}..0x{start + count:X} — see [gbec-dump] in the log");
-    UnifiedRgb.Core.Sensors.GigabyteIsaBridge.DumpWindows(start, count);
+    UnifiedRgb.Cli.GigabyteIsaBridge.DumpWindows(start, count);
     return;
 }
 
@@ -341,7 +342,7 @@ if (args.Length >= 1 && args[0] == "--fanmap")
 
         // Gigabyte firmware owns the fans until told otherwise — take over
         // via the ISA-bridge MMIO path, sweep, then hand everything back.
-        using var bridge = UnifiedRgb.Core.Sensors.GigabyteIsaBridge.TryOpen();
+        using var bridge = UnifiedRgb.Cli.GigabyteIsaBridge.TryOpen();
         Say(bridge == null
             ? "isa-bridge: not available on this board"
             : $"isa-bridge: vendor control = {bridge.VendorControlEnabled?.ToString() ?? "unreadable"}");
@@ -727,6 +728,48 @@ if (args.Length >= 1 && args[0] == "--cputemp")
     return;
 }
 
+// --wireview [seconds]: the WireView Pro II through the app's own poller
+// (port discovery, vendor check, frame decode), one line per new frame.
+if (args.Length >= 1 && args[0] == "--wireview")
+{
+    int secs = args.Length > 1 && int.TryParse(args[1], out var s) ? s : 5;
+    var end = DateTime.UtcNow.AddSeconds(secs);
+    UnifiedRgb.Core.Sensors.WireViewReading? last = null;
+    try
+    {
+        while (DateTime.UtcNow < end)
+        {
+            UnifiedRgb.Core.Sensors.WireView.Touch();
+            var r = UnifiedRgb.Core.Sensors.WireView.Latest;
+            if (r != null && !ReferenceEquals(r, last))
+            {
+                last = r;
+                Console.WriteLine($"{r.Watts,7:0.0} W {r.Amps,6:0.00} A {r.Volts:0.000} V  cap {r.PsuCapWatts?.ToString() ?? "?"} W"
+                    + $"  in {r.OnboardInC:0.0} out {r.OnboardOutC:0.0} °C  fan {r.FanPercent}%  faults {r.Faults} log {r.FaultLog}");
+                Console.WriteLine("    " + string.Join("  ", r.Pins.Select((p, i) => $"P{i + 1} {p.Volts:0.000}V {p.Amps:0.00}A")));
+            }
+            Sleep(250);
+        }
+        Console.WriteLine($"State: {UnifiedRgb.Core.Sensors.WireView.Status}"
+            + (UnifiedRgb.Core.Sensors.WireView.Edition is string ed ? $" ({ed}, firmware v{UnifiedRgb.Core.Sensors.WireView.Firmware})" : ""));
+    }
+    finally { UnifiedRgb.Core.Sensors.WireView.Shutdown(); }
+    return;
+}
+
+// --lcdusb: the USB device the app would restart if the pump LCD wedged.
+// Metadata-only HID enumeration: sends NOTHING to the panel, so it is safe to
+// run while the app is streaming to it (--lcdinfo is not - its handshake would
+// land in the middle of the app's frame).
+if (args.Length >= 1 && args[0] == "--lcdusb")
+{
+    var cols = UnifiedRgb.Core.Native.HidNative.Find(0x0416, 0x5302);
+    if (cols.Count == 0) { Console.WriteLine("Thermalright LCD not found."); return; }
+    foreach (var c in cols)
+        Console.WriteLine($"out={c.OutputLength,-4} {c.Path}\n         -> {UnifiedRgb.Core.Native.UsbDeviceRestart.UsbInstanceFor(c.Path) ?? "(USB device not found)"}");
+    return;
+}
+
 // --lcdinfo: dump the pump's identify/telemetry reply to look for a temp field.
 if (args.Length >= 1 && args[0] == "--lcdinfo")
 {
@@ -806,8 +849,11 @@ if (args.Length >= 1 && args[0] == "--razer")
             if (sub == "persist")
             {
                 var col = Rgb.FromHex(args[2]);
-                d.SetColors(Enumerable.Repeat(col, d.LedCount).ToArray());
-                bool stored = d.PersistCurrentColor();
+                var frame = Enumerable.Repeat(col, d.LedCount).ToArray();
+                d.SetColors(frame);
+                // The colour it was just sent: the driver stores only what it
+                // is showing (a refused frame above makes this fail, honestly).
+                bool stored = d.PersistColor(frame);
                 Console.WriteLine($"  {col} written to onboard memory: {(stored ? "ok" : "FAILED")}");
                 if (!stored) Environment.ExitCode = 1;
                 continue;

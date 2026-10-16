@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Windows.Threading;
 using UnifiedRgb.Core;
 
@@ -26,6 +27,10 @@ public sealed class LcdScene
 {
     public string Name { get; set; } = "";
     public LcdDesign Design { get; set; } = new();
+
+    /// <summary>Fields this build does not know, written back untouched so a
+    /// rollback build does not strip them. See Profile.Extra.</summary>
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 }
 
 public sealed class SceneAction : INotifyPropertyChanged
@@ -75,6 +80,10 @@ public sealed class SceneAction : INotifyPropertyChanged
 
     public event PropertyChangedEventHandler? PropertyChanged;
     void Notify(string n) => PropertyChanged?.Invoke(this, new(n));
+
+    /// <summary>Fields this build does not know, written back untouched so a
+    /// rollback build does not strip them. See Profile.Extra.</summary>
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 }
 
 public sealed class SceneSequence
@@ -82,6 +91,10 @@ public sealed class SceneSequence
     public string Name { get; set; } = "";
     public List<SceneAction> Actions { get; set; } = new();
     public override string ToString() => Name;
+
+    /// <summary>Fields this build does not know, written back untouched so a
+    /// rollback build does not strip them. See Profile.Extra.</summary>
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 }
 
 public sealed class SceneStore
@@ -94,6 +107,10 @@ public sealed class SceneStore
     /// names its own show now. Kept only so the setting can be moved onto the
     /// startup profile instead of vanishing.</summary>
     public string? ActiveSequence { get; set; }
+
+    /// <summary>Fields this build does not know, written back untouched so a
+    /// rollback build does not strip them. See Profile.Extra.</summary>
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 
     /// <summary>Move steps that named a pump SCENE onto the profile that carries
     /// that scene, now that a step is a profile.
@@ -424,7 +441,7 @@ public sealed class SceneSequencer
         if (_seq == null || _seq.Actions.Count == 0) { Stop(); return; }
         long late = Environment.TickCount64 - _dueAt;
         if (late > 150)
-            Log.Occasional("scenes", "seq-late", $"step ran {late} ms late (UI thread busy)");
+            Log.Occasional("scenes-seq-late", "scenes", $"step ran {late} ms late (UI thread busy)");
         _index = (_index + 1) % _seq.Actions.Count;
         try { _apply(_seq.Actions[_index]); }
         catch (Exception ex) { Log.Warn("scenes", $"action failed: {ex.Message}"); }

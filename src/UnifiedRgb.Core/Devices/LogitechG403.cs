@@ -20,7 +20,7 @@ namespace UnifiedRgb.Core.Devices;
 /// then SET_EFFECT [cluster, static_effect_idx, R, G, B, 0x02].
 ///
 /// Ported from OpenRGB's LogitechHIDPP20Controller (constants + wire layouts).</summary>
-public sealed class LogitechG403 : IRgbDevice
+public sealed class LogitechG403 : IRgbDevice, IPersistableLighting
 {
     const ushort VID = 0x046D;
     const ushort HIDPP_USAGE_PAGE = 0xFF00;
@@ -55,7 +55,6 @@ public sealed class LogitechG403 : IRgbDevice
     // describing a mouse that has since slept or been reset), and with a flag
     // every one of those re-sends would have been a fresh write to flash.
     readonly Rgb?[] _persistedPer;
-    long _lastChangeTick;
 
     public string Name { get; }
     public string Vendor => "Logitech";
@@ -248,7 +247,19 @@ public sealed class LogitechG403 : IRgbDevice
             Array.Clear(rx);
             int got = hid.Read(rx, 200);
             if (got <= 0) return null;
-            if ((rx[0] == LONG_MSG || rx[0] == 0x10) && rx[2] == featIdx && (rx[3] & 0x0F) == SW_ID)
+            // A reply is OURS only if it names the same device, feature AND
+            // function. This used to check the feature and the software id
+            // alone, so a late reply - the claim's, after its read timed out -
+            // was taken as the answer to the SET_EFFECT behind it, and from
+            // then on every reply answered the request before it: a refused
+            // write read as landed and the dedup cached a colour the mouse
+            // never took. Anything else is somebody else's traffic (G HUB's
+            // own software id, another device behind a receiver) or stale.
+            // Device index 0x00 also answers a request sent to 0xFF: Bluetooth
+            // devices reply that way (Solaar accepts the same pair).
+            bool ourDevice = rx[1] == dev || (dev == 0xFF && rx[1] == 0x00);
+            if ((rx[0] == LONG_MSG || rx[0] == 0x10) && ourDevice && rx[2] == featIdx
+                && rx[3] == (byte)(func | SW_ID))
                 return rx;
         }
         return null;
@@ -265,20 +276,19 @@ public sealed class LogitechG403 : IRgbDevice
     readonly object _writeLock = new();
 
     /// <summary>SET_EFFECT's 'persist' byte writes the color to the mouse's
-    /// onboard memory. It used to ride every changed frame — an animated effect
-    /// committed to flash at frame rate, 24/7. Frames now stream without it.
-    /// A static apply commits at once (SetColors with persist: true, the
-    /// "survives handle close" case the byte exists for), Dispose commits
-    /// whatever the mouse is showing, and an effect's frame is only committed
-    /// lazily after it has sat unchanged for PersistAfterMs (checked by the
-    /// engine's 1 s keepalive). The window is long enough that no animated
-    /// effect's hold satisfies it - a Palette Cycle hold is 5 s, Time Warmth
-    /// steps once a minute - so only a genuinely parked effect ever writes
-    /// flash, and then once.</summary>
+    /// onboard memory. It used to ride every changed frame - an animated effect
+    /// committed to flash at frame rate, 24/7. Frames now stream without it,
+    /// and the driver never commits on its own: only an explicit caller does
+    /// (PersistColor, the app's settled-colour save; SetColors with
+    /// persist: true). The driver used to commit a colour that had sat
+    /// unchanged for five minutes, on the keepalive and again in Dispose - and
+    /// it cannot tell a colour the user chose from the black of a locked desk
+    /// or a night window. A lock longer than that, then the rescan on wake or
+    /// an exit, stored black in the mouse. The app's save knows the difference
+    /// (it skips while the lights are suppressed); the driver does not.</summary>
     /// <summary>Internal and settable ONLY so a test can retry without
     /// sleeping five seconds; nothing else should touch it.</summary>
     internal static int RetryAfterFailMs = 5000;
-    const int PersistAfterMs = 300_000;
 
     public bool SetColors(IReadOnlyList<Rgb> colors) => SetColors(colors, persist: false);
 
@@ -328,6 +338,7 @@ public sealed class LogitechG403 : IRgbDevice
         if (colors.Count == 0) return false;
         lock (_writeLock)
         {
+            if (_disposed) return false;   // queued behind Dispose: refuse quietly, per the contract
             bool landed = true;
             // Pace only a frame that will actually be sent. Sleeping first meant
             // an unchanged frame, or one whose clusters are all inside their
@@ -348,7 +359,7 @@ public sealed class LogitechG403 : IRgbDevice
                 if (!persist && wait > 0) Thread.Sleep((int)wait);
                 _lastFrameTick = Environment.TickCount64;
             }
-            bool claimed = false, changed = false;
+            bool claimed = false;
             for (int i = 0; i < _clusterEffect.Length; i++)
             {
                 var c = colors[Math.Min(i, colors.Count - 1)];
@@ -389,24 +400,8 @@ public sealed class LogitechG403 : IRgbDevice
                 if (_silent[i]) { _silent[i] = false; Log.Info("LogitechG403", $"{Name}: cluster {i} is answering again"); }
                 _retryAfter[i] = 0;
                 _lastPer[i] = c;
-                changed = true;
             }
-            long now = Environment.TickCount64;
-            if (changed) _lastChangeTick = now;
-            if (persist || (!changed && now - _lastChangeTick >= PersistAfterMs))
-            {
-                CommitPersist();
-                // Stamp the ATTEMPT, not just a color change. Only a
-                // successful commit records the flashed color, which is
-                // right - but the
-                // window that decides whether to try is driven by
-                // _lastChangeTick, and that only moved when a color changed.
-                // So once a commit failed, every keepalive (1/s, forever)
-                // retried it, and in the case where the write landed and only
-                // the reply was lost that is a real write to the mouse's flash
-                // once a second. PersistAfterMs exists precisely to stop that.
-                _lastChangeTick = now;
-            }
+            if (persist) CommitPersist();
             return landed;
         }
     }
@@ -428,6 +423,37 @@ public sealed class LogitechG403 : IRgbDevice
         parms[5]  = (byte)(c.R != 0 || c.G != 0 || c.B != 0 ? 0x02 : 0x00);
         if (persist) parms[12] = 0x01;   // save to the mouse so it survives handle close
         return Query(_hid, _dev, _rgbIdx, _fnSetEffect, parms) != null;
+    }
+
+    /// <summary>Store the colour the mouse is showing in its onboard memory, so
+    /// it survives the handle closing. Writes FLASH: called only by the app's
+    /// settled-colour save, 30 s after the lighting stops changing - static
+    /// applies used to pass persist:true and commit on every one of them (each
+    /// step of a colour-wheel drag, each brightness tick, each show step).
+    /// A colour already stored costs no write (CommitPersist dedups by cluster).
+    ///
+    /// Only <paramref name="showing"/>, and only when every cluster was last
+    /// sent exactly it. This used to commit _lastPer as it stood, which after a
+    /// lock that nothing relit was BLACK: the mouse then powered up dark with
+    /// the app closed, the one failure this save exists to prevent.</summary>
+    public bool PersistColor(IReadOnlyList<Rgb> showing)
+    {
+        if (showing.Count == 0) return false;
+        lock (_writeLock)
+        {
+            if (_disposed || _hid.IsDisposed) return false;
+            for (int i = 0; i < _clusterEffect.Length; i++)
+                if (_lastPer[i] != WritePolicy.ColorAt(showing, i))
+                {
+                    Log.Occasional($"g403-persist-mismatch:{Name}", "LogitechG403",
+                        $"{Name}: not storing #{WritePolicy.ColorAt(showing, i).ToHex()} - cluster {i} is not showing it");
+                    return false;
+                }
+            CommitPersist();
+            for (int i = 0; i < _clusterEffect.Length; i++)
+                if (_lastPer[i] is not Rgb c || _persistedPer[i] != c) return false;
+            return true;
+        }
     }
 
     /// <summary>Re-send, with the persist byte, every cluster whose current
@@ -494,17 +520,20 @@ public sealed class LogitechG403 : IRgbDevice
         $"clusters={_clusterEffect.Length} staticEffectIdx=[{string.Join(",", _clusterEffect)}] " +
         $"fnSetEffect=0x{_fnSetEffect:X2} fnSwControl=0x{_fnSwControl:X2}";
 
+    // The contract's shape: set under the write lock and re-checked under it,
+    // so a write queued behind Dispose returns false instead of reaching the
+    // closed handle - which refuses too, but then marks the cluster as having
+    // "stopped answering HID++", a warning the mouse never earned.
+    bool _disposed;
+
     public void Dispose()
     {
         lock (_writeLock)
         {
-            // Save what the mouse is showing before the handle goes - but only
-            // under the same quiet-period rule as the streaming path. A fresh
-            // instance is disposed at every rescan (a replug, a resume, a
-            // flapping hub), and an unconditional commit here was a flash write
-            // per cluster per rescan; an effect that was running has no colour
-            // worth persisting, and a static apply already persisted itself.
-            if (!_hid.IsDisposed && Environment.TickCount64 - _lastChangeTick >= PersistAfterMs) CommitPersist();
+            if (_disposed) return;
+            _disposed = true;
+            // No commit here (see PersistColor): a rescan or an exit
+            // after a long lock stored the lock's black.
             _hid.Dispose();
         }
     }

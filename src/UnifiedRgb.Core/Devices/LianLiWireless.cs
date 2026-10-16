@@ -16,9 +16,15 @@ namespace UnifiedRgb.Core.Devices;
 ///
 /// Transport: 240-byte RF frames split into 4×64B bulk writes
 /// [0x10, frag, channel, rxType, 60B]. Effect data = RGB triplets compressed
-/// with tinyuz. Fans store the last effect in flash and keep playing it when
-/// the host goes quiet. WinUSB is exclusive: if L-Connect's service is
-/// running, TryOpen fails quietly and the fans just don't appear.</summary>
+/// with tinyuz. The fans keep playing the last effect they were sent when the
+/// host goes quiet - from working memory, not flash: L-Connect's decompile
+/// (lianli.slv3.dll, RF_CMD) has a separate save command, RF_SaveCfg
+/// (0x12 0x15), which it sends only after a pairing or at most once every few
+/// hours with the effect unchanged for 30 s. This class never sends it (only
+/// 0x12 0x20 effect data and 0x12 0x10 PWM, which L-Connect does not save
+/// either), so neither streamed frames nor uploads write the fans' flash.
+/// WinUSB is exclusive: if L-Connect's service is running, TryOpen fails
+/// quietly and the fans just don't appear.</summary>
 public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
 {
     static readonly Guid IfaceGuid = new("1D4B2365-4749-48EA-B38A-7C6FDDDD7E26");
@@ -33,7 +39,9 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
                                    // need many frames at a small interval to play at the right speed;
                                    // InfRgbDat holds 1024 frames, so 160 is safe.
     const int MinAnimFrames = 8;   // don't degrade a loop below this many frames
-    const int AnimConfirmTimeoutMs = 6000;   // keep resending until the fans echo the index, up to this
+    // Keep resending until the fans echo the index, up to this. Settable only
+    // so the harness can let an upload go unconfirmed without waiting 6 s.
+    internal static int AnimConfirmTimeoutMs = 6000;
     // Live speed calibration: the hardware plays the baked loop at a rate we
     // can't predict exactly, so the user dials this until the fans match their
     // other devices. Multiplies the commanded per-frame interval (higher =
@@ -104,6 +112,13 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
     /// as "already uploaded" forever. Subscribers must marshal to their own
     /// thread.</summary>
     public event Action? AnimationUnconfirmed;
+
+    /// <summary>Raised on the TELEMETRY thread (outside _lock) when the fans
+    /// echo the index of the pending upload: the receiver took it. The baker
+    /// uses it to forget that these settings ever went unconfirmed, so a
+    /// later failure is not held against them as a repeat offence.
+    /// Subscribers must marshal to their own thread.</summary>
+    public event Action? AnimationConfirmed;
 
     // ILianFanDevice: three parts per fan (the SL-INF's real light zones).
     // Cached: WPF re-reads bound properties on every notify, and these used
@@ -422,12 +437,26 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         // Standalone applies get a second immediate send; streams don't (the
         // next frame is the retry, and the settle resend covers the last one).
         bool ok = SendEffect(data);
+        if (!ok)
+        {
+            // The transmitter refused a packet, so it is stalled or gone, and
+            // every further packet would wait out the same USB timeout under
+            // _lock. The insurance copy and the settle resend used to go out
+            // anyway: with a wedged dongle that held _lock for 20-56 s, and a
+            // Rescan's Dispose (on the UI thread) queued behind it. Neither
+            // could have helped - both are RF insurance for a frame the dongle
+            // TOOK. Earlier packets of this frame may have landed; the cache
+            // stays empty, so this frame or the previous one is really sent
+            // when it is requested next.
+            return WritePolicy.Refused("lianli-wl:tx", "LianLi",
+                "the transmitter refused a frame packet; the frame will be sent again");
+        }
         if (!streaming)
         {
             Thread.Sleep(30);
             // The second copy is insurance against a lost RF packet, not a
             // retry of a refused USB write, so it does not change the verdict:
-            // if the first one reached the dongle, the frame was delivered as
+            // the first one reached the dongle, so the frame was delivered as
             // far as this driver can tell.
             SendEffect(data);
         }
@@ -439,14 +468,6 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         // Not after Dispose: Change on a disposed timer throws, and a Transmit
         // that started before a rescan's Dispose can reach here after it.
         if (!_disposed) (_settleTimer ??= new Timer(SettleResend)).Change(500, Timeout.Infinite);
-        if (!ok)
-        {
-            // Some packets or the insurance copy may still have landed. The
-            // cache remains empty so either this frame or the previous one
-            // will really be sent when it is requested next.
-            return WritePolicy.Refused("lianli-wl:tx", "LianLi",
-                "the transmitter refused a frame packet; the frame will be sent again");
-        }
         // Commit the cache only now. It used to be stamped before the encode
         // and the send, so a throw anywhere in between left _lastSent holding
         // a frame the dongle never received - and because nothing on the
@@ -468,7 +489,7 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
             if (_disposed || _lastSent == null) return;
             if (!FramesEqual(_lastSent, _shadow)) return;   // newer transmit is coming anyway
             try { SendEffect(LianLiTinyuz.Encode(BuildWireBytes())); }
-            catch (Exception ex) { Log.Occasional("LianLi", "settle", $"settle resend failed: {ex.Message}"); }
+            catch (Exception ex) { Log.Occasional("lianli:settle", "LianLi", $"settle resend failed: {ex.Message}"); }
         }
     }
 
@@ -505,6 +526,16 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
     \*-----------------------------------------------------*/
     long _lastAnimHash;
 
+    /// <summary>True while a baked animation is believed to be playing on the
+    /// fans: uploaded (or still being confirmed) and not since interrupted.
+    /// Every static frame cancels it (Transmit zeroes the hash: the receiver
+    /// drops the animation for the static effect), and so do an unconfirmed
+    /// upload's expiry and a speed change. The baker reads this before it
+    /// skips an "unchanged" re-bake: comparing its signature alone left the
+    /// fans static or black after lock/unlock, identify and every other path
+    /// that sends a static frame and then asks for the same effect again.</summary>
+    public bool AnimationActive => Interlocked.Read(ref _lastAnimHash) != 0;
+
     public void UploadAnimation(IReadOnlyList<Rgb[]> frames, double frameMs)
     {
         if (frames.Count == 0) return;
@@ -513,6 +544,7 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
             for (int i = 0; i < fr.Length; i++)
                 hash = hash * 31 + (fr[i].R << 16 | fr[i].G << 8 | fr[i].B);
         hash = hash * 131 + (long)(frameMs * 16);
+        if (hash == 0) hash = 1;   // 0 means "nothing playing" (AnimationActive)
         lock (_lock)
         {
             if (hash == _lastAnimHash) return;
@@ -629,6 +661,7 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         {
             _animPending = false;
             Log.Info("LianLi", "animation confirmed by fans");
+            AnimationConfirmed?.Invoke();   // outside _lock, like the unconfirmed event
             return;
         }
         if (ExpireAnimationIfOverdue()) return;
@@ -656,7 +689,7 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         // away by UploadAnimation. Lock-free like IntervalScale's reset
         // (_lock may be held by a frame send for hundreds of ms).
         Interlocked.Exchange(ref _lastAnimHash, 0);
-        Log.Occasional("LianLi", "animtimeout", "animation not confirmed before timeout - giving up resends");
+        Log.Occasional("lianli:animtimeout", "LianLi", "animation not confirmed before timeout - giving up resends");
         // Outside _lock: the handler (the baker) marshals to the UI thread
         // and may schedule another upload, which takes _lock itself.
         AnimationUnconfirmed?.Invoke();
@@ -668,10 +701,17 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
     byte[] NextEffectIndexBuf() { var b = new byte[4]; NextEffectIndex(b); return b; }
 
     /// <summary>True when the TRANSMITTER took every fragment. The receiver's
-    /// side of the link is unobservable (see Transmit).</summary>
+    /// side of the link is unobservable (see Transmit).
+    ///
+    /// Stops at the first refused packet, meta repeats included. Each refusal
+    /// is a USB transfer that waited out its timeout, and this used to go on
+    /// sending every remaining packet after one (and the caller then sent an
+    /// insurance copy and a settle resend): a stalled transmitter held _lock
+    /// for 20-56 s, with a Rescan freezing the UI behind it. A receiver
+    /// missing any packet drops the whole effect anyway, so the rest could
+    /// not have helped.</summary>
     bool SendEffect(byte[] data, int totalFrame, double intervalMs, byte[] effectIndex)
     {
-        bool ok = true;
         // The receiver plays each frame in HALF the interval it's given (measured:
         // 64f/140ms and 150f/60ms both loop in ~4.5s = commanded/2). Send double so
         // the real per-frame time matches what we intend and the fans run at the
@@ -710,28 +750,35 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
                 Array.Copy(data, offset, rf, 20, n);
                 offset += RfValidLen;
             }
-            ok &= SendRf(rf);
+            if (!SendRf(rf)) return false;
             if (index == 0)
             {
                 // Meta packet goes out 4x, 20 ms apart (L-Connect-identical).
-                // The repeats are RF insurance, not USB retries, so they do
-                // not change the verdict the first one gave.
-                for (int k = 0; k < 3; k++) { Thread.Sleep(20); SendRf(rf); }
+                // The repeats are RF insurance, not USB retries - but a repeat
+                // the dongle refuses means it has stalled since the first, and
+                // the data packets behind it would only queue up more timeouts.
+                for (int k = 0; k < 3; k++)
+                {
+                    Thread.Sleep(20);
+                    if (!SendRf(rf)) return false;
+                }
             }
             // No pacing on data packets - L-Connect sends them back-to-back and
             // relies on the effect_index read-back retry to cover any lost packet.
             index++;
         }
-        return ok;
+        return true;
     }
 
     readonly byte[] _rfPkt = new byte[64];   // reused fragment (all callers hold _lock)
 
-    /// <summary>True when the dongle accepted every 60-byte fragment.</summary>
+    /// <summary>True when the dongle accepted every 60-byte fragment. Returns
+    /// at the first refused one: the receiver cannot reassemble an RF frame
+    /// with a fragment missing, and each further fragment to a stalled
+    /// dongle is another full USB timeout under _lock (see SendEffect).</summary>
     bool SendRf(byte[] rf)
     {
         if (_disposed) return false;   // torn down mid-write: nothing went out
-        bool ok = true;
         byte frag = 0;
         var pkt = _rfPkt;
         for (int off = 0; off < rf.Length; off += 60)
@@ -742,11 +789,11 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
             if (n < 60) Array.Clear(pkt, 4 + n, 60 - n);   // stale tail from a longer fragment
             if (!_usb.Write(_usb.BulkOutPipe, pkt))
             {
-                Log.Occasional("LianLi", "write", "bulk write failed");
-                ok = false;
+                Log.Occasional("lianli:write", "LianLi", "bulk write failed");
+                return false;
             }
         }
-        return ok;
+        return true;
     }
 
     static bool FramesEqual(Rgb[] a, Rgb[] b)
@@ -829,9 +876,9 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
             if (TelemetryWanted())
             {
                 try { PollTelemetry(); }
-                catch (Exception ex) { Log.Occasional("LianLi", "telemetry", $"telemetry poll failed: {ex.Message}"); }
+                catch (Exception ex) { Log.Occasional("lianli:telemetry", "LianLi", $"telemetry poll failed: {ex.Message}"); }
                 try { ExpireAnimationIfOverdue(); }   // whether or not the poll got an answer
-                catch (Exception ex) { Log.Occasional("LianLi", "animexpire", $"animation expiry failed: {ex.Message}"); }
+                catch (Exception ex) { Log.Occasional("lianli:animexpire", "LianLi", $"animation expiry failed: {ex.Message}"); }
                 // Poll fast while an animation upload awaits confirmation (drives the
                 // resend), slow otherwise (RPM/PWM only need a lazy refresh).
                 Thread.Sleep(_animPending ? 150 : 1500);
@@ -855,14 +902,24 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         }
     }
 
+    /// <summary>How the telemetry poll opens the receiver. Settable ONLY so a
+    /// test can stand in for it (null = no receiver): the real one enumerates
+    /// and opens the SLV3 RX, which a harness must never do while the app owns
+    /// the hardware. Telemetry pages are then fed through ApplyTelemetryPage.</summary>
+    internal Func<WinUsbDevice?> ReceiverOpener { get; set; } = OpenRealReceiver;
+
+    static WinUsbDevice? OpenRealReceiver()
+    {
+        string? path = WinUsbDevice.FindPath(IfaceGuid, RxVidPid);
+        return path == null ? null : WinUsbDevice.Open(path);
+    }
+
     void PollTelemetry()
     {
         if (_disposed) return;
         if (_rx == null)
         {
-            string? path = WinUsbDevice.FindPath(IfaceGuid, RxVidPid);
-            if (path == null) return;
-            var opened = WinUsbDevice.Open(path);
+            var opened = ReceiverOpener();
             if (opened == null || opened.BulkInPipe == 0) { opened?.Dispose(); return; }
             // Publish under the lock so Dispose can't miss (and leak) a receiver
             // opened between its check and ours - WinUSB is exclusive, so a
@@ -891,8 +948,16 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
             rx.Dispose();   // idempotent (WinUsbDevice._freed) if Dispose got there first
             return;
         }
-        int got = rx.Read(page);
-        if (got < 46 || page[0] != 0x10) return;
+        ApplyTelemetryPage(page, rx.Read(page));
+    }
+
+    /// <summary>Take one GetDev status page from the receiver: RPMs, the PWM
+    /// duties the fans report, and the effect index they are playing. True
+    /// when the page carried our fan group's record. Internal so the harness
+    /// can feed a page without a receiver.</summary>
+    internal bool ApplyTelemetryPage(byte[] page, int got)
+    {
+        if (got < 46 || page[0] != 0x10) return false;
 
         // 42-byte records after the 4-byte header; find our fan group by MAC.
         for (int rec = 4; rec + 42 <= got; rec += 42)
@@ -908,15 +973,16 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
                 rpms[f] = (hi << 8) + page[rec + 28 + f * 2 + 1];
             }
             _rpmByChain = rpms;
-            var pwm = new byte[4];
-            Array.Copy(page, rec + 36, pwm, 0, 4);
+            var pwm = new byte[PwmChains];
+            Array.Copy(page, rec + 36, pwm, 0, PwmChains);
             _pwmByChainTele = pwm;
 
             // Effect index the fans are actually playing (RX record offset +20).
             _reportedEffectIndex = page[rec + 20] << 24 | page[rec + 21] << 16 | page[rec + 22] << 8 | page[rec + 23];
             ReconcileAnimation();
-            return;
+            return true;
         }
+        return false;
     }
 
     /*-----------------------------------------------------*\
@@ -935,10 +1001,23 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
     // send (up to ~300 ms). Only the RF send itself needs _lock.
     // Order: _lock is never taken while holding _pwmLock.
     readonly object _pwmLock = new();
-    readonly byte[] _pwmTarget = new byte[4];
+    /// <summary>Fans one PWM frame (and one telemetry record) addresses. A
+    /// group of five or six (FanNum comes from L-Connect's file) has chains
+    /// past this, which the frame cannot carry.</summary>
+    const int PwmChains = 4;
+    readonly byte[] _pwmTarget = new byte[PwmChains];
     bool _pwmSeeded;
+    // Chains set on purpose before the seed ran (bit per chain): the seed
+    // fills only the others.
+    int _pwmTouched;
     volatile bool _pwmDirty;
     Thread? _pwmThread;
+
+    /// <summary>How long the first PWM write waits for the receiver's first
+    /// telemetry page before seeding the fans nobody asked about with the 40%
+    /// fallback. Internal and settable ONLY so a test can reach the fallback
+    /// without waiting two seconds.</summary>
+    internal static int PwmSeedWaitMs = 2000;
 
     /// <summary>Set one fan's duty (percent, by arranged slot). Asserts over
     /// RF until the receiver confirms; other fans keep their current duty.</summary>
@@ -948,21 +1027,73 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         byte d = (byte)Math.Clamp(percent * 255 / 100, 0, 255);
         if (d == 6) d = 7;
         if (d >= 153 && d <= 155) d = 156;
+        int chain = _slotToChain[Math.Clamp(slot, 0, _fanNum - 1)];
+        if (chain >= PwmChains)
+        {
+            // Indexing the 4-byte target with it threw out of SetFanDuty - on
+            // the sensor timer's curve tick, every tick.
+            Log.Occasional($"lianli:pwm-chain{chain}", "LianLi",
+                $"fan {chain + 1} cannot be speed-controlled: the receiver's PWM frame addresses only {PwmChains} fans per group");
+            return;
+        }
         lock (_pwmLock)
         {
-            // First touch: seed untouched fans from telemetry so setting one
-            // fan never yanks the other three.
-            if (!_pwmSeeded)
-            {
-                var tele = _pwmByChainTele;
-                for (int i = 0; i < 4; i++) _pwmTarget[i] = tele != null ? tele[i] : (byte)0x66;
-                _pwmSeeded = true;
-            }
-            _pwmTarget[_slotToChain[Math.Clamp(slot, 0, _fanNum - 1)]] = d;
+            _pwmTarget[chain] = d;
+            if (!_pwmSeeded) _pwmTouched |= 1 << chain;
         }
         _pwmDirty = true;
         TelemetryTouch();
         StartPwmThread();
+    }
+
+    /// <summary>The duty (0-255) currently asked of a slot's fan. For the
+    /// harness, which drives the fan hub's real handback paths against a fake
+    /// receiver and has to see what they asked for.</summary>
+    internal byte PwmTargetOfSlot(int slot)
+    {
+        int chain = _slotToChain[Math.Clamp(slot, 0, _fanNum - 1)];
+        if (chain >= PwmChains) return 0;
+        lock (_pwmLock) return _pwmTarget[chain];
+    }
+
+    /// <summary>The session's first PWM write: give every fan nobody asked
+    /// about its CURRENT duty from telemetry, so setting one fan never yanks
+    /// the other three.
+    ///
+    /// This used to run inside SetFanDuty, before the TelemetryTouch that
+    /// starts the polling - so on the first write there was never a page yet,
+    /// and every other fan got the 0x66 (40%) fallback. With hand-off on, fans
+    /// that were following the motherboard curve then sat at a fixed 40% for
+    /// the whole session. Here, on the worker, it waits (bounded) for the
+    /// first page instead, and falls back only when none comes.</summary>
+    void SeedUntouchedFans()
+    {
+        // Every fan in use already set explicitly (the failsafe's 100%, a curve
+        // on each): nothing to seed, so no reason to wait for telemetry first.
+        // The wait used to delay exactly those writes by up to 2 s - and a
+        // crash path that gives the PWM thread under a second could lose them.
+        int inUse = 0;
+        for (int s = 0; s < _fanNum; s++)
+            if (_slotToChain[s] < PwmChains) inUse |= 1 << _slotToChain[s];
+        lock (_pwmLock)
+        {
+            if (_pwmSeeded) return;
+            if ((_pwmTouched & inUse) == inUse) { _pwmSeeded = true; _pwmTouched = 0; return; }
+        }
+        long deadline = Environment.TickCount64 + PwmSeedWaitMs;
+        while (_pwmByChainTele == null && !_disposed && Environment.TickCount64 < deadline)
+            Thread.Sleep(50);
+        var tele = _pwmByChainTele;
+        lock (_pwmLock)
+        {
+            if (_pwmSeeded) return;   // FollowPwmLine set every chain meanwhile
+            for (int i = 0; i < PwmChains; i++)
+                if ((_pwmTouched & (1 << i)) == 0) _pwmTarget[i] = tele != null ? tele[i] : (byte)0x66;
+            _pwmSeeded = true;
+            _pwmTouched = 0;
+        }
+        if (tele == null && !_disposed)
+            Log.Info("LianLi", $"pwm: no telemetry from the receiver within {PwmSeedWaitMs} ms - fans not being set start at 40%");
     }
 
     void StartPwmThread()
@@ -978,6 +1109,7 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
 
     void PwmLoop()
     {
+        SeedUntouchedFans();   // a no-op once seeded; may wait up to PwmSeedWaitMs the first time
         int confirms = 0, attempts = 0;
         while (attempts < 120 && !_disposed)   // hard cap ~1 min
         {
@@ -986,7 +1118,7 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
             byte[] target;
             lock (_pwmLock) target = (byte[])_pwmTarget.Clone();
             var tele = _pwmByChainTele;
-            bool match = tele != null && tele.AsSpan(0, 4).SequenceEqual(target);
+            bool match = tele != null && tele.AsSpan(0, PwmChains).SequenceEqual(target);
             if (match)
             {
                 if (++confirms >= 3 && !_pwmDirty) break;
@@ -995,7 +1127,7 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
             {
                 confirms = 0;
                 try { lock (_lock) SendPwmFrame(target); }
-                catch (Exception ex) { Log.Occasional("LianLi", "pwm", $"pwm send failed: {ex.Message}"); }
+                catch (Exception ex) { Log.Occasional("lianli:pwm", "LianLi", $"pwm send failed: {ex.Message}"); }
             }
             TelemetryTouch();
             Thread.Sleep(400);
@@ -1018,7 +1150,7 @@ public sealed class LianLiWireless : IRgbDevice, IZoneWritable, ILianFanDevice
         var target = new byte[] { 6, 6, 6, 6 };
         lock (_pwmLock)
         {
-            for (int i = 0; i < 4; i++) _pwmTarget[i] = 6;
+            for (int i = 0; i < PwmChains; i++) _pwmTarget[i] = 6;
             _pwmSeeded = true;
         }
         lock (_lock)

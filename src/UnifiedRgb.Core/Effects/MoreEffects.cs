@@ -130,6 +130,12 @@ public sealed class TimeWarmth : IEffect
 /// shades instead of one flat tone.</summary>
 public sealed class Aurora : IEffect
 {
+    /// <summary>Streamed, never baked onto wireless fans: this effect does not
+    /// repeat exactly over a LoopSeconds window (incommensurate rates, or a
+    /// fresh random pattern per step), so a baked loop popped at every seam.
+    /// Reworking the maths to loop would change how it looks on EVERY device
+    /// for the sake of the one that bakes; streaming keeps the look.</summary>
+    public bool Bakeable => false;
     public string Name => "Aurora";
     public bool UsesBaseColor => true;
     public double LoopSeconds(double speed) => Fx.Loop((2.0 * Math.PI), speed);
@@ -154,6 +160,12 @@ public sealed class Aurora : IEffect
 /// tinted through hues near the color you choose.</summary>
 public sealed class Plasma : IEffect
 {
+    /// <summary>Streamed, never baked onto wireless fans: this effect does not
+    /// repeat exactly over a LoopSeconds window (incommensurate rates, or a
+    /// fresh random pattern per step), so a baked loop popped at every seam.
+    /// Reworking the maths to loop would change how it looks on EVERY device
+    /// for the sake of the one that bakes; streaming keeps the look.</summary>
+    public bool Bakeable => false;
     public string Name => "Plasma";
     public bool UsesBaseColor => true;
     public double LoopSeconds(double speed) => Fx.Loop((2.0 * Math.PI), speed);
@@ -181,6 +193,12 @@ public sealed class Plasma : IEffect
 /// keyboard and as a top-to-bottom cascade on a stacked fan tower.</summary>
 public sealed class Rain : IEffect
 {
+    /// <summary>Streamed, never baked onto wireless fans: this effect does not
+    /// repeat exactly over a LoopSeconds window (incommensurate rates, or a
+    /// fresh random pattern per step), so a baked loop popped at every seam.
+    /// Reworking the maths to loop would change how it looks on EVERY device
+    /// for the sake of the one that bakes; streaming keeps the look.</summary>
+    public bool Bakeable => false;
     public string Name => "Rain";
     public bool UsesBaseColor => true;
     public double LoopSeconds(double speed) => Fx.Loop(2.0, speed);
@@ -234,6 +252,12 @@ public sealed class Rain : IEffect
 /// dips and flares, brightest low and softer at the top.</summary>
 public sealed class Candle : IEffect
 {
+    /// <summary>Streamed, never baked onto wireless fans: this effect does not
+    /// repeat exactly over a LoopSeconds window (incommensurate rates, or a
+    /// fresh random pattern per step), so a baked loop popped at every seam.
+    /// Reworking the maths to loop would change how it looks on EVERY device
+    /// for the sake of the one that bakes; streaming keeps the look.</summary>
+    public bool Bakeable => false;
     public string Name => "Candle";
     public bool UsesBaseColor => true;
     public double LoopSeconds(double speed) => Fx.Loop((2.0 * Math.PI), speed);

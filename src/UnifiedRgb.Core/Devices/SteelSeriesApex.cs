@@ -198,6 +198,7 @@ public sealed class SteelSeriesApex : IRgbDevice, IKeyMappedDevice, IHardwareMod
     {
         lock (_writeLock)
         {
+            if (_disposed) return false;   // queued behind Dispose: refuse quietly, per the contract
             // Retry mode setup before dedup: an accepted RGB report is not
             // visible until direct mode has been accepted too.
             if (_needInit)
@@ -268,6 +269,7 @@ public sealed class SteelSeriesApex : IRgbDevice, IKeyMappedDevice, IHardwareMod
     {
         lock (_writeLock)
         {
+            if (_disposed) return false;   // nothing can be sent through a closed handle
             var buf = new byte[_outputLen];
             buf[1] = PKT_ONBOARD;
             bool ok = _hid.Write(buf);
@@ -277,5 +279,23 @@ public sealed class SteelSeriesApex : IRgbDevice, IKeyMappedDevice, IHardwareMod
         }
     }
 
-    public void Dispose() => _hid.Dispose();
+    // The contract's shape: set under the write lock and re-checked under it.
+    // Dispose used to close the handle with no lock at all, so it could land
+    // in the middle of a frame - between the init and the colour report, or
+    // under a SetFeature in flight - and a write queued behind it went on to
+    // the closed handle and logged a refusal the keyboard never made.
+    bool _disposed;
+
+    public void Dispose()
+    {
+        // The old lock-free close also cancelled a SetFeature hung in the
+        // driver. Taking the lock alone would wait on it, with Rescan on the UI
+        // thread behind: cancel first, then the lock comes free.
+        _hid.CancelPending();
+        lock (_writeLock)
+        {
+            _disposed = true;
+            _hid.Dispose();
+        }
+    }
 }

@@ -11,7 +11,8 @@ namespace UnifiedRgb.Core.Devices;
 /// Colors go to the direct-color register (v2 0x8100 on DDR5) as R,B,G
 /// triples in 3-byte blocks with direct mode enabled (0x8020=1 + apply).
 /// Detection remaps each DIMM's controller from 0x77 to its own address
-/// (slot index 0x80F8 / address 0x80F9), then probes the candidate list.
+/// (slot index 0x80F8 / address 0x80F9) once it has identified as ENE with a
+/// read-only test, then probes the candidate list.
 /// Requires elevation (PawnIO).</summary>
 public sealed class EneDram : IRgbDevice, IHardwareModes
 {
@@ -79,7 +80,9 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
     bool _directOn;
     Rgb[]? _last;
     byte[]? _wireBuf;             // reused wire buffer (was allocated per frame)
-    bool _batchedBlocks = true;   // full-stick SMBus blocks; reverts on first host rejection
+    bool _batchedBlocks = true;   // full-stick SMBus blocks; reverts after repeated host rejections
+    int _blockRefusals;           // consecutive refused BLOCK writes (a failed select or a busy bus does not count)
+    const int BlockRefusalsBeforeFallback = 3;
 
     public string Name { get; }
     public string Vendor => "ENE";
@@ -137,28 +140,45 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
     bool RegWriteBlock(ushort reg, ReadOnlySpan<byte> data)
     {
         if (!_bus.WriteWordData(_addr, 0x00, Swap(reg))) return false;
-        if (_bus.WriteBlockData(_addr, 0x03, data)) return true;
+        var r = _bus.WriteBlockData(_addr, 0x03, data);
+        if (r == BlockWrite.Ok) return true;
+        // Busy, not refused: the bytes would queue on the same mutex another
+        // tool is holding, each for up to 2 s. Fail now. The frame path re-sends
+        // on its next call; the exit path (SetOnboardMode under HardwareExit's
+        // short budget) does not get another try, so a bus held past 2 s right
+        // at exit can leave this LED slot on its previous colour - where the
+        // byte fallback used to stretch an exit by tens of seconds instead.
+        if (r == BlockWrite.BusBusy) return false;
         // Fallback: byte-at-a-time through the auto-increment data register.
         foreach (var b in data)
             if (!_bus.WriteByteData(_addr, 0x01, b)) return false;
         return true;
     }
 
+    enum BlockResult { Ok, SelectFailed, BusBusy, BlockFailed }
+
     /// <summary>Block write with NO byte fallback — used by the batched color
     /// path so a host that rejects large blocks reports failure cleanly and the
-    /// caller can revert to small chunks instead of degrading to per-byte I/O.</summary>
-    bool TryBlock(ushort reg, ReadOnlySpan<byte> data)
+    /// caller can revert to small chunks instead of degrading to per-byte I/O.
+    /// Says WHICH half failed, and how: only a block the host refused says
+    /// anything about the host's block support.</summary>
+    BlockResult TryBlock(ushort reg, ReadOnlySpan<byte> data)
     {
-        if (!_bus.WriteWordData(_addr, 0x00, Swap(reg))) return false;
-        return _bus.WriteBlockData(_addr, 0x03, data);
+        if (!_bus.WriteWordData(_addr, 0x00, Swap(reg))) return BlockResult.SelectFailed;
+        return _bus.WriteBlockData(_addr, 0x03, data) switch
+        {
+            BlockWrite.Ok => BlockResult.Ok,
+            BlockWrite.BusBusy => BlockResult.BusBusy,
+            _ => BlockResult.BlockFailed,
+        };
     }
 
     /*-----------------------------------------------------*\
-    | Detection (OpenRGB's remap-then-probe sequence)       |
+    | Detection (OpenRGB's remap-then-probe sequence, with  |
+    | an identity check before the remap writes)            |
     \*-----------------------------------------------------*/
     public static List<IRgbDevice> DetectAll()
     {
-        var found = new List<IRgbDevice>();
         var bus = PawnSmbus.TryOpenAny();
         if (bus == null)
         {
@@ -179,15 +199,38 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
                 DetectionNotes.Report(nameof(EneDram), "RGB memory", BlockReason.Failed,
                     "PawnIO is installed and we are elevated, but no SMBus controller answered",
                     "your chipset may not be one of the two we support (AMD PIIX4, Intel I801)");
-            return found;
+            return new List<IRgbDevice>();
         }
+        return DetectOn(bus);
+    }
+
+    /// <summary>Remap and probe on an open bus, which the returned sticks then
+    /// own (the last one's Dispose closes it; with none found it is closed
+    /// here). Separate from DetectAll so the harness can run the real sequence
+    /// against a stand-in bus.</summary>
+    internal static List<IRgbDevice> DetectOn(PawnSmbus bus)
+    {
+        var found = new List<IRgbDevice>();
 
         // Remap: while a controller answers at the shared 0x77 address, assign
         // it (per slot) the next free address from the candidate list.
+        //
+        // Only once whatever answers there has IDENTIFIED as an ENE controller,
+        // with the same read-only test the probe below uses. OpenRGB's sequence
+        // writes the slot and address registers to anything that ACKs 0x77,
+        // and 0x77 is not reserved: on a board where something else sits there,
+        // that is a register write to an unidentified device - the one thing
+        // the detection contract (ADDING_A_DEVICE.md) forbids, and on SMBus
+        // the kind of write that can damage hardware.
         int addressIdx = -1;
         for (int slot = 0; slot < 8; slot++)
         {
             if (bus.ReadByte(0x77) < 0) break;
+            if (!TestForEne(bus, 0x77))
+            {
+                Log.Warn("EneDram", "a device answers at 0x77 but does not identify as an ENE controller - not remapping it");
+                break;
+            }
             do
             {
                 addressIdx++;
@@ -371,9 +414,9 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
             // instead of 16, each of which took the machine-wide SMBus mutex
             // and a kernel ioctl. Matches OpenRGB's ENERegisterWriteBlock.
             // Self-healing: if this host rejects large blocks (the old code's
-            // comment suggests one once did), the FIRST failure flips this
-            // stick back to the proven 3-byte chunks and repaints the same
-            // frame through the legacy path.
+            // comment suggests one once did), a refused block repaints the
+            // same frame through the proven 3-byte chunks, and a few refusals
+            // IN A ROW flip this stick to them for good.
             var buf = _wireBuf ??= new byte[_ledCount * 3];
             for (int i = 0; i < _ledCount; i++)
             {
@@ -391,19 +434,41 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
             // identical frame after it - the engine's once-a-second keepalive
             // included - was deduped away. The stick sat on stale colors until
             // the color changed or a rescan.
-            bool landed = false;
+            bool landed = false, viaChunks = !_batchedBlocks;
+            var r = BlockResult.Ok;
             if (_batchedBlocks)
             {
-                landed = true;
-                for (int off = 0; off < buf.Length && landed; off += 30)   // 30 = 10 LEDs, under the 32 B SMBus cap
-                    landed = TryBlock((ushort)(_directReg + off), buf.AsSpan(off, Math.Min(30, buf.Length - off)));
-                if (!landed)
+                for (int off = 0; off < buf.Length && r == BlockResult.Ok; off += 30)   // 30 = 10 LEDs, under the 32 B SMBus cap
+                    r = TryBlock((ushort)(_directReg + off), buf.AsSpan(off, Math.Min(30, buf.Length - off)));
+                landed = r == BlockResult.Ok;
+                if (landed) _blockRefusals = 0;
+                else if (r == BlockResult.BlockFailed)
                 {
-                    _batchedBlocks = false;
-                    Log.Warn("EneDram", $"host rejected batched block write at 0x{_addr:X2} - reverting to 3-byte chunks");
+                    // The select landed and the host REFUSED the block: the one
+                    // failure that says something about block support. Any
+                    // failure used to flip the stick for good, so a single
+                    // select timed out behind another tool's 2 s hold on the
+                    // bus cost 8x the SMBus traffic for the rest of the
+                    // session, logged as the host rejecting blocks.
+                    viaChunks = true;   // this frame still goes out, the proven way
+                    if (++_blockRefusals >= BlockRefusalsBeforeFallback)
+                    {
+                        _batchedBlocks = false;
+                        Log.Warn("EneDram", $"host refused {_blockRefusals} batched block writes in a row at 0x{_addr:X2} - reverting to 3-byte chunks");
+                    }
                 }
+                // SelectFailed: the bus was busy or the stick NAKed the register
+                // select. BusBusy: the select landed, then another tool took
+                // the bus (a hardware monitor polling between our two
+                // transactions) and held it past the wait, so the block never
+                // went out. Both are transient and nothing to do with blocks:
+                // the frame is refused below and re-sent whole on the next
+                // call. BusBusy used to count as a refusal, so three frames
+                // that met a busy monitor flipped the stick to 3-byte chunks
+                // for the session - 8x the bus traffic, on exactly the bus
+                // that was already contended.
             }
-            if (!_batchedBlocks)
+            if (viaChunks)
             {
                 landed = true;
                 for (int off = 0; off < buf.Length; off += 3)
@@ -414,8 +479,11 @@ public sealed class EneDram : IRgbDevice, IHardwareModes
                     if (!RegWriteBlock((ushort)(_directReg + off), buf.AsSpan(off, 3))) { landed = false; break; }
             }
             if (!landed)
-                return WritePolicy.Refused(ref _last, $"ene:{_addr:X2}:frame", "EneDram",
-                    $"color write failed at 0x{_addr:X2} - the frame will be re-sent on the next call");
+                return r == BlockResult.BusBusy
+                    ? WritePolicy.Refused(ref _last, $"ene:{_addr:X2}:busy", "EneDram",
+                        $"another program held the SMBus past the wait at 0x{_addr:X2} - the frame will be re-sent on the next call")
+                    : WritePolicy.Refused(ref _last, $"ene:{_addr:X2}:frame", "EneDram",
+                        $"color write failed at 0x{_addr:X2} - the frame will be re-sent on the next call");
 
             // Don't dedup a frame written while direct mode is still off, and
             // do not call it delivered either: the color bytes were accepted

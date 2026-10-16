@@ -18,8 +18,8 @@ namespace UnifiedRgb.App.Services;
 | Threading: everything here except the render worker    |
 | and the applier lane runs on the UI thread - Rebake    |
 | (timer tick), ForgetSignatures / Invalidate / Stop     |
-| (view-model calls) and the unconfirmed-animation       |
-| handler (marshalled). _lastSig and _retried are plain  |
+| (view-model calls) and the (un)confirmed-animation     |
+| handlers (marshalled). _lastSig and _misses are plain  |
 | collections for that reason; _gen is concurrent        |
 | because the worker and the applier lane read it.       |
 \*-----------------------------------------------------*/
@@ -49,19 +49,38 @@ public sealed class LianBakeService
     // a state that no longer wants it. Entries are never removed: an in-flight
     // task looks its device up here and a missing key would read as "current".
     readonly ConcurrentDictionary<LianLiWireless, int> _gen = new();
-    // The handler subscribed to each device's AnimationUnconfirmed, kept so the
-    // next bake can unsubscribe exactly that delegate before re-subscribing
-    // (an Action closure cannot be found again by value).
-    readonly Dictionary<LianLiWireless, Action> _unconfirmed = new();
+    // The handlers subscribed to each device's AnimationUnconfirmed and
+    // AnimationConfirmed, kept so the next bake can unsubscribe exactly those
+    // delegates before re-subscribing (a closure cannot be found again by value).
+    readonly Dictionary<LianLiWireless, (Action Unconfirmed, Action Confirmed)> _handlers = new();
     // The generation whose upload has actually REACHED the device (set on the
     // applier lane right before UploadAnimation). A device's unconfirmed event
     // can only be about an upload that happened; one that fires between a new
     // bake's subscribe and its upload belongs to the previous upload and must
     // not spend the new bake's retry.
     readonly ConcurrentDictionary<LianLiWireless, int> _uploaded = new();
-    // Devices whose current bake is already the one retry after an
-    // unconfirmed upload; a second failure hands them back to streaming.
-    readonly HashSet<LianLiWireless> _retried = new();
+
+    /// <summary>What a device's fans have NOT taken: the bake signature whose
+    /// uploads went unconfirmed, how many did since it last confirmed, and
+    /// when it may be uploaded again. Per signature, not per device: an
+    /// effect too dense to land in one RF burst never confirms while a simpler
+    /// one does, so a new effect always gets its own tries.</summary>
+    sealed class Misses
+    {
+        public string Sig = "";
+        public int Count;
+        public long RetryAtMs;
+    }
+    readonly Dictionary<LianLiWireless, Misses> _misses = new();
+
+    /// <summary>The wait after the first whole round (an upload and its one
+    /// retry) of a signature goes unconfirmed. Each further round doubles it,
+    /// up to the cap. Settable only for the harness.</summary>
+    internal static long UnconfirmedBackoffMs = 60_000;
+    internal static long UnconfirmedBackoffCapMs = 30 * 60_000;
+
+    internal static long BackoffFor(int rounds)
+        => Math.Min(UnconfirmedBackoffCapMs, UnconfirmedBackoffMs << Math.Clamp(rounds - 1, 0, 30));
 
     public LianBakeService(LightingController lighting, Func<IEnumerable<LianLiWireless>> devices)
     {
@@ -99,12 +118,38 @@ public sealed class LianBakeService
     {
         foreach (var dev in _gen.Keys) Bump(dev);
         _lastSig.Clear();
-        _retried.Clear();
+        _misses.Clear();
     }
 
     /// <summary>Stop the debounce AND abandon outstanding bakes: a Stop is a
     /// shutdown, and nothing baked after it may reach the hardware.</summary>
     public void Stop() { _timer?.Stop(); Invalidate(); }
+
+    /// <summary>The lights are going off: abandon every bake still rendering
+    /// or queued, so none uploads its animation after the black frame and
+    /// relights the fans on a locked desk. Unlike Invalidate the signatures
+    /// and the unconfirmed-upload record stay - nothing about the settings
+    /// changed, and the black frame itself clears AnimationActive, so the
+    /// restore re-uploads them.</summary>
+    public void CancelInFlight()
+    {
+        _timer?.Stop();
+        foreach (var dev in _gen.Keys) Bump(dev);
+    }
+
+    /// <summary>An SDK client took this device: abandon its bake in flight
+    /// (still rendering, or its upload queued), so the takeover is not
+    /// answered a moment later by the animation landing over the client's
+    /// picture. The signature stays, like CancelInFlight: the client's frames
+    /// cancel the animation in hardware, and the release re-uploads it.</summary>
+    public void Cancel(LianLiWireless dev) => Bump(dev);
+
+    /// <summary>Asked right before an upload reaches the fans: true while the
+    /// lights are meant to be off (MainViewModel.LightsSuppressed). The
+    /// generation check already drops every bake LightsOff cancelled; this
+    /// keeps any later path that starts one during the dark window from
+    /// lighting the fans.</summary>
+    internal Func<bool>? Suppressed { get; set; }
 
     /// <summary>Drop every device instance a Rescan has replaced: unsubscribe
     /// its handler and forget its generation, signature and marks. Each Rescan
@@ -117,11 +162,11 @@ public sealed class LianBakeService
         var current = new HashSet<LianLiWireless>(_devices());
         foreach (var dev in _gen.Keys.Where(d => !current.Contains(d)).ToList())
         {
-            if (_unconfirmed.Remove(dev, out var handler)) dev.AnimationUnconfirmed -= handler;
+            Unsubscribe(dev);
             _gen.TryRemove(dev, out _);
             _uploaded.TryRemove(dev, out _);
             _lastSig.Remove(dev);
-            _retried.Remove(dev);
+            _misses.Remove(dev);
         }
     }
 
@@ -220,8 +265,9 @@ public sealed class LianBakeService
         return key.ToString();
     }
 
-    /// <summary><paramref name="retry"/> preserves the device's retry mark;
-    /// only a new bake request gives the next edit its own retry.</summary>
+    /// <summary><paramref name="retry"/> is the one immediate retry after an
+    /// unconfirmed upload: part of a round that was already let through, so
+    /// the unconfirmed backoff does not apply to it.</summary>
     void Rebake(LianLiWireless dev, bool retry = false)
     {
         var engine = _lighting.Engine;
@@ -241,11 +287,37 @@ public sealed class LianBakeService
         // motion / density / direction / tail / own palette): an edit to those
         // re-requested a bake, this check called it unchanged, and the fans
         // kept the old animation while the preview showed the new one.
+        //
+        // "Unchanged" also needs the animation to still be ON the fans. Any
+        // static frame cancels it in hardware (LightsOff's black, the unlock
+        // restore, identify's put-back), and none of those paths clears the
+        // signature - so the same effect asked for again afterwards matched,
+        // nothing was uploaded, and the fans sat static or black while the
+        // preview animated. The device knows whether it is still playing - and
+        // "playing" includes an upload still awaiting the fans' confirmation,
+        // so a re-request inside that window is not a second upload either.
         var baseFrame = (Rgb[])_lighting.FrameFor(dev).Clone();
         string sig = BakeSignature(channels, baseFrame, dev.Name);
-        if (dev.SuppressStreaming && _lastSig.TryGetValue(dev, out var prev) && prev == sig) return;
+        if (dev.SuppressStreaming && dev.AnimationActive
+            && _lastSig.TryGetValue(dev, out var prev) && prev == sig) return;
+
+        // These exact settings went a whole round unconfirmed not long ago.
+        // AnimationActive went false when the confirm deadline lapsed, so the
+        // check above no longer holds them back, and every rebake request -
+        // a profile re-applied, an unlock, identify's put-back - used to cost
+        // another upload and its retry: twelve seconds of RF resends and the
+        // fans flipping between a restarted animation and streaming. Until
+        // the backoff runs out they are streamed, which shows the effect.
+        // Streaming, never suppressed-and-skipped: that is what keeps D1 -
+        // the fans can not be left static or black behind a skipped bake,
+        // because the engine is painting them.
+        if (!retry && _misses.TryGetValue(dev, out var miss) && miss.Sig == sig
+            && Environment.TickCount64 < miss.RetryAtMs)
+        {
+            if (dev.SuppressStreaming) StreamInstead(dev, "these settings were not confirmed by the fans recently - streaming them");
+            return;
+        }
         _lastSig[dev] = sig;
-        if (!retry) _retried.Remove(dev);
 
         // One window that every channel closes on; none means a faithful
         // stream beats a popping bake.
@@ -277,7 +349,7 @@ public sealed class LianBakeService
         // still never touches stored state.
         Master.Finish(dev, baseFrame);
         int myGen = _gen.AddOrUpdate(dev, 1, (_, g) => g + 1);
-        Subscribe(dev, myGen);
+        Subscribe(dev, myGen, sig);
         // Bake from the clock's current phase so the fans' frame 0 is the same
         // point in the cycle the streamed devices are on (red right after an All-
         // devices restart). No look-ahead: on a restart we want them to START on
@@ -321,15 +393,41 @@ public sealed class LianBakeService
                 // The upload is paced (many RF packets, sleeps between them) - run it
                 // on the device lane. Keyed so a fresh bake supersedes a still-queued
                 // one; the generation check drops an out-of-date bake entirely.
+                //
+                // moveToEnd, like every other static-intent post: a re-posted key
+                // otherwise keeps its FIRST slot in the lane, so this upload could
+                // run before a static frame queued after the earlier bake - and
+                // that frame would then cancel the newer animation it preceded.
                 double frameMs = T * 1000.0 / N;
                 _lighting.Applier.Post(LightingController.LaneOf(dev), (dev, "anim"), () =>
                 {
-                    // Missing = superseded too: Prune drops a replaced instance's
-                    // generation, and a bake for it must never reach the hardware.
-                    if (!_gen.TryGetValue(dev, out int cur) || cur != myGen) return;
-                    _uploaded[dev] = myGen;   // from here an unconfirmed event can be about THIS bake
-                    dev.UploadAnimation(frames, frameMs);
-                });
+                    // Under the device's write gate, the boundary every other
+                    // hardware write shares with the effect workers: a worker's
+                    // straggler frame landing after the upload is a static frame,
+                    // and it would cancel the animation on the fans.
+                    //
+                    // And everything that decides WHETHER to upload is asked
+                    // inside it, at the moment of writing. Asked before taking
+                    // it, an upload waiting there for a slow write could pass
+                    // every check, then a lights-off or a client's takeover
+                    // land, and the animation still go out after them.
+                    lock (EffectEngine.WriteGateFor(dev))
+                    {
+                        // Missing = superseded too: Prune drops a replaced instance's
+                        // generation, and a bake for it must never reach the hardware.
+                        if (!_gen.TryGetValue(dev, out int cur) || cur != myGen) return;
+                        if (Suppressed?.Invoke() == true) return;
+                        // A client owns the device: the claim is the fact that
+                        // matters, whatever else bumped or did not bump the
+                        // generation (the takeover does, through Cancel). A
+                        // claim landing after this point is safe: its frames
+                        // queue behind this job on the same lane and replace
+                        // the loop.
+                        if (_lighting.IsClientOwned(dev)) return;
+                        _uploaded[dev] = myGen;   // from here an unconfirmed event can be about THIS bake
+                        dev.UploadAnimation(frames, frameMs);
+                    }
+                }, moveToEnd: true);
             }
             catch (Exception ex)
             {
@@ -353,26 +451,45 @@ public sealed class LianBakeService
         });
     }
 
-    /// <summary>Listen for the device giving up on this bake's upload.
-    /// Idempotent per device: the previous handler is removed first, so a
-    /// device only ever carries one and it closes over the CURRENT generation.</summary>
-    void Subscribe(LianLiWireless dev, int gen)
+    /// <summary>Listen for the device's verdict on this bake's upload.
+    /// Idempotent per device: the previous handlers are removed first, so a
+    /// device only ever carries one pair and it closes over the CURRENT
+    /// generation and signature.</summary>
+    void Subscribe(LianLiWireless dev, int gen, string sig)
     {
-        if (_unconfirmed.TryGetValue(dev, out var old)) dev.AnimationUnconfirmed -= old;
-        // Fires on the device's telemetry thread; everything the service owns
-        // is UI-thread state, so marshal before touching any of it.
-        Action handler = () => _ui.BeginInvoke(() => OnUnconfirmed(dev, gen));
-        _unconfirmed[dev] = handler;
-        dev.AnimationUnconfirmed += handler;
+        Unsubscribe(dev);
+        // Both fire on the device's telemetry thread; everything the service
+        // owns is UI-thread state, so marshal before touching any of it.
+        Action unconfirmed = () => _ui.BeginInvoke(() => OnUnconfirmed(dev, gen, sig));
+        Action confirmed = () => _ui.BeginInvoke(() => OnConfirmed(dev, gen, sig));
+        _handlers[dev] = (unconfirmed, confirmed);
+        dev.AnimationUnconfirmed += unconfirmed;
+        dev.AnimationConfirmed += confirmed;
+    }
+
+    void Unsubscribe(LianLiWireless dev)
+    {
+        if (!_handlers.Remove(dev, out var old)) return;
+        dev.AnimationUnconfirmed -= old.Unconfirmed;
+        dev.AnimationConfirmed -= old.Confirmed;
     }
 
     /// <summary>The fans never confirmed the upload (RF loss for the whole
-    /// resend window). Before this hook the device stayed on SuppressStreaming
-    /// with the signature cached, so the same settings were skipped forever
-    /// and the fans sat frozen on the previous animation. Retry the bake once
-    /// (UploadAnimation's hash was reset by the device, so identical frames go
-    /// out again); a second failure falls back to streaming.</summary>
-    void OnUnconfirmed(LianLiWireless dev, int gen)
+    /// resend window, or a receiver whose read-back never answers). Before the
+    /// first hook here the device stayed on SuppressStreaming with the
+    /// signature cached, so the same settings were skipped forever and the
+    /// fans sat frozen on the previous animation.
+    ///
+    /// A round is one upload and one immediate retry (UploadAnimation's hash
+    /// was reset by the device, so identical frames go out again). A round
+    /// that ends unconfirmed hands the device to streaming AND holds these
+    /// settings back from the next upload for a while, doubling each round:
+    /// without that, a receiver that never confirms got the whole round again
+    /// on every rebake request. The count is kept per signature and survives
+    /// new requests for the same settings - it used to be a per-device mark
+    /// that any request reset, so requests arriving between a lapse and this
+    /// handler restarted the round and it never ended.</summary>
+    void OnUnconfirmed(LianLiWireless dev, int gen, string sig)
     {
         // Stale if anything moved on since this bake: a newer bake, a static
         // apply, a Rescan or shutdown (Invalidate bumps every device). That
@@ -387,14 +504,32 @@ public sealed class LianBakeService
         // bake's single retry and drop its upload as "superseded" before it
         // ever went out.
         if (!_uploaded.TryGetValue(dev, out int up) || up != gen) return;
-        if (_retried.Add(dev))
+        if (!_misses.TryGetValue(dev, out var miss) || miss.Sig != sig)
+            _misses[dev] = miss = new Misses { Sig = sig };
+        if (++miss.Count % 2 == 1)
         {
             Log.Warn("LianBake", "animation not confirmed by the fans - retrying the bake once");
             _lastSig.Remove(dev);   // or the retry short-circuits on "unchanged"
             Rebake(dev, retry: true);
             return;
         }
-        _retried.Remove(dev);       // the next user edit gets a fresh attempt + retry
+        int rounds = miss.Count / 2;
+        long wait = BackoffFor(rounds);
+        miss.RetryAtMs = Environment.TickCount64 + wait;
+        Log.Occasional($"lianbake:unconfirmed:{dev.Name}", "LianBake",
+            $"{dev.Name}: the fans have not confirmed these settings in {rounds} round(s) of upload and retry - "
+            + $"streaming them instead, and not uploading them again for {wait / 1000} s");
         StreamInstead(dev, "animation not confirmed twice - falling back to streaming");
+    }
+
+    /// <summary>The fans took this bake's upload: whatever these settings
+    /// missed before was the air, not the effect, so the count starts over.
+    /// Only for an upload of ours that reached the device - a confirmation
+    /// arriving between a newer bake's subscribe and its upload is about the
+    /// previous upload, not this signature.</summary>
+    void OnConfirmed(LianLiWireless dev, int gen, string sig)
+    {
+        if (!_uploaded.TryGetValue(dev, out int up) || up != gen) return;
+        if (_misses.TryGetValue(dev, out var miss) && miss.Sig == sig) _misses.Remove(dev);
     }
 }

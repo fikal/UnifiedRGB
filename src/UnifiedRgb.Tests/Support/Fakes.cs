@@ -232,14 +232,6 @@ sealed class FakeHid : UnifiedRgb.Core.Native.IHidTransport
     public bool GetInputReport(byte[] report) => GetFeature(report);
     public void Dispose() => IsDisposed = true;
 
-    /// <summary>A HID++ long reply that Query will accept: echoes the feature
-    /// index and software id so the driver's matcher takes it.</summary>
-    public static byte[] HidppReply(byte featIdx, byte swId = 0x07)
-    {
-        var r = new byte[20];
-        r[0] = 0x11; r[1] = 0xFF; r[2] = featIdx; r[3] = swId;
-        return r;
-    }
 }
 
 /// <summary>Constant-color effect with a render counter and a settable
@@ -270,8 +262,17 @@ sealed class FakePersistDevice : IRgbDevice, IPersistableLighting
     public IReadOnlyList<RgbZone> Zones => new[] { new RgbZone { Name = "All", Offset = 0, Count = LedCount } };
     public Rgb[]? Last;
     public int Persists;
+    /// <summary>What each successful save stored.</summary>
+    public readonly List<Rgb[]> Stored = new();
     public bool SetColors(IReadOnlyList<Rgb> colors) { Last = colors.ToArray(); return true; }
-    public bool PersistCurrentColor() { Persists++; return true; }
+    /// <summary>The real drivers' contract: only what it was last sent.</summary>
+    public bool PersistColor(IReadOnlyList<Rgb> showing)
+    {
+        if (Last == null || !Last.SequenceEqual(showing)) return false;
+        Persists++;
+        Stored.Add(showing.ToArray());
+        return true;
+    }
     public void InvalidateCache() { }
     public void Dispose() { }
 }

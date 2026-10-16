@@ -21,20 +21,45 @@ public static class PawnIoInstaller
         get { try { return PawnIO.IsAvailable; } catch { return false; } }
     }
 
+    /// <summary>Where the installer is staged: a folder only administrators can
+    /// write (ProtectedFolder), under %ProgramData%\UnifiedRgb.
+    ///
+    /// It used to be %TEMP%. The handle below kept the exe itself from being
+    /// swapped, but the folder stayed writable by every process of the user,
+    /// and the Windows loader looks for an exe's DLLs in the exe's OWN folder
+    /// first - so anything could drop a DLL beside the installer under the name
+    /// of one it imports and have it run elevated, inside the process that
+    /// installs a kernel driver.</summary>
+    internal static string StagingDir => AppPaths.Machine("pawnio-setup");
+
+    /// <summary>Make the staging folder exist with its administrators-only
+    /// ACL. False, with the reason, when it cannot be made or verified; the
+    /// caller then does not install at all (fail closed, like the bundled
+    /// OpenRGB).</summary>
+    internal static bool PrepareStaging(out string? why)
+        => ProtectedFolder.Ensure(AppPaths.MachineDir, out why)
+           && ProtectedFolder.Ensure(StagingDir, out why);
+
     public static async Task<bool> InstallAsync(Action<string>? status = null)
     {
         try
         {
+            if (!PrepareStaging(out string? why))
+            {
+                Log.Warn("pawnio", $"no administrators-only folder to stage the installer in ({why}) - not running it");
+                status?.Invoke("PawnIO install refused: could not make a protected folder for the installer");
+                return false;
+            }
             status?.Invoke("downloading PawnIO installer...");
-            string path = Path.Combine(Path.GetTempPath(), $"PawnIO_setup-{Guid.NewGuid():N}.exe");
+            string path = Path.Combine(StagingDir, $"PawnIO_setup-{Guid.NewGuid():N}.exe");
             try
             {
                 using (var http = new HttpClient { Timeout = TimeSpan.FromMinutes(3) })
                     await File.WriteAllBytesAsync(path, await http.GetByteArrayAsync(Url));
-                // %TEMP% is writable by every same-user process, so a file that is
-                // verified by path and launched by path later can be swapped in
-                // between (the per-attempt name only hides it from a fixed-path
-                // watcher). Hold a read handle with no write/delete sharing from
+                // Kept although the folder is now administrators-only: a file that
+                // is verified by path and launched by path later must be the same
+                // file at both moments, whoever else on the machine can write
+                // there. Hold a read handle with no write/delete sharing from
                 // before the signature check until the last launch has returned:
                 // CreateProcess's read/execute open is compatible with it, while
                 // any rewrite, rename or delete of the file gets a sharing violation.
@@ -85,7 +110,7 @@ public static class PawnIoInstaller
             finally
             {
                 // Refused, finished, timed out or only partly downloaded: don't
-                // leave a multi-MB installer per attempt in %TEMP%. Fails
+                // leave a multi-MB installer per attempt in the staging folder. Fails
                 // harmlessly while a timed-out installer still has the image
                 // mapped, and is a no-op when the download never created the file.
                 try { File.Delete(path); } catch { }

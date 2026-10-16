@@ -253,6 +253,18 @@ mode returns false rather than pretending.
 - **Never probe hardware you have not positively identified with a write.** A
   receiver was soft-bricked once by an exploratory packet. Initialisation
   writes are fine, but only to a VID/PID you matched exactly.
+- The one exception is a **read-only query the vendor's protocol defines for
+  identification**, sent on the vendor's own protocol interface. Logitech's
+  detection does this: it asks HID++ IRoot "which index is feature 0x8070 /
+  0x8071?" on every Logitech collection with the HID++ usage page (0xFF00),
+  whatever the PID, because gating by PID would drop every mouse not on a
+  list. Such a query changes no state on any device that speaks the protocol,
+  and a device that does not simply never answers it. A query that SETS
+  anything - a mode, a register, an address - is a write, and the rule above
+  applies.
+- On a shared bus (SMBus) there is no VID/PID: identify the device with reads
+  before any write to its address. ENE detection reads the identity window
+  (0xA0-0xAF) at 0x77 before it writes the remap registers there.
 
 ### The optional interfaces
 
@@ -341,8 +353,9 @@ Before opening the PR:
 - [ ] `IHardwareModes` methods, if implemented, return whether the command
       landed
 - [ ] Persist-to-flash, if any, is rare and never per frame
-- [ ] Detection never writes to unidentified hardware; blocked hardware is
-      reported through `DetectionNotes`
+- [ ] Detection never writes to unidentified hardware (a protocol-defined,
+      read-only identification query is the only exception); blocked
+      hardware is reported through `DetectionNotes`
 - [ ] Registered as a static method on the driver class; added to `LaneOf`
       if it shares a bus
 - [ ] Safe to call after `Dispose`; `Dispose` never throws

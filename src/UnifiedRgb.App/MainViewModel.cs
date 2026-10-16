@@ -121,7 +121,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // A calibration session drives device INSTANCES a rescan would replace,
         // and an SDK client's claims would all drop at once - the same two
         // reasons the recovery policy defers, so do not even ask.
-        if (Services.CalibrationAid.AnyActive || Devices.Any(d => _sdkHeld.Contains(d) || _lighting.IsClaimed(d))) return;
+        if (Services.CalibrationAid.AnyActive || Devices.Any(d => _lighting.IsClientOwned(d))) return;
         _sleepProbeRunning = true;
         // Feature exchanges with a reply wait: never on the UI thread.
         Task.Run(() =>
@@ -150,7 +150,17 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     \*-----------------------------------------------------*/
     sealed class TargetFx
     {
-        public EffectChoice? Choice;
+        /// <summary>A different effect drops Extra: the unknown fields a newer
+        /// build wrote belong to the entry for the effect they were saved with,
+        /// and handing one effect's fields to another (Rainbow Wave's onto a
+        /// Breathing started on the same range later) is how they came back on
+        /// a brand-new profile. The same effect re-applied keeps them.</summary>
+        public EffectChoice? Choice
+        {
+            get => _choice;
+            set { if (!ReferenceEquals(value, _choice)) Extra = null; _choice = value; }
+        }
+        EffectChoice? _choice;
         public PatternEffect? Pattern;
         public KeyRipple? Ripple;
         public Taichi? Taichi;
@@ -179,6 +189,13 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         /// the client lets go, and CaptureEffects records it so a profile saved
         /// meanwhile keeps the choice rather than filing the device as static.</summary>
         public Rgb? HeldBase;
+        /// <summary>The fields a newer build wrote on the saved entry this range
+        /// was restored from (EffectAssignment.Extra), handed back by
+        /// CaptureEffects. Kept on the range rather than looked up again at save
+        /// time because the range is where the entry lives now: a layout change
+        /// re-anchors it to new LED numbers, and a rescan or an automation
+        /// round trip rebuilds the entry from here.</summary>
+        public Dictionary<string, System.Text.Json.JsonElement>? Extra;
     }
 
     // Direction is expressed as the sign of the speed the engine runs at: a
@@ -702,8 +719,11 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         var colors = CurrentFx().Palette.Select(c => c.ToHex()).ToArray();
         if (colors.Length == 0) return;
         var list = _store.Settings.SavedPalettes ??= new();
+        // Overwriting builds a new entry, so the replaced one's unknown fields
+        // are carried across by name, as a re-saved profile's are (Profile.Extra).
+        var replaced = list.FirstOrDefault(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
         list.RemoveAll(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));   // overwrite same name
-        list.Add(new SavedPalette { Name = name, Colors = colors });
+        list.Add(new SavedPalette { Name = name, Colors = colors, Extra = replaced?.Extra });
         _store.SaveSettings();
     }
 
@@ -848,8 +868,75 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         _persistTimer.Stop(); _persistTimer.Start();
     }
 
+    /// <summary>An automation rule's profile is what the desk shows (a game's
+    /// app rule, a sensor rule, a scheduled profile), and the user has not
+    /// changed it since. Set and cleared by the AutomationService.</summary>
+    internal bool RuleOwnsLighting { get; set; }
+
+    /*--- devices that drop our lighting on their own (ISelfRevertingLighting) ---*/
+
+    // An MSI GPU's RGB controller goes back to its own mode after a graphics
+    // driver reset, and nothing tells us: during a dark window the card lit up
+    // and stayed lit, and in the day it showed its rainbow under a static colour
+    // until the next change. A display change (which a driver reset usually
+    // raises) asks at once; the minute timer catches a reset that raises none.
+    // It only runs while such a device is present, and each tick is one
+    // register read per device, written to only when it really reverted.
+    DispatcherTimer? _revertWatch;
+    const int RevertCheckMs = 60_000;
+
+    void StartRevertWatch()
+    {
+        _revertWatch = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(RevertCheckMs) };
+        _revertWatch.Tick += (_, _) => CheckForReverts();
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+        SyncRevertWatch();
+    }
+
+    /// <summary>Run the minute check only while a device that needs it is
+    /// present (after every detect).</summary>
+    void SyncRevertWatch()
+    {
+        if (_revertWatch == null) return;
+        if (Devices.Any(d => d is ISelfRevertingLighting)) { if (!_revertWatch.IsEnabled) _revertWatch.Start(); }
+        else _revertWatch.Stop();
+    }
+
+    // A display change is what a driver reset usually raises: a card that
+    // cannot say whether it reverted is written again then, unasked.
+    void OnDisplaySettingsChanged(object? sender, EventArgs e) =>
+        _dispatcher.BeginInvoke(() => { if (_revertWatch != null) _lighting.RepairReverts(Devices.ToList(), likelyReset: true); });
+
+    void CheckForReverts() => _lighting.RepairReverts(Devices.ToList());
+
     void PersistSettledLighting()
     {
+        // Only the user's own settled lighting is worth putting in flash. The
+        // timer is restarted by EVERY static push, and three kinds of those are
+        // not the user's colour:
+        //  - lights off (lock, a dark window): the devices show black, and a
+        //    lock within 30 s of a restore stored BLACK onboard - the mouse then
+        //    woke dark after a shutdown, the exact failure this save exists for;
+        //  - the calibration aid's reference patches;
+        //  - a playing show's steps - transient by design, and a show stepping
+        //    every 30 s or more wrote flash on every step, forever.
+        //
+        // Those three are the obvious cases. The one that cost a mouse its
+        // colour was not on the list: a device still showing the lights-off
+        // black AFTER the suppression had been lifted (a hand edit in a dark
+        // window relit only the edited device). So what is stored is no longer
+        // "whatever the driver last sent": it is the user's STORED colour, and
+        // only once the write boundary knows the device is showing exactly that
+        // (LightingController.PersistStoredColor, which also runs on the
+        // device's lane under its write gate, where nothing can draw between
+        // the check and the store).
+        if (LightsSuppressed || Services.CalibrationAid.AnyActive || ShowOwnsLighting) return;
+        // A rule's profile is not the user's own lighting either (Ryan's call,
+        // 10/15): the mouse's stored colour is what it shows with the app
+        // closed, and that should be the lighting they chose, not whatever a
+        // game rule had up when it was saved. Once they change the lighting
+        // during the rule, it is theirs again (AutomationService clears this).
+        if (RuleOwnsLighting) return;
         foreach (var d in Devices)
         {
             if (d is not IPersistableLighting p) continue;
@@ -858,9 +945,8 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             if (_engine.ChannelsFor(d).Count > 0) continue;
             // A device an SDK client holds is showing the client's picture, not
             // the user's - storing that would outlive the client.
-            if (_sdkHeld.Contains(d) || _lighting.IsClaimed(d)) continue;
-            try { p.PersistCurrentColor(); }
-            catch (Exception ex) { UnifiedRgb.Core.Log.Warn("lighting", $"{d.Name}: storing the colour failed: {ex.Message}"); }
+            if (_lighting.IsClientOwned(d)) continue;
+            _lighting.PersistStoredColor(d, p);
         }
     }
 
@@ -1044,7 +1130,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         if (LightsSuppressed) return;
         foreach (var d in Devices)
         {
-            if (_sdkHeld.Contains(d) || _lighting.IsClaimed(d)) continue;
+            if (_lighting.IsClientOwned(d)) continue;
             // The Lian Li handles brightness via re-baking (a direct SetColors
             // would interrupt a playing hardware animation). Only trust the flag
             // while a channel is actually running: a static "All devices" leaves
@@ -1052,8 +1138,11 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             if (d is LianLiWireless { SuppressStreaming: true } && _engine.ChannelsFor(d).Count > 0) continue;
             _lighting.PushFrame(d);
         }
-        // Brightness is applied inside the bake render, not in its dedup
-        // signature - forget the last upload or the fans keep the old level.
+        // Brightness and the calibration trim are both IN the bake's dedup
+        // signature (LianBakeService.BakeSignature), so the rebake below sees a
+        // changed signature and re-uploads on its own. (This used to say the
+        // opposite.) Forgetting the signatures as well makes that unconditional:
+        // one extra upload per change, against any input the key ever misses.
         _bake.ForgetSignatures();
         RequestLianRebake();
     }
@@ -1096,8 +1185,10 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     string? _appliedProfile;
 
     /// <summary>The name of the profile the lighting currently is, or null for
-    /// ad-hoc lighting. The SDK host reads it to tell whether the desk moved on
-    /// while a client held a device.</summary>
+    /// ad-hoc lighting. Read-only view of _appliedProfile for the harness; the
+    /// app's own readers (the show's "already on" check, CaptureState) use the
+    /// field. (This was documented as read by the SDK host; nothing there reads
+    /// it.)</summary>
     public string? AppliedProfileName => _appliedProfile;
 
     public void ApplyProfileByIndex(int i)
@@ -1411,10 +1502,11 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             if (choice.Effect is { } fx)
             {
                 var starterBase = new Rgb(255, 255, 255);
-                bool blocked = EffectBlockedByClient(d);
+                bool blocked = EffectBlocked(d);
                 tfx.HeldBase = blocked ? starterBase : null;
                 tfx.Channel = blocked ? null
                             : _engine.Start(d, 0, d.LedCount, FrameFor(d), fx, 1.0, starterBase);
+                if (!blocked) _lighting.NoteOtherWrite(d);
             }
             else
             {
@@ -1482,7 +1574,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             ReadWallpaperProfile = () => null;
             ApplyWallpaperProfile = _ => false;
         }
-        _bake = new Services.LianBakeService(_lighting, () => Devices.OfType<LianLiWireless>());
+        _bake = new Services.LianBakeService(_lighting, () => Devices.OfType<LianLiWireless>()) { Suppressed = () => LightsSuppressed };
         _battery = new Services.BatteryMonitor(_lighting.Applier, () => Devices, RefreshBatterySubtitles);
         // Before anything renders: the layout decides what coordinates every
         // effect sees, and an LED override applies whether the desk is on or not.
@@ -1491,6 +1583,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             isGigabyteBoard: () => Devices.OfType<GigabyteIt5711>().Any(),
             pawnIoMissing: () => PawnIoMissing,
             isOnScreen: () => ShowCoolingPanel);
+        if (startServices) CoolingViewModel.UseForCrashPath(() => _store.Settings);
         Lcd = new LcdDesignerViewModel(
             isOnScreen: () => ShowLcdPanel);   // visibility, not selection: Settings covers the pane
 
@@ -1636,22 +1729,25 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // mutating itself (see LianLiUniHub.Tick).
         LianLiUniHub.LayoutFileChanged += OnUniHubLayoutFileChanged;
         if (!startServices) { _initializing = false; return; }
+        // Locked, or inside a dark window, at launch: dark from the very first
+        // write. The automation is created after this view model and used to
+        // tick only two seconds later, so the startup profile lit the whole
+        // desk (and the pump panel) on every overnight update restart - auto
+        // sign-in, lock, autostart - until it did. The service adopts this.
+        bool startDark = Services.AutomationService.StartsDark(_store.Settings);
+        if (startDark)
+        {
+            LightsSuppressed = true;
+            // Before the panel is opened, so it opens blank rather than lighting
+            // for a moment: the blank is remembered and applied on attach,
+            // however late the panel turns up (LcdDesignerViewModel.TryAttach).
+            SetPumpLcdOn(false);
+            UnifiedRgb.Core.Log.Info("lighting", "starting with the lights off: the session is locked or a dark window is open");
+        }
         Lcd.Start();
         UnifiedRgb.Core.Effects.ChromaFeed.Start();      // DLL-shim pipe (Wallpaper Engine)
         UnifiedRgb.Core.Net.ChromaRestServer.Start();    // Chroma REST API :54235 (CS2 and modern games)
-        Rescan();
-        SyncLianUniChannelToPopulated();      // land on a connector that actually has fans
-        SetColor(new Rgb(255, 0, 255));
-
-        /*-------------------------------------------------*\
-        | Apply + select the startup profile on every       |
-        | launch (autostart and manual alike).              |
-        \*-------------------------------------------------*/
-        if (_store.Settings.StartupProfile is string sp)
-        {
-            var prof = Profiles.FirstOrDefault(p => p.Name.Equals(sp, StringComparison.OrdinalIgnoreCase));
-            if (prof != null) { SelectedProfile = prof; LoadProfile(prof); LandOnRunningLianTarget(); }
-        }
+        StartDesk();
         _initializing = false;
 
         CheckForUpdate();
@@ -1678,7 +1774,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             // client that had claimed a device but not yet drawn to it be
             // rescanned straight through - which is the one thing the comment
             // on RecoverDevices promises cannot happen.
-            SdkClientHolds: Devices.Any(d => _sdkHeld.Contains(d) || _lighting.IsClaimed(d)),
+            SdkClientHolds: Devices.Any(d => _lighting.IsClientOwned(d)),
             // A scheduled dark window or a locked session. We still redetect;
             // we just do not turn anything on. See RecoverDevices.
             LightsSuppressed: LightsSuppressed,
@@ -1687,6 +1783,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             CalibrationRunning: Services.CalibrationAid.AnyActive));
         _watchdog.Start();
         StartSleepingDeviceWatch();
+        StartRevertWatch();
         Lcd.InitScenes();
         Shows.Init();
         MigrateShowsToProfiles();
@@ -1712,6 +1809,32 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     }
 
     bool _initializing = true;
+
+    /// <summary>The part of startup that first touches the lighting: detect,
+    /// land on a populated hub connector, then apply + select the startup
+    /// profile (on every launch, autostart and manual alike). Split out so the
+    /// harness can run it over fakes; the constructor runs it once, while
+    /// _initializing is set. In the dark (the constructor's StartsDark) the
+    /// write boundary records all of it and writes nothing lit: the rescan
+    /// blacks every device it opens, and the profile's effects wait pending
+    /// for the automation's relight.</summary>
+    internal void StartDesk()
+    {
+        bool was = _initializing;
+        _initializing = true;   // the colour below seeds the wheel; it is not an edit
+        try
+        {
+            Rescan();
+            SyncLianUniChannelToPopulated();      // land on a connector that actually has fans
+            SetColor(new Rgb(255, 0, 255));
+            if (_store.Settings.StartupProfile is string sp)
+            {
+                var prof = Profiles.FirstOrDefault(p => p.Name.Equals(sp, StringComparison.OrdinalIgnoreCase));
+                if (prof != null) { SelectedProfile = prof; LoadProfile(prof); LandOnRunningLianTarget(); }
+            }
+        }
+        finally { _initializing = was; }
+    }
 
     Rgb Current => new((byte)_r, (byte)_g, (byte)_b);
 
@@ -1839,13 +1962,15 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
 
     /// <summary>Start (or stop, for Static) one effect channel on a single device
     /// range, replacing any overlapping channel. Shared by the single-target and
-    /// all-fans fan-out paths.</summary>
-    /// <summary>With the desk switched on, the range renders against where the
-    /// device sits on it rather than against the device's own shape, which is
-    /// what makes one wave carry from the keyboard to the fans. The canvas
-    /// argument only says whether THIS apply should switch the desk on.</summary>
-    void ApplyFxRange(IRgbDevice dev, int off, int count, TargetFx fx, EffectChoice choice,
-                      bool canvas = false)
+    /// all-fans fan-out paths.
+    ///
+    /// With the desk switched on, the range renders against where the device
+    /// sits on it rather than against the device's own shape, which is what
+    /// makes one wave carry from the keyboard to the fans. Whether the desk is
+    /// on is read from the layout here (CanvasPositions); turning it on is
+    /// ApplyModeToDesk's job, before it gets here. (This took a "canvas"
+    /// argument documented as doing that; nothing ever read it.)</summary>
+    void ApplyFxRange(IRgbDevice dev, int off, int count, TargetFx fx, EffectChoice choice)
     {
         // Assignments this range replaces (overlap on the same device) fall
         // back to Static so their pills read correctly when revisited. A start
@@ -1866,12 +1991,19 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             }
         }
 
+        // Stopped here rather than inside Start, so the channels this range
+        // replaces are known: one of them can reach well past it (a whole-device
+        // effect replaced on one zone), and see ReplacedSpan for what happens
+        // to the part outside.
+        var replaced = _engine.StopRange(dev, off, count);
+        var (spanOff, spanCount) = ReplacedSpan(replaced, off, count);
+
         if (choice.Effect == null)
         {
-            _engine.StopRange(dev, off, count);
             fx.Channel = null;
             fx.HeldBase = null;
-            _lighting.RestoreStatics(dev, off, count);
+            // The whole of every replaced range goes static, not just this one.
+            _lighting.RestoreStatics(dev, spanOff, spanCount);
             RequestLianRebake();
             // A change like any other: Breathing to Static returned here before
             // the dirty mark, so the profile still read as applied and unchanged,
@@ -1896,16 +2028,39 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             bc = SafeWhite;
             UpdateColorViews(bc);
         }
-        // The desk is a mode: with it on, every effect renders across it. The
-        // canvas argument is what turns it ON for a "Whole desk" apply; once on,
-        // it applies to everything.
-        bool blocked = EffectBlockedByClient(dev);
+        // The desk is a mode: with it on, every effect renders across it
+        // (CanvasPositions is null while it is off).
+        bool blocked = EffectBlocked(dev);
         fx.HeldBase = blocked ? bc : null;
         fx.Channel = blocked ? null
                    : _engine.Start(dev, off, count, FrameFor(dev), effect, SignedSpeed(fx), bc,
                                    CanvasPositions(dev, off, count));
+        if (!blocked) _lighting.NoteOtherWrite(dev);   // an animation, not the stored colour
+        // A zone device writes each channel's range and nothing else, so the
+        // part of a replaced effect outside this range kept that effect's last
+        // frame for good. A whole-device device needs nothing: every frame its
+        // workers write is composed over the statics. RestoreUncovered skips
+        // whatever is animating when it runs - this channel, and on "All fans +
+        // part" the other fans' channels started right after this one.
+        if (!blocked && spanCount > count && dev is IZoneWritable zw)
+            _lighting.RestoreUncovered(zw, dev, spanOff, spanCount);
         RequestLianRebake();
         MarkDirty();
+    }
+
+    /// <summary>The smallest range covering [off, off+count) and every channel
+    /// it replaced. Every replaced channel overlaps the new range, so this is
+    /// one unbroken span: the new range plus whatever the old effects held on
+    /// either side of it.</summary>
+    static (int Offset, int Count) ReplacedSpan(IReadOnlyList<EffectEngine.Channel> replaced, int off, int count)
+    {
+        int start = off, end = off + count;
+        foreach (var c in replaced)
+        {
+            start = Math.Min(start, c.Offset);
+            end = Math.Max(end, c.Offset + c.Count);
+        }
+        return (start, end - start);
     }
 
     /// <summary>An SDK client holds this device: it paints the whole device
@@ -1916,13 +2071,28 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     /// refused the same way. The choice IS kept, as a pending start with its
     /// base colour (TargetFx.HeldBase): the client's release brings the device
     /// back from what the user wants for it NOW (RestoreDevice), and a profile
-    /// saved meanwhile records the effect they chose, not "static".</summary>
-    bool EffectBlockedByClient(IRgbDevice dev)
+    /// saved meanwhile records the effect they chose, not "static".
+    ///
+    /// The lights being deliberately off is the same answer for the same
+    /// reason: the effect is the user's intent, kept pending, and the way back
+    /// out of the dark starts it (RelightLeftovers, or the restore). Nothing
+    /// asked before - a profile applied, a rescan, the desk editor or the
+    /// startup profile each started effects inside a locked session.</summary>
+    bool EffectBlocked(IRgbDevice dev)
     {
-        if (!_sdkHeld.Contains(dev) && !_lighting.IsClaimed(dev)) return false;
-        UnifiedRgb.Core.Log.Occasional($"claimed:{dev.Name}", "lighting",
-            $"{dev.Name}: an SDK client has this device - not starting an effect on it until it lets go");
-        return true;
+        if (_lighting.IsClientOwned(dev))
+        {
+            UnifiedRgb.Core.Log.Occasional($"claimed:{dev.Name}", "lighting",
+                $"{dev.Name}: an SDK client has this device - not starting an effect on it until it lets go");
+            return true;
+        }
+        if (LightsSuppressed)
+        {
+            UnifiedRgb.Core.Log.Occasional($"dark-fx:{dev.Name}", "lighting",
+                $"{dev.Name}: the lights are off - the effect starts when they come back");
+            return true;
+        }
+        return false;
     }
 
 
@@ -1964,7 +2134,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             var fx = FxFor(dev, 0, dev.LedCount);
             fx.Choice = choice;
             CopyTargetSettings(srcFx, fx, choice);
-            ApplyFxRange(dev, 0, dev.LedCount, fx, choice, canvas: true);
+            ApplyFxRange(dev, 0, dev.LedCount, fx, choice);
         }
         LandOnWholeLianDevice();
         // One clock, one start: the whole point is that the devices are phases
@@ -2101,13 +2271,43 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     /// <summary>Raised on the hub's timer thread. _watchdog is nulled first
     /// thing in Dispose, so it doubles as "still alive": a rescan onto handles
     /// that are closing is the one thing this must never do.</summary>
-    void OnUniHubLayoutFileChanged() => _dispatcher.BeginInvoke(() => { if (_watchdog != null) Rescan(); });
+    void OnUniHubLayoutFileChanged() => _dispatcher.BeginInvoke(RescanForLayoutFile);
+
+    /// <summary>The wired hub's layout file changed: rebuild the device list,
+    /// but not under an open colour calibration. The aid drives device
+    /// INSTANCES that a rescan replaces, and its reference patches were
+    /// repainted by the rescan's restore - the same two reasons the recovery
+    /// policy waits for it. Checked again every couple of seconds until the
+    /// calibration is closed; the newest change is the one that counts, and
+    /// one rescan covers any number of them.</summary>
+    void RescanForLayoutFile()
+    {
+        if (_watchdog == null) { _layoutRescanWait?.Stop(); return; }   // shutting down
+        if (Services.CalibrationAid.AnyActive)
+        {
+            if (_layoutRescanWait == null)
+            {
+                _layoutRescanWait = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+                _layoutRescanWait.Tick += (_, _) => RescanForLayoutFile();
+            }
+            if (!_layoutRescanWait.IsEnabled)
+                Log.Info("lighting", "the hub layout changed during a colour calibration - rescanning once it is closed");
+            _layoutRescanWait.Start();
+            return;
+        }
+        _layoutRescanWait?.Stop();
+        Rescan();
+    }
+
+    DispatcherTimer? _layoutRescanWait;
 
     void Rescan()
     {
         // Carry the current lighting across the rescan: static frames by device
         // name, and effect assignments via the same snapshot profiles use.
-        _recoveryLighting.Remember(Devices, FrameFor, CaptureEffects(), replaceEffects: !LightsSuppressed);
+        // Effects included even in the dark: they are pending there, not lost
+        // (see CaptureState).
+        _recoveryLighting.Remember(Devices, FrameFor, CaptureEffects());
         // Copies. CaptureState writes to these same objects, and the restore
         // below runs the whole effect-start path; if anything in between ever
         // re-enters this view model (a dialog pumping the dispatcher, say), an
@@ -2122,10 +2322,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // headers and presses it, and every LED after the edited one shifts. Keep
         // the layout these frames were captured against so the colours can follow
         // their zones instead of their indices.
-        var savedZones = Devices.ToDictionary(d => d.Name,
-            d => (d.Zones ?? Array.Empty<RgbZone>())
-                 .Select(z => new ZoneSpan { Name = z.Name, Offset = z.Offset, Count = z.Count }).ToArray(),
-            StringComparer.Ordinal);
+        var savedZones = ZoneLayoutsByName(Devices);
 
         // The SDK server goes first. StopAndDrain below is the guard against
         // writing to a handle that is about to close, and a socket thread posts
@@ -2138,6 +2335,14 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         _sdkServer?.DeviceListChanged();
         _sdkServer?.Dispose();
         _sdkServer = null;
+        // ...and its host with it. A client thread the stop could not wait out
+        // (it gives up after half a second, and a thread parked in the hop to
+        // this busy UI thread is exactly that) still calls in after the rescan:
+        // its takeover then held a device for a server that will never release
+        // it, and its next frame painted an instance that had been disposed.
+        // Retired, it is heard by nobody. See OpenRgbHost.Retire.
+        _sdkHost?.Retire();
+        _sdkHost = null;
         // An in-flight bake renders on a worker and posts its upload later; the
         // device it targets is about to be disposed. Invalidate every bake
         // generation so a late upload is dropped instead of landing on a dead
@@ -2148,19 +2353,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         _manager.Dispose();
         _lighting.ForgetFrames();
         Devices.Clear();
-        // The OpenRGB bridge is a user setting, not a device family the user
-        // can disable, so it needs its own gate here: with the option off the
-        // bridge detector still connected to any separately running OpenRGB,
-        // built proxy devices and switched them to custom mode. The CLI keeps
-        // calling OpenRgbLink.DetectAll directly, on purpose.
-        _manager.DetectAll(f => IsFamilyDisabled(f) || (f == nameof(OpenRgbLink) && !_store.Settings.UseOpenRgb));
-        foreach (var d in _manager.Devices)
-        {
-            // Per-device families (OpenRGB proxies) can't be skipped at the
-            // factory level; filter them here instead.
-            if (_manager.FamilyOf.TryGetValue(d, out var fam) && IsFamilyDisabled(fam)) continue;
-            Devices.Add(d);
-        }
+        foreach (var d in Redetect()) Devices.Add(d);
 
         // Repaint statics on the fresh device instances, through the layout they
         // were captured against - the effects below read the same remaps.
@@ -2170,11 +2363,16 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
                 savedFrames.TryGetValue(d.Name, out var had) ? had.Length : 0);
         foreach (var d in Devices)
             if (savedFrames.TryGetValue(d.Name, out var old))
-            {
-                var map = RemapFor(d);
-                if (LightsSuppressed) map.MapFrame(old, FrameFor(d));
-                else RestoreFrame(d, map, old);
-            }
+                RestoreFrame(d, RemapFor(d), old);   // recorded only, in the dark
+        // In the dark, every instance is put dark - all of them, not only the
+        // ones that are new to the list: a re-opened device can come back on
+        // its firmware's own lighting. This used to map the frames and write
+        // nothing, so only a rescan that came from RecoverDevices (which
+        // follows with LightsOff) ever blacked a device that turned up during
+        // a lock; the hub's layout-file watcher, the bridge starting or
+        // stopping, the PawnIO install and the channel picker all rescan too.
+        if (LightsSuppressed)
+            foreach (var d in Devices) _lighting.PushBlack(d);
 
         RefreshBlockedDevices();                               // what this scan saw but could not use
         // Health is keyed by device INSTANCE and every instance was just
@@ -2182,7 +2380,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // handles alive for the life of the process. It also resets the story:
         // what the previous handle was refusing says nothing about this one.
         UnifiedRgb.Core.DeviceHealth.Shared.Reset();
-        _sdkHeld.Clear();                                      // the claims died with the instances
+        _lighting.ReleaseAllHolds();                                      // the claims died with the instances
         RefreshDeviceHealth();                                 // ...including the blocked-device rows
         // Whatever was pending is now done. A user pressing Rescan while a
         // replug debounce is running would otherwise get the whole teardown
@@ -2191,12 +2389,51 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         ApplyLianSpeed();                                      // carry the saved fan-speed calibration
         _battery.Rescan();                                     // charge, before the rows are built
         SyncSdkServer();                                       // SDK clients hold stale instances
+        SyncRevertWatch();                                     // a GPU that drops our lighting on its own came or went
         StartGsi();                                            // game state, if the user has it on
         SyncCanvas();                                          // a new device needs a place on the desk
         BuildLeftItems();                                      // devices + pump LCD row
-        if (!LightsSuppressed) RestoreEffects(savedEffects);
+        RestoreEffects(savedEffects);                          // pending, in the dark (EffectBlocked)
         LandOnRunningLianTarget();
         SyncWheelToSelection();
+    }
+
+    /// <summary>The probe half of a rescan: every driver family asked what is
+    /// attached (a disabled family is skipped without being opened), minus what
+    /// the user has turned off. A seam for the harness only, which has to drive
+    /// a real Rescan - the SDK unwind, the instance swap and the hold reset, in
+    /// that order - with fakes, where this would open the hardware.</summary>
+    internal Func<IReadOnlyList<IRgbDevice>> Redetect { get => _redetect ??= DetectHardware; set => _redetect = value; }
+    Func<IReadOnlyList<IRgbDevice>>? _redetect;
+
+    IReadOnlyList<IRgbDevice> DetectHardware()
+    {
+        // The OpenRGB bridge is a user setting, not a device family the user
+        // can disable, so it needs its own gate here: with the option off the
+        // bridge detector still connected to any separately running OpenRGB,
+        // built proxy devices and switched them to custom mode. The CLI keeps
+        // calling OpenRgbLink.DetectAll directly, on purpose.
+        _manager.DetectAll(f => IsFamilyDisabled(f) || (f == nameof(OpenRgbLink) && !_store.Settings.UseOpenRgb));
+        // Per-device families (OpenRGB proxies) can't be skipped at the
+        // factory level; filter them here instead.
+        return _manager.Devices
+            .Where(d => !(_manager.FamilyOf.TryGetValue(d, out var fam) && IsFamilyDisabled(fam)))
+            .ToList();
+    }
+
+    /// <summary>Each device's zone layout by name, for a rescan to re-anchor
+    /// the frames it carries across. Built with the indexer, last one wins -
+    /// the same rule RecoveryLightingState applies to the frames themselves.
+    /// It was ToDictionary, which THROWS on a repeated key, and nothing makes
+    /// device names unique - two units of one model can report the same one.
+    /// Every Rescan then died on the UI thread before redetecting anything.</summary>
+    internal static Dictionary<string, ZoneSpan[]> ZoneLayoutsByName(IEnumerable<IRgbDevice> devices)
+    {
+        var byName = new Dictionary<string, ZoneSpan[]>(StringComparer.Ordinal);
+        foreach (var d in devices)
+            byName[d.Name] = (d.Zones ?? Array.Empty<RgbZone>())
+                .Select(z => new ZoneSpan { Name = z.Name, Offset = z.Offset, Count = z.Count }).ToArray();
+        return byName;
     }
 
     /// <summary>Rescan and launch select the device (landing on Fan 1 / whole
@@ -2237,15 +2474,23 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         // shutting down would rescan onto handles that are about to close.
         _sleepWatch?.Stop();
         _sleepWatch = null;
+        _persistTimer?.Stop();   // no flash write onto handles that are about to close
+        _revertWatch?.Stop();    // nor a revert repair
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+        _exitPreviewed.Clear();  // a late EndExitPreview must not post onto them either
         _watchdog?.Dispose();
         _watchdog = null;
         LianLiUniHub.LayoutFileChanged -= OnUniHubLayoutFileChanged;
+        _layoutRescanWait?.Stop();   // a rescan waiting out a calibration must not start now
         // A queued show step must not apply a profile onto handles that are
         // about to close. (Shows implemented IDisposable; nothing called it.)
         try { Shows.Dispose(); } catch { }
         Cooling.DiscardPendingDuties();
-        if (UnifiedRgb.Core.Sensors.SensorHub.AnyControlledFan)
-            UnifiedRgb.Core.Sensors.SensorHub.RestoreAllFans("app exit", keepConfig: true);
+        // HandbackOwed, not AnyControlledFan: an Identify burst in flight (the
+        // GPU stayed in NvAPI manual at 100%) and a handback still queued for
+        // retry need this too, with no mode set anywhere.
+        if (UnifiedRgb.Core.Sensors.SensorHub.HandbackOwed)
+            UnifiedRgb.Core.Sensors.SensorHub.RestoreAllFans(UnifiedRgb.Core.Sensors.FanHandback.Exit);
         // Wireless fans: optionally follow the SYS fan header's hardware curve
         // while the app is away (must run before the device is disposed).
         if (_store.Settings.LianHandoffOnExit)
@@ -2281,6 +2526,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         Safely(_manager.Dispose);
         Safely(Lcd.Dispose);   // saves the design, releases the panel + the PawnIO temp reader
         Safely(UnifiedRgb.Core.Sensors.SensorHub.Shutdown);   // closes LHM (unloads its ring0 service) + the PawnIO sensor handles
+        Safely(UnifiedRgb.Core.Sensors.WireView.Shutdown);    // stops the poller, closes the WireView's COM port
         Safely(UnifiedRgb.Core.Net.ChromaRestServer.Stop);   // release :54235 cleanly
         Safely(OpenRgbLink.Shutdown);
         Safely(OpenRgbManager.Stop);
@@ -2290,9 +2536,12 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
     /// what they picked. Posted on the device's lane rather than written here,
     /// because the effect engine may be mid-frame on the same transport. For a
     /// streamed device the app takes back over on its next write, which is the
-    /// point: this is a preview, not a mode.</summary>
+    /// point: this is a preview, not a mode. A device an SDK client owns is
+    /// previewed too - the user asked to see it - and EndExitPreview gives it
+    /// back to the client.</summary>
     public void ApplyExitBehaviorNow(IRgbDevice device, UnifiedRgb.Core.ExitBehavior behavior)
     {
+        _exitPreviewed.Add(device);
         _applier.Post(LaneOf(device), ("exit-preview", device), () =>
         {
             // Under the device's write gate, like every other write that is not
@@ -2300,6 +2549,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             // finish before this lands, or its frame lands after ours.
             lock (EffectEngine.WriteGateFor(device))
             {
+                _lighting.NoteOtherWrite(device);   // the preview, not the stored colour, is on it now
                 try
                 {
                     // A preview is terminal too: the user pressed "apply now"
@@ -2317,51 +2567,99 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         });
     }
 
+    /// <summary>Devices an exit-behaviour preview has been sent to since the
+    /// window opened. UI thread only.</summary>
+    readonly HashSet<IRgbDevice> _exitPreviewed = new();
+
+    /// <summary>The exit-behaviour window closed: put every previewed device
+    /// back to what the app has it showing.
+    ///
+    /// "The app takes back over on its next write" only ever held for a device
+    /// with an effect streaming to it. A device on a static colour has no next
+    /// write, so a previewed hardware rainbow or colour stayed on it after the
+    /// window closed - until the next profile apply, which could be days.
+    ///
+    /// What goes back is decided on the device's lane at the moment of writing
+    /// (LightingController.PutBack), and it is made to land - the device's
+    /// cache still holds the colour from before the preview: the black during
+    /// a dark window or a locked session; an SDK client's own picture on a
+    /// device a client owns (it used to be skipped, and kept the previewed exit
+    /// state under the claim for good); otherwise the user's lighting, which a
+    /// running effect paints over as usual. One a rescan replaced was
+    /// repainted by the rescan.</summary>
+    public void EndExitPreview()
+    {
+        if (_exitPreviewed.Count == 0) return;
+        foreach (var device in _exitPreviewed)
+        {
+            if (!Devices.Contains(device)) continue;
+            // Never written this session: its stored frame is the zeroed
+            // default, not a colour anyone chose, and pushing it blacked a
+            // device the app had left to its firmware. The preview (a return
+            // to hardware, most likely) is the nearest thing to what it showed.
+            // (A client's painting counts as written: it is put back.)
+            if (!_lighting.HasBeenWritten(device)) continue;
+            _lighting.PutBack(device, "exit preview undone");
+        }
+        _exitPreviewed.Clear();
+    }
+
     /// <summary>Blink a device white a few times so it can be picked out of a
-    /// row of identical ones. The whole blink runs as ONE job on the device's
-    /// applier lane, so an effect's frames queue behind it rather than painting
-    /// over the middle of it.</summary>
+    /// row of identical ones, then put back what it was showing.
+    ///
+    /// The whole blink is ONE job on the device's applier lane and holds the
+    /// device's write gate from the first flash to the restore. Each write used
+    /// to take the gate on its own, so a running effect would not stall - and
+    /// its worker then painted the next frame within ~16 ms of every flash, so
+    /// on an animating device the blink could not be seen at all. Pausing the
+    /// effect for the ~0.85 s the blink takes is what was asked for.
+    ///
+    /// The blink itself is the user asking for a look, in the dark too. What
+    /// it leaves behind is not: see the put-back below.</summary>
     public void IdentifyDevice(IRgbDevice device)
     {
         var white = new Rgb[device.LedCount];
         Array.Fill(white, new Rgb(255, 255, 255));
         var dark = new Rgb[device.LedCount];
-        var restore = _lighting.ComposedFrame(device);
 
         _applier.Post(LaneOf(device), (device, "identify"), () =>
         {
-            // Each write takes the device's write gate (the same one effect
-            // workers and the static path use), never the whole blink: holding
-            // it across the sleeps would stall a running effect for ~0.8 s.
             try
             {
-                for (int i = 0; i < 3; i++)
-                {
-                    // The verdicts feed device health like every other write.
-                    // A blink is a rare, deliberate, six-packet burst straight
-                    // at one device, which makes it an unusually clean signal:
-                    // if these are refused, that device really is not there.
-                    bool ok;
-                    lock (EffectEngine.WriteGateFor(device)) ok = device.SetColors(white);
-                    UnifiedRgb.Core.DeviceHealth.Shared.Report(device, ok);
-                    Thread.Sleep(140);
-                    lock (EffectEngine.WriteGateFor(device)) ok = device.SetColors(dark);
-                    UnifiedRgb.Core.DeviceHealth.Shared.Report(device, ok);
-                    Thread.Sleep(140);
-                }
-                // Put back what it was showing. A running effect repaints on its
-                // next frame anyway; this is for a device sitting on a static.
-                // The restore is the last thing this job does and there is no
-                // frame behind it (a device sitting on a static has nothing to
-                // repaint it), so it is made to land rather than written once
-                // and hoped for: a refusal here leaves the device dark, which
-                // looks exactly like the blink broke it. Still under the gate,
-                // like the blink writes above - the retries are more attempts
-                // at the same write, not a licence to race an effect worker.
                 lock (EffectEngine.WriteGateFor(device))
-                    UnifiedRgb.Core.Devices.WritePolicy.MustLand(device, restore, "identify restore");
+                {
+                    for (int i = 0; i < 3; i++)
+                    {
+                        // The verdicts feed device health like every other write.
+                        // A blink is a rare, deliberate, six-packet burst straight
+                        // at one device, which makes it an unusually clean signal:
+                        // if these are refused, that device really is not there.
+                        bool ok = device.SetColors(white);
+                        UnifiedRgb.Core.DeviceHealth.Shared.Report(device, ok);
+                        Thread.Sleep(140);
+                        ok = device.SetColors(dark);
+                        UnifiedRgb.Core.DeviceHealth.Shared.Report(device, ok);
+                        Thread.Sleep(140);
+                    }
+                    // Put back what it should be showing NOW, decided here
+                    // under the gate rather than captured when the blink was
+                    // posted: the black if the lights are off, a client's own
+                    // picture if one owns the device, else the user's composed
+                    // lighting through the write boundary (finished, made to
+                    // land: a refusal would leave it dark, which looks exactly
+                    // like the blink broke it). The captured colours were
+                    // written unconditionally, which relit a dark window for
+                    // the rest of the night, or put the user's static under a
+                    // client's claim. An effect resumes over it once the gate
+                    // is released.
+                    _lighting.WriteWhatItShows(device, "identify restore");
+                }
             }
             catch (Exception ex) { UnifiedRgb.Core.Log.Warn("identify", $"{device.Name}: {ex.Message}"); }
+            // Wireless fans playing a baked loop: the blink was a static frame,
+            // and a static frame stops the hardware animation. Ask for the loop
+            // back (the bake service decides whether it needs re-uploading).
+            if (device is LianLiWireless) _dispatcher.BeginInvoke(() => RequestLianRebake());
         });
     }
 

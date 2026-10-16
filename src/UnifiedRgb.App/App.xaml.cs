@@ -39,6 +39,9 @@ public partial class App : Application
         listener.Start();
 
         Log.Info("app", $"UnifiedRGB starting  elevated={DiagnosticReport.IsAdmin()}  args={string.Join(' ', e.Args)}");
+        UnifiedRgb.App.Services.AppInstall.LogStartup();
+        // Off the UI thread: it talks to Task Scheduler and may copy the exe.
+        _ = System.Threading.Tasks.Task.Run(UnifiedRgb.App.Services.AppInstall.ReconcileAutostart);
 
         // Crashes land in the log so remote users can send it back.
         DispatcherUnhandledException += (_, ex) =>
@@ -63,12 +66,26 @@ public partial class App : Application
             Log.Error("app", ex.ExceptionObject as Exception ?? new Exception(ex.ExceptionObject?.ToString() ?? "unknown"));
             // Fatal path: hand any manually-driven fans back to the BIOS
             // before the process dies (the marker file covers a hard kill).
+            // Wireless fans have no BIOS: they follow the board's PWM line when
+            // the user chose that for exit, and otherwise the ones we were
+            // driving go to 100%. Both used to be skipped here, leaving them
+            // on whatever duty the curve last wrote, with nothing running it.
+            bool wirelessToBoard = CoolingViewModel.HandOffWirelessOnCrash;
             try
             {
-                if (UnifiedRgb.Core.Sensors.SensorHub.AnyControlledFan)
-                    UnifiedRgb.Core.Sensors.SensorHub.RestoreAllFans("crash", keepConfig: true);
+                // HandbackOwed: an Identify burst or a queued handback is owed
+                // one as much as a fan with a mode (see MainViewModel.Dispose).
+                if (UnifiedRgb.Core.Sensors.SensorHub.HandbackOwed)
+                    UnifiedRgb.Core.Sensors.SensorHub.RestoreAllFans(UnifiedRgb.Core.Sensors.FanHandback.Crash, wirelessHandoff: wirelessToBoard);
             }
-            catch { }
+            catch (Exception fanEx) { Log.Warn("app", $"crash: handing the fans back failed: {fanEx.Message}"); }
+            if (wirelessToBoard)
+            {
+                // Same as a clean exit (MainViewModel.Dispose), which does it
+                // whether or not any fan had a mode.
+                try { UnifiedRgb.Core.Devices.LianLiWireless.Instance?.FollowPwmLine(); }
+                catch (Exception lianEx) { Log.Warn("app", $"crash: handing the wireless fans to the board failed: {lianEx.Message}"); }
+            }
             // Then close the sensor sources: only LHM's Computer.Close() unloads
             // its ring0 driver service and releases the ISA-bus mutex, and
             // process teardown does neither. Best-effort, after the restore.
@@ -83,6 +100,12 @@ public partial class App : Application
         System.Diagnostics.PresentationTraceSources.Refresh();
         System.Diagnostics.PresentationTraceSources.DataBindingSource.Switch.Level = System.Diagnostics.SourceLevels.Warning;
         System.Diagnostics.PresentationTraceSources.DataBindingSource.Listeners.Add(new BindingTraceListener());
+
+        // An import that brought in fan-config.json has the running fan hub
+        // re-read it, rather than the hub overwriting it before the restart.
+        // Wired here, not in the view model, so harness-built view models
+        // never reach the real hub.
+        MainViewModel.AfterFanConfigImport = UnifiedRgb.Core.Sensors.SensorHub.ReloadFanConfig;
 
         base.OnStartup(e);
     }

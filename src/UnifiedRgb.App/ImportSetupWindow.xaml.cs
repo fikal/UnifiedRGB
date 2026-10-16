@@ -15,8 +15,8 @@ namespace UnifiedRgb.App;
 /// Importing a bundle rewrites profiles, screens, palettes and the desk
 /// layout, which is most of what a person has ever built in this app. So this
 /// screen exists to make sure nothing is lost by accident: SetupBundle.Preview
-/// has already read and validated the whole file WITHOUT writing anything, and
-/// what it worked out is shown here, item by item, before Apply is called.
+/// reads and validates the file on a worker WITHOUT writing anything, and what
+/// it worked out is shown here, item by item, before Apply is called.
 ///
 /// The conflicts are the reason the window exists. An item that would replace
 /// something the user already has gets a red badge, a red border and a red
@@ -53,11 +53,13 @@ public partial class ImportSetupWindow : Window
         return brush;
     }
 
-    /// <summary>What Preview() made of the file. Public because a caller that
-    /// wants to log or report the refusal should not have to re-read the
-    /// bundle to find out why.</summary>
-    public ImportPreview Preview { get; }
+    /// <summary>What Preview() made of the file, or null while it is still
+    /// being read. Public because a caller that wants to log or report the
+    /// refusal should not have to re-read the bundle to find out why.</summary>
+    public ImportPreview? Preview { get; private set; }
     readonly Action<ImportResult>? _afterApply;
+    readonly List<string> _localNames;
+    bool _closed;
 
     /// <summary>What Apply() did, or null when the user cancelled or the
     /// bundle was refused before anything could be applied. NON-NULL DOES NOT
@@ -91,16 +93,25 @@ public partial class ImportSetupWindow : Window
     /// the preview says so.</param>
     public ImportSetupWindow(string bundlePath, IEnumerable<IRgbDevice>? devices = null, Action<ImportResult>? afterApply = null)
     {
-        // Read and validate before the window is built. Preview writes
-        // nothing, so a bad file costs the user a sentence rather than a
-        // half-applied setup, and the whole window can be laid out from a
-        // result that is already known.
         _afterApply = afterApply;
         // The XAML cap (880) only helps on a tall display; on a 768 px laptop
         // the Import/Cancel footer was off screen. Follow the work area.
         SourceInitialized += (_, _) => MaxHeight = Math.Min(MaxHeight, Math.Max(400, SystemParameters.WorkArea.Height - 40));
-        Preview = SetupBundle.Preview(bundlePath, devices);
-        var local = (devices ?? Enumerable.Empty<IRgbDevice>())
+        // The window opens small, holding only the busy card, and grows when
+        // the preview lands. CenterOwner placed it for the small size, so
+        // growing downward would push the footer off the bottom of the screen:
+        // grow and shrink about the centre instead.
+        SizeChanged += (_, e) =>
+        {
+            if (e.HeightChanged && e.PreviousSize.Height > 0 && !double.IsNaN(Top))
+                Top -= (e.NewSize.Height - e.PreviousSize.Height) / 2;
+        };
+        // The live device objects are read here, on the UI thread: their names
+        // for the mapping combos and their fingerprints for the identity match.
+        // Only file work goes to the worker below.
+        var attached = devices?.Where(d => d != null).ToList() ?? new List<IRgbDevice>();
+        var fingerprints = DeviceIdentity.Survey(attached);
+        _localNames = attached
             .Select(d => d.Name)
             .Where(n => !string.IsNullOrWhiteSpace(n))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -111,38 +122,90 @@ public partial class ImportSetupWindow : Window
         DataContext = this;
 
         PathLine.Text = bundlePath;
-        foreach (string line in Preview.Summary) SummaryLines.Add(line);
-        foreach (string line in Preview.Warnings) WarningLines.Add(line);
+        SourceLine.Text = "Reading the file...";
+        ImportButton.IsEnabled = false;
+        LoadPreview(bundlePath, fingerprints);
+    }
+
+    /// <summary>Read and validate the bundle on a worker. Preview writes
+    /// nothing, so a bad file costs the user a sentence rather than a
+    /// half-applied setup. It used to run in the constructor, so the UI thread
+    /// opened, inflated and parsed the whole bundle - up to the reader's 128 MB
+    /// budget - before the window could even draw, with the app frozen behind
+    /// it.</summary>
+    async void LoadPreview(string bundlePath, List<DeviceFingerprint> here)
+    {
+        // async void, so nothing may escape: an exception here would reach the
+        // dispatcher and take the app down over a file the user only opened.
+        try
+        {
+            ImportPreview preview;
+            try { preview = await Task.Run(() => SetupBundle.PreviewAgainst(bundlePath, here)); }
+            catch (Exception ex)
+            {
+                // PreviewAgainst reports rather than throws; this is the unexpected.
+                Log.Warn("import", $"preview of {bundlePath} failed: {ex}");
+                preview = new ImportPreview { BundlePath = bundlePath, Problem = $"the bundle could not be read: {ex.Message}" };
+            }
+            if (_closed) return;   // the user stopped waiting; there is nothing left to show it in
+            ShowPreview(preview);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("import", $"import window could not show the preview: {ex}");
+            if (_closed) return;
+            // Half-built rows are not something to choose from: the reason and
+            // a way out, as for a file that could not be read.
+            BusyCard.Visibility = Visibility.Collapsed;
+            BodyScroll.Visibility = Visibility.Collapsed;
+            ImportButton.IsEnabled = false;
+            ProblemText.Text = $"the preview could not be shown: {ex.Message}";
+            ProblemCard.Visibility = Visibility.Visible;
+        }
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _closed = true;
+        base.OnClosed(e);
+    }
+
+    void ShowPreview(ImportPreview preview)
+    {
+        Preview = preview;
+        BusyCard.Visibility = Visibility.Collapsed;
+        foreach (string line in preview.Summary) SummaryLines.Add(line);
+        foreach (string line in preview.Warnings) WarningLines.Add(line);
         if (WarningLines.Count > 0) WarningsCard.Visibility = Visibility.Visible;
 
-        if (!Preview.Ok)
+        if (!preview.Ok)
         {
             // Nothing here can be chosen, so nothing that implies a choice is
             // shown: the file name, the reason, and a way out.
             SourceLine.Text = "This file could not be read.";
-            ProblemText.Text = Preview.Problem ?? "the bundle could not be read";
+            ProblemText.Text = preview.Problem ?? "the bundle could not be read";
             ProblemCard.Visibility = Visibility.Visible;
-            BodyScroll.Visibility = Visibility.Collapsed;
             ImportButton.IsEnabled = false;
             return;
         }
 
-        SourceLine.Text = DescribeSource();
-        BuildSections();
-        BuildDevices(local);
+        BodyScroll.Visibility = Visibility.Visible;
+        SourceLine.Text = DescribeSource(preview);
+        BuildSections(preview);
+        BuildDevices(preview, _localNames);
 
         // The safe set is what the window opens on, so the default answer to
         // "I clicked import without reading" is "you gained things and lost
         // nothing".
-        ApplyPreset(Preview.DefaultChoices());
+        ApplyPreset(preview.DefaultChoices());
     }
 
     /// <summary>Where the bundle came from, in one line. The manifest can be
     /// missing a date, and "0001-01-01" reads as a bug rather than as "not
     /// recorded", so it is spelled out instead.</summary>
-    string DescribeSource()
+    static string DescribeSource(ImportPreview preview)
     {
-        var m = Preview.Manifest;
+        var m = preview.Manifest;
         if (m == null) return "";
         string when = m.CreatedUtc == default
             ? "an unrecorded date"
@@ -150,36 +213,36 @@ public partial class ImportSetupWindow : Window
         string machine = string.IsNullOrWhiteSpace(m.MachineName) ? "an unnamed machine" : m.MachineName;
         string version = string.IsNullOrWhiteSpace(m.AppVersion) ? "UnifiedRGB" : $"UnifiedRGB {m.AppVersion}";
         return $"Made by {version} on {machine}, {when}"
-             + (Preview.SameMachine ? " · that is this machine, so this is your own backup" : "");
+             + (preview.SameMachine ? " · that is this machine, so this is your own backup" : "");
     }
 
     /*==========================================================*\
     |  Building the list                                         |
     \*==========================================================*/
 
-    void BuildSections()
+    void BuildSections(ImportPreview preview)
     {
-        AddSection("PROFILES", "lighting saved per device", Preview.Profiles, _profiles);
-        AddSection("SCREENS", "LCD designs", Preview.Screens, _screens);
-        AddSection("SHOWS", "timed sequences of screens", Preview.Sequences, _sequences);
-        AddSection("PALETTES", "saved color sets", Preview.Palettes, _palettes);
+        AddSection("PROFILES", "lighting saved per device", preview.Profiles, _profiles);
+        AddSection("SCREENS", "LCD designs", preview.Screens, _screens);
+        AddSection("SHOWS", "timed sequences of screens", preview.Sequences, _sequences);
+        AddSection("PALETTES", "saved color sets", preview.Palettes, _palettes);
 
         // The whole-file sections. Each is all or nothing by nature (a desk
         // layout is one arrangement, not a set of independent rows), which is
         // why they are single rows rather than a list.
         var whole = new ImportSection("EVERYTHING ELSE", "each of these is all or nothing");
-        _currentScreen = AddSingle(whole, Preview.CurrentScreen);
-        _canvas = AddSingle(whole, Preview.Canvas);
-        _rules = AddSingle(whole, Preview.Rules);
-        _preferences = AddSingle(whole, Preview.Preferences);
-        _machine = AddSingle(whole, Preview.MachineHardware);
+        _currentScreen = AddSingle(whole, preview.CurrentScreen);
+        _canvas = AddSingle(whole, preview.Canvas);
+        _rules = AddSingle(whole, preview.Rules);
+        _preferences = AddSingle(whole, preview.Preferences);
+        _machine = AddSingle(whole, preview.MachineHardware);
         if (whole.Rows.Count > 0) Sections.Add(whole);
 
         // The swatches have no preview row of their own because they cannot
         // conflict: Apply merges them into what is already there. Offered only
         // when the bundle actually carries settings, which is exactly when the
         // preview produced a Preferences row.
-        if (Preview.Preferences != null) SwatchCard.Visibility = Visibility.Visible;
+        if (preview.Preferences != null) SwatchCard.Visibility = Visibility.Visible;
     }
 
     void AddSection(string title, string note, List<ImportItem> items, List<ImportRow> into)
@@ -203,11 +266,17 @@ public partial class ImportSetupWindow : Window
         return row;
     }
 
-    void BuildDevices(List<string> localNames)
+    void BuildDevices(ImportPreview preview, List<string> localNames)
     {
-        if (Preview.Devices.Count == 0) return;
-        foreach (var mapping in Preview.Devices)
-            DeviceRows.Add(new DeviceRemapRow(mapping, localNames));
+        if (preview.Devices.Count == 0) return;
+        foreach (var mapping in preview.Devices)
+        {
+            var row = new DeviceRemapRow(mapping, localNames);
+            // A changed mapping can make the import one Apply would refuse,
+            // so the footer is re-judged on every change, not only on ticks.
+            row.PropertyChanged += (_, _) => { if (IsLoaded) UpdateFooter(); };
+            DeviceRows.Add(row);
+        }
         DeviceSection.Visibility = Visibility.Visible;
     }
 
@@ -259,10 +328,12 @@ public partial class ImportSetupWindow : Window
         {
             string? to = row.ChosenLocalName;
             if (to == null || string.Equals(to, row.BundleName, StringComparison.OrdinalIgnoreCase)) continue;
-            // Indexer rather than Add: two identical devices share one name in
-            // the bundle, so the same key can legitimately come round twice and
-            // Add would throw on the second.
-            choices.DeviceRemap[row.BundleName] = to;
+            // TryAdd, first row wins: two identical devices share one name in
+            // the bundle, so the same key can legitimately come round twice. The
+            // preview's own mapping keeps the first too (ImportPreview.
+            // ProposedRemap), and keeping the last here handed Apply a different
+            // mapping from the one the preview had just described.
+            choices.DeviceRemap.TryAdd(row.BundleName, to);
         }
         return choices;
     }
@@ -270,13 +341,24 @@ public partial class ImportSetupWindow : Window
     /// <summary>Keep the Import button and the count honest after every tick.
     /// Importing nothing is not a failure, but it is never what the user meant,
     /// so the button says so by being unavailable rather than by succeeding at
-    /// doing nothing.</summary>
+    /// doing nothing. A device mapping Apply would refuse disables it too, and
+    /// says why beside the mapping, rather than leaving the user to find out
+    /// from a failed import.</summary>
     void UpdateFooter()
     {
+        if (Preview is not { } preview) return;   // still reading the file
         var choices = BuildChoices();
         bool empty = ImportPreview.IsEmpty(choices);
-        ImportButton.IsEnabled = Preview.Ok && !empty;
+        string? clash = empty ? null : SetupBundle.RemapProblem(preview, choices);
+        RemapProblemText.Text = clash ?? "";
+        RemapProblemCard.Visibility = clash == null ? Visibility.Collapsed : Visibility.Visible;
+        ImportButton.IsEnabled = preview.Ok && !empty && clash == null;
 
+        if (clash != null)
+        {
+            SelectionCount.Text = "change the device mapping below first";
+            return;
+        }
         if (empty)
         {
             // "Select the safe set" ticking nothing is not a broken button: the
@@ -311,14 +393,21 @@ public partial class ImportSetupWindow : Window
         if (IsLoaded) UpdateFooter();
     }
 
-    void SafeSet_Click(object sender, RoutedEventArgs e) => ApplyPreset(Preview.DefaultChoices());
+    void SafeSet_Click(object sender, RoutedEventArgs e)
+    {
+        if (Preview != null) ApplyPreset(Preview.DefaultChoices());
+    }
 
-    void Everything_Click(object sender, RoutedEventArgs e) => ApplyPreset(Preview.EverythingChoices());
+    void Everything_Click(object sender, RoutedEventArgs e)
+    {
+        if (Preview != null) ApplyPreset(Preview.EverythingChoices());
+    }
 
     void Import_Click(object sender, RoutedEventArgs e)
     {
+        if (Preview is not { Ok: true } preview) return;
         var choices = BuildChoices();
-        if (!Preview.Ok || ImportPreview.IsEmpty(choices)) return;
+        if (ImportPreview.IsEmpty(choices)) return;
 
         // Apply is synchronous file work on a handful of small JSON files and
         // it is all-or-nothing, so it runs on the UI thread rather than being
@@ -330,7 +419,7 @@ public partial class ImportSetupWindow : Window
         ImportResult result;
         try
         {
-            result = SetupBundle.Apply(Preview, choices);
+            result = SetupBundle.Apply(preview, choices);
         }
         catch (Exception ex)
         {
@@ -408,7 +497,13 @@ public partial class ImportSetupWindow : Window
             BackupPathText.Text = result.BackupDirectory;
             BackupCard.Visibility = Visibility.Visible;
         }
-        if (result.RestartRecommended) RestartCard.Visibility = Visibility.Visible;
+        if (result.RestartRecommended)
+        {
+            RestartCard.Visibility = Visibility.Visible;
+            // Only when there were curves to talk about: the card used to say
+            // so after every wiring import.
+            if (result.FanConfigChanged) RestartText.Text += " Imported fan curves are already in use.";
+        }
 
         ChooserPanel.Visibility = Visibility.Collapsed;
         ResultPanel.Visibility = Visibility.Visible;

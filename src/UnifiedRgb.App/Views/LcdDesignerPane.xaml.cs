@@ -88,7 +88,8 @@ public partial class LcdDesignerPane : UserControl
         VM.TouchLcd();
     }
 
-    /*-----------------------------------------------------*    | Alignment guides, the way a forms designer does it:   |
+    /*-----------------------------------------------------*\
+    | Alignment guides, the way a forms designer does it:   |
     | while an item is dragged, its edges and centre are    |
     | compared against every other item and against the     |
     | screen itself. Anything within a few pixels snaps,    |
@@ -137,9 +138,6 @@ public partial class LcdDesignerPane : UserControl
         if (lineY is { } vy) DrawGuide(0, vy, ScreenW, vy);
         return (sx, sy);
     }
-
-    /// <summary>Closest line to any of the item's three anchors, if one is within
-    /// SnapDistance. `delta` is how far the item must move to sit on it.</summary>
 
     void DrawGuide(double x1, double y1, double x2, double y2) =>
         GuideLayer.Children.Add(new System.Windows.Shapes.Line

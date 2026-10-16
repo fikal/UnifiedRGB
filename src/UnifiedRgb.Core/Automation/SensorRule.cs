@@ -58,6 +58,11 @@ public sealed class SensorRule : System.ComponentModel.INotifyPropertyChanged
 
     public string Profile { get => _profile; set => Set(ref _profile, value, nameof(Profile)); }
     public bool Enabled { get => _enabled; set => Set(ref _enabled, value, nameof(Enabled)); }
+
+    /// <summary>Fields this build does not know, written back untouched so a
+    /// rollback build does not strip what a newer one stored on the rule.</summary>
+    [System.Text.Json.Serialization.JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; set; }
 }
 
 /// <summary>Where a rule stands between ticks: whether it is currently firing,
@@ -80,7 +85,7 @@ public readonly record struct SensorHit(
 }
 
 /// <summary>Pure hysteresis + hold state machine. One step per tick per rule;
-/// the caller owns the state array across ticks.</summary>
+/// the caller owns the state across ticks (SensorRuleTracker, in the app).</summary>
 public static class SensorRuleEvaluator
 {
     /// <param name="value">Current reading, or null when the sensor is
@@ -130,6 +135,78 @@ public static class SensorRuleEvaluator
         }
         return null;
     }
+}
+
+/// <summary>Every sensor rule's hysteresis state between ticks, kept against the
+/// RULE rather than its place in the list.
+///
+/// It used to be an array indexed by position, reset only when the list object
+/// or its length changed. A reorder changes neither, so the firing state moved
+/// to whichever rule now sat in that slot: a rule reading 50 degrees could be
+/// "firing" because the 90-degree rule had just been dragged below it, and its
+/// profile went on. Adding or removing any rule changed the length and reset
+/// them all, so the rule that WAS firing dropped out, sat through its hold
+/// again, and the lighting went to Base and back. Keyed by identity, a rule
+/// keeps its own state wherever it moves, and only a rule that has left the
+/// list loses it. Allocates nothing on a tick once the list has been seen.</summary>
+public sealed class SensorRuleTracker
+{
+    readonly Dictionary<SensorRule, SensorRuleState> _states = new(ReferenceEqualityComparer.Instance);
+    // Per-tick scratch in the list's CURRENT order, because list order is still
+    // the priority FirstActive reads. Resized only when the count changes.
+    SensorRuleState[] _ordered = Array.Empty<SensorRuleState>();
+    double?[] _values = Array.Empty<double?>();
+    readonly List<SensorRule> _gone = new();
+
+    /// <summary>Advance every rule one tick and return the winner.</summary>
+    /// <param name="read">The reading for a source, or null when it has none.</param>
+    /// <param name="firstMissing">The source of the first enabled rule that
+    /// had no reading, for the "sensor rule paused" status; null when every
+    /// enabled rule could read.</param>
+    public SensorHit? Step(IReadOnlyList<SensorRule> rules, Func<string, double?> read, double nowSeconds,
+                           Func<string, bool>? profileExists, out string? firstMissing)
+    {
+        firstMissing = null;
+        if (_ordered.Length != rules.Count)
+        {
+            _ordered = new SensorRuleState[rules.Count];
+            _values = new double?[rules.Count];
+        }
+        for (int i = 0; i < rules.Count; i++)
+        {
+            var r = rules[i];
+            double? v = r.Enabled ? read(r.Source) : null;
+            _states.TryGetValue(r, out var was);
+            var now = SensorRuleEvaluator.Step(r, v, was, nowSeconds);
+            _states[r] = now;
+            _ordered[i] = now;
+            _values[i] = v;
+            if (r.Enabled && v == null) firstMissing ??= r.Source;
+        }
+        Prune(rules);
+        return SensorRuleEvaluator.FirstActive(rules, _ordered, _values, profileExists);
+    }
+
+    /// <summary>Forget the rules that are no longer in the list, so a removed
+    /// rule's state does not outlive it.</summary>
+    void Prune(IReadOnlyList<SensorRule> rules)
+    {
+        foreach (var kept in _states.Keys)
+        {
+            bool present = false;
+            for (int i = 0; i < rules.Count && !present; i++) present = ReferenceEquals(rules[i], kept);
+            if (!present) _gone.Add(kept);
+        }
+        foreach (var r in _gone) _states.Remove(r);
+        _gone.Clear();
+    }
+
+    /// <summary>Whether this rule is firing as of the last step.</summary>
+    internal bool IsActive(SensorRule rule) => _states.TryGetValue(rule, out var s) && s.Active;
+
+    /// <summary>How many rules have state, for the harness: removed rules must
+    /// not linger.</summary>
+    internal int Tracked => _states.Count;
 }
 
 /// <summary>The sensors a rule can watch: fixed ids for the headline values,

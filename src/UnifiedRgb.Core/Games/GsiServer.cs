@@ -32,6 +32,18 @@ public sealed class GsiServer : IDisposable
     // thread. Volatile so a worker cannot see a stale reference indefinitely.
     volatile GameState _state = GameState.Empty;
 
+    /// <summary>Taken around "are we stopping?" together with the state write
+    /// that depends on the answer, by Stop and by a request being handled. A
+    /// request that passed the check, then spent its time parsing while Stop
+    /// ran, used to write the game's state and post time AFTER Stop had
+    /// cleared them: the settings line said "connected" for another ten
+    /// seconds after the listener was gone.</summary>
+    readonly object _stateLock = new();
+
+    /// <summary>Harness only: runs on the listener thread between a request's
+    /// parse and its state write - the window a Stop used to slip through.</summary>
+    internal Action? AfterParse;
+
     public int Port { get; private set; }
     public string Token { get; private set; } = "";
     public bool Running => _listener != null;
@@ -107,12 +119,15 @@ public sealed class GsiServer : IDisposable
 
     public void Stop()
     {
-        _stopping = true;
+        lock (_stateLock)
+        {
+            _stopping = true;
+            // Before the handles go, so a worker reading State sees "nothing
+            // playing" rather than the last frame of a game that has closed.
+            _state = GameState.Empty;
+            Interlocked.Exchange(ref _lastPostTicks, 0);
+        }
         _dropWatch?.Dispose(); _dropWatch = null;
-        // Before the handles go, so a worker reading State sees "nothing
-        // playing" rather than the last frame of a game that has closed.
-        _state = GameState.Empty;
-        Interlocked.Exchange(ref _lastPostTicks, 0);
         try { _listener?.Stop(); } catch { }
         try { _listener?.Close(); } catch { }
         _listener = null;
@@ -143,6 +158,17 @@ public sealed class GsiServer : IDisposable
 
     void Handle(HttpListenerContext ctx)
     {
+        // The "localhost" prefix matches the Host header, not the caller:
+        // http.sys hands this listener any request on the port whose Host says
+        // localhost, from whatever address it came. The game is on this
+        // machine, so anything else is refused before its body is read.
+        if (!ctx.Request.IsLocal)
+        {
+            Log.Occasional("gsi-remote", "gsi", $"refused a request from {ctx.Request.RemoteEndPoint}");
+            ctx.Response.StatusCode = 403;
+            try { ctx.Response.Close(); } catch { }   // the caller hung up: nothing left to refuse
+            return;
+        }
         if (ctx.Request.ContentLength64 > MaxBodyBytes)
         {
             Log.Occasional("gsi-big", "gsi", $"ignoring a {ctx.Request.ContentLength64} byte post");
@@ -168,6 +194,7 @@ public sealed class GsiServer : IDisposable
         if (_stopping) return;
 
         var parsed = GsiParser.Parse(body, Token);
+        AfterParse?.Invoke();
         if (parsed == null)
         {
             // A wrong token is worth saying once: it is the difference between
@@ -176,9 +203,16 @@ public sealed class GsiServer : IDisposable
             return;
         }
 
-        bool wasConnected = Connected;
-        _state = parsed;
-        Interlocked.Exchange(ref _lastPostTicks, Math.Max(1, Environment.TickCount64));
+        bool wasConnected;
+        lock (_stateLock)
+        {
+            // Asked again now the parse is done, together with the write: the
+            // check above only spares the parse, and Stop can run during it.
+            if (_stopping) return;
+            wasConnected = Connected;
+            _state = parsed;
+            Interlocked.Exchange(ref _lastPostTicks, Math.Max(1, Environment.TickCount64));
+        }
         if (!wasConnected)
         {
             // The difference between "your config is wrong" and "you have not

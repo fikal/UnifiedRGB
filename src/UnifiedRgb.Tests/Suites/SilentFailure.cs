@@ -1,6 +1,7 @@
 ﻿using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
+using static UnifiedRgb.Tests.TestHelpers;
 
 namespace UnifiedRgb.Tests;
 
@@ -136,13 +137,4 @@ static class SilentFailureSuite
         return ln > 0 && lines[ln - 1].TrimStart().StartsWith("//", StringComparison.Ordinal);
     }
 
-    /// <summary>The repo, found from THIS file's compile-time path rather than
-    /// the working directory: the harness runs from bin/, and CI runs it from
-    /// somewhere else again.</summary>
-    static string? RepoRoot([CallerFilePath] string here = "")
-    {
-        var dir = new DirectoryInfo(Path.GetDirectoryName(here) ?? ".");
-        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "UnifiedRgb.slnx"))) dir = dir.Parent;
-        return dir?.FullName;
-    }
 }

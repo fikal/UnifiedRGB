@@ -51,6 +51,11 @@ public sealed class ScheduleRule : INotifyPropertyChanged
     bool _idleOnly;
     public bool IdleOnly { get => _idleOnly; set { _idleOnly = value; Changed(nameof(IdleOnly)); } }
 
+    /// <summary>Fields this build does not know, written back untouched so a
+    /// rollback build does not strip what a newer one stored on the rule.</summary>
+    [System.Text.Json.Serialization.JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; set; }
+
     /*--- day bits as bindable flags, so the editor is seven check boxes ---*/
     bool Bit(int i) => (_days & (1 << i)) != 0;
     void SetBit(int i, bool on)
@@ -100,6 +105,21 @@ public sealed class ScheduleRule : INotifyPropertyChanged
         if (t >= start) return RunsOn(r, now.DayOfWeek);              // started today
         if (t < end) return RunsOn(r, now.AddDays(-1).DayOfWeek);     // started yesterday
         return false;
+    }
+
+    /// <summary>When the window that is open at <paramref name="now"/> opened
+    /// and when it closes, as dates; null when it is not open. Same rule as
+    /// InWindow: an overnight window belongs to the day it started, so at 01:00
+    /// Tuesday a 23:00-07:00 window opened Monday 23:00 and closes Tuesday 07:00.</summary>
+    public static (DateTime Start, DateTime End)? OpenSpan(ScheduleRule r, DateTime now)
+    {
+        if (!InWindow(r, now)) return null;
+        // Parsed exactly as InWindow parses them, which has just said both are valid.
+        TimeSpan.TryParse(r.Start, out var start);
+        TimeSpan.TryParse(r.End, out var end);
+        bool overnight = end < start;
+        var day = !overnight || now.TimeOfDay >= start ? now.Date : now.Date.AddDays(-1);
+        return (day + start, (overnight ? day.AddDays(1) : day) + end);
     }
 
     /// <summary>Window is open, the rule is on, and (for an idle-only rule) the

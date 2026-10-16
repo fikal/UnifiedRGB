@@ -26,37 +26,47 @@ public static class ChromaRestServer
 {
     const int Port = 54235;
     static HttpListener? _listener;
+    static int _port = Port;   // what the init reply points the client back at
     static int _session;
     static readonly object _lock = new();
 
     static readonly byte[] RespResult0 = Encoding.UTF8.GetBytes("{\"result\":0}");
     static readonly byte[] RespTick = Encoding.UTF8.GetBytes("{\"tick\":1}");
     static readonly LogBudget _initLog = new(5);   // a game inits once; a flood must not grow the log
+    static readonly LogBudget _refusedLog = new(5); // a page can retry in a loop; same bound
 
-    public static void Start()
+    public static void Start() => Start(Port);
+
+    /// <summary>Listen on <paramref name="port"/>. A parameter only for the
+    /// harness, which cannot take :54235 while the app itself is running.
+    /// True when listening (now or already).</summary>
+    internal static bool Start(int port)
     {
-        if (_listener != null) return;
+        if (_listener != null) return true;
         lock (_lock)
         {
-            if (_listener != null) return;
+            if (_listener != null) return true;
             try
             {
                 var l = new HttpListener();
-                l.Prefixes.Add($"http://localhost:{Port}/");
-            // HTTP.sys matches a prefix on the Host header: a Chroma host that
-            // spells the documented base URL as 127.0.0.1 got no answer at all.
-            // Loopback either way; nothing on the LAN is reached by this.
-            l.Prefixes.Add($"http://127.0.0.1:{Port}/");
+                l.Prefixes.Add($"http://localhost:{port}/");
+                // HTTP.sys matches a prefix on the Host header: a Chroma host that
+                // spells the documented base URL as 127.0.0.1 got no answer at all.
+                // Loopback either way; nothing on the LAN is reached by this.
+                l.Prefixes.Add($"http://127.0.0.1:{port}/");
                 l.Start();
+                _port = port;
                 _listener = l;
                 new Thread(() => Loop(l)) { IsBackground = true, Name = "chroma-rest" }.Start();
-                Log.Info("chroma", $"REST server listening on :{Port}");
+                Log.Info("chroma", $"REST server listening on :{port}");
+                return true;
             }
             catch (Exception ex)
             {
                 // Port busy = Razer Central already owns it (then Razer's own SDK
                 // handles games; our shim/pipe still covers Wallpaper Engine).
-                Log.Warn("chroma", $"REST server not started ({ex.Message}) - Razer Central may own :{Port}");
+                Log.Warn("chroma", $"REST server not started ({ex.Message}) - Razer Central may own :{port}");
+                return false;
             }
         }
     }
@@ -90,7 +100,7 @@ public static class ChromaRestServer
                 try { Handle(context); }
                 catch (Exception ex)
                 {
-                    Log.Occasional("chroma", "rest", $"handle: {ex.Message}");
+                    Log.Occasional("chroma-rest", "chroma", $"handle: {ex.Message}");
                     try { context.Response.Abort(); } catch { }   // don't leave the client hanging
                 }
             }, ctx);
@@ -104,6 +114,32 @@ public static class ChromaRestServer
     static void Handle(HttpListenerContext ctx)
     {
         var req = ctx.Request;
+        // Loopback only, in code: the HTTP.sys prefix matches the Host header,
+        // not the connecting address, so a LAN request sent with
+        // "Host: localhost" was served. The GSI listener checks the same.
+        if (!req.IsLocal)
+        {
+            ctx.Response.StatusCode = 403;
+            ctx.Response.ContentLength64 = 0;
+            ctx.Response.Close();
+            return;
+        }
+        // A web page must not drive the lights: a text/plain POST is a CORS
+        // "simple" request, sent with no preflight, and its body was applied
+        // before the browser ever looked for a CORS header in the reply. Pages
+        // are told apart by their Origin (OriginAllowed has the rules); the
+        // native clients send none, and the browser-hosted ones that worked
+        // before - extensions, NW.js and Electron games, Overwolf apps - send
+        // an origin no web page can.
+        string? origin = req.Headers["Origin"];
+        if (!OriginAllowed(origin))
+        {
+            if (_refusedLog.Allow()) Log.Warn("chroma", $"REST: refused a request from a web page ({Printable(origin)})");
+            ctx.Response.StatusCode = 403;
+            ctx.Response.ContentLength64 = 0;
+            ctx.Response.Close();
+            return;
+        }
         string path = (req.Url?.AbsolutePath ?? "").TrimEnd('/');
 
         int bodyLen = 0;
@@ -123,7 +159,7 @@ public static class ChromaRestServer
             int id = Interlocked.Increment(ref _session);
             if (_initLog.Allow()) Log.Info("chroma", $"REST init: session {id} ({AppTitle(body, bodyLen)})");
             Json(ctx, Encoding.UTF8.GetBytes(
-                $"{{\"sessionid\":{id},\"uri\":\"http://localhost:{Port}/razer/chromasdk/{id}\"}}"));
+                $"{{\"sessionid\":{id},\"uri\":\"http://localhost:{_port}/razer/chromasdk/{id}\"}}"));
             return;
         }
 
@@ -142,6 +178,58 @@ public static class ChromaRestServer
         }
 
         Json(ctx, RespResult0);
+    }
+
+    /// <summary>Whether a request carrying this Origin header may be served.
+    /// Refused: what a web page can send - an http(s) origin on any host but
+    /// this machine's loopback, and the opaque "null" (a sandboxed iframe or a
+    /// data: document forces that one, so it cannot be told from an attack).
+    /// Served: no Origin at all (the SDK's C++/C# wrappers, game engines' HTTP
+    /// stacks); any other scheme, which only an extension or a packaged app
+    /// can be (chrome-extension, moz-extension, safari-web-extension,
+    /// overwolf-extension, NW.js/Electron app:// and file://); and
+    /// http(s)://localhost, 127.x.x.x and [::1], which is a local process
+    /// serving its own page (DNS rebinding arrives with the attacker's own
+    /// origin, not ours). Anything that is not a bare scheme://host[:port],
+    /// as browsers serialise an origin, is refused rather than guessed at;
+    /// two headers folded into one ("a, b") are refused that way too.</summary>
+    internal static bool OriginAllowed(string? origin)
+    {
+        if (origin == null) return true;
+        if (origin.Equals("null", StringComparison.OrdinalIgnoreCase)) return false;
+        int sep = origin.IndexOf("://", StringComparison.Ordinal);
+        if (sep <= 0 || !char.IsAsciiLetter(origin[0])) return false;
+        string scheme = origin[..sep];
+        foreach (char c in scheme)
+            if (!char.IsAsciiLetterOrDigit(c) && c is not ('+' or '-' or '.')) return false;
+        // The host[:port] part: printable ASCII (browsers send IDN hosts as
+        // punycode), and no path, query, credentials or second value.
+        foreach (char c in origin.AsSpan(sep + 3))
+            if (c <= ' ' || c >= 0x7F || c is '/' or '\\' or '?' or '#' or '@' or ',') return false;
+        bool web = scheme.Equals("http", StringComparison.OrdinalIgnoreCase)
+                || scheme.Equals("https", StringComparison.OrdinalIgnoreCase);
+        if (!web) return true;
+        // The host is split out by hand, not with Uri: Uri rewrites a host
+        // named "loopback" to "localhost" (and IsLoopback says yes to it), and
+        // a DNS search suffix can resolve that name to anywhere on the network.
+        string authority = origin[(sep + 3)..], host, port;
+        if (authority.StartsWith('['))
+        {
+            int close = authority.IndexOf(']');
+            if (close < 0) return false;
+            host = authority[1..close];
+            port = authority[(close + 1)..];
+        }
+        else
+        {
+            int colon = authority.IndexOf(':');
+            host = colon < 0 ? authority : authority[..colon];
+            port = colon < 0 ? "" : authority[colon..];
+        }
+        if (port.Length > 0 && (port.Length is < 2 or > 6 || port[0] != ':' || port.AsSpan(1).ContainsAnyExceptInRange('0', '9')))
+            return false;
+        if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase)) return true;
+        return IPAddress.TryParse(host, out var ip) && IPAddress.IsLoopback(ip);
     }
 
     /// <summary>Parse a device effect and push its colors to the feed, routed by
@@ -230,17 +318,24 @@ public static class ChromaRestServer
         {
             using var d = JsonDocument.Parse(new ReadOnlyMemory<byte>(body, 0, len));
             string title = d.RootElement.TryGetProperty("title", out var t) ? t.GetString() ?? "?" : "?";
-            // Peer-controlled text headed for the log (and the support bundle):
-            // no control characters (an embedded newline forges a log line), short.
-            var sb = new StringBuilder(Math.Min(title.Length, 64));
-            foreach (char ch in title)
-            {
-                if (sb.Length >= 64) break;
-                sb.Append(char.IsControl(ch) ? ' ' : ch);
-            }
-            return sb.Length == 0 ? "?" : sb.ToString();
+            return Printable(title);
         }
         catch { return "?"; }   // unparseable request body; "?" is what the log line prints
+    }
+
+    /// <summary>Peer-controlled text headed for the log (and the support
+    /// bundle): no control characters (an embedded newline forges a log line),
+    /// at most 64 characters, "?" when nothing is left.</summary>
+    static string Printable(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return "?";
+        var sb = new StringBuilder(Math.Min(text.Length, 64));
+        foreach (char ch in text)
+        {
+            if (sb.Length >= 64) break;
+            sb.Append(char.IsControl(ch) ? ' ' : ch);
+        }
+        return sb.Length == 0 ? "?" : sb.ToString();
     }
 
     static void Json(HttpListenerContext ctx, byte[] bytes)

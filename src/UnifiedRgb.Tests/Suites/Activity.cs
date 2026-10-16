@@ -1091,23 +1091,42 @@ static class ActivitySuite
                 // client's picture, not the user's.
                 var keeper = new FakePersistDevice { Name = "Keeps colour", LedCount = 2 };
                 vm.Devices.Add(keeper);
-                var persist = typeof(UnifiedRgb.App.MainViewModel).GetMethod("PersistSettledLighting", flags)!;
+                var persistMethod = typeof(UnifiedRgb.App.MainViewModel).GetMethod("PersistSettledLighting", flags)!;
+                // The save runs on the device's lane under its write gate now,
+                // so each timer firing is followed by draining the lanes.
+                void Persist() { persistMethod.Invoke(vm, null); vm.Lighting.Applier.Drain(2000); }
 
                 vm.LightsSuppressed = false;
-                persist.Invoke(vm, null);
+                // The timer only ever fires after a static push (that is what
+                // starts it), and the save stores only a colour the app is known
+                // to have put on the device.
+                Persist();
+                t.Equal(0, keeper.Persists, "nothing is stored before the app has shown the device a colour");
+                System.Array.Fill(vm.Lighting.FrameFor(keeper), new UnifiedRgb.Core.Rgb(12, 34, 56));
+                vm.Lighting.PushFrame(keeper);
+                vm.Lighting.Applier.Drain(2000);
+                Persist();
                 t.Equal(1, keeper.Persists, "a settled colour is stored");
+                t.Check(keeper.Stored[^1].All(c => c == new UnifiedRgb.Core.Rgb(12, 34, 56)), "...and it is the stored colour, finished as written");
 
                 // An SDK client owns the picture: storing it would outlive the client.
                 vm.StopEffectsOn(keeper);
-                persist.Invoke(vm, null);
+                Persist();
                 t.Equal(1, keeper.Persists, "a device a client holds is left alone");
                 vm.ReleaseHold(keeper);
-                persist.Invoke(vm, null);
+                Persist();
                 t.Equal(2, keeper.Persists, "...and stored again once the client lets go");
 
                 // A device with no persist support is simply skipped, not crashed on.
-                persist.Invoke(vm, null);
+                Persist();
                 t.Equal(3, keeper.Persists, "repeat ticks are harmless - the driver skips a colour already stored");
+
+                // Lights off (lock, a dark window): the devices show black. A save
+                // here stored BLACK onboard, and the mouse woke dark after a shutdown.
+                vm.LightsSuppressed = true;
+                Persist();
+                t.Equal(3, keeper.Persists, "nothing is stored while the lights are off");
+                vm.LightsSuppressed = false;
                 vm.Devices.Remove(keeper);
 
                 t.Section("master brightness does not relight a dark desk or write over a client");
@@ -1137,7 +1156,20 @@ static class ActivitySuite
                 vm.Lighting.Applier.Drain(2000);
                 t.Check(dev.Last!.SequenceEqual(clientFrame),
                     "changing master brightness leaves a device an SDK client is holding alone");
+
+                // The write boundary itself asks both halves now. It used to ask
+                // IsClaimed only, so any static push in the gap between a client's
+                // takeover and its first frame went straight to the hardware.
+                Array.Fill(vm.Lighting.FrameFor(dev), new UnifiedRgb.Core.Rgb(1, 2, 3));
+                vm.Lighting.PushFrame(dev);
+                vm.Lighting.Applier.Drain(2000);
+                t.Check(vm.Lighting.IsClientOwned(dev), "a taken device is the client's from the takeover, before its first frame");
+                t.Check(dev.Last!.SequenceEqual(clientFrame), "...and a static push in that gap is held back at the write boundary");
                 vm.ReleaseHold(dev);
+                t.Check(!vm.Lighting.IsClientOwned(dev), "released: the device is ours again");
+                vm.RestoreDevice(dev);
+                vm.Lighting.Applier.Drain(2000);
+                t.Check(!dev.Last!.SequenceEqual(clientFrame), "...and the colour kept meanwhile goes out once the client lets go");
                 vm.MasterBrightness = 1.0;
                 vm.Lighting.Applier.Drain(2000);
             }

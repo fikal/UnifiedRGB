@@ -38,19 +38,30 @@ public sealed partial class MainViewModel
         var dev = Devices.OfType<GigabyteIt5711>().FirstOrDefault();
         if (dev == null) return;
         var white = Enumerable.Repeat(Rgb.White, Math.Clamp(leds, 1, 64)).ToArray();
-        _applier.Post(LaneOf(dev), ("hdrtest", header),
-            () => { lock (EffectEngine.WriteGateFor(dev)) dev.SetHeaderLeds(header, white); });   // ordered against a running effect's frames
+        _applier.Post(LaneOf(dev), ("hdrtest", header), () =>
+        {
+            lock (EffectEngine.WriteGateFor(dev))   // ordered against a running effect's frames
+            {
+                _lighting.NoteOtherWrite(dev);
+                dev.SetHeaderLeds(header, white);
+            }
+        });
     }
 
-    /// <summary>Undo a header test: re-push the board's stored static frame
-    /// (SetHeaderLeds leaves the header marked for re-init, so this write also
-    /// restores its counts/effect mask). Any running effect channel repaints
-    /// its range on the next engine frame. HeaderConfigDialog calls this from
-    /// the window's Closed event, so a tested header never stays white.</summary>
+    /// <summary>Undo a header test: write the whole board again (SetHeaderLeds
+    /// leaves the header marked for re-init, so this write also restores its
+    /// counts/effect mask). Any running effect channel repaints its range on
+    /// the next engine frame. HeaderConfigDialog calls this from the window's
+    /// Closed event, so a tested header never stays white.
+    ///
+    /// What is written is decided on the lane when it runs (PutBack): the
+    /// black in the dark, a client's picture under a claim, else the stored
+    /// frame. A plain PushFrame here relit a dark desk, and under a client it
+    /// was refused outright, which left the tested header white.</summary>
     public void EndHeaderTest()
     {
         var dev = Devices.OfType<GigabyteIt5711>().FirstOrDefault();
-        if (dev != null) _lighting.PushFrame(dev);
+        if (dev != null) _lighting.PutBack(dev, "header test undone");
     }
 
     /// <summary>Persist the new header layout and rebuild devices from it.</summary>
@@ -102,7 +113,7 @@ public sealed partial class MainViewModel
         // halves of "held", as everywhere else in this file: IsClaimed turns
         // true only on the client's first painted frame, and the write
         // boundary (LightingController.PushFrame) refuses on that half too.
-        if (_sdkHeld.Contains(dev) || _lighting.IsClaimed(dev))
+        if (_lighting.IsClientOwned(dev))
         {
             _engine.InvalidateBase(dev);
             UnifiedRgb.Core.Log.Occasional($"held:{dev.Name}", "lighting",

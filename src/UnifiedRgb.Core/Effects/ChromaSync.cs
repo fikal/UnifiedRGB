@@ -29,45 +29,22 @@ public static class ChromaFeed
     static volatile Frame? _kb, _cl;
     static long _lastFrame;
     const int PreferKeyboardMs = 1000;
-    static Thread? _server;
-    // Every accepted instance costs a reader thread blocked in Read with no
-    // timeout; a host that leaks connections (or any hostile local process)
-    // must not pile those up in the elevated 24/7 process.
+    // Lives for the app's life once started, so it is never disposed.
+    static volatile ChromaPipeServer? _pipe;
+    // Every accepted instance holds a slot; a host that leaks connections (or
+    // any hostile local process) must not pile those up in the elevated 24/7
+    // process.
     const int MaxClients = 16;
-    static int _clients;
-    static readonly LogBudget _connLog = new(10);
-
-    /// <summary>Connections that have not sent a complete frame yet, and when
-    /// they arrived.
-    ///
-    /// The client cap bounds threads, but a connection that simply never sends
-    /// anything sits in a blocking read forever and keeps its slot: sixteen
-    /// silent local processes could lock every real shim host out, and named
-    /// pipes have no read timeout to fall back on. Only the FIRST frame is
-    /// deadlined - a real host sends one as soon as it connects, whereas an
-    /// established host may legitimately go quiet for hours between games and
-    /// must not be dropped.</summary>
-    static readonly System.Collections.Concurrent.ConcurrentDictionary<NamedPipeServerStream, long> _unproven = new();
     const int FirstFrameDeadlineMs = 30_000;
-
-    static void EvictSilentClients()
-    {
-        while (true)
-        {
-            Thread.Sleep(5000);
-            long now = Environment.TickCount64;
-            foreach (var (pipe, at) in _unproven)
-            {
-                if (now - at < FirstFrameDeadlineMs) continue;
-                if (!_unproven.TryRemove(pipe, out _)) continue;
-                // Disposing under the reader unblocks it; ServeClient's finally
-                // releases the slot.
-                Log.Occasional("chroma-silent", "chroma",
-                    $"dropping a pipe client that connected but sent no frame within {FirstFrameDeadlineMs / 1000}s");
-                try { pipe.Dispose(); } catch { }
-            }
-        }
-    }
+    // With every slot taken, a client this long without a frame gives its slot
+    // to a new connection (ChromaPipeServer's summary has why 30 s is safe).
+    internal const int IdleEvictMs = 30_000;
+    // ...and a connection that has not sent its FIRST frame gives it up after
+    // this long: a real shim writes its frame in the same call that connects,
+    // so only something holding slots open is still silent by then. Without
+    // it, sixteen silent connections re-opened as each was dropped kept every
+    // slot under 30 s idle, and Wallpaper Engine was refused for good.
+    internal const int UnprovenEvictMs = 2_000;
 
     /// <summary>A frame arrived within the last few seconds.</summary>
     public static bool Active => Environment.TickCount64 - Interlocked.Read(ref _lastFrame) < 4000;
@@ -75,13 +52,13 @@ public static class ChromaFeed
     /// <summary>Start the pipe server (idempotent). Runs for the app's life.</summary>
     public static void Start()
     {
-        if (_server != null) return;
+        if (_pipe != null) return;
         lock (_lock)
         {
-            if (_server != null) return;
-            new Thread(EvictSilentClients) { IsBackground = true, Name = "chroma-feed-reaper" }.Start();
-            _server = new Thread(ServerLoop) { IsBackground = true, Name = "chroma-feed" };
-            _server.Start();
+            if (_pipe != null) return;
+            var pipe = new ChromaPipeServer(PipeName, FirstFrameDeadlineMs, MaxClients, Publish, IdleEvictMs, UnprovenEvictMs);
+            pipe.Start();
+            _pipe = pipe;
         }
     }
 
@@ -118,6 +95,166 @@ public static class ChromaFeed
         int gy = Math.Clamp((int)(y * f.Rows), 0, f.Rows - 1);
         return f.Grid[gy * f.Cols + gx];
     }
+}
+
+/// <summary>The shim's named pipe: one instance per connected host, each read
+/// asynchronously, every frame handed to <c>publish(type, grid, rows, cols)</c>.
+/// An instance rather than statics so the harness can run one under its own
+/// name; the app runs exactly one, under ChromaFeed's, for its whole life.
+///
+/// The client cap bounds the connections, but a connection that simply never
+/// sends anything would keep its slot forever: sixteen silent local processes
+/// could lock every real shim host out. So the FIRST frame has a deadline. A
+/// real host sends one as soon as it connects, whereas an established host may
+/// legitimately go quiet for hours between games and must not be dropped.
+///
+/// The pipe is opened overlapped for that. The old reaper disposed a silent
+/// client's pipe from another thread, but a synchronous ReadFile cannot be
+/// interrupted that way: the close waits for the read, the read waited for a
+/// byte that never came, and the slot was never given back.
+///
+/// The deadline alone still left a way in: ONE valid frame made a client
+/// "real" for good, so sixteen connections that each sent one frame and then
+/// nothing locked Wallpaper Engine out just the same. So when every slot is
+/// taken, a new connection is given the slot of the client that has gone
+/// longest without a frame, provided that is at least idleEvictMs (30 s in
+/// the app). A client that keeps sending is never evicted; when every slot is
+/// busy like that the newcomer is refused, as before.
+///
+/// Why that never costs a real host anything, from what the shim
+/// (native/chroma-shim/RzChromaSDK.cpp, SendFrame) does:
+///   - it opens the pipe only to send a frame, and writes that frame in the
+///     same call, so a real connection is never idle at the start;
+///   - it writes whenever the host creates or sets an effect: Wallpaper Engine
+///     and Chroma animations do that at their frame rate, many times a second,
+///     nowhere near 30 s while they run;
+///   - a host that has gone quiet (Wallpaper Engine paused behind a fullscreen
+///     game, a game that set one static colour) is not lighting anything by
+///     then: ChromaFeed.Active lets a frame go after 4 s;
+///   - after a failed write it closes its handle and reopens the pipe on its
+///     next frame (the 1 s reconnect gate counts from its last attempt, long
+///     past for an established connection). An evicted host loses the one
+///     frame whose write found the pipe closed, and is back on the next.
+/// A host refused because every slot is busy retries the same way, about once
+/// a second while it has frames to send.</summary>
+internal sealed class ChromaPipeServer : IDisposable
+{
+    readonly string _name;
+    readonly int _firstFrameDeadlineMs;
+    readonly int _maxClients;
+    readonly int _idleEvictMs;
+    readonly int _unprovenEvictMs;
+    readonly Action<int, Rgb[], int, int> _publish;
+    readonly CancellationTokenSource _stop = new();
+    readonly CancellationToken _stopping;
+    readonly LogBudget _connLog = new(10);
+    readonly List<PipeClient> _live = new();   // the slots; guarded by locking it
+    bool _firstInstance = true;   // touched only by the accept thread
+    Thread? _accept;
+
+    public ChromaPipeServer(string name, int firstFrameDeadlineMs, int maxClients, Action<int, Rgb[], int, int> publish,
+        int idleEvictMs = ChromaFeed.IdleEvictMs, int unprovenEvictMs = ChromaFeed.UnprovenEvictMs)
+    {
+        _name = name;
+        _firstFrameDeadlineMs = firstFrameDeadlineMs;
+        _maxClients = maxClients;
+        _idleEvictMs = idleEvictMs;
+        _unprovenEvictMs = unprovenEvictMs;
+        _publish = publish;
+        _stopping = _stop.Token;
+    }
+
+    /// <summary>Connections holding a slot right now.</summary>
+    public int ClientCount { get { lock (_live) return _live.Count; } }
+
+    /// <summary>One accepted connection: when it last sent a frame, and the
+    /// switch that drops it.</summary>
+    sealed class PipeClient : IDisposable
+    {
+        readonly CancellationTokenSource _drop;
+        long _lastFrame;           // TickCount64 of its last whole frame; of the connect until the first
+        volatile bool _evicted;
+        volatile bool _proven;     // has sent a whole frame
+
+        public PipeClient(CancellationToken stopping)
+        {
+            _drop = CancellationTokenSource.CreateLinkedTokenSource(stopping);
+            _lastFrame = Environment.TickCount64;
+        }
+
+        /// <summary>Cancelled when the server stops or the client is evicted.</summary>
+        public CancellationToken Dropped => _drop.Token;
+        public bool Evicted => _evicted;
+        public long IdleMs(long now) => now - Interlocked.Read(ref _lastFrame);
+        public bool Proven => _proven;
+        public void Framed() { Interlocked.Exchange(ref _lastFrame, Environment.TickCount64); _proven = true; }
+
+        /// <summary>Only ever called under the slot lock, while the client is
+        /// still in the slot list; ServeClientAsync takes the client out under
+        /// that same lock before disposing it, so this never meets a disposed
+        /// token source.</summary>
+        public void Evict() { _evicted = true; _drop.Cancel(); }
+
+        public void Dispose() => _drop.Dispose();
+    }
+
+    /// <summary>A slot for a new connection: a free one, else a client's that
+    /// can give it up - one still without its first frame after
+    /// unprovenEvictMs (never a real host, so these go first), or one that has
+    /// gone idleEvictMs without a frame, the longest idle first. That client is
+    /// cancelled, and gone from the count at once. Null when every slot is busy.</summary>
+    PipeClient? Admit(out long evictedIdleMs)
+    {
+        evictedIdleMs = -1;
+        lock (_live)
+        {
+            if (_live.Count >= _maxClients)
+            {
+                long now = Environment.TickCount64;
+                PipeClient? victim = null;
+                long victimMs = -1;
+                bool victimSilent = false;
+                foreach (var c in _live)
+                {
+                    long idle = c.IdleMs(now);
+                    bool silent = !c.Proven;
+                    if (idle < (silent ? _unprovenEvictMs : _idleEvictMs)) continue;
+                    if (victim == null || (silent && !victimSilent) || (silent == victimSilent && idle > victimMs))
+                    { victim = c; victimMs = idle; victimSilent = silent; }
+                }
+                if (victim == null) return null;
+                _live.Remove(victim);
+                victim.Evict();
+                evictedIdleMs = victimMs;
+            }
+            var client = new PipeClient(_stopping);
+            _live.Add(client);
+            return client;
+        }
+    }
+
+    void Release(PipeClient client)
+    {
+        lock (_live) _live.Remove(client);   // already gone when it was evicted
+        client.Dispose();
+    }
+
+    public void Start()
+    {
+        _accept = new Thread(AcceptLoop) { IsBackground = true, Name = "chroma-feed" };
+        _accept.Start();
+    }
+
+    /// <summary>Stop accepting and drop every connection. The app never calls
+    /// this (the pipe serves for its whole life); the harness does. The accept
+    /// thread is let go before the token source is, so it never reads a
+    /// disposed one.</summary>
+    public void Dispose()
+    {
+        _stop.Cancel();
+        _accept?.Join(2000);
+        _stop.Dispose();
+    }
 
     // We run elevated (high integrity); Wallpaper Engine runs as a normal user
     // (medium). A default pipe blocks the lower process from connecting, so we
@@ -133,10 +270,10 @@ public static class ChromaFeed
     const string PipeSddl = "D:(A;;FA;;;BA)(A;;FA;;;SY)(A;;GRGW;;;WD)S:(ML;;NW;;;ME)";
     const uint PIPE_ACCESS_INBOUND = 0x00000001;
     const uint FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000;
+    const uint FILE_FLAG_OVERLAPPED = 0x40000000;
     const uint PIPE_TYPE_BYTE = 0, PIPE_WAIT = 0;
     const uint PIPE_UNLIMITED_INSTANCES = 255;
     const int ERROR_ACCESS_DENIED = 5;
-    static bool _firstInstance = true;
 
     [StructLayout(LayoutKind.Sequential)]
     struct SECURITY_ATTRIBUTES { public int nLength; public IntPtr lpSecurityDescriptor; public int bInheritHandle; }
@@ -149,7 +286,7 @@ public static class ChromaFeed
         uint maxInstances, uint outBuf, uint inBuf, uint timeout, ref SECURITY_ATTRIBUTES sa);
     [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr h);
 
-    static NamedPipeServerStream CreateServer()
+    NamedPipeServerStream CreateServer()
     {
         if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(PipeSddl, 1, out var psd, out _))
             throw new InvalidOperationException("bad pipe SDDL");
@@ -158,64 +295,79 @@ public static class ChromaFeed
             var sa = new SECURITY_ATTRIBUTES { nLength = Marshal.SizeOf<SECURITY_ATTRIBUTES>(), lpSecurityDescriptor = psd, bInheritHandle = 0 };
             // PIPE_UNLIMITED_INSTANCES: with maxInstances=1 a second host
             // (Wallpaper Engine + a game) got ERROR_PIPE_BUSY for as long as the
-            // first stayed connected. Every accepted connection gets its own
-            // reader thread; the accept loop immediately creates the next instance.
+            // first stayed connected. Every accepted connection is served on its
+            // own; the accept loop immediately creates the next instance.
             // FIRST_PIPE_INSTANCE on our very first create: if the name already
             // exists another process got there first and would share the
             // hosts' connections with us - refuse instead of silently joining
             // it. Later instances are ours (the flag would fail them).
-            uint openMode = PIPE_ACCESS_INBOUND | (_firstInstance ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0);
-            var h = CreateNamedPipeW(@"\\.\pipe\" + PipeName, openMode,
+            // OVERLAPPED: so a read can be cancelled (see the class summary).
+            uint openMode = PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED
+                          | (_firstInstance ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0);
+            var h = CreateNamedPipeW(@"\\.\pipe\" + _name, openMode,
                 PIPE_TYPE_BYTE | PIPE_WAIT, PIPE_UNLIMITED_INSTANCES, 0, 1 << 20, 0, ref sa);
             if (h.IsInvalid) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
             _firstInstance = false;
             // isConnected:false - the handle is a fresh, unconnected pipe; with
             // `true` a client racing CreateNamedPipe->ConnectNamedPipe made
             // WaitForConnection throw and tore down that client's connection.
-            return new NamedPipeServerStream(PipeDirection.In, false, false, h);
+            // isAsync:true - it was created overlapped, and must be driven so.
+            return new NamedPipeServerStream(PipeDirection.In, true, false, h);
         }
         finally { LocalFree(psd); }
     }
 
-    static void ServerLoop()
+    void AcceptLoop()
     {
-        // Accept loop: one pipe instance per connected host, each served on its
-        // own thread, so a second host never waits for the first to leave.
-        while (true)
+        // Accept loop: one pipe instance per connected host, each served
+        // asynchronously, so a second host never waits for the first to leave.
+        while (!_stopping.IsCancellationRequested)
         {
             NamedPipeServerStream pipe;
             try { pipe = CreateServer(); }
-            catch (Exception ex) { AcceptError(ex); continue; }
+            catch (Exception ex) { AcceptError(ex); continue; }   // AcceptError logs it and paces the retry
             // Split from the create: an instance whose accept fails (a client
             // connected and dropped before we got here: "pipe is broken") must
             // be released here, not left to the finalizer.
-            try { pipe.WaitForConnection(); }
-            catch (Exception ex) { pipe.Dispose(); AcceptError(ex); continue; }
-            if (Interlocked.Increment(ref _clients) > MaxClients)
+            try { pipe.WaitForConnectionAsync(_stopping).GetAwaiter().GetResult(); }
+            catch (OperationCanceledException) { pipe.Dispose(); break; }   // Dispose: the server is stopping
+            catch (Exception ex) { pipe.Dispose(); AcceptError(ex); continue; }   // AcceptError logs it
+            var client = Admit(out long evictedIdleMs);
+            if (client == null)
             {
-                Interlocked.Decrement(ref _clients);
                 pipe.Dispose();
-                Log.Occasional("chroma-clients", "chroma", $"more than {MaxClients} pipe clients - refusing extra connections");
+                Log.Occasional("chroma-clients", "chroma",
+                    $"all {_maxClients} pipe slots are held by clients that sent a frame in the last {_idleEvictMs / 1000.0:0.#} s - refusing a new connection");
                 continue;
             }
+            if (evictedIdleMs >= 0)
+                Log.Occasional("chroma-pipe-evict", "chroma",
+                    $"all {_maxClients} pipe slots taken - dropped the client {evictedIdleMs / 1000.0:0.#} s without a frame to admit a new one");
             if (_connLog.Allow()) Log.Info("chroma", "host connected to the pipe");
-            new Thread(() => ServeClient(pipe)) { IsBackground = true, Name = "chroma-feed-client" }.Start();
+            _ = ServeClientAsync(pipe, client);
         }
     }
 
-    static void AcceptError(Exception ex)
+    void AcceptError(Exception ex)
     {
         if (_firstInstance && ex is System.ComponentModel.Win32Exception { NativeErrorCode: ERROR_ACCESS_DENIED })
         {
-            Log.Occasional("chroma-squat", "chroma", $"pipe {PipeName} already exists (another process owns it) - Chroma feed off until it goes away");
-            Thread.Sleep(5000);
+            Log.Occasional("chroma-squat", "chroma", $"pipe {_name} already exists (another process owns it) - Chroma feed off until it goes away");
+            Pause(5000);
             return;
         }
-        Log.Occasional("chroma", "feed", $"pipe accept error: {ex.Message}");
-        Thread.Sleep(200);
+        Log.Occasional("chroma-accept", "chroma", $"pipe accept error: {ex.Message}");
+        Pause(200);
     }
 
-    static void ServeClient(NamedPipeServerStream pipe)
+    /// <summary>Sleep, cut short by Dispose.</summary>
+    void Pause(int ms)
+    {
+        long until = Environment.TickCount64 + ms;
+        while (!_stopping.IsCancellationRequested && Environment.TickCount64 < until) Thread.Sleep(50);
+    }
+
+    async Task ServeClientAsync(NamedPipeServerStream pipe, PipeClient client)
     {
         // Reused across messages on THIS connection: the old per-message
         // `new byte[n*4]` allocated at the host's frame rate (up to 28 KB/frame
@@ -223,20 +375,26 @@ public static class ChromaFeed
         // array — it's handed out by reference.
         var head = new byte[5];
         byte[] body = Array.Empty<byte>();
+        bool proven = false;
         try
         {
             using (pipe)
+            using (var firstFrame = CancellationTokenSource.CreateLinkedTokenSource(client.Dropped))
             {
-                bool firstFrame = true;
-                _unproven[pipe] = Environment.TickCount64;
-                while (ReadExact(pipe, head, 5))
+                firstFrame.CancelAfter(_firstFrameDeadlineMs);
+                while (true)
                 {
+                    // Proven: a real host. No deadline from here on, however
+                    // quiet it goes; only a newcomer needing its slot after
+                    // idleEvictMs of quiet takes it (Admit).
+                    var ct = proven ? client.Dropped : firstFrame.Token;
+                    if (!await ReadExact(pipe, head, 5, ct)) break;
                     int rows = head[1] | (head[2] << 8);
                     int cols = head[3] | (head[4] << 8);
                     int n = rows * cols;
                     if (n <= 0 || n > 4096) break;               // sanity
                     if (body.Length < n * 4) body = new byte[n * 4];
-                    if (!ReadExact(pipe, body, n * 4)) break;
+                    if (!await ReadExact(pipe, body, n * 4, ct)) break;
 
                     var grid = new Rgb[n];
                     for (int i = 0; i < n; i++)
@@ -245,29 +403,34 @@ public static class ChromaFeed
                         byte r = body[i * 4], gg = body[i * 4 + 1], b = body[i * 4 + 2];
                         grid[i] = new Rgb(r, gg, b);
                     }
-                    Publish(head[0], grid, rows, cols);
-                    if (firstFrame)
+                    _publish(head[0], grid, rows, cols);
+                    client.Framed();
+                    if (!proven)
                     {
-                        // Proven: a real host. It keeps its slot from here on
-                        // however quiet it goes.
-                        _unproven.TryRemove(pipe, out _);
+                        proven = true;
                         if (_connLog.Allow()) Log.Info("chroma", $"first frame: type={head[0]} {rows}x{cols}");
-                        firstFrame = false;
                     }
                 }
             }
         }
-        catch (Exception ex) { Log.Occasional("chroma", "feed", $"pipe error: {ex.Message}"); }
-        finally { _unproven.TryRemove(pipe, out _); Interlocked.Decrement(ref _clients); }
+        catch (OperationCanceledException) when (client.Evicted) { /* its slot went to a newcomer; Admit's caller logged it */ }
+        catch (OperationCanceledException) when (!proven && !_stopping.IsCancellationRequested)
+        {
+            Log.Occasional("chroma-silent", "chroma",
+                $"dropping a pipe client that connected but sent no frame within {_firstFrameDeadlineMs / 1000.0:0.#}s");
+        }
+        catch (OperationCanceledException) { /* the server is being disposed (the harness): the pipe went with it */ }
+        catch (Exception ex) { Log.Occasional("chroma-pipe", "chroma", $"pipe error: {ex.Message}"); }
+        finally { Release(client); }
         if (_connLog.Allow()) Log.Info("chroma", "host disconnected from the pipe");
     }
 
-    static bool ReadExact(Stream s, byte[] buf, int len)
+    static async Task<bool> ReadExact(Stream s, byte[] buf, int len, CancellationToken ct)
     {
         int got = 0;
         while (got < len)
         {
-            int n = s.Read(buf, got, len - got);
+            int n = await s.ReadAsync(buf.AsMemory(got, len - got), ct);
             if (n <= 0) return false;
             got += n;
         }

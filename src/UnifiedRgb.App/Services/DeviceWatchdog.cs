@@ -255,10 +255,14 @@ public sealed class DeviceWatchdog : IDisposable
 
     void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
     {
-        // Resume only. Suspend needs nothing from us: the exit-behaviour and
-        // lights-off paths already run on the way down, and a device we write
-        // to while Windows is tearing the USB stack apart is a device that
-        // refuses the write for a reason that is not its fault.
+        // Resume only: redetecting is this class's job. The way DOWN is the
+        // automation's (AutomationService.Suspending): it puts the lights off
+        // and drains the black before Windows suspends, and holds them off
+        // until the resume. (This comment used to claim the lights-off already
+        // ran on the way down; nothing did, unless Windows happened to send
+        // the session lock first.) Nothing else is written here: a device we
+        // write to while Windows is tearing the USB stack apart is a device
+        // that refuses the write for a reason that is not its fault.
         if (e.Mode != PowerModes.Resume) return;
         // SystemEvents raises on its own thread, and everything downstream
         // (the timer, the view model, the device list) is the UI's.

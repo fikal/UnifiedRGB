@@ -24,8 +24,9 @@ public static class AppPaths
     /// elevation at all - so a bundle kept there let an unprivileged process
     /// swap in a binary of its own and have the administrator process run it,
     /// at every logon. Nothing here creates this folder: it exists only once
-    /// <see cref="ProtectedFolder.Ensure"/> has made it and set its ACL, and a
-    /// copy anybody else made first is thrown away by the same call.</summary>
+    /// <see cref="ProtectedFolder.Ensure"/> has made it with its ACL, and
+    /// anything anybody else put under the name first - a folder of their own,
+    /// a junction - is moved aside by the same call, never adopted.</summary>
     public static readonly string MachineDir =
         Redirect("UNIFIEDRGB_MACHINE_DIR", Environment.SpecialFolder.CommonApplicationData);
 

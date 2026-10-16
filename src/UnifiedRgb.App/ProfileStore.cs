@@ -1,7 +1,9 @@
 ﻿using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Win32;
 using UnifiedRgb.Core;
+using UnifiedRgb.App.Services;
 using UnifiedRgb.Core.Automation;
 
 namespace UnifiedRgb.App;
@@ -20,6 +22,10 @@ public sealed class ZoneSpan
     public string Name { get; set; } = "";
     public int Offset { get; set; }
     public int Count { get; set; }
+
+    /// <summary>Fields this build does not know, kept so a save writes them back.
+    /// See Profile.Extra.</summary>
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 }
 
 /// <summary>A saved effect assignment: which effect runs on which LED range of
@@ -43,6 +49,9 @@ public sealed class EffectAssignment
     /// shape. Additive: an older build reading this file ignores it and the
     /// effect simply runs per-device, which is what it did before.</summary>
     public bool Canvas { get; set; }
+
+    /// <summary>Fields this build does not know. See Profile.Extra.</summary>
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 }
 
 /// <summary>What a profile does to the pump panel: put up one screen, run one
@@ -109,6 +118,16 @@ public sealed class Profile
     /// is the user's own arrangement, and it survives a display being unplugged
     /// or renumbered. Additive: an older build ignores it.</summary>
     public string? Wallpaper { get; set; }
+
+    /// <summary>Fields written by a NEWER build, which this one does not know.
+    /// "Additive: an older build ignores it" was only half true: an older build
+    /// ignored the field on the way in and dropped it on the way out, so rolling
+    /// back once and saving anything stripped whatever the newer build had added
+    /// from every profile - last time round, the pump, show and wallpaper
+    /// bindings and the zone layouts. From this build on they are kept here and
+    /// written back untouched. JSON only; nothing reads them.</summary>
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
+
     public override string ToString() => Name;
 }
 
@@ -191,6 +210,10 @@ public sealed class SettingsData
     /// <summary>User-saved color palettes (name + hex list), shown in the
     /// Palette Library alongside the built-in presets.</summary>
     public List<SavedPalette>? SavedPalettes { get; set; }
+
+    /// <summary>Settings written by a newer build, kept so this one's next save
+    /// does not strip them. See Profile.Extra.</summary>
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 }
 
 /// <summary>A named color palette the user saved for reuse across effects.</summary>
@@ -198,6 +221,9 @@ public sealed class SavedPalette
 {
     public string Name { get; set; } = "";
     public string[] Colors { get; set; } = System.Array.Empty<string>();   // hex, no '#'
+
+    /// <summary>Fields this build does not know. See Profile.Extra.</summary>
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 }
 
 /// <summary>A device the user disabled: the app never opens it (its whole
@@ -207,6 +233,9 @@ public sealed class DisabledDeviceEntry
 {
     public string Name { get; set; } = "";
     public string Family { get; set; } = "";
+
+    /// <summary>Fields this build does not know. See Profile.Extra.</summary>
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 }
 
 /// <summary>Loads/saves profiles + settings as JSON under %APPDATA%\UnifiedRgb,
@@ -294,29 +323,16 @@ public sealed class ProfileStore
     }
 
     /// <summary>Read a JSON store; null when absent or unreadable. A CORRUPT
-    /// file is copied aside first (`*.corrupt-yyyyMMdd-HHmmss`) and logged: the
-    /// old path silently substituted defaults, and the next routine save then
-    /// overwrote the user's profiles/settings for good. A file that merely
-    /// could not be READ (sharing violation from an AV/sync client at an
-    /// autostart launch, permissions) is not corrupt: the read is retried
-    /// briefly, and if it still fails the store runs on defaults with saves
-    /// to that path disabled for this session - so the intact file on disk is
-    /// never replaced by an empty one.</summary>
-    /// <summary>Read a JSON store WITHOUT any of LoadJson's consequences: no
-    /// `.corrupt-*` copy, no Unreadable entry, no log line, no retry. Null for any
-    /// reason at all.
-    ///
-    /// For a reader that is only LOOKING - the setup-bundle preview answers "what
-    /// would this change?" against the user's own files. Through LoadJson, opening
-    /// that preview could drop a `.corrupt-` copy beside their profiles, or turn a
-    /// momentary sharing violation from a sync client into saves being disabled for
-    /// the rest of the session - all from a dialog the user might then cancel.</summary>
-    internal static T? PeekJson<T>(string path) where T : class
-    {
-        try { return File.Exists(path) ? JsonSerializer.Deserialize<T>(File.ReadAllText(path)) : null; }
-        catch { return null; }   // a PEEK: absent, unreadable and malformed are all 'nothing to show'. The loading path says so loudly; this one must not.
-    }
-
+    /// file is copied aside first (`*.corrupt-yyyyMMdd-HHmmss`), logged and noted
+    /// in the activity history: the old path silently substituted defaults, and
+    /// the next routine save then overwrote the user's profiles/settings for
+    /// good. A file that merely could not be READ (sharing violation from an
+    /// AV/sync client at an autostart launch, permissions) is not corrupt: the
+    /// read is retried briefly, and if it still fails the store runs on
+    /// defaults with saves to that path disabled until a later LoadJson of it
+    /// succeeds (a reload after an import) - so the intact file on disk is
+    /// never replaced by an empty one. A reader that is only LOOKING (the
+    /// setup-bundle preview) must not come through here: see Bundle/CurrentSetup.</summary>
     internal static T? LoadJson<T>(string path, string what) where T : class
     {
         if (!File.Exists(path)) return null;
@@ -339,8 +355,16 @@ public sealed class ProfileStore
         catch (Exception ex)
         {
             string backup = path + $".corrupt-{DateTime.Now:yyyyMMdd-HHmmss}";
-            try { File.Copy(path, backup, overwrite: true); } catch { backup = "(backup failed)"; }   // the corrupt original could not be copied aside; the warning below prints this instead of a path
+            bool kept = true;
+            try { File.Copy(path, backup, overwrite: true); } catch { kept = false; backup = "(backup failed)"; }   // the corrupt original could not be copied aside; the warning and the note below say so instead of naming a path
             Log.Warn("store", $"{what} unreadable ({ex.Message}) - starting from defaults; original kept at {backup}");
+            // Said where the user looks. A corrupt settings or profiles file
+            // reset everything to defaults with only that log line, so the
+            // first sign was every profile gone and no clue that a copy of
+            // them was sitting right next to the new file.
+            ActivityLog.Note(ActivityKind.Problem, kept
+                ? $"{what} was unreadable and has been reset to defaults. Your old file is at {backup}."
+                : $"{what} was unreadable and has been reset to defaults. The old file could not be copied aside.");
             return null;
         }
     }
@@ -421,13 +445,6 @@ public sealed class ProfileStore
     /// is said once per failure and not once per debounced retry.</summary>
     static readonly HashSet<string> Failing = new(StringComparer.Ordinal);
 
-    /// <summary>Capture the given frames into a named profile (replacing any
-    /// same-named profile) and persist. Devices absent right now (disabled or
-    /// unplugged) keep their previously saved colors and effect assignments —
-    /// disabling a device must never bleed its data out of profiles.</summary>
-    /// <param name="carryFrom">The profile this one replaces under a DIFFERENT
-    /// name (a rename). It has already been deleted, so it cannot be found by
-    /// name; its absent-device data and screen carry over from here.</param>
     /// <summary>Empty and whitespace are stored as null, so "nothing bound" has
     /// exactly one representation in the file.</summary>
     static string? Blank(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;
@@ -461,6 +478,10 @@ public sealed class ProfileStore
             Wallpaper = wallpaper == null ? old?.Wallpaper
                       : wallpaper.Length == 0 ? null
                       : wallpaper,
+            // What a newer build stored here describes things this one cannot
+            // see, exactly like an absent device, so it is carried rather than
+            // rebuilt from nothing. See Profile.Extra.
+            Extra = old?.Extra,
         };
         var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var (dev, frame) in frames)
@@ -468,11 +489,14 @@ public sealed class ProfileStore
             p.DeviceFrames[dev.Name] = frame.Select(c => c.ToHex()).ToArray();
             p.DeviceZones[dev.Name] = (dev.Zones ?? Array.Empty<RgbZone>())
                 .Select(z => new ZoneSpan { Name = z.Name, Offset = z.Offset, Count = z.Count }).ToArray();
+            if (old != null && old.DeviceZones.TryGetValue(dev.Name, out var hadZones))
+                CarryZoneExtras(p.DeviceZones[dev.Name], hadZones);
             present.Add(dev.Name);
         }
 
         if (old != null)
         {
+            CarryEffectExtras(p.Effects, old.Effects);
             foreach (var kv in old.DeviceFrames)
                 if (!present.Contains(kv.Key))
                     p.DeviceFrames[kv.Key] = kv.Value;
@@ -490,13 +514,67 @@ public sealed class ProfileStore
         return p;
     }
 
+    /// <summary>The Profile.Extra rule, one level down. A save does not update
+    /// the loaded zone entries, it rebuilds them from the device, so the
+    /// unknown fields a newer build wrote on a zone were dropped by every
+    /// re-save in a rollback build even though the profile's own bag was
+    /// carried. A zone is its NAME (see ZoneSpan); two zones of one name pair
+    /// up in order.</summary>
+    static void CarryZoneExtras(ZoneSpan[] now, ZoneSpan[]? had)
+    {
+        var bags = (had ?? Array.Empty<ZoneSpan>()).Where(z => z?.Extra != null).ToList();
+        foreach (var z in now)
+        {
+            int at = bags.FindIndex(o => string.Equals(o.Name, z.Name, StringComparison.Ordinal));
+            if (at < 0) continue;
+            z.Extra = bags[at].Extra;
+            bags.RemoveAt(at);
+        }
+    }
+
+    /// <summary>The same for the effect entries, which CaptureEffects builds new
+    /// from the running channels. The view model already hands back the bag of
+    /// the entry each channel was started from (TargetFx.Extra), which follows a
+    /// range the layout moved; this covers an entry it has none for, from the
+    /// replaced entry with the same device, range and effect - an entry's
+    /// identity, as the name is a profile's.</summary>
+    static void CarryEffectExtras(List<EffectAssignment>? now, List<EffectAssignment>? had)
+    {
+        if (now == null || had == null) return;
+        // A bag the view model already placed (on a range the layout moved) is
+        // not handed out a second time to whatever now sits at its old range.
+        var placed = new HashSet<object>(now.Where(e => e?.Extra != null).Select(e => (object)e.Extra!),
+                                         ReferenceEqualityComparer.Instance);
+        var bags = had.Where(e => e?.Extra != null && !placed.Contains(e.Extra)).ToList();
+        foreach (var e in now)
+        {
+            if (e == null || e.Extra != null) continue;
+            // The effect is part of the identity: another effect on the same
+            // range is another entry, and the fields were the old effect's.
+            int at = bags.FindIndex(o => string.Equals(o.Device, e.Device, StringComparison.OrdinalIgnoreCase)
+                                         && o.Offset == e.Offset && o.Count == e.Count
+                                         && string.Equals(o.Effect, e.Effect, StringComparison.Ordinal));
+            if (at < 0) continue;
+            e.Extra = bags[at].Extra;
+            bags.RemoveAt(at);
+        }
+    }
+
+    /// <summary>Capture the given frames into a named profile (replacing any
+    /// same-named profile, in its place) and persist. Devices absent right now
+    /// (disabled or unplugged) keep their previously saved colors and effect
+    /// assignments - disabling a device must never bleed its data out of
+    /// profiles.</summary>
+    /// <param name="carryFrom">The profile this one replaces under a DIFFERENT
+    /// name (a rename). Its absent-device data and screen carry over from here,
+    /// and the new name takes its place in the list.</param>
     public Profile Capture(string name, IEnumerable<(IRgbDevice Device, Rgb[] Frame)> frames,
                            string[]? customColors = null, List<EffectAssignment>? effects = null,
                            PumpTarget? pump = null, Profile? carryFrom = null, string? wallpaper = null)
     {
         var p = BuildCapture(name, frames, customColors, effects, pump, carryFrom, wallpaper);
-        Profiles.RemoveAll(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
-        Profiles.Add(p);
+        var next = Placed(p, carryFrom);
+        Profiles.Clear(); Profiles.AddRange(next);
         SaveProfiles();
         return p;
     }
@@ -506,10 +584,37 @@ public sealed class ProfileStore
                            PumpTarget? pump = null, Profile? carryFrom = null, string? wallpaper = null)
     {
         var p = BuildCapture(name, frames, customColors, effects, pump, carryFrom, wallpaper);
-        var next = Profiles.Where(x => !x.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).Append(p).ToList();
+        var next = Placed(p, carryFrom);
         if (!TrySave(ProfilesPath, next, "profiles.json")) return null;
         Profiles.Clear(); Profiles.AddRange(next);
         return p;
+    }
+
+    /// <summary>The profile list with <paramref name="p"/> in its place: where
+    /// the same name already was, else just before the profile it was renamed
+    /// from (which the caller removes next, leaving the new name in that slot),
+    /// else at the end.
+    ///
+    /// A re-save used to remove the profile and APPEND it, while the view model
+    /// replaced it where it stood. The list on screen and the file then
+    /// disagreed about the order, and the order is what Ctrl+Alt+1..9 apply: after
+    /// a restart re-read the file, every hotkey past the re-saved profile applied
+    /// a different one.</summary>
+    List<Profile> Placed(Profile p, Profile? carryFrom)
+    {
+        var next = new List<Profile>(Profiles.Count + 1);
+        bool placed = false;
+        foreach (var x in Profiles)
+        {
+            if (!x.Name.Equals(p.Name, StringComparison.OrdinalIgnoreCase)) { next.Add(x); continue; }
+            if (!placed) { next.Add(p); placed = true; }   // a second same-named entry is dropped, as RemoveAll did
+        }
+        if (placed) return next;
+        int at = carryFrom == null ? -1
+            : next.FindIndex(x => x.Name.Equals(carryFrom.Name, StringComparison.OrdinalIgnoreCase));
+        if (at >= 0) next.Insert(at, p);
+        else next.Add(p);
+        return next;
     }
 
     internal bool TryRemoveRenamedProfile(string name)
@@ -544,65 +649,32 @@ public sealed class ProfileStore
     }
 
     /*-----------------------------------------------------*\
-    | Launch at login — an ELEVATED scheduled task (RL       |
-    | HIGHEST), so the PawnIO CPU-temp sensor works at boot  |
-    | with no UAC prompt. Creating/removing the task needs   |
-    | one elevation; the logon runs themselves never prompt. |
+    | Launch at login - an ELEVATED logon task, so the       |
+    | PawnIO CPU-temp sensor works at boot with no UAC       |
+    | prompt. The task, and the installed copy it runs, live |
+    | in AppInstall; this keeps the HKCU Run entry of the    |
+    | builds before the task cleaned up.                     |
     \*-----------------------------------------------------*/
-    const string TaskName = "UnifiedRGB";
-
     public static bool IsAutoStartEnabled()
     {
-        try
-        {
-            var psi = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "schtasks", Arguments = $"/Query /TN \"{TaskName}\"",
-                UseShellExecute = false, CreateNoWindow = true,
-            };
-            using var p = System.Diagnostics.Process.Start(psi);
-            p!.WaitForExit(4000);
-            if (p.ExitCode == 0) return true;
-        }
-        catch { }   // schtasks is absent or refused; fall through to the legacy Run entry below
+        if (AppInstall.IsAutoStartEnabled()) return true;
         // Legacy: the old HKCU Run entry.
         using var key = Registry.CurrentUser.OpenSubKey(RunKey);
         return key?.GetValue(RunValue) != null;
     }
 
-    /// <summary>Create/remove the logon task. False when schtasks failed, timed
-    /// out or the UAC prompt was declined - logged with the exit code, so the
-    /// "why didn't it start after reboot" case has a trace instead of a ticked
-    /// box over a task that does not exist.</summary>
+    /// <summary>Create/remove the logon task. False when Task Scheduler refused
+    /// (logged), so the "why didn't it start after reboot" case has a trace
+    /// instead of a ticked box over a task that does not exist.</summary>
     public static bool SetAutoStart(bool enable)
     {
-        string verb = enable ? "/Create" : "/Delete";
         try
         {
             // Clear any legacy Run-key entry either way.
-            using (var key = Registry.CurrentUser.CreateSubKey(RunKey))
-                key.DeleteValue(RunValue, throwOnMissingValue: false);
-
-            string exe = Environment.ProcessPath ?? "";
-            string cmd = enable
-                ? $"/Create /F /TN \"{TaskName}\" /SC ONLOGON /RL HIGHEST /TR \"\\\"{exe}\\\" --autostart\""
-                : $"/Delete /F /TN \"{TaskName}\"";
-            var psi = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "schtasks", Arguments = cmd,
-                UseShellExecute = true, Verb = "runas", WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
-            };
-            using var p = System.Diagnostics.Process.Start(psi);
-            if (p == null) { Log.Warn("autostart", $"schtasks {verb}: process did not start"); return false; }
-            if (!p.WaitForExit(15000)) { Log.Warn("autostart", $"schtasks {verb}: timed out"); return false; }
-            if (p.ExitCode != 0) { Log.Warn("autostart", $"schtasks {verb} exited {p.ExitCode}"); return false; }
-            return true;
+            using var key = Registry.CurrentUser.CreateSubKey(RunKey);
+            key.DeleteValue(RunValue, throwOnMissingValue: false);
         }
-        catch (Exception ex)
-        {
-            // Includes the user declining UAC (Win32Exception 1223).
-            Log.Warn("autostart", $"schtasks {verb} failed: {ex.Message}");
-            return false;
-        }
+        catch (Exception ex) { Log.Warn("autostart", $"old Run entry not cleared: {ex.Message}"); }
+        return AppInstall.SetAutoStart(enable);
     }
 }

@@ -28,9 +28,13 @@ static class Suites
         ("PreviewCache",  PreviewCacheSuite.Run),
         ("Closing",       ClosingSuite.Run),
         ("Backup",        BackupSuite.Run),
+        ("FixBundle",     FixBundleSuite.Run),
         ("Fans",          FansSuite.Run),
         ("SensorRules",   SensorRulesSuite.Run),
         ("SensorHub",     SensorHubSuite.Run),
+        ("FixFans",       FixFansSuite.Run),
+        ("InvariantFans", InvariantFansSuite.Run),
+        ("WireView",      WireViewSuite.Run),
 
         // The lighting engine and everything that renders.
         ("Effects",       EffectsSuite.Run),
@@ -38,6 +42,7 @@ static class Suites
         ("CanvasLoad",    CanvasLoadSuite.Run),
         ("Undo",          UndoSuite.Run),
         ("LcdScenes",     LcdScenesSuite.Run),
+        ("PanelWedge",    PanelWedgeSuite.Run),
 
         // Drivers: real protocol bytes over FakeHid.
         ("Devices",       DevicesSuite.Run),
@@ -45,17 +50,26 @@ static class Suites
         ("LianBake",      LianBakeSuite.Run),
         ("ReviewFixes",   ReviewFixesSuite.Run),
         ("WriteContract", WriteContractSuite.Run),
+        ("FixDrivers",    FixDriversSuite.Run),
+        ("RemainingDrivers", RemainingDriversSuite.Run),
         ("DeviceHealth",  DeviceHealthSuite.Run),
         ("Battery",       BatterySuite.Run),
         ("HardwareExit",  HardwareExitSuite.Run),
         ("Native",        NativeSuite.Run),
+        ("WireViewLifecycle", WireViewLifecycleSuite.Run),
 
         // Write ordering between the engine and the applier lanes.
         ("EngineLighting", EngineLightingSuite.Run),
+        ("FixLighting",   FixLightingSuite.Run),
 
         // Automation, scheduling and the app's own rules.
         ("Automation",    AutomationSuite.Run),
         ("Activity",      ActivitySuite.Run),
+        ("FixState",      FixStateSuite.Run),
+        ("RemainingState", RemainingStateSuite.Run),
+        ("InvariantLightsHw", InvariantLightsHwSuite.Run),
+        ("InvariantLightsAsync", InvariantLightsAsyncSuite.Run),
+        ("LightsOffBoundary", LightsOffBoundarySuite.Run),
 
         // Anything that opens a socket, a pipe or a process comes last.
         ("Chroma",        ChromaSuite.Run),
@@ -63,6 +77,9 @@ static class Suites
         ("Net",           NetSuite.Run),
         ("OpenRgbBridge", OpenRgbBridgeSuite.Run),
         ("SupportBundle", SupportBundleSuite.Run),
+        ("FixMisc",       FixMiscSuite.Run),
+        ("AppInstall",    AppInstallSuite.Run),
+        ("RemainingServers", RemainingServersSuite.Run),
 
         // Reads the SOURCE, so it depends on nothing and goes last.
         ("SilentFailure", SilentFailureSuite.Run),

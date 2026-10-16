@@ -81,6 +81,15 @@ public partial class ExitBehaviorWindow : Window
         if (changed) config.Save();
     }
 
+    /// <summary>"Apply now" put a device into its exit state, and on a device
+    /// sitting on a static colour nothing ever took it back out: the preview
+    /// stayed on the hardware after the window was gone.</summary>
+    protected override void OnClosed(EventArgs e)
+    {
+        base.OnClosed(e);
+        _vm.EndExitPreview();
+    }
+
     void Drag_Down(object sender, MouseButtonEventArgs e)
     {
         if (e.ButtonState == MouseButtonState.Pressed) this.TryDragMove();

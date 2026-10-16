@@ -67,6 +67,11 @@ public static class Log
     /// <summary>Rate-limited logging for hot paths (device write loops): logs
     /// the first occurrence per key, then at most once per minute with a
     /// suppressed-count so a failing device can't flood the file at 60fps.</summary>
+    /// <param name="key">What is rate-limited together: ONE failure, e.g.
+    /// "media-art" or $"fx:{device}@{offset}". Never a bare component name -
+    /// 13 call sites once passed ("lcd", "media"), so a cover-art failure
+    /// silenced the pump LCD's "frame send failed" for a minute.</param>
+    /// <param name="source">The component tag printed in the line, e.g. "lcd".</param>
     public static void Occasional(string key, string source, string message)
     {
         lock (_lock)

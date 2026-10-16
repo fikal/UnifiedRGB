@@ -162,11 +162,30 @@ public sealed class WasapiLoopback : IDisposable
             Marshal.ReleaseComObject(enumerator);
         }
 
+        StartPolling();
+        Log.Info("audio", $"loopback capture started ({_sampleRate} Hz, {_channels} ch, " +
+                          $"{(_isFloat ? "f32" : "i16")}, {(_wakeEvent != null ? "event-driven" : "polling")})");
+    }
+
+    void StartPolling()
+    {
         _running = true;
         _thread = new Thread(Poll) { IsBackground = true, Name = "wasapi-loopback" };
         _thread.Start();
-        Log.Info("audio", $"loopback capture started ({_sampleRate} Hz, {_channels} ch, " +
-                          $"{(_isFloat ? "f32" : "i16")}, {(_wakeEvent != null ? "event-driven" : "polling")})");
+    }
+
+    /// <summary>The real poll loop over a stand-in capture client (32-bit
+    /// float frames), so the harness can drive the Dispose-while-delivering
+    /// path without an audio endpoint. Nothing else calls this.</summary>
+    internal void StartPollingForTest(IAudioCaptureClient capture, AutoResetEvent? wake, int sampleRate, int channels)
+    {
+        _capture = capture;
+        _wakeEvent = wake;
+        _sampleRate = sampleRate;
+        _channels = channels;
+        _isFloat = true;
+        _bytesPerSample = 4;
+        StartPolling();
     }
 
     void StartCore(IMMDeviceEnumerator enumerator, out IMMDevice device)
@@ -236,46 +255,68 @@ public sealed class WasapiLoopback : IDisposable
 
     void Poll()
     {
-        while (_running)
+        // Both captured ONCE, before the loop. Dispose used to null and free
+        // the fields even when its 500 ms Join gave up on this thread (a slow
+        // consumer callback, a stalled endpoint), and the event wait below
+        // read _wakeEvent OUTSIDE the try: a NullReference or ObjectDisposed
+        // there is unhandled on a background thread, which ends the process.
+        // Now nothing is freed until this thread has left (see Dispose), so
+        // the locals stay valid for the whole loop, and the wait is inside
+        // the try anyway.
+        var capture = _capture;
+        var wake = _wakeEvent;
+        try
         {
-            try
+            while (_running && capture != null)
             {
-                while (_running)
+                try
                 {
-                    // A failing HRESULT (AUDCLNT_E_DEVICE_INVALIDATED when the
-                    // endpoint is unplugged) must throw like every other call: a
-                    // silent loop exit here left IsAlive true, so the watchdog
-                    // kept polling a dead client for as long as the effect ran.
-                    Check(_capture!.GetNextPacketSize(out uint packet), "next packet");
-                    if (packet == 0) break;
-                    Check(_capture.GetBuffer(out var data, out uint frames, out uint flags, out _, out _), "get buffer");
-                    try
+                    while (_running)
                     {
-                        if (frames > 0)
+                        // A failing HRESULT (AUDCLNT_E_DEVICE_INVALIDATED when the
+                        // endpoint is unplugged) must throw like every other call: a
+                        // silent loop exit here left IsAlive true, so the watchdog
+                        // kept polling a dead client for as long as the effect ran.
+                        Check(capture.GetNextPacketSize(out uint packet), "next packet");
+                        if (packet == 0) break;
+                        Check(capture.GetBuffer(out var data, out uint frames, out uint flags, out _, out _), "get buffer");
+                        try
                         {
-                            if (_mono.Length < frames) _mono = new float[frames];
-                            bool silent = (flags & 0x2) != 0;   // AUDCLNT_BUFFERFLAGS_SILENT
-                            if (silent) Array.Clear(_mono, 0, (int)frames);
-                            else MixToMono(data, (int)frames);
-                            _onSamples(_mono, (int)frames, _sampleRate);
+                            if (frames > 0)
+                            {
+                                if (_mono.Length < frames) _mono = new float[frames];
+                                bool silent = (flags & 0x2) != 0;   // AUDCLNT_BUFFERFLAGS_SILENT
+                                if (silent) Array.Clear(_mono, 0, (int)frames);
+                                else MixToMono(data, (int)frames);
+                                _onSamples(_mono, (int)frames, _sampleRate);
+                            }
                         }
+                        finally { capture.ReleaseBuffer(frames); }   // a consumer throw must not wedge the stream (OUT_OF_ORDER)
                     }
-                    finally { _capture.ReleaseBuffer(frames); }   // a consumer throw must not wedge the stream (OUT_OF_ORDER)
+                    // Event mode: sleep until the endpoint signals a ready buffer. The
+                    // 30 ms timeout keeps silence/idle behavior identical and doubles
+                    // as a graceful floor on endpoints whose loopback events misfire.
+                    if (wake != null) wake.WaitOne(30);
+                    else Thread.Sleep(10);
+                }
+                catch (Exception ex)
+                {
+                    if (_running) Log.Warn("audio", $"capture loop error: {ex.Message}");
+                    break;                                  // device gone: owner restarts us
                 }
             }
-            catch (Exception ex)
+        }
+        finally
+        {
+            // Second to arrive frees the native state: Dispose, if it has
+            // already given up waiting for this thread, left it to us.
+            if (Interlocked.Exchange(ref _handoff, 1) == 1)
             {
-                if (_running) Log.Warn("audio", $"capture loop error: {ex.Message}");
-                break;                                  // device gone: owner restarts us
+                ReleaseCom();
+                _wakeEvent?.Dispose(); _wakeEvent = null;
             }
-            // Event mode: sleep until the endpoint signals a ready buffer. The
-            // 30 ms timeout keeps silence/idle behavior identical and doubles
-            // as a graceful floor on endpoints whose loopback events misfire.
-            if (_wakeEvent != null) _wakeEvent.WaitOne(30);
-            else Thread.Sleep(10);
         }
     }
-
     unsafe void MixToMono(IntPtr data, int frames)
     {
         if (_isFloat)
@@ -305,18 +346,56 @@ public sealed class WasapiLoopback : IDisposable
         if (hr < 0) throw new COMException($"WASAPI {what} failed", hr);
     }
 
+    /// <summary>Who frees the client, the capture client and the wake event:
+    /// Dispose when the poll thread has exited (or never ran), otherwise the
+    /// poll thread on its way out. Whichever of the two arrives SECOND does
+    /// it, decided by this flag, so it happens exactly once and never under a
+    /// thread that is still using them.</summary>
+    int _handoff;
+
     public void Dispose()
     {
+        // Once. A second Dispose while the poll thread was still delivering read
+        // the hand-off flag as "the thread has left" and freed the COM objects
+        // under it.
+        if (Interlocked.Exchange(ref _disposeOnce, 1) != 0) return;
         _running = false;
-        _wakeEvent?.Set();                              // pop the loop out of its wait
-        _thread?.Join(500);
-        try { _client?.Stop(); } catch { }
+        // Pop the loop out of its wait. A poll thread finishing a handed-off
+        // release may have closed the event already (a second Dispose).
+        try { _wakeEvent?.Set(); }
+        catch (ObjectDisposedException) { }   // already released: the loop is gone
+        var thread = _thread;
         // Never throw from here: Start's catch relies on Dispose to clean up
         // and then rethrow the ORIGINAL failure.
-        try { if (_capture != null) Marshal.ReleaseComObject(_capture); } catch { }
-        _capture = null;
-        try { if (_client != null) Marshal.ReleaseComObject(_client); } catch { }
-        _client = null;
-        _wakeEvent?.Dispose(); _wakeEvent = null;
+        //
+        // Freed here only once the poll thread is gone (or never ran). If it
+        // is still inside a delivery after 500 ms - a slow consumer, a stalled
+        // endpoint - the event and the COM objects are left to it, and it frees
+        // them on its way out; unless it left between the Join and the
+        // exchange, in which case it left them to us.
+        if (thread == null || thread.Join(500) || Interlocked.Exchange(ref _handoff, 1) == 1)
+        {
+            ReleaseCom();
+            _wakeEvent?.Dispose(); _wakeEvent = null;
+            return;
+        }
+        Log.Info("audio", "capture thread still delivering after 500 ms - it releases the stream itself when it returns");
+    }
+
+    /// <summary>Stop and release the COM objects, once: each field is taken
+    /// with an exchange, so a second caller finds nothing to release. The wake
+    /// event is disposed beside each call (the analyser wants to see it in
+    /// Dispose).</summary>
+    int _disposeOnce;
+
+    void ReleaseCom()
+    {
+        var client = Interlocked.Exchange(ref _client, null);
+        var capture = Interlocked.Exchange(ref _capture, null);
+        // Each step is best effort: a client that refuses to stop or release
+        // is already dead (device invalidated), and teardown must go on.
+        try { client?.Stop(); } catch { }   // already stopped or invalidated
+        try { if (capture != null) Marshal.ReleaseComObject(capture); } catch { }   // not an RCW, or already released
+        try { if (client != null) Marshal.ReleaseComObject(client); } catch { }    // not an RCW, or already released
     }
 }

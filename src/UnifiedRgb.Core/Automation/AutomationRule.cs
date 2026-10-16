@@ -17,6 +17,11 @@ public sealed class AutomationRule : System.ComponentModel.INotifyPropertyChange
     public string Process { get => _process; set { if (_process == value) return; _process = value; Changed(nameof(Process)); } }
     public string Profile { get => _profile; set { if (_profile == value) return; _profile = value; Changed(nameof(Profile)); } }
 
+    /// <summary>Fields this build does not know, written back untouched so a
+    /// rollback build does not strip what a newer one stored on the rule.</summary>
+    [System.Text.Json.Serialization.JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; set; }
+
     /// <summary>Profile of the first rule matching the foreground process, or
     /// null. Order is priority: the top match wins, which is the order the
     /// rules dialog lets the user drag. A trailing ".exe" is tolerated because

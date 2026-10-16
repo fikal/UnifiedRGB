@@ -26,6 +26,12 @@ using UnifiedRgb.Tests;
 // its isolation must refuse to start rather than write the user's real files.
 if (!Isolation.Enforce()) return 1;
 
+// The fan hub opens real hardware (LHM's ring0 driver, PawnIO, NvAPI) the
+// first time anything touches it - a temp-reactive effect, a Cooling view
+// model. Shut it before any suite runs, so no test (filtered or not) can
+// start it on the developer's machine.
+UnifiedRgb.Core.Sensors.SensorHub.Shutdown();
+
 if (args.Contains("--list"))
 {
     foreach (var (suiteName, _) in Suites.All) Console.WriteLine(suiteName);

@@ -26,12 +26,16 @@ public sealed class ThermalrightLcd : IDisposable
 
     internal ThermalrightLcd(IHidTransport hid) { _hid = hid; }
 
+    /// <summary>The HID interface path this panel was opened on (null for a
+    /// harness fake): what a USB-level restart of a wedged panel starts from.</summary>
+    public string? DevicePath { get; private init; }
+
     public static ThermalrightLcd? TryOpen()
     {
         // The image interface is the collection with a 513-byte output report.
         var r = HidNative.OpenFirst("TrLcd", VID, PID, h => h.OutputLength >= REPORT);
         if (r == null) return null;
-        var lcd = new ThermalrightLcd(r.Value.Handle);
+        var lcd = new ThermalrightLcd(r.Value.Handle) { DevicePath = r.Value.Info.Path };
         lcd.Handshake();
         return lcd;
     }

@@ -113,13 +113,13 @@ public static class WeatherService
                 // %t = temperature, %C = condition text; u = US units (°F).
                 var raw = (await Http.GetStringAsync("https://wttr.in/?format=%t+%C&u")).Trim();
                 if (raw.Length > MaxTextLength)
-                    UnifiedRgb.Core.Log.Occasional("lcd", "weather", $"unexpected reply ({raw.Length} chars) ignored");
+                    UnifiedRgb.Core.Log.Occasional("weather-reply", "weather", $"unexpected reply ({raw.Length} chars) ignored");
                 else if (!string.IsNullOrWhiteSpace(raw) && !raw.Contains("Unknown", StringComparison.OrdinalIgnoreCase))
                     _current = raw.TrimStart('+');                    // wttr prefixes positive temps with '+'
             }
             catch (Exception ex)
             {
-                UnifiedRgb.Core.Log.Occasional("lcd", "weather", $"fetch failed: {ex.Message}");
+                UnifiedRgb.Core.Log.Occasional("weather-fetch", "weather", $"fetch failed: {ex.Message}");
             }
             await Task.Delay(TimeSpan.FromMinutes(15));
         }

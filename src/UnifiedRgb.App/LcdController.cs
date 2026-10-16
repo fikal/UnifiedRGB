@@ -27,11 +27,45 @@ public sealed class LcdController : IDisposable
 
     string? _bgPath;
     BitmapSource? _bgCache;
-    DateTime _bgStamp;         // write time of the loaded file (re-decoded when it changes)
-    DateTime _bgStatAt;        // the stamp is re-read at most every 2 s, not per render tick
+    BgVersion _bgVersion;      // size and write time of the loaded file (re-decoded when they change)
+    DateTime _bgStatAt;        // the file is re-examined at most every BackgroundStatEvery, not per render tick
     double _bgNatW = 1, _bgNatH = 1;   // natural pixel size of the loaded file
-    string? _bgFailedPath;     // last path that failed to decode; retried every 30 s
-    DateTime _bgFailedAt;
+    string? _bgFailedPath;     // the design's background when it is one that did not load
+
+    // Backgrounds that did not load, per file. The memory used to be ONE
+    // file, forgotten whenever any other background loaded: a scene sequence
+    // alternating with a refused file re-decoded it, and logged it again, at
+    // every step. Now each file is remembered at the size and write time it
+    // had. Refused (over the size limits) or undecodable stays refused until
+    // the file changes: the same bytes fail the same way. Unreadable (locked
+    // by an editor mid-save, access denied, gone between the check and the
+    // open) is retried on a short back-off capped at BgRetryMax - it was a
+    // flat 30 s before the 2026-10 fixes, which then stretched it to an hour
+    // for a file that had only been locked for a moment. Bounded: a sequence
+    // through more than MaxBgFailures failing files forgets the oldest, which
+    // costs one more decode of it per pass.
+    readonly Dictionary<string, BgFailure> _bgFailures = new(StringComparer.OrdinalIgnoreCase);
+    const int MaxBgFailures = 16;
+    static readonly TimeSpan BgRetryMax = TimeSpan.FromSeconds(30);
+
+    readonly record struct BgVersion(bool Exists, long Size, DateTime Written);
+    sealed record BgFailure(BgVersion Version, string Why, bool Permanent, int Attempts, DateTime At, DateTime RetryAt);
+
+    /// <summary>How often a background file's write time is re-read. Settable
+    /// so the harness does not have to wait out the real interval.</summary>
+    internal TimeSpan BackgroundStatEvery = TimeSpan.FromSeconds(2);
+
+    /// <summary>The wait before an unreadable background is first tried again;
+    /// it doubles per failure up to BgRetryMax. Settable for the harness.</summary>
+    internal TimeSpan BackgroundRetryFirst = TimeSpan.FromSeconds(2);
+
+    /// <summary>Background decodes attempted, successful or not. For the
+    /// harness, which pins that a failed file is not decoded over and over.</summary>
+    internal int BackgroundDecodes { get; private set; }
+
+    /// <summary>Why the design's background is not showing - refused for its
+    /// size, or failed to decode - or null when it shows or there is none.</summary>
+    public string? BackgroundProblem { get; private set; }
 
     public LcdDesign Design { get; set; } = LcdDesign.Default();
     public ICpuTempProvider Temp { get; set; } = new NullCpuTempProvider();
@@ -54,6 +88,15 @@ public sealed class LcdController : IDisposable
     /// a few seconds of a panel that answers nothing - not a single bad
     /// report. Settable so the harness does not have to wait that long.</summary>
     internal int LostAfterFailures = 4;
+
+    /// <summary>True once any frame has landed on this handle. A controller
+    /// lost WITHOUT ever delivering one reopened a panel that is on the bus
+    /// but refusing everything - a wedged firmware, not an unplug.</summary>
+    public bool DeliveredAny => _delivered;
+    volatile bool _delivered;
+
+    /// <summary>The panel's HID interface path, for a USB-level restart.</summary>
+    public string? DevicePath => _lcd.DevicePath;
 
     internal LcdController(ThermalrightLcd lcd) { _lcd = lcd; }
 
@@ -110,7 +153,7 @@ public sealed class LcdController : IDisposable
             try { _lcd.ShowFrame(frame); }
             catch (Exception ex)
             {
-                UnifiedRgb.Core.Log.Occasional("lcd", "lcd", $"frame send failed: {ex.Message}");
+                UnifiedRgb.Core.Log.Occasional("lcd-frame", "lcd", $"frame send failed: {ex.Message}");
                 // A run of refusals is not a bad report, it is a handle with no
                 // panel behind it any more. Resync cannot fix that: it talks to
                 // the same handle. Say so, once, to whoever can reopen it.
@@ -129,6 +172,7 @@ public sealed class LcdController : IDisposable
             }
             finally { Volatile.Write(ref _sending, null); }
             failures = 0;
+            _delivered = true;
             lastSent = frame;
             long ms = Environment.TickCount64 - t0;
             sent++; msSum += ms;
@@ -376,14 +420,18 @@ public sealed class LcdController : IDisposable
     /// the ONE decode the panel render and the designer share - the designer
     /// used to hold its own full-resolution copy - cached per (path, write
     /// time) and loaded on demand, so a background drag re-reads a field.
-    /// Frozen, so any thread may read it.</summary>
+    /// Frozen, so any thread may read it. Scaled down to at most about twice
+    /// the panel: both views draw it into the design's rect, never at its own
+    /// pixel size, so only BackgroundSize carries the file's real size.</summary>
     public BitmapSource? Background
     {
         get { EnsureBackgroundLoaded(); return _gif is { Count: > 0 } ? _gif[0].Frame : _bgCache; }
     }
 
     /// <summary>Natural pixel size of the background file (a GIF's logical
-    /// screen, not the panel-scaled frames) - the editor's aspect source.</summary>
+    /// screen, not the panel-scaled frames; a still's header size, not the
+    /// scaled copy that is kept) - the editor's aspect source, and what its
+    /// Fill and Fit placements scale.</summary>
     public (double W, double H) BackgroundSize
     {
         get { EnsureBackgroundLoaded(); return (_bgNatW, _bgNatH); }
@@ -392,62 +440,209 @@ public sealed class LcdController : IDisposable
     void EnsureBackgroundLoaded()
     {
         var path = Design.BackgroundImagePath;
-        if (path == _bgPath)
+        if (string.IsNullOrEmpty(path))
         {
-            // Already loaded — no per-frame File.Exists syscall. A file re-saved
-            // in place (same path) is picked up via its write stamp, re-read at
-            // most every 2 s rather than on every render tick (10 Hz under a GIF).
-            if (path == null) return;
-            var now = DateTime.UtcNow;
-            if (now - _bgStatAt < TimeSpan.FromSeconds(2)) return;
-            _bgStatAt = now;
-            if (StampOf(path) == _bgStamp) return;
+            // Also takes down the problem of a background that was just
+            // removed: it stayed on the designer with no image set.
+            if (_bgPath != null || _bgFailedPath != null) ClearBackground(null, null);
+            return;
         }
-        // A file that failed to decode is not re-decoded (and re-warned) on
-        // every tick; a slow retry lets a re-saved or reconnected file recover
-        // without re-picking it. (A MISSING file keeps its cheap per-tick
-        // File.Exists so it shows the moment it reappears.)
-        if (path == _bgFailedPath && DateTime.UtcNow - _bgFailedAt < TimeSpan.FromSeconds(30)) return;
-        if (string.IsNullOrEmpty(path) || !System.IO.File.Exists(path))
-        { _bgCache = null; _bgPath = null; _gif = null; _bgNatW = _bgNatH = 1; return; }
+        var now = DateTime.UtcNow;
+        // The file in hand - the one loaded, or the failure on show - is
+        // re-examined at most every BackgroundStatEvery, not on every render
+        // tick (10 Hz under a GIF) or canvas drag.
+        if ((path == _bgPath || path == _bgFailedPath) && now - _bgStatAt < BackgroundStatEvery) return;
+        _bgStatAt = now;
+        var version = VersionOf(path);
+        if (path == _bgPath && version == _bgVersion) return;   // re-saved in place = a new version, decoded below
+        string key = FailureKey(path);
+        if (_bgFailures.TryGetValue(key, out var failed))
+        {
+            // Failed before: shown as failed, without a decode or a log line,
+            // until the file changes or an unreadable one's back-off runs out.
+            if (failed.Version != version) _bgFailures.Remove(key);
+            else if (failed.Permanent || now < failed.RetryAt) { ClearBackground(path, failed.Why); return; }
+        }
+        // A missing file shows nothing and says nothing, and keeps this cheap
+        // attribute read per call so it shows the moment it reappears.
+        if (!version.Exists) { ClearBackground(null, null); return; }
         _bgCache = null; _gif = null;
+        BackgroundDecodes++;
+        string name = System.IO.Path.GetFileName(path);
+        string? refused;
         try
         {
-            _bgStamp = StampOf(path); _bgStatAt = DateTime.UtcNow;
-            if (path.EndsWith(".gif", StringComparison.OrdinalIgnoreCase))
-                LoadGif(path);
-            else
-            {
-                var img = new BitmapImage();
-                img.BeginInit();
-                img.CacheOption = BitmapCacheOption.OnLoad;
-                img.UriSource = new Uri(path);
-                img.EndInit();
-                img.Freeze();
-                _bgCache = img;
-                _bgNatW = Math.Max(1, img.PixelWidth); _bgNatH = Math.Max(1, img.PixelHeight);
-            }
-            _bgPath = path;
-            _bgFailedPath = null;
+            refused = path.EndsWith(".gif", StringComparison.OrdinalIgnoreCase) ? LoadGif(path) : LoadStill(path);
+        }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
+        {
+            // The bytes could not be read: a sharing violation while an editor
+            // saves it, access denied, deleted since the check. Try again soon.
+            RememberFailure(key, path, version, permanent: false, $"it could not be read ({ex.Message})", now);
+            UnifiedRgb.Core.Log.Occasional("lcd-bg-unreadable", "lcd", $"background {name} could not be read, trying again shortly: {ex.Message}");
+            return;
         }
         catch (Exception ex)
         {
-            UnifiedRgb.Core.Log.Occasional("lcd-bg", "lcd", $"background load failed: {ex.Message}");
-            _bgCache = null; _bgPath = null; _gif = null; _bgNatW = _bgNatH = 1;
-            _bgFailedPath = path; _bgFailedAt = DateTime.UtcNow;
+            // The decoder's verdict on bytes it did read (not an image, corrupt,
+            // out of memory): the same file fails the same way next time.
+            RememberFailure(key, path, version, permanent: true, $"it could not be decoded ({ex.Message})", now);
+            UnifiedRgb.Core.Log.Occasional("lcd-bg-undecodable", "lcd", $"background {name} could not be decoded: {ex.Message}");
+            return;
         }
+        if (refused != null)
+        {
+            RememberFailure(key, path, version, permanent: true, $"it {refused}", now);
+            UnifiedRgb.Core.Log.Occasional("lcd-bg-refused", "lcd", $"background {name} refused: it {refused}");
+            return;
+        }
+        _bgFailures.Remove(key);
+        _bgPath = path; _bgVersion = version;
+        _bgFailedPath = null;
+        BackgroundProblem = null;
     }
 
-    static DateTime StampOf(string path)
+    /// <summary>Nothing showing: no background set, its file missing (both
+    /// with no problem), or failedPath did not load, for the reason given.</summary>
+    void ClearBackground(string? failedPath, string? why)
     {
-        try { return System.IO.File.GetLastWriteTimeUtc(path); } catch { return default; }
+        _bgCache = null; _gif = null; _bgPath = null; _bgNatW = _bgNatH = 1;
+        _bgFailedPath = failedPath;
+        BackgroundProblem = why;
     }
 
-    void LoadGif(string path)
+    void RememberFailure(string key, string path, BgVersion version, bool permanent, string why, DateTime now)
     {
-        var dec = new GifBitmapDecoder(new Uri(path),
-            BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
-        if (dec.Frames.Count == 0) return;
+        bool known = _bgFailures.TryGetValue(key, out var before);
+        int attempts = known && before!.Version == version ? before.Attempts + 1 : 1;
+        if (!known && _bgFailures.Count >= MaxBgFailures)
+        {
+            string? oldest = null;
+            var at = DateTime.MaxValue;
+            foreach (var (k, f) in _bgFailures)
+                if (f.At < at) { oldest = k; at = f.At; }
+            if (oldest != null) _bgFailures.Remove(oldest);
+        }
+        _bgFailures[key] = new BgFailure(version, why, permanent, attempts, now,
+            permanent ? DateTime.MaxValue : now + RetryDelay(attempts, BackgroundRetryFirst));
+        ClearBackground(path, why);
+    }
+
+    /// <summary>The wait before an unreadable background's next try:
+    /// <paramref name="first"/> after its first failure, doubling per failure
+    /// after that, never more than BgRetryMax.</summary>
+    internal static TimeSpan RetryDelay(int attempts, TimeSpan first)
+    {
+        double ms = first.TotalMilliseconds * Math.Pow(2, Math.Clamp(attempts - 1, 0, 30));
+        return TimeSpan.FromMilliseconds(Math.Min(ms, BgRetryMax.TotalMilliseconds));
+    }
+
+    static BgVersion VersionOf(string path)
+    {
+        try
+        {
+            var fi = new System.IO.FileInfo(path);
+            return fi.Exists ? new BgVersion(true, fi.Length, fi.LastWriteTimeUtc) : default;
+        }
+        catch (Exception) { return default; }   // a string that cannot name a file: missing, as File.Exists said before
+    }
+
+    static string FailureKey(string path)
+    {
+        try { return System.IO.Path.GetFullPath(path); }
+        catch (Exception) { return path; }   // not a path GetFullPath takes: the string itself still tells files apart
+    }
+
+    // What a background may be, judged from the file's header before a pixel
+    // is decoded. A photo straight off a 100 MP camera fits; a header claiming
+    // 60000x60000 (a few bytes of file, gigabytes once decoded) does not.
+    const int MaxStillSide = 16384;
+    const long MaxStillPixels = 120_000_000;
+    // A still is kept at no more than twice the panel's 320x240, the most the
+    // panel or the designer's canvas (on a 200% display) can show. The cap on
+    // the decoded pixel count covers panoramas and other extreme shapes, which
+    // cover the panel only at a large size.
+    const long MaxStillDecodePixels = 4L * 1024 * 1024;
+    // GIFs are read whole into memory for the decoder, so the file is bounded
+    // too, at the size an import accepts for an asset (SetupBundle).
+    const long MaxGifBytes = 24L * 1024 * 1024;
+    const int MaxGifSide = 4096;
+    const int MaxGifFrames = 96;
+
+    static string? TooLarge(int w, int h, int maxSide, long maxPixels)
+    {
+        if (w <= 0 || h <= 0) return $"has no size ({w}x{h})";
+        if (w > maxSide || h > maxSide || (long)w * h > maxPixels)
+            return $"is {w}x{h}, more than a panel background can be ({maxSide} px a side, {maxPixels / 1_000_000} MP)";
+        return null;
+    }
+
+    /// <summary>The width to decode a still of natural size w x h at: its longer
+    /// side as large as the designer can zoom a background (LcdDesign.MaxBgSize),
+    /// never more than the image itself, and within MaxStillDecodePixels however
+    /// long and thin it is. Twice the panel was too little: a background zoomed
+    /// past "cover" (a crop of a big photo) was drawn from that small decode
+    /// and came out visibly soft.</summary>
+    internal static int StillDecodeWidth(int w, int h)
+    {
+        double scale = Math.Min(1.0, LcdDesign.MaxBgSize / Math.Max(w, h));
+        double px = w * scale * (h * scale);
+        if (px > MaxStillDecodePixels) scale *= Math.Sqrt(MaxStillDecodePixels / px);
+        return Math.Clamp((int)Math.Round(w * scale), 1, w);
+    }
+
+    /// <summary>A still image. Null when loaded, otherwise why it was refused.
+    /// The natural size is read from the header (a delay-created frame with no
+    /// cache decodes nothing), and only the scaled copy is kept: a large photo
+    /// used to sit fully decoded, at four bytes a pixel, for the life of the
+    /// design. One open stream for both, so the file checked is the file
+    /// decoded.</summary>
+    string? LoadStill(string path)
+    {
+        using var fs = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read,
+            System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete);
+        var head = BitmapDecoder.Create(fs, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None);
+        if (head.Frames.Count == 0) return "has no image in it";
+        int w = head.Frames[0].PixelWidth, h = head.Frames[0].PixelHeight;
+        if (TooLarge(w, h, MaxStillSide, MaxStillPixels) is string why) return why;
+
+        fs.Position = 0;
+        int dw = StillDecodeWidth(w, h);
+        var img = new BitmapImage();
+        img.BeginInit();
+        img.CacheOption = BitmapCacheOption.OnLoad;   // decode now, so the stream can go
+        if (dw < w) img.DecodePixelWidth = dw;        // the height follows the aspect
+        img.StreamSource = fs;
+        img.EndInit();
+        img.Freeze();
+        _bgCache = img;
+        _bgNatW = w; _bgNatH = h;
+        return null;
+    }
+
+    /// <summary>An animated GIF, composited to panel-scale frames. Null when
+    /// loaded, otherwise why it was refused. The decoder caches nothing and
+    /// creates a frame only when it is composited, so only the first
+    /// MaxGifFrames are touched (the old OnLoad decoder decoded EVERY frame up
+    /// front); and each is scaled to panel size before it is drawn
+    /// (PanelScale), because a full-size frame drawn as it is stays decoded on
+    /// the frame object until the load returns - lazy creation alone left the
+    /// peak where it was.</summary>
+    string? LoadGif(string path)
+    {
+        byte[] bytes;
+        using (var fs = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read,
+                   System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete))
+        {
+            if (fs.Length > MaxGifBytes)
+                return $"is {fs.Length / (1024 * 1024)} MB, more than a background GIF can be ({MaxGifBytes / (1024 * 1024)} MB)";
+            bytes = new byte[fs.Length];
+            fs.ReadExactly(bytes);
+        }
+        using var ms = new System.IO.MemoryStream(bytes, writable: false);
+        var dec = new GifBitmapDecoder(ms,
+            BitmapCreateOptions.PreservePixelFormat | BitmapCreateOptions.DelayCreation, BitmapCacheOption.None);
+        if (dec.Frames.Count == 0) return "has no frames";
         // The canvas is the GIF's logical screen, not its first frame: an
         // optimised GIF's first frame can be a sub-rectangle, and a canvas
         // sized to it would crop every later frame that reaches past it.
@@ -458,14 +653,14 @@ public sealed class LcdController : IDisposable
             try { if (gmd.GetQuery("/logscrdesc/Width") is ushort lw && lw > 0) w = Math.Max(w, lw); } catch { }
             try { if (gmd.GetQuery("/logscrdesc/Height") is ushort lh && lh > 0) h = Math.Max(h, lh); } catch { }
         }
-        _bgNatW = Math.Max(1, w); _bgNatH = Math.Max(1, h);
+        if (TooLarge(w, h, MaxGifSide, (long)MaxGifSide * MaxGifSide) is string tooBig) return tooBig;
         // Composite at panel scale: full-res frames of a large GIF would cost
         // tens of MB for zero visible gain on a 320x240 screen.
         double scale = Math.Min(1.0, Math.Min((double)LW / w, (double)LH / h));
         int cw = Math.Max(1, (int)(w * scale)), chh = Math.Max(1, (int)(h * scale));
         // 96 composited panel-scale frames ≈ 29 MB worst case (was 150 ≈ 46 MB
         // resident for a tray app); longer GIFs loop their first 96 frames.
-        int max = Math.Min(dec.Frames.Count, 96);
+        int max = Math.Min(dec.Frames.Count, MaxGifFrames);
 
         // Pass 1: each frame's placement, timing and disposal from its Image
         // Descriptor / Graphic Control Extension. Disposal is what happens to
@@ -501,6 +696,10 @@ public sealed class LcdController : IDisposable
                 }
                 catch { }
             }
+            // A frame decodes at its own size whatever the logical screen
+            // says, so a forged one is refused here, before pass 2 decodes it.
+            if (TooLarge(Math.Max(fw, f.PixelWidth), Math.Max(fh, f.PixelHeight), MaxGifSide, (long)MaxGifSide * MaxGifSide) is string frameTooBig)
+                return $"has a frame that {frameTooBig}";
             draw[i] = new Rect(left * scale, top * scale, fw * scale, fh * scale);
             placed[i] = (GifCanvas.PixelRect(draw[i], cw, chh), disposal);
             delays[i] = TimeSpan.FromMilliseconds(Math.Max(delayCs * 10, 60));
@@ -526,11 +725,12 @@ public sealed class LcdController : IDisposable
             beforePrev = i + 1 < max && plan[i + 1].RestorePrevious ? (byte[])canvas.Clone() : null;
 
             var under = BitmapSource.Create(cw, chh, 96, 96, PixelFormats.Pbgra32, null, canvas, stride);
+            var piece = PanelScale(dec.Frames[i], scale);
             var dv = new DrawingVisual();
             using (var dc = dv.RenderOpen())
             {
                 dc.DrawImage(under, new Rect(0, 0, cw, chh));
-                dc.DrawImage(dec.Frames[i], draw[i]);
+                if (piece != null) dc.DrawImage(piece, draw[i]);
             }
             var rtb = new RenderTargetBitmap(cw, chh, 96, 96, PixelFormats.Pbgra32);
             rtb.Render(dv);
@@ -544,7 +744,33 @@ public sealed class LcdController : IDisposable
         _gif = frames;
         _gifIndex = 0;
         _gifDue = DateTime.UtcNow + frames[0].Item2;
+        _bgNatW = w; _bgNatH = h;
         UnifiedRgb.Core.Log.Info("lcd", $"GIF background: {frames.Count} frame(s) @ {cw}x{chh}");
+        return null;
+    }
+
+    /// <summary>A GIF frame at the scale it is composited at. Drawing the
+    /// full-size frame left its decoded pixels cached on the frame object, and
+    /// the decoder holds every frame until the load returns - so a large GIF
+    /// peaked at its whole decoded animation (measured: a 2048x2048, 60-frame
+    /// GIF cost 1.2 GB) however lazily the frames were created. Scaled and
+    /// copied out here, only the panel-size copy is ever kept. A frame already
+    /// at panel scale or smaller is drawn as it is (and so exactly as before).
+    /// Null for a frame that scales to nothing.</summary>
+    static BitmapSource? PanelScale(BitmapSource frame, double scale)
+    {
+        if (scale >= 1.0) return frame;
+        int sw = (int)Math.Round(frame.PixelWidth * scale), sh = (int)Math.Round(frame.PixelHeight * scale);
+        if (sw < 1 || sh < 1) return null;
+        var scaled = new FormatConvertedBitmap(
+            new TransformedBitmap(frame, new ScaleTransform((double)sw / frame.PixelWidth, (double)sh / frame.PixelHeight)),
+            PixelFormats.Pbgra32, null, 0);
+        int stride = scaled.PixelWidth * 4;
+        var px = new byte[stride * scaled.PixelHeight];
+        scaled.CopyPixels(px, stride, 0);
+        var copy = BitmapSource.Create(scaled.PixelWidth, scaled.PixelHeight, 96, 96, PixelFormats.Pbgra32, null, px, stride);
+        copy.Freeze();
+        return copy;
     }
 
     /*  FormattedText is cached per element and rebuilt only when its inputs

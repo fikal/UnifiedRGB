@@ -131,12 +131,42 @@ public enum DeviceType
 /// This writes FLASH. Callers must debounce it and must never put it on a frame
 /// path - see MainViewModel.PersistLightingDebounced, which also refuses while an
 /// effect is running, because an animation has no colour worth keeping.</summary>
+/// <summary>A device whose controller can drop the lighting we set without
+/// anything telling us - an MSI GPU's RGB controller after a graphics driver
+/// reset goes back to its own mode. The driver's dedup still believes the old
+/// colour is showing, so nothing would ever correct it; the app asks this
+/// now and then (LightingController.RepairReverts) and puts it back.</summary>
+public interface ISelfRevertingLighting
+{
+    /// <summary>True: the controller still shows what the last write left.
+    /// False: it reverted - the driver has already forgotten what it showed,
+    /// so the next write goes out. Null: nothing to compare yet, the read
+    /// failed, or this unit cannot tell; ask again later. One cheap read.</summary>
+    bool? ShowingOurs();
+
+    /// <summary>False once this unit is known NOT to report its state (Ryan's
+    /// 5090 reads its mode register back as 0x00). Such a device is not asked;
+    /// on an event that usually means a reset (a display change) its lighting
+    /// is simply written again instead.</summary>
+    bool CanTell => true;
+}
+
 public interface IPersistableLighting
 {
-    /// <summary>Store the current colour, or false when there is nothing to store
-    /// or the device refused. A colour already stored is a success and costs no
-    /// write.</summary>
-    bool PersistCurrentColor();
+    /// <summary>Store <paramref name="showing"/> - the user's colour, finished
+    /// for the hardware, as the caller last asked the device to show it - but
+    /// ONLY if it is exactly what the device was last sent. False when it is
+    /// not (the device is showing something else: a lights-off black, a test
+    /// colour, a client's picture, a frozen effect frame), when there is
+    /// nothing storable, or when the device refused. A colour already stored
+    /// is a success and costs no write.
+    ///
+    /// This replaced "store whatever you last sent", which cannot tell the
+    /// user's colour from the black of a locked desk: a hand edit in a dark
+    /// window left the mouse unrelit, and the settled save then stored black
+    /// in a G403's onboard memory. The caller says what it wants kept; the
+    /// driver refuses to keep anything it is not actually showing.</summary>
+    bool PersistColor(IReadOnlyList<Rgb> showing);
 }
 
 /// <summary>Keyboards that can resolve a Windows virtual-key code to the LED

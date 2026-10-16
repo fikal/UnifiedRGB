@@ -125,23 +125,65 @@ static class EffectsSuite
             }
         }
 
-        t.Section("Baked loops close on their period (#67)");
+        t.Section("Baked loops close on their period (#67, D3)");
         {
-            var pos = Grid(8, 8);
+            // EVERY bakeable effect, found by reflection rather than listed: the
+            // list used to name six, and nine more (Aurora, Plasma, Candle, Rain,
+            // Candy Box, Starfield, Colorful Meteor, Disco, Electric) baked loops
+            // that popped at every wrap. Those nine are now streamed instead
+            // (Bakeable false, checked below) so they keep their look. A new
+            // effect is covered the day it is written.
+            var effects = typeof(IEffect).Assembly.GetTypes()
+                .Where(ty => ty.IsClass && !ty.IsAbstract && typeof(IEffect).IsAssignableFrom(ty)
+                             && ty.GetConstructor(Type.EmptyTypes) != null)
+                .OrderBy(ty => ty.Name, StringComparer.Ordinal)
+                .Select(ty => (IEffect)Activator.CreateInstance(ty)!)
+                .ToList();
+            // Palette effects default to an empty palette, which renders one flat
+            // white and would close on any period at all: give them colours.
+            var pal = new[] { new Rgb(255, 0, 0), new Rgb(0, 255, 0), new Rgb(0, 0, 255) };
+            foreach (var fx in effects) if (fx is IPaletteEffect pe) pe.Palette = pal;
+            // Custom Pattern is one class with a period per mode: every bakeable mode.
+            foreach (var color in new[] { PatternColor.Rainbow, PatternColor.Gradient, PatternColor.Solid })
+                foreach (var motion in new[] { PatternMotion.Static, PatternMotion.Rotate, PatternMotion.Chase, PatternMotion.Breathe, PatternMotion.Wave })
+                    effects.Add(new PatternEffect { Color = color, Motion = motion, Palette = pal });
             var bc = new Rgb(200, 90, 30);
-            foreach (IEffect fx in new IEffect[] { new StackOutline(), new Waterfall(), new Orbit(), new TideFx(), new Police(), new Fire() })
-                foreach (double speed in new[] { 1.0, 2.5 })
-                {
-                    double loop = fx.LoopSeconds(speed);
-                    t.Check(loop >= 1.5 / speed - 1e-9 && loop <= 12.0 / speed + 1e-9, $"{fx.Name} LoopSeconds({speed}) = {loop:F3} inside the baker's clamp scaled by speed");
-                    var a = new Rgb[64]; var b = new Rgb[64];
-                    fx.Render(a, pos, 0.37, speed, bc);
-                    fx.Render(b, pos, 0.37 + loop, speed, bc);
-                    t.Check(SameWithin(a, b, 1), $"{fx.Name} frame at t0 equals frame at t0 + LoopSeconds({speed})");
-                }
-            // Baked at speed 1 these must land inside the 1.5..12 s clamp outright.
-            foreach (IEffect fx in new IEffect[] { new StackOutline(), new Waterfall(), new Orbit(), new TideFx(), new Police(), new Fire() })
-                t.Check(fx.LoopSeconds(1.0) >= 1.5 && fx.LoopSeconds(1.0) <= 12.0, $"{fx.Name} LoopSeconds(1) = {fx.LoopSeconds(1.0):F3} in 1.5..12");
+            int bakeable = 0;
+            foreach (var fx in effects.Where(e => e.Bakeable))
+            {
+                bakeable++;
+                string what = fx is PatternEffect p ? $"{fx.Name} ({p.Color}/{p.Motion})" : fx.Name;
+                foreach (var pos in new[] { Grid(8, 8), Line(64) })   // Line: the strip paths (Rain, Matrix, Tide)
+                    foreach (double speed in new[] { 1.0, 2.5, -1.0 })   // negative: Reverse
+                    {
+                        double loop = fx.LoopSeconds(speed);
+                        var a = new Rgb[64]; var b = new Rgb[64];
+                        fx.Render(a, pos, 0.37, speed, bc);
+                        if (loop == 0)
+                        {
+                            // Time-invariant: any window is a period, so ANY two
+                            // moments must match.
+                            fx.Render(b, pos, 0.37 + 3.3, speed, bc);
+                            t.Check(SameWithin(a, b, 1), $"{what} declares LoopSeconds 0 and really is constant (speed {speed})");
+                            continue;
+                        }
+                        double s = Math.Abs(speed);
+                        t.Check(loop >= 1.5 / s - 1e-9 && loop <= 12.0 / s + 1e-9, $"{what} LoopSeconds({speed}) = {loop:F3} inside the baker's clamp scaled by speed");
+                        fx.Render(b, pos, 0.37 + loop, speed, bc);
+                        t.Check(SameWithin(a, b, 1), $"{what} frame at t0 equals frame at t0 + LoopSeconds({speed}) on a {(pos[0].Y == pos[^1].Y ? "strip" : "grid")}");
+                    }
+                // Baked at speed 1 the period must land inside the 1.5..12 s clamp outright.
+                double one = fx.LoopSeconds(1.0);
+                t.Check(one == 0 || one >= 1.5 && one <= 12.0, $"{what} LoopSeconds(1) = {one:F3} in 1.5..12");
+            }
+            t.Check(bakeable >= 50, $"the sweep found the effect library ({bakeable} bakeable effects and pattern modes)");
+            // Their motion never repeats on a bake window; making it repeat would
+            // change how they look on every device, so a wireless fan streams them.
+            foreach (var name in new[] { "Aurora", "Plasma", "Rain", "Candle", "Disco", "Electric", "Starfield", "ColorfulMeteor", "CandyBox" })
+            {
+                var fx = effects.FirstOrDefault(e => e.GetType().Name == name);
+                t.Check(fx != null && !fx.Bakeable, $"{name} is streamed, never baked");
+            }
         }
 
         t.Section("PatternEffect gradient == PaletteFx.Sample (#143)");

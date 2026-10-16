@@ -226,6 +226,12 @@ public sealed class Twinkle : IEffect
 /// <summary>Random color blocks snapping to the beat of a step clock.</summary>
 public sealed class Disco : IEffect
 {
+    /// <summary>Streamed, never baked onto wireless fans: this effect does not
+    /// repeat exactly over a LoopSeconds window (incommensurate rates, or a
+    /// fresh random pattern per step), so a baked loop popped at every seam.
+    /// Reworking the maths to loop would change how it looks on EVERY device
+    /// for the sake of the one that bakes; streaming keeps the look.</summary>
+    public bool Bakeable => false;
     public string Name => "Disco";
     public bool UsesBaseColor => false;
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb _)
@@ -266,6 +272,12 @@ public sealed class Police : IEffect
 /// <summary>Unstable crackling energy with random arcs.</summary>
 public sealed class Electric : IEffect
 {
+    /// <summary>Streamed, never baked onto wireless fans: this effect does not
+    /// repeat exactly over a LoopSeconds window (incommensurate rates, or a
+    /// fresh random pattern per step), so a baked loop popped at every seam.
+    /// Reworking the maths to loop would change how it looks on EVERY device
+    /// for the sake of the one that bakes; streaming keeps the look.</summary>
+    public bool Bakeable => false;
     public string Name => "Electric";
     public bool UsesBaseColor => true;
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb baseColor)
@@ -305,6 +317,12 @@ public sealed class Fire : IEffect
 /// <summary>Sparse cool-white stars blinking in the dark.</summary>
 public sealed class Starfield : IEffect
 {
+    /// <summary>Streamed, never baked onto wireless fans: this effect does not
+    /// repeat exactly over a LoopSeconds window (incommensurate rates, or a
+    /// fresh random pattern per step), so a baked loop popped at every seam.
+    /// Reworking the maths to loop would change how it looks on EVERY device
+    /// for the sake of the one that bakes; streaming keeps the look.</summary>
+    public bool Bakeable => false;
     public string Name => "Starfield";
     public bool UsesBaseColor => false;
     public void Render(Rgb[] buf, LedPos[] pos, double t, double speed, Rgb _)
@@ -516,6 +534,12 @@ public sealed class DoubleMeteor : IEffect
 /// <summary>A meteor that changes to a fresh random color on every lap.</summary>
 public sealed class ColorfulMeteor : IEffect
 {
+    /// <summary>Streamed, never baked onto wireless fans: this effect does not
+    /// repeat exactly over a LoopSeconds window (incommensurate rates, or a
+    /// fresh random pattern per step), so a baked loop popped at every seam.
+    /// Reworking the maths to loop would change how it looks on EVERY device
+    /// for the sake of the one that bakes; streaming keeps the look.</summary>
+    public bool Bakeable => false;
     public string Name => "Colorful Meteor";
     public bool UsesBaseColor => false;
     // One lap per loop: baked devices show one color per loop (still cycles live).
@@ -792,6 +816,12 @@ public sealed class MopUp : IEffect
 /// candy.</summary>
 public sealed class CandyBox : IEffect
 {
+    /// <summary>Streamed, never baked onto wireless fans: this effect does not
+    /// repeat exactly over a LoopSeconds window (incommensurate rates, or a
+    /// fresh random pattern per step), so a baked loop popped at every seam.
+    /// Reworking the maths to loop would change how it looks on EVERY device
+    /// for the sake of the one that bakes; streaming keeps the look.</summary>
+    public bool Bakeable => false;
     public string Name => "Candy Box";
     public bool UsesBaseColor => false;
     // Loop over 3 windows (u: 0->3): the wrap lands on ph=0 where every sparkle

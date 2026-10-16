@@ -63,6 +63,7 @@ public sealed class SayoDevice : IRgbDevice
         if (colors.Count == 0) return false;
         lock (_writeLock)
         {
+            if (_disposed) return false;   // and again under the lock: Dispose may have run while we waited for it
             var c = colors[0];
             if (_last == c) return true;   // already showing it: a skip is a success
 

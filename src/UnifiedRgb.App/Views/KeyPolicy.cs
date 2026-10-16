@@ -4,10 +4,6 @@ using System.Windows.Input;
 
 namespace UnifiedRgb.App.Views;
 
-/// <summary>Mouse-first policy shared by the panes: typing drives the reactive
-/// effects, so focused list controls must never react to keys. Tab still moves
-/// focus; TextBoxes nested in a list item still type (PreviewKeyDown tunnels
-/// ahead of them - marking their keys handled blocked TextInput entirely).</summary>
 /// <summary>A ListBox's template ScrollViewer handles the mouse wheel and marks
 /// it handled even when it has nothing to scroll, so a page ScrollViewer behind
 /// a list never moved while the pointer sat over the list (most of the Cooling
@@ -28,6 +24,10 @@ static class WheelPolicy
     }
 }
 
+/// <summary>Mouse-first policy shared by the panes: typing drives the reactive
+/// effects, so focused list controls must never react to keys. Tab still moves
+/// focus; TextBoxes nested in a list item still type (PreviewKeyDown tunnels
+/// ahead of them - marking their keys handled blocked TextInput entirely).</summary>
 static class KeyPolicy
 {
     public static void MouseFirst(KeyEventArgs e)

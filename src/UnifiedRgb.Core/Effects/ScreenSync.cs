@@ -49,7 +49,7 @@ public static class AmbientScreen
             {
                 if (Capture(bgra)) _grid.BlendBgra(bgra, Vibrance);
             }
-            catch (Exception ex) { Log.Occasional("ambient", "cap", $"screen capture failed: {ex.Message}"); }
+            catch (Exception ex) { Log.Occasional("ambient-capture", "ambient", $"screen capture failed: {ex.Message}"); }
             Thread.Sleep(100);
         }
     }

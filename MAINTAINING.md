@@ -33,6 +33,47 @@ if you want prose.
 Rules the script enforces: run from `main`, clean tree, both shims build,
 tests green, built FileVersion == the version being released.
 
+## Where a release runs from (`AppInstall.cs`)
+
+A release is one portable exe, but "Start with Windows" does not run it
+from where the user saved it: the logon task is elevated, and Downloads
+(like `%TEMP%\.net`, where .NET unpacks the native WPF DLLs) is writable by
+anything running as the user. So:
+
+- Turning on Start with Windows copies the running exe (this build, older
+  or newer than what is there) to `C:\Program Files\UnifiedRGB\UnifiedRGB.exe`,
+  in a folder made administrators-only by `ProtectedFolder`, and points the
+  task there.
+- That copy only runs with its DLLs unpacked under
+  `C:\Program Files\UnifiedRGB\runtime`: it checks where the .NET host really
+  unpacked them (`NATIVE_DLL_SEARCH_DIRECTORIES`), restarts itself once with
+  `DOTNET_BUNDLE_EXTRACT_BASE_DIR` pointing there if not, and refuses to run
+  (log line + message box) if they are still elsewhere after that.
+- Launching the downloaded exe hands over to the installed copy (refreshing
+  it first if the download is newer). An OLDER download runs itself, so you
+  can always roll back: run the old exe, untick and tick Start with Windows.
+  The updater updates whichever copy is running.
+- Turning Start with Windows off deletes the task, and the installed copy
+  too unless you are running from it (then a later launch of the downloaded
+  exe removes it).
+- The task is registered from XML through the Task Scheduler COM API, with
+  normal priority, no 72-hour limit and no battery rules (the
+  `schtasks /SC ONLOGON` defaults were wrong on all three). Each launch
+  brings an older build's task up to date, but never moves a task that runs
+  a `bin\Debug` / `bin\Release` exe.
+
+Development builds (Debug, not single-file) are never installed; their task
+keeps the exe it names and only gets the settings fixed.
+
+What this does not close: the logon task's process inherits the user's
+environment, and the .NET runtime loads a profiler named there
+(`CORECLR_ENABLE_PROFILING` / `CORECLR_PROFILER_PATH`) before any app code
+runs. Startup hooks are off (`StartupHookSupport=false`), every
+`DOTNET_`/`COMPlus_`/`CORECLR_`/`COR_` variable is stripped from what the app
+passes to the processes it starts, and finding one logs a warning - but
+keeping a profiler out of the first process needs a native launcher that
+starts the app with a clean environment.
+
 ## Docs and the website
 
 - **`docs/` is the GitHub Pages root.** Everything in it is live at

@@ -16,13 +16,24 @@ namespace UnifiedRgb.Core.Net;
 \*-----------------------------------------------------------*/
 public static class OpenRgbManager
 {
-    // Master pipeline build (what openrgb.org itself now points at) — covers
-    // hardware 0.9 predates (newer NZXT/Razer/50-series). Pinned to one CI
-    // job for reproducibility; the moving master URL is the fallback if the
-    // pinned artifact ever expires.
-    const string BundleVersion = "master-15972623581";   // resolved 2026-08-19
-    const string PinnedUrl = "https://gitlab.com/CalcProgrammer1/OpenRGB/-/jobs/15972623581/artifacts/download";
-    const string LatestUrl = "https://gitlab.com/CalcProgrammer1/OpenRGB/-/jobs/artifacts/master/download?job=Windows+64";
+    // The OpenRGB 1.0 release (2026-09-11): openrgb.org links its Windows
+    // downloads to these Codeberg release assets, which stay up for good. The
+    // pin used to be a GitLab master CI job, whose artifact GitLab deletes after
+    // 30 days: every pin expired, and after expiry a machine with no OpenRGB
+    // installed could not get one. Pinned to the exact bytes as well, because
+    // this process runs elevated and launches what it unpacks; there is NO
+    // fallback to an unverified download. A machine that has an older build
+    // installed keeps running it, with a warning, if this one cannot be fetched
+    // (see EnsureRunningAsync).
+    //
+    // To move to a newer release, take the "Windows_64 ... .zip" asset from its
+    // Codeberg release, check its size against the release API, and update all
+    // three constants together. 1.0 kept every launch flag (--server,
+    // --server-port, --loglevel, --config) and the Detectors.detectors config
+    // format this class relies on; check both again on a version bump.
+    internal const string BundleVersion = "release-1.0-81bbe18";
+    internal const string PinnedUrl = "https://codeberg.org/OpenRGB/OpenRGB/releases/download/release_1.0/OpenRGB_1.0_Windows_64_81bbe18.zip";
+    internal const string BundleSha256 = "182a52a3c97c4c4ae52c80286b4260c9666c51c3447dbc416ee8945f66192e90";   // 22,012,179 bytes
     public const int Port = 6742;
 
     // ProgramData, administrators only - not LocalAppData. This process runs
@@ -33,8 +44,9 @@ public static class OpenRgbManager
     // once and to sweep an instance still running from it (see ProtectedFolder).
     static readonly string Root = AppPaths.Machine("openrgb");
     static readonly string LegacyRoot = AppPaths.Local("openrgb");
-    static readonly string ConfigDir = Path.Combine(Root, "config");
-    static readonly string StampPath = Path.Combine(Root, "bundle-version.txt");
+    const string ConfigName = "config", StampName = "bundle-version.txt";
+    static readonly string ConfigDir = Path.Combine(Root, ConfigName);
+    static readonly string StampPath = Path.Combine(Root, StampName);
 
     /// <summary>Is this image path inside a tree the app launches OpenRGB from,
     /// now or before the move to ProgramData. For the conflict-process report,
@@ -46,9 +58,10 @@ public static class OpenRgbManager
     /// <summary>The root is ours - administrators only, made by us - or the
     /// bundle is not used. Runs before every install and every launch, because
     /// a launch trusts whatever it finds under Root: that has to have been put
-    /// there by an administrator, and a folder somebody else planted under the
-    /// name is thrown away here (after which nothing is installed, and the
-    /// install path downloads a fresh copy). False = do not launch.</summary>
+    /// there by an administrator, and anything somebody else planted under the
+    /// name (a folder, a junction) is moved aside here (after which nothing is
+    /// installed, and the install path downloads a fresh copy). False = do
+    /// not launch.</summary>
     static bool SecureRoot(Action<string>? status)
     {
         bool ok = ProtectedFolder.Ensure(AppPaths.MachineDir, out string? why)
@@ -137,27 +150,22 @@ public static class OpenRgbManager
 
     /// <summary>Download + extract the pinned build (idempotent per version).
     /// Upgrades in place when the pinned version changes, preserving the
-    /// managed config (detector tweaks) across the swap.</summary>
+    /// managed config (detector tweaks) across the swap. Fails closed: a
+    /// download that fails, or bytes that are not exactly the pinned build,
+    /// install nothing and leave whatever was there untouched.</summary>
     public static async Task InstallAsync(Action<string>? status = null)
     {
         if (IsInstalled) return;
-        Stop();                                  // never upgrade under a running instance
         if (!SecureRoot(status))
             throw new InvalidOperationException("the OpenRGB folder could not be made administrators-only");
         Directory.CreateDirectory(Root);
 
-        // Clear the previous build but keep config/ (detector state).
-        foreach (var dir in Directory.GetDirectories(Root))
-            if (!string.Equals(dir, ConfigDir, StringComparison.OrdinalIgnoreCase))
-                try { Directory.Delete(dir, recursive: true); } catch { }   // a file still held: the fresh unpack overwrites it anyway
-        foreach (var file in Directory.GetFiles(Root))
-            try { File.Delete(file); } catch { }   // ...same: leftovers are overwritten, and a half-cleared root is not a reason to refuse the install
-
         status?.Invoke("downloading OpenRGB...");
-        string zipPath = Path.Combine(Root, "openrgb.zip");
-        using (var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) })
+        byte[] bytes;
+        // Bounded: the pinned build is 22 MB, and the hash refuses anything
+        // else anyway, so there is no reason to buffer more than this.
+        using (var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5), MaxResponseContentBufferSize = 64L * 1024 * 1024 })
         {
-            byte[] bytes;
             try
             {
                 bytes = await http.GetByteArrayAsync(PinnedUrl);
@@ -165,25 +173,71 @@ public static class OpenRgbManager
             }
             catch (Exception ex)
             {
-                Log.Warn("openrgb", $"pinned build unavailable ({ex.Message}); falling back to latest master");
-                bytes = await http.GetByteArrayAsync(LatestUrl);
-                Log.Info("openrgb", $"downloaded MOVING master build ({bytes.Length:n0} bytes) from {LatestUrl}");
+                string why = ex is HttpRequestException { StatusCode: System.Net.HttpStatusCode.NotFound }
+                    ? "the release download is gone (404)" : ex.Message;
+                status?.Invoke("the pinned OpenRGB build could not be downloaded - nothing was installed");
+                Log.Warn("openrgb", $"the pinned OpenRGB build {BundleVersion} is unavailable from {PinnedUrl}: {why}. "
+                    + "Nothing was installed; there is no unverified fallback.");
+                throw new InvalidOperationException($"the pinned OpenRGB build is unavailable ({why}); nothing was installed", ex);
             }
-            await File.WriteAllBytesAsync(zipPath, bytes);
         }
+
         status?.Invoke("extracting...");
-        ZipFile.ExtractToDirectory(zipPath, Root, overwriteFiles: true);
-        File.Delete(zipPath);
-        File.WriteAllText(StampPath, BundleVersion);
+        // Never upgrade under a running instance - but only stopped now, with
+        // the new build in hand: stopping before the download left the bridge
+        // dead whenever the download then failed.
+        KillBundled();
+        try { InstallVerified(bytes, BundleSha256, Root, BundleVersion); }
+        catch (UnverifiedBuildException ex)
+        {
+            status?.Invoke("the downloaded OpenRGB does not match the pinned build - nothing was installed");
+            Log.Warn("openrgb", $"{ex.Message}. Nothing was installed.");
+            throw;
+        }
         _installedStamp = 0;   // invalidate the IsInstalled memo immediately
-        File.WriteAllText(Path.Combine(Root, "LICENSE-NOTE.txt"),
-            "This folder contains an unmodified official OpenRGB build (GPLv2),\r\n" +
-            "from the project's own CI pipeline (what openrgb.org links to).\r\n" +
-            "Source: https://gitlab.com/CalcProgrammer1/OpenRGB\r\n" +
-            "UnifiedRGB communicates with it over its SDK network protocol only.\r\n");
         Log.Info("openrgb", $"installed {BundleVersion} to {Root}");
         CarryOverLegacyConfig();
         RetireLegacyRoot();
+    }
+
+    /// <summary>The downloaded archive is not the build this version pins.</summary>
+    internal sealed class UnverifiedBuildException(string message) : Exception(message);
+
+    /// <summary>Verify <paramref name="archive"/> against the pinned SHA-256
+    /// BEFORE a single file is touched, then swap it in under
+    /// <paramref name="root"/>: the previous build cleared (config/ kept),
+    /// the archive unpacked from the very bytes that were hashed, and the
+    /// version stamp written LAST, so a stamp on disk always means a verified,
+    /// complete install. Throws UnverifiedBuildException on a mismatch, with
+    /// root left exactly as it was. Takes the root so the harness can run it
+    /// against a scratch folder.</summary>
+    internal static void InstallVerified(byte[] archive, string expectedSha256, string root, string version)
+    {
+        string got = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(archive));
+        if (!string.Equals(got, expectedSha256, StringComparison.OrdinalIgnoreCase))
+            throw new UnverifiedBuildException(
+                $"the downloaded OpenRGB ({archive.Length:n0} bytes, SHA-256 {got.ToLowerInvariant()}) does not match "
+                + $"the pinned build {version} (SHA-256 {expectedSha256})");
+
+        // Clear the previous build but keep config/ (detector state).
+        string configDir = Path.Combine(root, ConfigName), stampPath = Path.Combine(root, StampName);
+        foreach (var dir in Directory.GetDirectories(root))
+            if (!string.Equals(dir, configDir, StringComparison.OrdinalIgnoreCase))
+                try { Directory.Delete(dir, recursive: true); } catch { }   // a file still held: the fresh unpack overwrites it anyway
+        foreach (var file in Directory.GetFiles(root))
+            try { File.Delete(file); } catch { }   // ...same: leftovers are overwritten, and a half-cleared root is not a reason to refuse the install
+        // Not best effort: a stamp that survived would vouch for whatever the
+        // unpack below leaves behind if it fails part way.
+        File.Delete(stampPath);
+
+        using (var zip = new MemoryStream(archive, writable: false))
+            ZipFile.ExtractToDirectory(zip, root, overwriteFiles: true);
+        File.WriteAllText(Path.Combine(root, "LICENSE-NOTE.txt"),
+            "This folder contains an unmodified official OpenRGB release (GPLv2),\r\n" +
+            "the Windows build openrgb.org links to.\r\n" +
+            "Source: https://codeberg.org/OpenRGB/OpenRGB\r\n" +
+            "UnifiedRGB communicates with it over its SDK network protocol only.\r\n");
+        File.WriteAllText(stampPath, version);
     }
 
     /// <summary>Ensure a server is running: reuse an existing one, else launch
@@ -191,6 +245,7 @@ public static class OpenRgbManager
     public static async Task<bool> EnsureRunningAsync(Action<string>? status = null)
     {
         if (IsServerUp()) return true;
+        int generation = Volatile.Read(ref _stopGeneration);
         // The port is spoken for from HERE, download included: a first-run
         // install takes minutes, and the app has already moved its own SDK
         // server aside for us. A Rescan in that window re-created it on 6742
@@ -198,8 +253,19 @@ public static class OpenRgbManager
         Interlocked.Exchange(ref _launching, 1);
         try
         {
-            await InstallAsync(status);
-            return Launch(status);
+            try { await InstallAsync(status); }
+            catch (Exception ex) when (FindExe() != null)
+            {
+                // The pinned build could not be installed (offline, its download
+                // expired, a mismatch) but a build installed earlier is still in
+                // the administrators-only folder. Keep the bridge running on it:
+                // a version bump used to read every existing install as missing
+                // and leave the bridge dead until a download succeeded.
+                Log.Warn("openrgb", $"the pinned build {BundleVersion} could not be installed ({ex.Message}); "
+                    + "running the OpenRGB already installed instead");
+                status?.Invoke("could not fetch the pinned OpenRGB - running the one already installed");
+            }
+            return Launch(status, generation);
         }
         catch (Exception ex)
         {
@@ -218,7 +284,15 @@ public static class OpenRgbManager
     public static bool Launching => Volatile.Read(ref _launching) != 0;
     static int _launching;
 
-    static bool Launch(Action<string>? status)
+    /// <summary>Bumped by every Stop from outside (the bridge switched off, the
+    /// app exiting). A launch compares it with the number it started under: a
+    /// different one means its process was killed on purpose, which is neither
+    /// a detector crash for the bisect to chase nor a reason to relaunch.</summary>
+    static int _stopGeneration;
+
+    static bool StoppedSince(int generation) => Volatile.Read(ref _stopGeneration) != generation;
+
+    static bool Launch(Action<string>? status, int generation)
     {
         Interlocked.Exchange(ref _launching, 1);
         try
@@ -230,11 +304,12 @@ public static class OpenRgbManager
             bool policyRestartDone = false;
             for (int attempt = 0; attempt < 14; attempt++)
             {
-                switch (LaunchOnce(status, ref policyRestartDone))
+                if (StoppedSince(generation)) return false;
+                switch (LaunchOnce(status, generation, ref policyRestartDone))
                 {
                     case LaunchResult.Ok: return true;
                     case LaunchResult.Failed: return false;
-                    case LaunchResult.Relaunch: Stop(); continue;
+                    case LaunchResult.Relaunch: KillBundled(); continue;
                 }
             }
             status?.Invoke("OpenRGB kept restarting — giving up for this session");
@@ -250,7 +325,7 @@ public static class OpenRgbManager
 
     enum LaunchResult { Ok, Failed, Relaunch }
 
-    static LaunchResult LaunchOnce(Action<string>? status, ref bool policyRestartDone)
+    static LaunchResult LaunchOnce(Action<string>? status, int generation, ref bool policyRestartDone)
     {
         // Every launch, not only the install: what is about to run is whatever
         // sits under Root, and this is what says that only an administrator
@@ -263,7 +338,7 @@ public static class OpenRgbManager
             Log.Warn("openrgb", "OpenRGB.exe not found after install");
             return LaunchResult.Failed;
         }
-        Stop();                    // never stack a second bundled instance on the port
+        KillBundled();             // never stack a second bundled instance on the port
         Directory.CreateDirectory(ConfigDir);
         bool hadConfig = File.Exists(Path.Combine(ConfigDir, "OpenRGB.json"));
         if (hadConfig) { ApplyConflictPolicy(); OpenRgbCrashBisect.ReapplyCulprits(ConfigDir); }
@@ -285,6 +360,9 @@ public static class OpenRgbManager
             WindowStyle = ProcessWindowStyle.Hidden,
             WorkingDirectory = Path.GetDirectoryName(exe)!,
         });
+        // A Stop that ran between the sweep above and this start found nothing
+        // to kill: the instance just started would outlive the switch-off.
+        if (StoppedSince(generation)) { KillBundled(); return LaunchResult.Failed; }
         if (_proc != null) HideWindowsOf(_proc, 30_000);
         for (int i = 0; i < 60; i++)
         {
@@ -295,6 +373,7 @@ public static class OpenRgbManager
                 // device list to settle or every first query sees 0 devices.
                 if (!WaitForDetection(status))
                 {
+                    if (StoppedSince(generation)) return Stopped(status);
                     // The server DIED during its hardware scan: a detector
                     // crashed on this machine's hardware. Hand it to the
                     // bisect; when armed it narrows the detector list and we
@@ -336,6 +415,7 @@ public static class OpenRgbManager
                 // Died before the port even opened — also a detection crash
                 // (early detectors run before the server socket comes up),
                 // unless the exit code says it simply failed to start.
+                if (StoppedSince(generation)) return Stopped(status);
                 bool crash = ExitLooksLikeCrash();
                 if (crash && OpenRgbCrashBisect.OnCrash(ConfigDir))
                 {
@@ -353,9 +433,19 @@ public static class OpenRgbManager
         return LaunchResult.Failed;
     }
 
+    /// <summary>The server went away because it was stopped on purpose mid-start
+    /// (the bridge switched off, the app exiting). Reading that as a crash fed an
+    /// innocent detector to the bisect, and its relaunch fought the stop.</summary>
+    static LaunchResult Stopped(Action<string>? status)
+    {
+        Log.Info("openrgb", "stopped while it was starting");
+        status?.Invoke("stopped");
+        return LaunchResult.Failed;
+    }
+
     /// <summary>Did the bundled server die the way a detector crash dies (access
     /// violation, fast-fail, abort) rather than quit? Feeding an ordinary exit
-    /// (missing VC++ runtime, AV block, a broken moving-master build, Qt's
+    /// (missing VC++ runtime, AV block, a broken build, Qt's
     /// quit-on-last-window) to the bisect would convict an innocent detector
     /// permanently and hide the real failure.</summary>
     static bool ExitLooksLikeCrash()
@@ -406,8 +496,17 @@ public static class OpenRgbManager
     /// <summary>Stop every OpenRGB running from OUR install dir (never someone's
     /// own install), the old per-user one included. Sweeping by path is what
     /// actually guarantees the port is free — a tracked-handle kill alone can
-    /// miss a survivor and leave the old instance owning 6742 with stale config.</summary>
+    /// miss a survivor and leave the old instance owning 6742 with stale config.
+    /// A launch in progress gives up rather than reading the kill as a crash.</summary>
     public static void Stop()
+    {
+        Interlocked.Increment(ref _stopGeneration);
+        KillBundled();
+    }
+
+    /// <summary>The sweep alone, for a launch clearing the way for its own
+    /// instance: that is not a stop, and must not cancel the launch.</summary>
+    static void KillBundled()
     {
         foreach (var p in Process.GetProcessesByName("OpenRGB"))
         {
@@ -466,8 +565,9 @@ public static class OpenRgbManager
         Interlocked.Exchange(ref _launching, 1);
         try
         {
-            Stop();
-            return Launch(status);
+            int generation = Volatile.Read(ref _stopGeneration);
+            KillBundled();
+            return Launch(status, generation);
         }
         finally { Interlocked.Exchange(ref _launching, 0); }
     }
@@ -592,17 +692,27 @@ public static class OpenRgbManager
             // once the process is gone or a newer launch superseded it - the
             // bisect relaunches up to 14x, and sweepers used to keep walking
             // every window over dead (reusable) pids for their full 30 s.
-            long start = Environment.TickCount64;
-            long end = start + forMs;
-            while (Environment.TickCount64 < end && gen == Volatile.Read(ref _launchGen) && !HasExited(proc))
+            // The whole body is guarded: an exception escaping a raw Thread
+            // takes the elevated process down with it, and this one only ever
+            // hides a window. A failed sweep is logged and the sweeper ends.
+            try
             {
-                EnumWindows((h, _) =>
+                long start = Environment.TickCount64;
+                long end = start + forMs;
+                while (Environment.TickCount64 < end && gen == Volatile.Read(ref _launchGen) && !HasExited(proc))
                 {
-                    GetWindowThreadProcessId(h, out uint p);
-                    if (p == pid && IsWindowVisible(h)) ShowWindow(h, 0 /* SW_HIDE */);
-                    return true;
-                }, IntPtr.Zero);
-                Thread.Sleep(Environment.TickCount64 - start < 5000 ? 250 : 1000);
+                    EnumWindows((h, _) =>
+                    {
+                        GetWindowThreadProcessId(h, out uint p);
+                        if (p == pid && IsWindowVisible(h)) ShowWindow(h, 0 /* SW_HIDE */);
+                        return true;
+                    }, IntPtr.Zero);
+                    Thread.Sleep(Environment.TickCount64 - start < 5000 ? 250 : 1000);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("openrgb", $"window hiding stopped: {ex.Message}");
             }
         })
         { IsBackground = true, Name = "openrgb-hide" }.Start();

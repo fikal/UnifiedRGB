@@ -110,16 +110,20 @@ public sealed class FanRowModel : System.ComponentModel.INotifyPropertyChanged
     /// minimum the driver takes over, incl. zero-RPM where the card allows).</summary>
     public int CurveFloor { get; }
 
+    /// <param name="suspended">The thermal failsafe paused this fan's mode:
+    /// `mode`/`duty`/`curve` are what it kept, and the fan is on auto until
+    /// the user picks a mode for it.</param>
     public FanRowModel(int index, bool canControl, string defaultName, string renameKey,
         string? savedName, string mode, int duty, UnifiedRgb.Core.Sensors.FanCurve? curve,
         UnifiedRgb.Core.Sensors.TempSource source, Action<string, string> persistName,
-        int minDuty = 30, int curveFloor = 30)
+        int minDuty = 30, int curveFloor = 30, bool suspended = false)
     {
         Index = index; CanControl = canControl; DefaultName = defaultName;
         RenameKey = renameKey; _persistName = persistName;
         MinDuty = minDuty; CurveFloor = curveFloor;
         _label = savedName ?? defaultName;
         _mode = mode; _duty = Math.Max(duty, minDuty); _source = source;
+        _suspended = suspended && mode != "Auto";
         _curve = curve ?? UnifiedRgb.Core.Sensors.FanCurve.Preset_(
             mode is "Auto" or "Manual" or "Custom" ? "Standard" : mode, source, curveFloor);
     }
@@ -140,17 +144,37 @@ public sealed class FanRowModel : System.ComponentModel.INotifyPropertyChanged
     public string Rpm { get => _rpm; set { if (_rpm != value) { _rpm = value; Notify(nameof(Rpm)); } } }
 
     string _mode;
-    public string Mode
+    bool _suspended;
+
+    /// <summary>The failsafe paused this fan's mode (kept in _mode) and the
+    /// board has the fan. The row used to go on showing the curve as if it
+    /// were running.</summary>
+    public bool IsSuspended => _suspended;
+
+    /// <summary>The selected profile pill. Null while suspended, so no pill is
+    /// lit (none of them is running) and clicking ANY pill - including the
+    /// one the fan had - is a change the list reports. A pill that is already
+    /// selected reports nothing when clicked, which is why the kept mode is
+    /// not shown as selected.</summary>
+    public string? Mode
     {
-        get => _mode;
+        get => _suspended ? null : _mode;
         set
         {
-            if (_mode == value || value == null) return;
+            // Re-picking the kept mode is how a suspended fan is re-armed, so
+            // an equal value only short-circuits when nothing is suspended.
+            if (value == null || (_mode == value && !_suspended)) return;
             _mode = value;
-            Notify(nameof(Mode)); Notify(nameof(IsManual)); Notify(nameof(IsCurve));
-            Notify(nameof(IsAuto)); Notify(nameof(ModeSummary));
+            _suspended = false;
+            NotifyModeState();
             if (!_applying) ApplyMode();
         }
+    }
+
+    void NotifyModeState()
+    {
+        Notify(nameof(Mode)); Notify(nameof(IsManual)); Notify(nameof(IsCurve));
+        Notify(nameof(IsAuto)); Notify(nameof(ModeSummary)); Notify(nameof(IsSuspended));
     }
 
     int _duty = 50;
@@ -162,7 +186,7 @@ public sealed class FanRowModel : System.ComponentModel.INotifyPropertyChanged
             int v = Math.Clamp(value, MinDuty, 100);
             if (_duty == v) { if (v != value) Notify(nameof(DutyPercent)); return; }
             _duty = v; Notify(nameof(DutyPercent)); Notify(nameof(ModeSummary));
-            if (!_applying && _mode == "Manual") ScheduleDutyApply();
+            if (!_applying && IsManual) ScheduleDutyApply();
         }
     }
 
@@ -174,17 +198,35 @@ public sealed class FanRowModel : System.ComponentModel.INotifyPropertyChanged
     DispatcherTimer? _dutyApply;
     void ScheduleDutyApply()
     {
+        if (_retired) return;
         if (_dutyApply == null)
         {
             var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
             t.Tick += (_, _) =>
             {
                 t.Stop();
-                if (_mode == "Manual") UnifiedRgb.Core.Sensors.SensorHub.SetFanDuty(Index, _duty);
+                ApplyPendingDuty();
             };
             _dutyApply = t;
         }
         _dutyApply.Stop(); _dutyApply.Start();
+    }
+
+    /// <summary>A slider value is waiting on the debounce. For the tests.</summary>
+    internal bool HasPendingDuty => _dutyApply?.IsEnabled == true;
+
+    /// <summary>Land the debounced slider value - but only onto the mode it
+    /// was dragged in. The hub no longer running this fan on Manual means its
+    /// mode changed behind this row's back during the 120 ms: the thermal
+    /// failsafe suspended it, an import replaced it, a re-open re-derived it.
+    /// Applying the drag anyway re-armed a fan the failsafe had just handed
+    /// back (and cleared FailsafeTripped); the row shows the hub's state
+    /// instead.</summary>
+    void ApplyPendingDuty()
+    {
+        if (!IsManual) return;
+        if (UnifiedRgb.Core.Sensors.SensorHub.ManualFanDuty(Index) == null) { SyncFromHub(); return; }
+        if (!UnifiedRgb.Core.Sensors.SensorHub.SetFanDuty(Index, _duty)) SyncFromHub();
     }
 
     /// <summary>Drop a slider value still waiting to be applied. Exit only:
@@ -199,7 +241,21 @@ public sealed class FanRowModel : System.ComponentModel.INotifyPropertyChanged
     {
         if (_dutyApply?.IsEnabled != true) return;
         _dutyApply.Stop();
-        if (_mode == "Manual") UnifiedRgb.Core.Sensors.SensorHub.SetFanDuty(Index, _duty);
+        ApplyPendingDuty();
+    }
+
+    bool _retired;
+
+    /// <summary>The Cooling list is being rebuilt and this row is leaving it.
+    /// A slider value still on its debounce lands now (guarded as above), and
+    /// the row never schedules another. The rebuild used to drop the row with
+    /// its timer still running: 120 ms later the orphan's SetFanDuty re-armed
+    /// a fan the failsafe had just suspended, or left the new row showing a
+    /// duty the hub no longer had.</summary>
+    public void Retire()
+    {
+        FlushPendingDuty();
+        _retired = true;
     }
 
     UnifiedRgb.Core.Sensors.TempSource _source;
@@ -211,18 +267,17 @@ public sealed class FanRowModel : System.ComponentModel.INotifyPropertyChanged
             var s = value switch { "CPU" => UnifiedRgb.Core.Sensors.TempSource.Cpu, "GPU" => UnifiedRgb.Core.Sensors.TempSource.Gpu, _ => UnifiedRgb.Core.Sensors.TempSource.Hottest };
             if (s == _source) return;
             _source = s; _curve.Source = s; Notify(nameof(SourceName)); Notify(nameof(ModeSummary));
-            if (!_applying && IsCurve) UnifiedRgb.Core.Sensors.SensorHub.SetFanCurve(Index, _curve);
+            if (!_applying && IsCurve && !UnifiedRgb.Core.Sensors.SensorHub.SetFanCurve(Index, _curve)) SyncFromHub();
         }
     }
 
     /// <summary>One-line state for the compact fan row, e.g. "Quiet · CPU",
     /// "Manual · 50%", "Auto".</summary>
-    public string ModeSummary => _mode switch
-    {
-        "Auto" => "Auto",
-        "Manual" => $"Manual · {_duty}%",
-        _ => $"{_mode} · {SourceName}",
-    };
+    public string ModeSummary => _suspended
+        ? $"Paused by failsafe · {KeptSummary}"
+        : _mode == "Auto" ? "Auto" : KeptSummary;
+
+    string KeptSummary => _mode == "Manual" ? $"Manual · {_duty}%" : $"{_mode} · {SourceName}";
 
     UnifiedRgb.Core.Sensors.FanCurve _curve;
     public UnifiedRgb.Core.Sensors.FanCurve Curve => _curve;
@@ -230,24 +285,75 @@ public sealed class FanRowModel : System.ComponentModel.INotifyPropertyChanged
     bool _editing;
     public bool IsEditing { get => _editing; set { if (_editing != value) { _editing = value; Notify(nameof(IsEditing)); } } }
 
-    public bool IsManual => _mode == "Manual";
-    public bool IsCurve => _mode is not ("Auto" or "Manual");
-    public bool IsAuto => _mode == "Auto";
+    // A suspended fan is on the board's curve, and the editor says so (IsAuto)
+    // instead of offering a curve or slider that is not driving anything.
+    public bool IsManual => !_suspended && _mode == "Manual";
+    public bool IsCurve => !_suspended && _mode is not ("Auto" or "Manual");
+    public bool IsAuto => _suspended || _mode == "Auto";
 
-    /// <summary>Push the current mode to the hardware.</summary>
+    /// <summary>Push the current mode to the hardware. A mode the hub refuses
+    /// (the fan is not controllable right now - LHM mid re-open, a GPU without
+    /// control - or the write did not land) is not shown as running: the row
+    /// re-reads what the hub has on the fan. It used to go on saying e.g.
+    /// "Manual · 100%" over a fan still on its curve.</summary>
     public void ApplyMode()
     {
+        bool taken = true;
         switch (_mode)
         {
-            case "Auto": UnifiedRgb.Core.Sensors.SensorHub.RestoreFan(Index); break;
-            case "Manual": UnifiedRgb.Core.Sensors.SensorHub.SetFanDuty(Index, _duty); break;
-            case "Custom": _curve.Preset = "Custom"; UnifiedRgb.Core.Sensors.SensorHub.SetFanCurve(Index, _curve); break;
+            case "Auto": UnifiedRgb.Core.Sensors.SensorHub.RestoreFan(Index); break;   // never refused: a failed handback is retried by the hub
+            case "Manual": taken = UnifiedRgb.Core.Sensors.SensorHub.SetFanDuty(Index, _duty); break;
+            case "Custom": _curve.Preset = "Custom"; taken = UnifiedRgb.Core.Sensors.SensorHub.SetFanCurve(Index, _curve); break;
             default:   // a named preset
                 _curve = UnifiedRgb.Core.Sensors.FanCurve.Preset_(_mode, _source, CurveFloor);
                 Notify(nameof(Curve));
-                UnifiedRgb.Core.Sensors.SensorHub.SetFanCurve(Index, _curve);
+                taken = UnifiedRgb.Core.Sensors.SensorHub.SetFanCurve(Index, _curve);
                 break;
         }
+        if (!taken) SyncFromHub();
+    }
+
+    /// <summary>What the hub is running on one fan, as a row shows it: the
+    /// mode name, its duty (50 when not Manual), a copy of its curve, the
+    /// curve's source, and whether the failsafe has it suspended.</summary>
+    internal readonly record struct HubFanState(string Mode, int Duty,
+        UnifiedRgb.Core.Sensors.FanCurve? Curve, UnifiedRgb.Core.Sensors.TempSource Source, bool Suspended);
+
+    internal static HubFanState ReadHub(int index)
+    {
+        string mode = "Auto"; int duty = 50;
+        UnifiedRgb.Core.Sensors.FanCurve? curve = null;
+        bool suspended = false;
+        // GPU defaults to following its own temperature.
+        var src = index == UnifiedRgb.Core.Sensors.SensorHub.GpuFanIndex
+            ? UnifiedRgb.Core.Sensors.TempSource.Gpu : UnifiedRgb.Core.Sensors.TempSource.Hottest;
+        if (UnifiedRgb.Core.Sensors.SensorHub.ManualFanDuty(index) is int p) { mode = "Manual"; duty = p; }
+        // The row gets its OWN copy: FanCurveOf returns the hub's live instance,
+        // which the sensor timer thread reads (DutyAt) while the curve editor
+        // would otherwise Insert/RemoveAt its Points on the UI thread.
+        else if (UnifiedRgb.Core.Sensors.SensorHub.FanCurveOf(index) is { } c)
+        { mode = c.MatchesPreset() ? c.Preset : "Custom"; curve = c.Clone(); src = c.Source; }
+        // Paused by the failsafe: the row keeps what it had, so picking that
+        // profile again (or Custom, for an edited curve) re-arms it as it was.
+        else if (UnifiedRgb.Core.Sensors.SensorHub.SuspendedFanDuty(index) is int sp) { mode = "Manual"; duty = sp; suspended = true; }
+        else if (UnifiedRgb.Core.Sensors.SensorHub.SuspendedFanCurveOf(index) is { } sc)
+        { mode = sc.MatchesPreset() ? sc.Preset : "Custom"; curve = sc.Clone(); src = sc.Source; suspended = true; }
+        return new(mode, duty, curve, src, suspended);
+    }
+
+    /// <summary>Show what the hub actually runs on this fan (after it refused
+    /// what the row asked for, or changed it behind the row's back). Auto
+    /// keeps the row's own duty and curve: they are what the editor offers if
+    /// the user picks a mode again.</summary>
+    void SyncFromHub()
+    {
+        var s = ReadHub(Index);
+        _mode = s.Mode;
+        _suspended = s.Suspended && s.Mode != "Auto";
+        if (s.Mode == "Manual") _duty = Math.Max(s.Duty, MinDuty);
+        if (s.Curve != null) { _curve = s.Curve; _source = s.Source; }
+        NotifyModeState();
+        Notify(nameof(DutyPercent)); Notify(nameof(SourceName)); Notify(nameof(Curve));
     }
 
     public void Identify() => _ = UnifiedRgb.Core.Sensors.SensorHub.IdentifyFan(Index);
@@ -258,7 +364,7 @@ public sealed class FanRowModel : System.ComponentModel.INotifyPropertyChanged
         _applying = true;
         Mode = "Custom";
         _applying = false;
-        UnifiedRgb.Core.Sensors.SensorHub.SetFanCurve(Index, _curve);
+        if (!UnifiedRgb.Core.Sensors.SensorHub.SetFanCurve(Index, _curve)) SyncFromHub();
     }
 
     /// <summary>Copy this fan's mode/curve/source onto another row + its fan.</summary>
@@ -267,7 +373,10 @@ public sealed class FanRowModel : System.ComponentModel.INotifyPropertyChanged
         other._applying = true;
         other._source = _source;
         other._curve = _curve.Clone();
-        other.Mode = _mode;
+        // A row the failsafe paused shows - and runs - the BIOS curve; its kept
+        // mode is not live. Copying _mode armed every other fan with it while
+        // this one stayed paused.
+        other.Mode = _suspended ? "Auto" : _mode;
         other.DutyPercent = _duty;
         other.Notify(nameof(SourceName));
         other.Notify(nameof(Curve));

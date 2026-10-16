@@ -37,6 +37,10 @@ public interface IHidTransport : IDisposable
     bool SetFeature(byte[] report);
     bool GetFeature(byte[] report);
     bool GetInputReport(byte[] report);
+    /// <summary>Abort whatever is in flight on the handle, from any thread,
+    /// without closing it. For a Dispose that must take a lock a hung feature
+    /// report is holding: cancel first, and the lock comes free.</summary>
+    void CancelPending() { }
 }
 
 public static class HidNative
@@ -281,16 +285,47 @@ public static class HidNative
             finally { pin.Free(); }
         }
 
+        // The three feature calls are not under the transfer locks (they are
+        // IOCTLs, not overlapped I/O), so Dispose can close the handle between
+        // the flag check and the call. The marshaller then refuses the closed
+        // SafeHandle with an ObjectDisposedException, which escaped into the
+        // driver - the interface contract says a disposed transport simply
+        // reports failure, and that is what each of these now does.
+
         /// <summary>Send a HID feature report (report[0] = report ID).</summary>
-        public bool SetFeature(byte[] report) => !_disposed && HidD_SetFeature(_handle, report, report.Length);
+        public bool SetFeature(byte[] report)
+        {
+            if (_disposed) return false;
+            try { return HidD_SetFeature(_handle, report, report.Length); }
+            catch (ObjectDisposedException) { return false; }   // closed under us: see above
+        }
 
         /// <summary>Read a HID feature report (report[0] = report ID on entry).</summary>
-        public bool GetFeature(byte[] report) => !_disposed && HidD_GetFeature(_handle, report, report.Length);
+        public bool GetFeature(byte[] report)
+        {
+            if (_disposed) return false;
+            try { return HidD_GetFeature(_handle, report, report.Length); }
+            catch (ObjectDisposedException) { return false; }   // closed under us: see above
+        }
 
         /// <summary>Read a HID INPUT report via control GET_REPORT (report[0] =
         /// report ID on entry). Used for command→response devices that answer on
         /// the control pipe rather than pushing on the interrupt IN pipe.</summary>
-        public bool GetInputReport(byte[] report) => !_disposed && HidD_GetInputReport(_handle, report, report.Length);
+        public bool GetInputReport(byte[] report)
+        {
+            if (_disposed) return false;
+            try { return HidD_GetInputReport(_handle, report, report.Length); }
+            catch (ObjectDisposedException) { return false; }   // closed under us: see above
+        }
+
+        public void CancelPending()
+        {
+            if (_disposed) return;
+            // The SafeHandle's ref count keeps the handle valid for the call
+            // even if Dispose closes it on another thread meanwhile.
+            try { CancelIoEx(_handle, IntPtr.Zero); }
+            catch (ObjectDisposedException) { }   // closed in between: nothing left to cancel
+        }
 
         /// <summary>Idempotent, and taken under both transfer locks so an
         /// in-flight overlapped Write/Read finishes (bounded by its timeout)

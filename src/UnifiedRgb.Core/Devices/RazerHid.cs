@@ -38,7 +38,6 @@ namespace UnifiedRgb.Core.Devices;
 public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
 {
     public const ushort VID = 0x1532;
-    const int WIRE_LEN = 90;
     const int FEATURE_LEN = 91;          // report id 0x00 + 90 wire bytes
     const int ARGS = 9;                  // buffer index of arguments[0]
     const int MAX_LEDS_PER_PACKET = 25;  // (80 - 5) / 3
@@ -275,10 +274,15 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
     /// what counts as a mouse.</summary>
     public static bool MouseAwakeBehindPad()
     {
-        List<HidNative.HidInfo> all;
-        try { all = HidNative.FindAll(); }
-        catch { return false; }   // the handle went away between the open and the exchange; treat as 'not this one'
-        foreach (var iface in all.Where(IsControlCollection).Where(h => h.ProductId == HYPERFLUX_V2))
+        // Enumerate the PAD only. This used to walk FindAll() and filter by
+        // product id afterwards, and FindAll opens every HID collection on the
+        // machine and asks each for its product and manufacturer strings -
+        // every keyboard, headset, UPS and game controller, every five seconds,
+        // for as long as a mouse slept behind a pad.
+        List<HidNative.HidInfo> pads;
+        try { pads = HidNative.Find(VID, HYPERFLUX_V2); }
+        catch { return false; }   // enumeration itself failed (device removed mid-walk): no pad to ask, so not awake
+        foreach (var iface in pads.Where(IsControlCollection))
         {
             try
             {
@@ -471,14 +475,20 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
         // at or above the threshold meant the "frames not accepted" and
         // "answering again" lines fired once per process and never again,
         // so a second outage on the same device was silent in the log.
-        lock (_writeLock) { _last = null; _lastSendTick = 0; _nextRetryTick = 0; _failures = 0; _persisted = null; }
+        // NOT _persisted: this forgets what was last SENT, and every static
+        // apply calls it, but the flash still holds what was stored. Clearing
+        // it here defeated the "already stored costs no write" rule, so each
+        // settled-colour save re-wrote flash even for an unchanged colour.
+        lock (_writeLock) { _last = null; _lastSendTick = 0; _nextRetryTick = 0; _failures = 0; }
     }
 
     // ~the first minute of failures stays at the quick cadence, then backs off.
     const int QuickRetryMs = 2000, SlowRetryMs = 30_000, QuickRetries = 30;
 
     // The colour currently in the device's onboard storage, so a repeat costs no
-    // flash write. Cleared by InvalidateCache with everything else.
+    // flash write. Only PersistColor writes that storage (the other
+    // VARSTORE writes are DPI/poll settings), so only it changes this; a new
+    // instance after a rescan starts unknown and stores once.
     Rgb? _persisted;
 
     public bool SetColors(IReadOnlyList<Rgb> colors)
@@ -487,6 +497,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
         if (colors.Count == 0) return false;
         lock (_writeLock)
         {
+            if (_disposed) return false;   // queued behind Dispose: refuse quietly, per the contract
             int n = LedCount;
             bool changed = _last == null;
             for (int i = 0; i < n; i++)
@@ -599,14 +610,23 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
     ///
     /// Returns false when there is nothing storable (no uniform colour yet, or a
     /// per-LED frame) or the device refused. Writes FLASH, so a caller must not
-    /// put this on a frame path - see the callers, which debounce it.</summary>
-    public bool PersistCurrentColor()
+    /// put this on a frame path - see the callers, which debounce it.
+    ///
+    /// Only <paramref name="showing"/>, and only when it is exactly the frame
+    /// the mouse was last sent: committing _last as it stood stored whatever
+    /// had last gone out, including a locked desk's black.</summary>
+    public bool PersistColor(IReadOnlyList<Rgb> showing)
     {
+        if (showing.Count == 0) return false;
         lock (_writeLock)
         {
-            // No disposed flag here: the handle refuses writes once closed, so a
-            // call that outlives Dispose fails at Send and reports false.
+            // Checked rather than left to the closed handle: a refused Send
+            // reports false too, but it also logs "could not store the colour
+            // onboard" for a device that was simply rescanned away.
+            if (_disposed) return false;
             if (_last == null || _last.Length == 0) return false;
+            for (int i = 0; i < _last.Length; i++)
+                if (_last[i] != WritePolicy.ColorAt(showing, i)) return false;   // not what it is showing
             var c = _last[0];
             for (int i = 1; i < _last.Length; i++)
                 if (_last[i] != c) return false;          // per-LED: nothing to store
@@ -637,7 +657,7 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
     /// lock itself; these one-shot exchanges did not.</summary>
     byte[]? ExchangeLocked(byte[] report)
     {
-        lock (_writeLock) return Exchange(_hid, report);
+        lock (_writeLock) return _disposed ? null : Exchange(_hid, report);
     }
 
     /// <summary>0x0F/0x04: brightness for the whole device, not stored.</summary>
@@ -1037,8 +1057,18 @@ public sealed class RazerHid : IRgbDevice, IBatteryDevice, IPersistableLighting
         return true;
     }
 
+    // The contract's shape: set under the write lock and re-checked under it,
+    // so a write queued behind Dispose returns false instead of reaching the
+    // closed handle - which also refuses, but counts toward "frames not
+    // accepted (mouse asleep...)", a sleep the device never had.
+    bool _disposed;
+
     public void Dispose()
     {
-        lock (_writeLock) _hid.Dispose();
+        lock (_writeLock)
+        {
+            _disposed = true;
+            _hid.Dispose();
+        }
     }
 }

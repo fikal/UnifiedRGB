@@ -63,6 +63,7 @@ public sealed class CoolingViewModel : INotifyPropertyChanged
     {
         _timer?.Stop();
         foreach (var f in CoolingFans) f.FlushPendingDuty();
+        GpuPower.Release();
     }
 
     /// <summary>Exit only: drop pending slider values instead of flushing them.
@@ -103,6 +104,8 @@ public sealed class CoolingViewModel : INotifyPropertyChanged
     public ObservableCollection<FanRowModel> CoolingFans { get; } = new();
     public ObservableCollection<SensorRow> CoolingGpuRows { get; } = new();
     public ObservableCollection<SensorRow> CoolingLianUniRows { get; } = new();
+    /// <summary>The GPU power-connector card (WireView Pro II), hidden without one.</summary>
+    public GpuPowerCardModel GpuPower { get; } = new();
     string _fanSig = "";
 
     FanRowModel? _editingFan;
@@ -129,6 +132,14 @@ public sealed class CoolingViewModel : INotifyPropertyChanged
 
     public bool ShowFanFailsafe => SensorHub.FailsafeTripped;
 
+    /// <summary>Fan control is on but the thermal failsafe has no reading for
+    /// the CPU (or a GPU it could read before): it would never notice that
+    /// part overheating.</summary>
+    public bool ShowFailsafeBlind => SensorHub.FailsafeBlindSpot != null;
+    public string FailsafeBlindText => SensorHub.FailsafeBlindSpot is string part
+        ? $"The overheat failsafe can't read the {part} temperature, so it can't step in if the {part} gets too hot while UnifiedRGB controls your fans."
+        : "";
+
     /// <summary>Copy the edited fan's whole setup onto every other fan.</summary>
     public void ApplyToAllFans()
     {
@@ -152,6 +163,15 @@ public sealed class CoolingViewModel : INotifyPropertyChanged
     /// <summary>PawnIO got installed: the empty-list hint changes wording.</summary>
     public void NotifyPawnIoChanged() => OnChanged(nameof(CoolingEmptyHint));
 
+    /// <summary>The settings object was replaced (a setup import): rebuild the
+    /// fan rows on the next refresh, which re-reads their names, and re-read
+    /// the hand-off switch.</summary>
+    public void SettingsReplaced()
+    {
+        _fanSig = "";
+        OnChanged(nameof(LianHandoffOnExit));
+    }
+
     /*--- exit handoff: wireless fans follow their SYS-fan sync wire while
           the app is away, so a hardware curve stays in charge ---*/
     public bool ShowLianHandoff => LianLiWireless.Instance != null;
@@ -164,6 +184,32 @@ public sealed class CoolingViewModel : INotifyPropertyChanged
             _settings().LianHandoffOnExit = value;
             _saveSettings();
             OnChanged();
+        }
+    }
+
+    // The crash handler (App.xaml.cs) has no view model to ask and may run on
+    // any thread, so it reads the hand-off choice through this. It only ever
+    // honoured it on a clean exit: after a crash the wireless fans sat at
+    // their last duty with no BIOS to fall back on. The settings GETTER, not a
+    // copied bool, so an import that replaces the settings object cannot
+    // leave it stale.
+    static Func<SettingsData>? s_crashSettings;
+
+    /// <summary>Point the crash path at the app's settings. Called once by the
+    /// app's own view model - an explicit hand-over rather than a side effect
+    /// of constructing this class, which every harness-built view model also
+    /// does. Null forgets it.</summary>
+    internal static void UseForCrashPath(Func<SettingsData>? settings) => Volatile.Write(ref s_crashSettings, settings);
+
+    /// <summary>"Hand the wireless fans to the board on exit", for the crash
+    /// path. False when no Cooling view model was ever built.</summary>
+    internal static bool HandOffWirelessOnCrash
+    {
+        get
+        {
+            var settings = Volatile.Read(ref s_crashSettings);
+            try { return settings?.Invoke().LianHandoffOnExit == true; }
+            catch { return false; }   // a crash path must not throw; without the setting the fans go to 100% instead
         }
     }
 
@@ -199,6 +245,8 @@ public sealed class CoolingViewModel : INotifyPropertyChanged
         OnChanged(nameof(CpuVoltText));
         OnChanged(nameof(GpuVoltText));
 
+        GpuPower.Refresh();
+
         // Controllable fans (board + bundled GPU; RPM updated in place).
         UpdateFanModels();
 
@@ -229,6 +277,8 @@ public sealed class CoolingViewModel : INotifyPropertyChanged
         OnChanged(nameof(ShowLianHandoff));
 
         OnChanged(nameof(ShowFanFailsafe));
+        OnChanged(nameof(ShowFailsafeBlind));
+        OnChanged(nameof(FailsafeBlindText));
         CoolingTick?.Invoke();
     }
 
@@ -240,7 +290,9 @@ public sealed class CoolingViewModel : INotifyPropertyChanged
         return rpms.Length > 1 ? $"{avg:n0} RPM × {rpms.Length}" : $"{avg:n0} RPM";
     }
 
-    void UpdateFanModels()
+    /// <summary>Internal for the tests (Refresh would also touch the
+    /// WireView's serial port).</summary>
+    internal void UpdateFanModels()
     {
         var fans = SensorHub.BoardFans;
         var desired = new List<int>();
@@ -257,8 +309,12 @@ public sealed class CoolingViewModel : INotifyPropertyChanged
         bool gpuRow = SensorHub.GpuFansControllable && SensorHub.GpuFanRpms is { Length: > 0 };
         var lianDev = LianLiWireless.Instance;
         int lianCount = lianDev?.FanCount ?? 0;
+        // The hub's mode epoch too: the rows used to rebuild only when fan
+        // NAMES changed, so after the failsafe they went on showing curves
+        // that were no longer running (and a config reload never showed).
         string sig = string.Join(",", desired.Select(i => fans[i].Name)) + (gpuRow ? "+GPU" : "")
-                   + (lianDev != null ? "+Lian:" + string.Join(",", Enumerable.Range(0, lianCount).Select(lianDev.FanNameAtSlot)) : "");
+                   + (lianDev != null ? "+Lian:" + string.Join(",", Enumerable.Range(0, lianCount).Select(lianDev.FanNameAtSlot)) : "")
+                   + "#" + SensorHub.ModeEpoch;
         if (sig != _fanSig)
         {
             _fanSig = sig;
@@ -266,6 +322,13 @@ public sealed class CoolingViewModel : INotifyPropertyChanged
             // dropping off (or returning) used to yank the curve editor to row 1
             // mid-edit.
             int? keep = _editingFan?.Index;
+            // The old rows go with their debounce timers stopped: a slider
+            // value still pending lands now (unless the hub has taken the fan
+            // off Manual meanwhile - the failsafe, an import), so the rows
+            // built below show it, instead of an orphaned timer writing it
+            // 120 ms after the rebuild. DiscardPendingDuties only ever saw the
+            // current rows.
+            foreach (var old in CoolingFans) old.Retire();
             CoolingFans.Clear();
             foreach (int i in desired) CoolingFans.Add(BuildFanModel(i, fans[i].Name, fans[i].CanControl));
             if (gpuRow) CoolingFans.Add(BuildFanModel(SensorHub.GpuFanIndex, "GPU", true));
@@ -298,27 +361,20 @@ public sealed class CoolingViewModel : INotifyPropertyChanged
     FanRowModel BuildFanModel(int i, string rawName, bool canControl)
     {
         bool isGpu = i == SensorHub.GpuFanIndex;
-        string mode = "Auto"; int duty = 50;
-        FanCurve? curve = null;
-        // GPU defaults to following its own temperature.
-        var src = isGpu ? TempSource.Gpu : TempSource.Hottest;
-        if (SensorHub.ManualFanDuty(i) is int p) { mode = "Manual"; duty = p; }
-        // The row gets its OWN copy: FanCurveOf returns the hub's live instance,
-        // which the sensor timer thread reads (DutyAt) while the curve editor
-        // would otherwise Insert/RemoveAt its Points on the UI thread.
-        else if (SensorHub.FanCurveOf(i) is FanCurve c)
-        { mode = c.MatchesPreset() ? c.Preset : "Custom"; curve = c.Clone(); src = c.Source; }
+        // The same read a row re-does when the hub refuses it (FanRowModel.SyncFromHub).
+        var s = FanRowModel.ReadHub(i);
         string key = $"fan:{rawName}";
         string def = isGpu ? "GPU fans" : FanDefault(i, rawName);
         return new FanRowModel(i, canControl, def, key,
-            _settings().FanLabels?.GetValueOrDefault(key), mode, duty, curve, src, RenameSaver(def),
+            _settings().FanLabels?.GetValueOrDefault(key), s.Mode, s.Duty, s.Curve, s.Source, RenameSaver(def),
             minDuty: SensorHub.ManualFloorFor(i),
-            curveFloor: SensorHub.FloorFor(i));
+            curveFloor: SensorHub.FloorFor(i),
+            suspended: s.Suspended);
     }
 
     /// <summary>Update read-only rows in place when the shape is unchanged (so
     /// an in-progress rename keeps its TextBox); rebuild only when rows change.</summary>
-    static void SyncReadoutRows(ObservableCollection<SensorRow> target, List<SensorRow> desired)
+    internal static void SyncReadoutRows(ObservableCollection<SensorRow> target, List<SensorRow> desired)
     {
         static string IdOf(SensorRow r) => $"s:{r.IsSection}:{r.Label}";
         bool sameShape = desired.Count == target.Count;

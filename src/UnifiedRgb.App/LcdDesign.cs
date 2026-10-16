@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Windows.Media;
 
@@ -124,6 +125,10 @@ public sealed class LcdElement : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new(n));
         PropertyChanged?.Invoke(this, new(nameof(Label)));
     }
+
+    /// <summary>Fields this build does not know, written back untouched so a
+    /// rollback build does not strip them. See Profile.Extra.</summary>
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 }
 
 /// <summary>The saved pump layout: an optional background image plus text elements.</summary>
@@ -147,6 +152,10 @@ public sealed class LcdDesign
     public double BgH { get; set; }
     public bool BgAspectLock { get; set; } = true;
     public List<LcdElement> Elements { get; set; } = new();
+
+    /// <summary>Fields this build does not know, written back untouched so a
+    /// rollback build does not strip them. See Profile.Extra.</summary>
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 
     public static LcdDesign Default() => new()
     {

@@ -140,6 +140,14 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         string.IsNullOrEmpty(LiveDesign?.BackgroundImagePath) ? ""
         : System.IO.Path.GetFileName(LiveDesign!.BackgroundImagePath!);
 
+    /// <summary>Why the chosen background is not on the screen (refused for its
+    /// size, or could not be decoded), or empty. A refused image used to fall
+    /// back to the gradient with nothing but a log line to say why.</summary>
+    public string LcdBackgroundProblem =>
+        _lcd?.BackgroundProblem is string why ? $"This image isn't showing: {why}." : "";
+    public bool HasLcdBackgroundProblem => LcdBackgroundProblem.Length > 0;
+    string _shownBgProblem = "";
+
     /// <summary>Open the panel (if present), load the saved design and start
     /// rendering. Called once from the main view model's constructor.</summary>
     /// <summary>Looks for the panel until it finds it. Fast at first, then
@@ -245,6 +253,13 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         else
         {
             _lcd.Design = LcdDesign.Load();
+            // A blank asked for before the panel was ever there - the dark
+            // window or locked session an autostart can begin in - is honoured
+            // on this first attach too. Only the return path used to apply it,
+            // so a panel that enumerated late at boot lit up inside the window.
+            // (Only ever switched OFF here: a panel opens on, and the harness's
+            // fakes open off so that nothing renders.)
+            if (!_retainedOn) _lcd.On = false;
             foreach (var e in _lcd.Design.Elements) { LcdElements.Add(e); Hook(e); }
             EnsureBgRect();   // migrate pre-rect designs to an explicit cover rect
             _baseline = Snapshot();   // the loaded design is what the first edit undoes back to
@@ -297,15 +312,88 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         old.Lost -= OnPanelLost;
         old.Detach();                       // the timer half, here on the UI thread
         _lcd = null;                        // Available and every setter short-circuit from here on
+        string? wedged = WedgedPanelPath(old);
         // The join and the handle close can each wait out a stalled write;
         // off the UI thread so the window does not freeze for the unplug.
-        Task.Run(() => { try { old.Dispose(); } catch (Exception ex) { UnifiedRgb.Core.Log.Warn("lcd", $"closing the lost panel: {ex.Message}"); } });
+        // A wedged panel is restarted AFTER our handle is closed. The finder's
+        // own dispatcher, not CurrentDispatcher: called off the UI thread, the
+        // latter would conjure an unpumped one and the finder never restarts.
+        var ui = _find.Dispatcher;
+        Task.Run(() =>
+        {
+            try { old.Dispose(); } catch (Exception ex) { UnifiedRgb.Core.Log.Warn("lcd", $"closing the lost panel: {ex.Message}"); }
+            if (wedged == null) return;
+            try { RestartWedgedPanel(wedged); }
+            catch (Exception ex) { UnifiedRgb.Core.Log.Warn("lcd", $"USB restart of the pump LCD failed: {ex.Message}"); }
+            finally
+            {
+                ui.BeginInvoke(new Action(() =>
+                {
+                    _restarting = false;
+                    if (_disposed) return;
+                    _findAttempts = 0;
+                    _find.Start();
+                }));
+            }
+        });
         _history.EndGesture();              // a drag on a panel that just vanished is over
         OnChanged(nameof(Available));
         OnChanged(nameof(CpuTempUnavailable));
+        // Given up on a wedged panel: each reopen is a handshake that waits out
+        // its timeouts on the UI thread, so look every 30 s, not every 3.
         _findAttempts = 0;
-        _find.Interval = TimeSpan.FromSeconds(3);
-        _find.Start();
+        _find.Interval = TimeSpan.FromSeconds(_wedge.Exhausted ? 30 : 3);
+        // While a restart runs the panel drops off the bus and comes back; the
+        // finder resumes once it is done rather than catching it half way.
+        if (wedged == null) _find.Start();
+    }
+
+    /*-----------------------------------------------------*\
+    | Wedged-panel recovery. The pump LCD's firmware can     |
+    | lock up while staying on the bus: every write refused, |
+    | no answer to the identify query (2026-10-14; also      |
+    | 2026-09-22 after a resume). Reopening our handle       |
+    | cannot reach that - each reopen "works" and the next   |
+    | frame is refused - but restarting the USB device does. |
+    | The tell is a reopened panel that is lost again before |
+    | ONE frame lands; twice in a row (~20 s) = restart it.  |
+    | An unplugged panel never reopens, so it never counts.  |
+    \*-----------------------------------------------------*/
+    readonly PanelWedgeGuard _wedge = new();
+    bool _restarting, _disposed;
+
+    /// <summary>The path to restart, or null to just look for the panel again.
+    /// UI thread (from OnPanelLost).</summary>
+    string? WedgedPanelPath(LcdController lost)
+    {
+        if (lost.DevicePath == null || _restarting) return null;   // a harness fake / one already running
+        switch (_wedge.OnLost(lost.DeliveredAny, Environment.TickCount64))
+        {
+            case PanelWedgeGuard.Verdict.Restart:
+                _restarting = true;
+                return lost.DevicePath;
+            case PanelWedgeGuard.Verdict.GiveUp:
+                UnifiedRgb.Core.Log.Warn("lcd", $"pump LCD still refusing frames after {PanelWedgeGuard.MaxRestartsPerHour} USB restart attempts this hour; "
+                    + "it needs a full power-off (shut down, then power on) - not restarting it again until it shows a frame");
+                return null;
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>Restart the panel's USB device (pool thread).</summary>
+    static void RestartWedgedPanel(string hidPath)
+    {
+        string? id = UnifiedRgb.Core.Native.UsbDeviceRestart.UsbInstanceFor(hidPath);
+        if (id == null)
+        {
+            UnifiedRgb.Core.Log.Warn("lcd", "pump LCD looks wedged (reopens, then refuses every frame) but its USB device could not be found to restart");
+            return;
+        }
+        UnifiedRgb.Core.Log.Warn("lcd", $"pump LCD looks wedged (reopens, then refuses every frame); restarting its USB device {id}");
+        bool ok = UnifiedRgb.Core.Native.UsbDeviceRestart.Restart(id, out string detail);
+        if (ok) UnifiedRgb.Core.Log.Info("lcd", $"USB restart of {id}: {detail}");
+        else UnifiedRgb.Core.Log.Warn("lcd", $"USB restart of {id} failed: {detail}");
     }
 
     /// <summary>One probe of the finder, for the harness: the timer that runs
@@ -375,6 +463,13 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         // and clock-face bitmap when the designer isn't on screen, including
         // while the window is hidden in the tray with the LCD item selected.
         if (!_isOnScreen() || !MainWindowState.Visible) return;
+        // The renderer decides a background's fate on its tick; say so as soon
+        // as it changes, without a property storm on every tick.
+        if (LcdBackgroundProblem != _shownBgProblem)
+        {
+            _shownBgProblem = LcdBackgroundProblem;
+            OnChanged(nameof(LcdBackgroundProblem)); OnChanged(nameof(HasLcdBackgroundProblem));
+        }
         // With a GIF background Ticked fires at 10 Hz; the clock face only
         // changes once a second, so the RenderTargetBitmap is made once per
         // second (TouchLcd resets this so an edit re-rasterizes at once).
@@ -497,7 +592,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         if (_lcd == null) return;
         SettleUndo();
         if (_history.Undo(_baseline) is string prev) ApplySnapshot(prev);
-        else Log.Occasional("lcd", "undo-empty", "undo requested with nothing to step back to");
+        else Log.Occasional("lcd-undo-empty", "lcd", "undo requested with nothing to step back to");
     }
 
     public void Redo()
@@ -1089,6 +1184,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
 
     public void Dispose()
     {
+        _disposed = true;   // a USB restart finishing after this must not restart the finder
         _lcdSave.Stop();
         _find.Stop();   // no more panel probes once the app is on its way out
         // The canvas, not the show's last scene - and the retained design of a

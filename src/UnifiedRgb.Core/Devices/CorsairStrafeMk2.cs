@@ -328,6 +328,7 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
         if (_disposed) return false;   // a write that outlives Dispose (a slow drain): refuse quietly, per the contract
         lock (_writeLock)
         {
+            if (_disposed) return false;   // and again under the lock: Dispose may have run while we waited for it
             var p = new byte[PKT]; p[1] = 0x07; p[2] = 0x05; p[3] = 0x01; p[5] = 0x03;
             // Both packets are attempted even if the first is refused: the
             // second is the one that actually selects hardware mode, and the
@@ -376,6 +377,7 @@ public sealed class CorsairStrafeMk2 : IRgbDevice, IKeyMappedDevice, IHardwareMo
         if (_disposed) return false;   // a write that outlives Dispose (a slow drain): refuse quietly, per the contract
         lock (_writeLock)
         {
+            if (_disposed) return false;   // and again under the lock: Dispose may have run while we waited for it
             // Cleared only when the init actually LANDED. Clearing first meant
             // one refused re-init (iCUE grabbing the handle for a moment after
             // a handback) left the keyboard in hardware mode permanently while

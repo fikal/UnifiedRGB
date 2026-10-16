@@ -48,9 +48,21 @@
                     </StackPanel>
                 </Border>
 
+                <!-- while the preview runs on a worker: the file is read and
+                     checked in full before anything can be chosen, and a large
+                     one takes long enough that a blank window reads as a hang -->
+                <Border x:Name="BusyCard" Grid.Row="2" Background="#FF14161C" CornerRadius="8"
+                        Padding="14,12" Margin="0,12,0,0" VerticalAlignment="Top">
+                    <StackPanel Orientation="Horizontal">
+                        <ProgressBar IsIndeterminate="True" Width="90" Height="4" VerticalAlignment="Center"/>
+                        <TextBlock Text="Reading and checking the bundle. Nothing is changed until you choose."
+                                   Opacity="0.7" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Border>
+
                 <!-- everything the user chooses between -->
                 <ScrollViewer x:Name="BodyScroll" Grid.Row="2" VerticalScrollBarVisibility="Auto"
-                              Margin="0,12,0,0">
+                              Margin="0,12,0,0" Visibility="Collapsed">
                     <!-- The right margin is the gap between the cards and the
                          scroll bar. Without it the rounded corners run straight
                          into the track, which reads as a rendering fault rather
@@ -252,6 +264,13 @@
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
+                            <!-- a mapping Apply would refuse, said beside the
+                                 mapping rather than after Import is pressed -->
+                            <Border x:Name="RemapProblemCard" Background="#FF3A2630" CornerRadius="8"
+                                    BorderBrush="#FFC03040" BorderThickness="1" Padding="14,10" Margin="0,4,0,0"
+                                    Visibility="Collapsed">
+                                <TextBlock x:Name="RemapProblemText" TextWrapping="Wrap" Foreground="#FFFF9AA6"/>
+                            </Border>
                         </StackPanel>
 
                     </StackPanel>
@@ -355,7 +374,7 @@
                             <StackPanel>
                                 <TextBlock Text="Restart UnifiedRGB to finish" FontWeight="SemiBold"
                                            Foreground="#FFE0C169"/>
-                                <TextBlock Text="The machine wiring files were replaced. Header layouts, hub layouts and fan curves are read once when their drivers open, so they keep the old values until the app is restarted."
+                                <TextBlock x:Name="RestartText" Text="Part of the machine wiring was replaced. Header and hub layouts, including the wired hub's connector and fan counts, are read once when their drivers open, so they keep the old values until the app is restarted."
                                            Opacity="0.8" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>

@@ -68,17 +68,26 @@ public sealed class AutomationService : IDisposable
     AutomationMode _mode = AutomationMode.Base;
     string? _activeRuleProfile;
 
-    /*--- sensor rules: the hysteresis state lives here, one entry per rule,
-          reused across ticks so a tick allocates nothing. ---*/
+    /*--- sensor rules: the hysteresis state lives here, one entry per rule
+          (keyed by the rule itself, see SensorRuleTracker), reused across
+          ticks so a tick allocates nothing. ---*/
     readonly Stopwatch _clock = Stopwatch.StartNew();
-    SensorRuleState[] _sensorStates = Array.Empty<SensorRuleState>();
-    double?[] _sensorValues = Array.Empty<double?>();
-    object? _sensorStatesFor;   // the rule list those states belong to
+    readonly SensorRuleTracker _sensorTracker = new();
     Func<string, bool>? _profileExists;   // cached: a closure per tick is a closure too many
+    Func<string, double?>? _readSensor;   // the same
     MainViewModel.LightState? _returnPoint;
     // The user acted during a lights-off window: stay awake until every such
     // window has closed, then re-arm for the next one.
     bool _scheduleOverride;
+    // When the dark the user woke up from ends. Without it the override was
+    // only cleared by a tick that SAW no window open, and a machine asleep
+    // across the morning end landed in the next night's window with the
+    // override still set: no lights-off that night at all.
+    DateTime? _overrideUntil;
+
+    /// <summary>The wall clock the schedules read. A seam so the harness can
+    /// step across a night without waiting for one.</summary>
+    internal Func<DateTime> WallClock = () => DateTime.Now;
 
     bool _selfApplying;   // our own profile applies must not clear the return point
 
@@ -86,10 +95,39 @@ public sealed class AutomationService : IDisposable
     // a dark window). From then on THEIR choice is the baseline: when the rule
     // ends the desk keeps it, rather than going to the startup profile.
     bool _userTookOver;
+    // ...and a rule has painted its own profile over that choice since: a lock
+    // and an unlock back into the same rule, or a second rule taking over. The
+    // desk is then the RULE's lighting, so "keep what you set" on the way back
+    // to Base kept the rule's profile and lost the edit for good.
+    bool _ruleRepainted;
     // LightsOff() ran since the last relight (a lock, a dark window): the way
     // back to Base has to put the lighting on again, whichever branch runs.
     bool _lightsOff;
+    // A RULE (app, sensor, scheduled profile) applied its profile since we
+    // last left Base. Only then is "back to the startup profile" the right
+    // way home: the setting reads "when a rule stops matching", and a lock or
+    // a dark window is not a rule. Without this every unlock replaced the
+    // desk with the startup profile, wiping unsaved hand edits, the save
+    // prompt and a show started by hand.
+    bool _ruleSinceBase;
     bool _inTick, _tickAgain;
+
+    /*--- Sleep. The PC going to sleep is "away" too: with LockLightsOff on,
+          the lights go off on the way down (LightsOff, drained before the
+          suspend handler returns) and the automation holds them off as if
+          locked until it hears the resume. Lights-off on sleep used to depend
+          on Windows delivering the session lock before the suspend. ---*/
+    bool _suspended;
+    DateTime _suspendedAt;
+    /// <summary>A resume that never arrives (lost, or a suspend that failed
+    /// and sent nothing) must not keep the desk dark forever: past this, by
+    /// the wall clock, the hold lapses and the next tick decides as usual. A
+    /// machine that really slept wakes far past it; one still on its way
+    /// down never gets near it.</summary>
+    static readonly TimeSpan SuspendHoldLapses = TimeSpan.FromMinutes(2);
+    const int SuspendInvokeMs = 800, SuspendDrainMs = 1000;
+
+    readonly Dispatcher _ui;
 
     /*--- Temporary pause. Per session and never persisted: see AutomationPause,
           which owns the reasoning and the copy. The held mode and profile are
@@ -171,14 +209,55 @@ public sealed class AutomationService : IDisposable
     {
         _askLocked = askLocked;
         _vm = vm;
+        _ui = Dispatcher.CurrentDispatcher;
         _vm.WakeLightsHook = Wake;
         _vm.LightingApplied += OnUserLighting;
-        if (monitor) SystemEvents.SessionSwitch += OnSessionSwitch;
+        // The view model can already be dark: it starts that way in a locked
+        // session or inside a dark window (StartsDark, before its first write),
+        // and a service is never the first to know. Adopt it as a dark mode
+        // with the desk as recorded so far as the way back, or the first tick
+        // would see Base == Base, change nothing, and leave it dark for good.
+        // The tick then settles which kind of dark it is, or relights.
+        if (_vm.LightsSuppressed)
+        {
+            _returnPoint = _vm.CaptureState();
+            _mode = AutomationMode.Locked;
+            _lightsOff = true;
+            Log.Info("auto", $"starting with the lights off; the way back is {Describe(_returnPoint)}");
+        }
+        if (monitor)
+        {
+            SystemEvents.SessionSwitch += OnSessionSwitch;
+            SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        }
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         _timer.Tick += (_, _) => Tick();
         if (monitor) _timer.Start();
         Current = this;
+        // Decide now, not two seconds from now: an app started inside a locked
+        // session or a dark window has its answer already, and a rule that
+        // matches at launch need not wait either.
+        if (monitor) Tick();
     }
+
+    /// <summary>Whether the desk should START dark: the session is locked
+    /// (with LockLightsOff on) or a lights-off window is open and active now.
+    /// The view model asks this before its first write, so an app launched by
+    /// an overnight update restart - auto sign-in, lock, autostart - never
+    /// lights the desk on the way to the automation's first tick. The same
+    /// facts the tick reads, minus anything that needs a running service.</summary>
+    internal static bool StartsDark(SettingsData s, DateTime now, bool? locked, double idleSeconds)
+    {
+        if (locked == true && s.LockLightsOff) return true;
+        foreach (var r in s.Schedules ?? new())
+            if (r is { Action: ScheduleAction.LightsOff } && ScheduleRule.IsActive(r, now, idleSeconds, NightIdleSeconds))
+                return true;
+        return false;
+    }
+
+    /// <summary>StartsDark for this machine, now.</summary>
+    internal static bool StartsDark(SettingsData s)
+        => StartsDark(s, DateTime.Now, UnifiedRgb.Core.Native.SessionState.IsLocked(), IdleSeconds());
 
     /// <summary>The user changed the lighting - a profile by button or hotkey,
     /// or a colour, effect, palette or speed by hand - while an override was
@@ -189,15 +268,38 @@ public sealed class AutomationService : IDisposable
     /// Hand edits arrive as a stream (a wheel drag raises one per move), so the
     /// first one during an override says so and every one after it quietly
     /// moves the baseline along with the drag: the capture is what has to
-    /// follow the hand, the sentence does not need repeating.</summary>
+    /// follow the hand, the sentence does not need repeating.
+    ///
+    /// THE RULE FOR A LIGHTING ACTION WHILE THE LIGHTS ARE OFF: it wakes the
+    /// whole desk, never one device. The write boundary records the edit and
+    /// writes nothing while the lights are off (LightingController.Suppressed),
+    /// so the edit is captured here, with everything else that is stored, as
+    /// the way back - and in a dark WINDOW the way back is taken at once (the
+    /// override). The edit used to light just the edited device, clear the
+    /// suppression, and leave every other device on the black with nothing
+    /// left that would ever relight it; the settled save then stored that
+    /// black in the mouse's flash. In a LOCKED session the lock still decides:
+    /// the edit is kept for the unlock, which puts all of it back.</summary>
     void OnUserLighting()
     {
+        bool dark = _mode is AutomationMode.Locked or AutomationMode.ScheduleOff;
         if (_paused && !_selfApplying)
         {
+            _vm.RuleOwnsLighting = false;   // the user's own choice from here (see PersistSettledLighting)
             _pauseLighting = _vm.CaptureState();
             _pauseHoldMode = AutomationMode.Base;
             _pauseHoldProfile = null;
             _returnPoint = _pauseLighting;
+            _ruleRepainted = false;
+            if (dark)
+            {
+                // Dark under the pause (a lock). Setting Base here would make
+                // the tick see nothing to change and leave the desk dark: the
+                // paused tick puts this capture back as soon as the session is
+                // unlocked - at once, if it already is.
+                _ui.BeginInvoke(new Action(Tick));
+                return;
+            }
             // The user has already applied this lighting. Reconcile now,
             // before Resume can evaluate against the previous rule's mode.
             _mode = AutomationMode.Base;
@@ -205,19 +307,28 @@ public sealed class AutomationService : IDisposable
             return;
         }
         if (_selfApplying || _mode == AutomationMode.Base) return;
+        _vm.RuleOwnsLighting = false;   // they changed it during the override: theirs to keep, and to store
         if (_mode == AutomationMode.ScheduleOff && !_scheduleOverride)
         {
             // Someone changing colors at 11 PM clearly wants lights.
-            _scheduleOverride = true;
-            Log.Info("auto", "user changed lighting during a scheduled dark window, staying awake until it ends");
+            ArmScheduleOverride();
+            Log.Info("auto", "user changed lighting during a scheduled dark window, waking the desk until it ends");
             ActivityLog.Note(ActivityKind.UserOverride,
-                "You lit things up during a scheduled dark window, so that schedule stays paused until the window ends.");
+                "You lit things up during a scheduled dark window, so the lights are back on and that schedule stays paused until the window ends.");
         }
         // Keep the choice itself, not a null. A null baseline plus a lock (or a
         // dark window) before the rule ended left the desk BLACK on the way
         // back: the Base branch had nothing to restore and nothing to apply.
         _returnPoint = _vm.CaptureState();
-        _lightsOff = false;   // the user has just lit things up
+        // Lit (a rule's profile is up): the user has just lit things up. Dark:
+        // nothing was written, so the way out has to repaint - leave it set.
+        if (!dark) _lightsOff = false;
+        _ruleRepainted = false;   // and what is on the desk is theirs again
+        // A dark window wakes now rather than on the next timer tick. Posted,
+        // not run inline: this is raised from inside the edit, and the whole
+        // desk is repainted once the edit has finished landing in the stored
+        // state. A drag's later moves find Base and return above.
+        if (_mode == AutomationMode.ScheduleOff) _ui.BeginInvoke(new Action(Tick));
         if (_userTookOver) return;   // the same edit continuing: the baseline moved, nothing new to say
         _userTookOver = true;
         Log.Info("auto", "lighting changed during an override, keeping it as the new baseline");
@@ -230,14 +341,89 @@ public sealed class AutomationService : IDisposable
     public void Wake()
     {
         if (_mode != AutomationMode.ScheduleOff) return;
-        _scheduleOverride = true;
+        ArmScheduleOverride();
         Tick();
+    }
+
+    /// <summary>Stay awake until the dark windows open now have ended. The end
+    /// is written down here, not only noticed later, so that it holds even if
+    /// no tick runs between now and then (see _overrideUntil).</summary>
+    void ArmScheduleOverride()
+    {
+        _scheduleOverride = true;
+        _overrideUntil = null;
+        var now = WallClock();
+        foreach (var r in _vm.SettingsData.Schedules ?? new())
+            if (r is { Enabled: true, Action: ScheduleAction.LightsOff }
+                && ScheduleRule.OpenSpan(r, now) is { } span
+                && (_overrideUntil == null || span.End > _overrideUntil))
+                _overrideUntil = span.End;
     }
 
     void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
     {
         if (e.Reason == SessionSwitchReason.SessionLock) { _locked = true; Tick(); }
         else if (e.Reason == SessionSwitchReason.SessionUnlock) { _locked = false; Tick(); }
+    }
+
+    /// <summary>Raised on SystemEvents' own thread. Windows waits for this
+    /// handler before it suspends, but only briefly, so the lights-off is run
+    /// on the UI thread with a bound on the wait, then the black is drained
+    /// onto the hardware - also bounded - before returning. (The device
+    /// watchdog hears the resume for its own reason: redetecting.)</summary>
+    void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == PowerModes.Suspend)
+        {
+            try
+            {
+                _ui.Invoke(Suspending, DispatcherPriority.Send, CancellationToken.None,
+                           TimeSpan.FromMilliseconds(SuspendInvokeMs));
+            }
+            catch (Exception ex) { Log.Warn("auto", $"lights off for sleep did not run: {ex.Message}"); }
+            _vm.Lighting.Applier.Drain(SuspendDrainMs);
+        }
+        else if (e.Mode == PowerModes.Resume)
+            _ui.BeginInvoke(new Action(Resumed));
+    }
+
+    /// <summary>The PC is going to sleep. With "lights off while away" on,
+    /// this is a lock as far as the lights are concerned, from now until the
+    /// resume: the tick sees it as Locked, goes dark through the ordinary
+    /// transition, and comes back the ordinary way - restored, or held dark
+    /// while the session is locked after the wake. Doing it as a MODE matters:
+    /// a lights-off with no mode change would leave the automation at Base,
+    /// and the resume's tick would see nothing to change and leave it dark.
+    /// It used to rely on Windows sending the session lock before the
+    /// suspend, which it does not have to, and did not do at all with
+    /// sign-in on wake turned off. UI thread.</summary>
+    internal void Suspending()
+    {
+        if (!_vm.SettingsData.LockLightsOff) return;
+        _suspended = true;
+        _suspendedAt = WallClock();
+        Tick();
+    }
+
+    /// <summary>The PC woke: the sleep hold ends and the tick decides - dark
+    /// while the session is locked, otherwise the way back. UI thread.</summary>
+    internal void Resumed()
+    {
+        if (!_suspended) return;
+        _suspended = false;
+        Log.Info("auto", "the PC woke up");
+        Tick();
+    }
+
+    /// <summary>Whether the sleep still holds the lights off, lapsing on its
+    /// own if the resume never came (see SuspendHoldLapses).</summary>
+    bool SuspendHolds()
+    {
+        if (!_suspended) return false;
+        if (WallClock() - _suspendedAt < SuspendHoldLapses) return true;
+        _suspended = false;
+        Log.Info("auto", "no resume was heard after the sleep - deciding the lights afresh");
+        return false;
     }
 
     /// <summary>One evaluation, never re-entered: a modal pumping the dispatcher
@@ -268,6 +454,8 @@ public sealed class AutomationService : IDisposable
             // Null means Windows would not say, and then whatever we last heard
             // stands, which is exactly the old behaviour.
             if (_askLocked() is bool reported) _locked = reported;
+            // Going to sleep counts as locked until the resume (see Suspending).
+            bool locked = _locked || SuspendHolds();
 
             var s = _vm.SettingsData;
 
@@ -282,9 +470,10 @@ public sealed class AutomationService : IDisposable
                 // foreground lookup, no sensor step. Held is a function of the
                 // frozen state and the lock alone, so a paused app is also the
                 // quietest the automation ever is.
-                var held = AutomationPause.Resolve(_pauseHoldMode, _pauseHoldProfile, _locked, s.LockLightsOff);
+                var held = AutomationPause.Resolve(_pauseHoldMode, _pauseHoldProfile, locked, s.LockLightsOff);
                 _vm.SetAutomationStatus(held.Status, held.Topic);
                 if (held.Mode == _mode && held.Profile == _activeRuleProfile) return;
+                if (HeldForCalibration(held.Mode)) return;
                 if (held.Mode == AutomationMode.Locked)
                 {
                     // Capture immediately before blackout, including hand edits
@@ -297,6 +486,9 @@ public sealed class AutomationService : IDisposable
                     _vm.NightLightsOff = false;
                     _vm.LightsSuppressed = false;
                     _selfApplying = true;
+                    // Un-suppressed FIRST: the write boundary refuses every lit
+                    // write while the lights are off. (The restore also relights
+                    // anything its capture does not name.)
                     try { _vm.RestoreState(_pauseLighting); }
                     finally { _selfApplying = false; }
                     _lightsOff = false;
@@ -314,7 +506,7 @@ public sealed class AutomationService : IDisposable
 
             var decision = AutomationDecision.Resolve(new AutomationInputs
             {
-                Locked = _locked,
+                Locked = locked,
                 LockLightsOff = s.LockLightsOff,
                 ScheduleOff = sched.Off,
                 ScheduleProfile = sched.Profile,
@@ -339,6 +531,9 @@ public sealed class AutomationService : IDisposable
             // is actually lit, so a decision that differs from them is
             // already the only thing a resume has to re-assert.
             if (decision.Mode == _mode && decision.Profile == _activeRuleProfile) return;
+            // Waits, and is decided afresh every tick until the calibration
+            // closes, so nothing about the held switch has to be remembered.
+            if (HeldForCalibration(decision.Mode)) return;
 
             // Only now, on an actual transition, is it worth asking what ELSE
             // wanted the lights. Re-running the app match costs one substring
@@ -354,7 +549,25 @@ public sealed class AutomationService : IDisposable
 
             Transition(decision.Mode, decision.Profile, decision.Status);
         }
-        catch (Exception ex) { Log.Occasional("automation", "auto", $"tick failed: {ex.Message}"); }
+        catch (Exception ex) { Log.Occasional("auto-tick", "auto", $"tick failed: {ex.Message}"); }
+    }
+
+    /// <summary>A colour calibration has its reference patches on the hardware,
+    /// so a switch that would PAINT the desk waits for it to close, the way the
+    /// recovery rescan does. Applied underneath it, a rule's profile repainted
+    /// the patches the user was comparing, and then the calibration's own
+    /// restore on close put the pre-calibration lighting back while the
+    /// automation went on believing the rule's profile was up.
+    ///
+    /// Going dark is let through: a lock still means lights off, and leaving a
+    /// white reference patch lit all night because a dialog was open is the
+    /// worse surprise. The calibration's restore honours the suppression, and
+    /// the relight waits here until the dialog is closed.</summary>
+    bool HeldForCalibration(AutomationMode next)
+    {
+        if (!CalibrationAid.AnyActive || next is AutomationMode.Locked or AutomationMode.ScheduleOff) return false;
+        Log.Occasional("auto-calibration-hold", "auto", $"holding the switch to {next} until the colour calibration is closed");
+        return true;
     }
 
     /// <summary>An app rule matched and lost. Precedence is completely
@@ -406,13 +619,18 @@ public sealed class AutomationService : IDisposable
         if (rules == null || rules.Count == 0)
         {
             _scheduleOverride = false;
+            _overrideUntil = null;
             return (null, null, false, false, "");
         }
 
-        var now = DateTime.Now;
+        var now = WallClock();
         ScheduleHit? off = null, profile = null;
         bool anyOffWindow = false, waitingIdle = false;
         string end = "";
+        // The latest end among the dark windows open now that began no later
+        // than the overridden dark ended: windows that run on from it with no
+        // gap, through which the override keeps the desk lit as it always did.
+        DateTime? runsOn = null;
 
         for (int i = 0; i < rules.Count; i++)
         {
@@ -423,6 +641,10 @@ public sealed class AutomationService : IDisposable
             {
                 anyOffWindow = true;
                 if (end.Length == 0) end = r.End;
+                if (_scheduleOverride && ScheduleRule.OpenSpan(r, now) is { } span
+                    && (_overrideUntil is not DateTime until || span.Start <= until)
+                    && (runsOn == null || span.End > runsOn))
+                    runsOn = span.End;
                 // "Only when I'm away": hold the lights until the machine has
                 // been idle, so an evening session is never cut off. Idle time
                 // carried in from before the window counts, so an already-away
@@ -446,7 +668,17 @@ public sealed class AutomationService : IDisposable
         // waking the lights is the user saying they want THEIR lighting, and
         // handing them a scheduled profile a second later is not that. Scheduling
         // resumes once the dark window they overrode has passed.
-        if (!anyOffWindow) _scheduleOverride = false;
+        //
+        // "Passed" is by the clock as well as by a gap a tick happened to see:
+        // a dark window open now that only began after the overridden one had
+        // ended is the NEXT night's, reached by sleeping through the morning,
+        // and the user woke nothing in it.
+        if (!anyOffWindow) { _scheduleOverride = false; _overrideUntil = null; }
+        else if (_scheduleOverride)
+        {
+            if (runsOn is DateTime later) { if (_overrideUntil == null || later > _overrideUntil) _overrideUntil = later; }
+            else if (_overrideUntil is DateTime until && now >= until) { _scheduleOverride = false; _overrideUntil = null; }
+        }
         if (_scheduleOverride) { off = null; profile = null; waitingIdle = false; }
 
         return (off, profile, anyOffWindow && _scheduleOverride, off == null && waitingIdle, end);
@@ -477,28 +709,13 @@ public sealed class AutomationService : IDisposable
         if (needFull) SensorHub.Touch();
         else if (needHub) SensorHub.TouchTemps();
 
-        // One state slot per rule. Reset when the list itself changes (added,
-        // removed, reordered) so state never lands on the wrong rule.
-        if (!ReferenceEquals(_sensorStatesFor, rules) || _sensorStates.Length != rules.Count)
-        {
-            _sensorStates = new SensorRuleState[rules.Count];
-            _sensorValues = new double?[rules.Count];
-            _sensorStatesFor = rules;
-        }
-
+        // State follows each rule wherever it moves in the list, and a rule
+        // added or removed leaves the others' state alone.
         _profileExists ??= _vm.HasProfile;
-        double now = _clock.Elapsed.TotalSeconds;
-        string? unavailable = null;
-        for (int i = 0; i < rules.Count; i++)
-        {
-            var r = rules[i];
-            double? v = r.Enabled ? SensorSources.Read(r.Source) : null;
-            _sensorValues[i] = v;
-            _sensorStates[i] = SensorRuleEvaluator.Step(r, v, _sensorStates[i], now);
-            // Not before the hub's first read: a null then is "still loading".
-            if (r.Enabled && v == null && unavailable == null && SensorHub.HasPublished) unavailable = r.Source;
-        }
-        var hit = SensorRuleEvaluator.FirstActive(rules, _sensorStates, _sensorValues, _profileExists);
+        _readSensor ??= SensorSources.Read;
+        var hit = _sensorTracker.Step(rules, _readSensor, _clock.Elapsed.TotalSeconds, _profileExists, out string? missing);
+        // Not before the hub's first read: a null then is "still loading".
+        string? unavailable = SensorHub.HasPublished ? missing : null;
         // A firing rule outranks the "no reading" note.
         return (hit, hit == null ? unavailable : null);
     }
@@ -522,7 +739,21 @@ public sealed class AutomationService : IDisposable
         {
             _returnPoint = _vm.CaptureState();
             _userTookOver = false;   // a fresh override: the baseline is what was on before it
+            _ruleRepainted = false;
+            _ruleSinceBase = false;
             Log.Info("auto", $"baseline saved: {Describe(_returnPoint)}");
+        }
+
+        bool goingDark = next is AutomationMode.Locked or AutomationMode.ScheduleOff;
+        // Coming out of the dark (or staying lit): open the gate BEFORE
+        // painting. The write boundary refuses every lit write while the
+        // lights are off, so a restore or a profile applied first would only
+        // be recorded. It used to be lifted after the switch, which was also
+        // the moment a half-relit desk became permanent.
+        if (!goingDark)
+        {
+            _vm.NightLightsOff = false;
+            _vm.LightsSuppressed = false;
         }
 
         _selfApplying = true;
@@ -534,9 +765,15 @@ public sealed class AutomationService : IDisposable
             case AutomationMode.ScheduleOff:
                 _vm.LightsOff();
                 _lightsOff = true;
-                Log.Info("auto", next == AutomationMode.Locked ? "session locked, lights off" : "scheduled window, lights off");
+                // The PC going to sleep is filed as a lock (see Suspending);
+                // say which it was.
+                bool sleeping = next == AutomationMode.Locked && _suspended && !_locked;
+                Log.Info("auto", next == AutomationMode.ScheduleOff ? "scheduled window, lights off"
+                    : sleeping ? "going to sleep, lights off" : "session locked, lights off");
                 ActivityLog.Note(ActivityKind.LightsOff, next == AutomationMode.Locked
-                    ? "Your session locked, so the lights went off. They come back when you sign in."
+                    ? sleeping
+                        ? "The PC went to sleep, so the lights went off. They come back when it wakes and you sign in."
+                        : "Your session locked, so the lights went off. They come back when you sign in."
                     // The scheduled case has a status that already names the
                     // window's end time, which is the fact people actually want.
                     : status ?? "A scheduled window turned the lights off.");
@@ -545,10 +782,14 @@ public sealed class AutomationService : IDisposable
             case AutomationMode.ScheduleProfile:
             case AutomationMode.App:
                 _vm.SetPumpLcdOn(true);   // unlocking straight into a rule must relight the LCD
-                if (profile == null) break;
-                if (_vm.ApplyProfileByName(profile))
+                if (profile != null && _vm.ApplyProfileByName(profile))
                 {
                     _lightsOff = false;
+                    _ruleSinceBase = true;
+                    _vm.RuleOwnsLighting = true;   // not stored in a mouse's memory (see PersistSettledLighting)
+                    // Over the user's own choice, if they had made one: the
+                    // way back to Base has to put that back (see there).
+                    if (_userTookOver) _ruleRepainted = true;
                     Log.Info("auto", next switch
                     {
                         AutomationMode.Sensor => $"sensor rule fired, applied profile '{profile}'",
@@ -562,14 +803,26 @@ public sealed class AutomationService : IDisposable
                     // fresh decision to quote.
                     ActivityLog.Note(ActivityKind.RuleActivated,
                         status ?? $"Back from the lock screen, profile '{profile}' is on again.");
+                    break;
                 }
                 // A rule naming a profile that no longer exists used to log
                 // nothing at all, so the lights not changing had no explanation.
-                else
+                if (profile != null)
                 {
                     Log.Warn("auto", $"a rule wanted profile '{profile}', which no longer exists");
                     ActivityLog.Note(ActivityKind.RuleActivated,
                         $"A rule asked for profile '{profile}', which no longer exists, so your lighting was left alone.");
+                }
+                // "Left alone" must not mean "left dark". Arriving here from a
+                // lock or a dark window, nothing has been painted: the gate is
+                // already open and the LCD back on, so the desk was half-woken -
+                // black LEDs, a lit panel, no suppression left to relight them.
+                // Put back what was on before the dark instead.
+                if (_lightsOff)
+                {
+                    if (_returnPoint != null) _vm.RestoreState(_returnPoint);
+                    _lightsOff = false;
+                    Log.Info("auto", "the rule had nothing to apply, so the lighting from before the lights went off is back");
                 }
                 break;
             case AutomationMode.Base:
@@ -579,17 +832,23 @@ public sealed class AutomationService : IDisposable
                 // startup profile set (the default return policy) an ordinary
                 // unlock restored the RGB and left the panel black.
                 _vm.SetPumpLcdOn(true);
-                // Back to the startup profile, if there is one and the user has
-                // not asked otherwise. The saved baseline is whatever happened
-                // to be on screen when the rule fired, which after an evening of
-                // building a profile IS that profile: the rule then "returns" to
-                // the thing it was overriding with, and nothing appears to end.
-                string? startup = _vm.ReturnProfile;
+                // Back to the startup profile, if there is one, the user has
+                // not asked otherwise, AND a rule actually ran: the setting is
+                // "when a RULE stops matching". The saved baseline is whatever
+                // happened to be on screen when the rule fired, which after an
+                // evening of building a profile IS that profile: the rule then
+                // "returns" to the thing it was overriding with, and nothing
+                // appears to end. A lock or a dark window on its own is not a
+                // rule, and its way back is exactly what was on before it.
+                string? startup = _ruleSinceBase ? _vm.ReturnProfile : null;
 
                 // Why we are back at Base. Blaming the rules while automation
                 // is paused would send someone hunting through a rule list
-                // that was never involved.
-                string why = _paused ? "Automation is paused" : "No rule matches any more";
+                // that was never involved, and neither is a lock or a dark
+                // window that simply ended.
+                string why = _paused ? "Automation is paused"
+                           : _lightsOff && !_ruleSinceBase ? "The lights are back on"
+                           : "No rule matches any more";
 
                 if (_userTookOver)
                 {
@@ -597,7 +856,17 @@ public sealed class AutomationService : IDisposable
                     // profile used to win here regardless, so a colour picked by
                     // hand mid-game was replaced two seconds after the game closed
                     // by whatever the startup profile happened to be.
-                    if (_lightsOff && _returnPoint != null)
+                    //
+                    // Kept as it stands only while it IS their choice. After a
+                    // lock (lights off) or a rule painting its own profile over
+                    // it - unlocking back into the same game, or a second rule
+                    // taking over - the desk shows something else, and keeping
+                    // THAT left the rule's profile on after every rule had ended
+                    // while the edit was lost. Their capture is put back instead.
+                    // That includes an edit made IN the dark: it was recorded,
+                    // not shown, and this restore is what shows it - the whole
+                    // desk, not just the device that was edited.
+                    if ((_lightsOff || _ruleRepainted) && _returnPoint != null)
                     {
                         _vm.RestoreState(_returnPoint);
                         Log.Info("auto", $"no rule matches, back to the lighting you set during it: {Describe(_returnPoint)}");
@@ -619,6 +888,9 @@ public sealed class AutomationService : IDisposable
                 }
                 else if (_returnPoint != null)
                 {
+                    // Everything the capture holds comes back with it: unsaved
+                    // edits and their save prompt, a show started by hand and
+                    // where it was, the pump screen and the wallpaper.
                     _vm.RestoreState(_returnPoint);
                     Log.Info("auto", $"no rule matches, restored {Describe(_returnPoint)}");
                     // Naming what was restored is the whole point: "restored
@@ -633,7 +905,6 @@ public sealed class AutomationService : IDisposable
                 {
                     if (_lightsOff)
                     {
-                        _vm.LightsSuppressed = false;
                         _vm.RestoreState(_vm.CaptureState());
                         Log.Info("auto", "no rule matches and no baseline was saved, relit the stored lighting");
                     }
@@ -642,14 +913,20 @@ public sealed class AutomationService : IDisposable
                 }
                 break;
         }
+        // Whatever branch ran, nothing may stay on the black once the lights
+        // are on: a device none of them named (a profile that does not list
+        // it, a snapshot taken before it appeared) gets its stored frame, and
+        // an effect still pending from the dark starts. A no-op after a full
+        // restore. Inside _selfApplying: it is ours, not a user edit.
+        if (!goingDark) _vm.RelightLeftovers();
         }
         finally { _selfApplying = false; }
-        if (next == AutomationMode.Base) { _lightsOff = false; _userTookOver = false; }
+        if (next == AutomationMode.Base) { _lightsOff = false; _userTookOver = false; _ruleRepainted = false; _ruleSinceBase = false; _vm.RuleOwnsLighting = false; }
         _mode = next;
         _activeRuleProfile = next is AutomationMode.App or AutomationMode.Sensor
             or AutomationMode.ScheduleProfile ? profile : null;
         _vm.NightLightsOff = next == AutomationMode.ScheduleOff;   // drives the wake banner
-        _vm.LightsSuppressed = next is AutomationMode.Locked or AutomationMode.ScheduleOff;   // scene sequences hold while off
+        _vm.LightsSuppressed = goingDark;   // scene sequences hold while off; LightsOff has set it already
     }
 
     /// <summary>What a saved baseline actually is, for the log. A profile name
@@ -724,14 +1001,21 @@ public sealed class AutomationService : IDisposable
         _vm.LightingApplied -= OnUserLighting;
         _vm.WakeLightsHook = null;   // was left dangling after dispose
         SystemEvents.SessionSwitch -= OnSessionSwitch;
-        // Never leave the lights off because we're exiting mid-state.
-        if (_mode is AutomationMode.Locked or AutomationMode.ScheduleOff && _returnPoint != null)
-            try { _vm.RestoreState(_returnPoint); } catch { }   // we are being disposed; a failed restore must not stop the rest of the teardown
-        // And never leave the gate SHUT. LightsOff sets LightsSuppressed and
-        // only this service clears it, so a disposed service left it true - which
-        // also mutes the SDK bridge. Harmless while the only Dispose is process
-        // teardown, but a service that is ever recreated starts at Base, so its
-        // first Tick returns without a Transition and nothing ever reopens it.
-        _vm.LightsSuppressed = false;
+        SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        // NO relight on the way out. This used to restore the return point
+        // when disposed while locked or dark - statics, effects, the pump LCD,
+        // the wallpaper, a show - and this runs FIRST when the window closes:
+        // a shutdown from the lock screen, an overnight Windows Update restart,
+        // a logoff. The desk lit up as the PC went down, and every device on
+        // "keep last colors" kept that light, on standby power, while the PC
+        // was off. What each device shows after the app is the exit
+        // behaviours' decision (MainViewModel.ApplyExitBehaviors), and for
+        // "keep last colors" on a dark desk, keeping the black is right.
+        //
+        // The suppression is left as it is for the same reason: shut while
+        // dark, so nothing on the way down can relight through the write
+        // boundary. A service created again over a dark view model adopts the
+        // dark (see the constructor) instead of starting at Base, which is
+        // what used to make clearing it here necessary.
     }
 }

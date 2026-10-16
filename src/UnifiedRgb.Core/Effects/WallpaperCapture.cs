@@ -99,7 +99,7 @@ public static class WallpaperCapture
                     {
                         _lastFind = now;
                         IntPtr wnd = FindWallpaperWindow(refreshPids: !alive);
-                        if (wnd == IntPtr.Zero) { Log.Occasional("wallpaper", "nowin", "no WE render window"); TearDown(); Thread.Sleep(500); continue; }
+                        if (wnd == IntPtr.Zero) { Log.Occasional("wallpaper-nowin", "wallpaper", "no WE render window"); TearDown(); Thread.Sleep(500); continue; }
                         if (!alive || wnd != _capturedWnd || RootOf(wnd) != _capturedTop)
                         { Log.Info("wallpaper", $"found window {wnd:X}, starting WGC"); TearDown(); StartSession(wnd); }
                     }
@@ -108,7 +108,7 @@ public static class WallpaperCapture
                 }
                 catch (Exception ex)
                 {
-                    Log.Occasional("wallpaper", "cap", $"capture failed: {ex.GetType().Name}: {ex.Message}");
+                    Log.Occasional("wallpaper-capture", "wallpaper", $"capture failed: {ex.GetType().Name}: {ex.Message}");
                     TearDown();
                     // The device too, not only the session: after a driver
                     // reset (TDR, GPU switch) the D3D device is REMOVED and every

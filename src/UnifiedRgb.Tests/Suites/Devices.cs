@@ -42,17 +42,19 @@ static class DevicesSuite
         var b = Enumerable.Repeat(Rgb.Blue, fans.LedCount).ToArray();
         t.Check(fans.SetColors(a), "initial frame is accepted");
 
-        // Force a standalone apply so the refused first send is followed by
-        // an accepted insurance copy, as happens when the USB link recovers.
+        // Force a standalone apply, the case that sends an insurance copy.
         void Standalone() => typeof(LianLiWireless).GetField("_lastSendMs",
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
             .SetValue(fans, Environment.TickCount64 - 1000);
         Standalone();
         int before = usb.Attempts;
         usb.RefuseAt = before + 1;
-        t.Check(!fans.SetColors(b), "a refused first packet reports failure even if the insurance copy lands");
-        t.Check(usb.Attempts - before == 40 && usb.Refusals == 1,
-            "both complete copies were attempted, with only one fragment refused");
+        t.Check(!fans.SetColors(b), "a refused first packet reports failure");
+        // The frame stops at the refusal (2026-10-14 review, A4): it used to
+        // send all 40 fragments of both copies, each one a full USB timeout
+        // under _lock when the transmitter is stalled rather than recovering.
+        t.Check(usb.Attempts - before == 1 && usb.Refusals == 1,
+            "the frame stops at the refused fragment: no further packets and no insurance copy");
         before = usb.Attempts;
         t.Check(fans.SetColors(a), "the previous color can be restored after uncertain delivery");
         t.Check(usb.Attempts > before, "restoring the previous color really sends it again");
@@ -80,6 +82,19 @@ static class DevicesSuite
         }
         finally { instanceField?.SetValue(null, priorInstance); }
     }
+
+    /// <summary>Answer every HID++ request the way the mouse does: with its own
+    /// device index, feature and function echoed back. The driver matches all
+    /// three (2026-10-14 review, A8); a canned reply carrying function 0 is the
+    /// answer to some OTHER request, and taking it for a SET_EFFECT's is exactly
+    /// how one late reply shifted every reply after it. <paramref name="accept"/>
+    /// refuses chosen writes by ordinal, which then get no reply at all.</summary>
+    static Func<int, byte[], bool> EchoHidpp(FakeHid hid, Func<int, bool>? accept = null) => (n, report) =>
+    {
+        if (accept != null && !accept(n)) return false;
+        hid.Replies.Enqueue((byte[])report.Clone());
+        return true;
+    };
 
     sealed class WirelessUsb : UnifiedRgb.Core.Native.IUsbWriter
     {
@@ -203,13 +218,12 @@ static class DevicesSuite
             LogitechG403.RetryAfterFailMs = 0;   // retry at once, or this test sleeps five seconds
             LogitechG403.MinFrameGapMs = 0;      // frames fire back to back here; the pacer has its own test
             var hid = new FakeHid();
-            for (int i = 0; i < 40; i++) hid.Replies.Enqueue(FakeHid.HidppReply(14));
             var mouse = new LogitechG403(hid, dev: 0xFF, rgbIdx: 14, feature: 0x8070,
                                          clusterEffect: new byte[] { 1, 1 }, name: "G403");
             var red = new Rgb(255, 0, 0);
 
             // Write 1 is the software-control claim; write 2 is cluster 0's color.
-            hid.Accept = (n, _) => n != 2;
+            hid.Accept = EchoHidpp(hid, n => n != 2);
             mouse.SetColors(new[] { red, red });
             t.Equal(3, hid.Writes.Count, "frame 1: the claim and both cluster writes went out");
             var claim = hid.Writes[0];
@@ -220,7 +234,7 @@ static class DevicesSuite
                 "SET_EFFECT: cluster, static effect index, then R G B");
             t.Equal(0, (int)fx[16], "streamed frames do not carry the persist byte");
 
-            hid.Accept = null;
+            hid.Accept = EchoHidpp(hid);
             int before = hid.Writes.Count;
             mouse.SetColors(new[] { red, red });
             // The old code had recorded cluster 0 as sent, so this frame was a no-op
@@ -239,18 +253,17 @@ static class DevicesSuite
         t.Section("LogitechG403: a refused persist is retried, a landed one is not");
         {
             var hid = new FakeHid();
-            for (int i = 0; i < 40; i++) hid.Replies.Enqueue(FakeHid.HidppReply(14));
             var mouse = new LogitechG403(hid, 0xFF, 14, 0x8070, new byte[] { 1, 1 }, "G403");
             var red = new Rgb(255, 0, 0);
             LogitechG403.MinFrameGapMs = 0;
 
             // claim(1), cluster 0(2), cluster 1(3), then the commits: cluster 0(4), cluster 1(5)
-            hid.Accept = (n, _) => n != 4;
+            hid.Accept = EchoHidpp(hid, n => n != 4);
             mouse.SetColors(new[] { red, red }, persist: true);
             t.Equal(5, hid.Writes.Count, "a static apply streams both clusters then commits both");
             t.Check(hid.Writes[3][4] == 0 && hid.Writes[3][16] == 0x01, "write 4 is cluster 0's commit (persist byte set)");
 
-            hid.Accept = null;
+            hid.Accept = EchoHidpp(hid);
             int before = hid.Writes.Count;
             mouse.SetColors(new[] { red, red }, persist: true);
             t.Equal(before + 1, hid.Writes.Count, "colors unchanged: only the refused commit is retried");
@@ -262,6 +275,64 @@ static class DevicesSuite
             LogitechG403.MinFrameGapMs = 33;
         }
 
+        t.Section("LogitechG403: a static apply writes no flash; the settled-colour save does, once");
+        {
+            // The static-apply path used to pass persist:true, committing to flash
+            // on every colour-wheel step, brightness tick and show step. Now the
+            // plain write streams only, and PersistColor (the app's 30 s
+            // settled-colour save) commits - once per colour.
+            var hid = new FakeHid();
+            hid.Accept = EchoHidpp(hid);
+            var mouse = new LogitechG403(hid, 0xFF, 14, 0x8070, new byte[] { 1, 1 }, "G403");
+            var green = new Rgb(0, 255, 0);
+            LogitechG403.MinFrameGapMs = 0;
+
+            ((IRgbDevice)mouse).SetColors(new[] { green, green });
+            t.Check(hid.Writes.All(w => w[16] == 0), "the plain write (what a static apply now uses) carries no persist byte");
+            int before = hid.Writes.Count;
+            t.Check(mouse.PersistColor(new[] { green, green }), "the settled-colour save stores it");
+            t.Equal(before + 2, hid.Writes.Count, "one commit per cluster");
+            t.Check(hid.Writes.Skip(before).All(w => w[16] == 0x01), "...each with the persist byte");
+            before = hid.Writes.Count;
+            t.Check(mouse.PersistColor(new[] { green, green }), "asked again for the same colour: still a success");
+            t.Equal(before, hid.Writes.Count, "...and no flash write");
+
+            // The lock's black (or any colour that is not the user's) on the
+            // mouse while the app asks to keep the user's green: nothing is
+            // stored. It used to commit whatever was last sent.
+            ((IRgbDevice)mouse).SetColors(new[] { Rgb.Black, Rgb.Black });
+            before = hid.Writes.Count;
+            t.Check(!mouse.PersistColor(new[] { green, green }), "a colour the mouse is not showing is refused");
+            t.Equal(before, hid.Writes.Count, "...with no flash write at all (was: it committed the black it was showing)");
+            ((IRgbDevice)mouse).SetColors(new[] { new Rgb(1, 2, 3), green });
+            before = hid.Writes.Count;
+            t.Check(!mouse.PersistColor(new[] { green, green }), "one cluster off is enough to refuse");
+            t.Equal(before, hid.Writes.Count, "...and nothing is half-stored");
+            LogitechG403.MinFrameGapMs = 33;
+        }
+
+        t.Section("LogitechG403: the driver never stores a colour on its own (a long lock's black)");
+        {
+            // External review: the driver committed any colour unchanged for
+            // five minutes, on the keepalive and again in Dispose, bypassing
+            // the app's save (which skips while the lights are off). A lock
+            // longer than that, then the rescan on wake, stored black.
+            var hid = new FakeHid();
+            hid.Accept = EchoHidpp(hid);
+            var mouse = new LogitechG403(hid, 0xFF, 14, 0x8070, new byte[] { 1, 1 }, "G403");
+            LogitechG403.MinFrameGapMs = 0;
+            var black = new Rgb(0, 0, 0);
+            ((IRgbDevice)mouse).SetColors(new[] { black, black });   // the locked desk's black
+            // However long it then sits: the clock the old five-minute rule
+            // read, wound back if the field is still there.
+            typeof(LogitechG403).GetField("_lastChangeTick", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                ?.SetValue(mouse, Environment.TickCount64 - 600_000);
+            ((IRgbDevice)mouse).SetColors(new[] { black, black });   // the engine's keepalive
+            mouse.Dispose();                                          // the rescan on wake, or an exit
+            t.Check(hid.Writes.All(w => w[16] == 0), "no write carried the persist byte: the black was never stored in the mouse");
+            LogitechG403.MinFrameGapMs = 33;
+        }
+
         t.Section("LogitechG403: lighting traffic is paced to ~30 Hz");
         {
             // The mouse's one microcontroller services the sensor at 1000 Hz and every
@@ -270,7 +341,7 @@ static class DevicesSuite
             // second, around the clock. Frames closer than the gap wait so a
             // one-shot command is delivered even if the engine has stopped.
             var hid = new FakeHid();
-            for (int i = 0; i < 40; i++) hid.Replies.Enqueue(FakeHid.HidppReply(14));
+            hid.Accept = EchoHidpp(hid);
             var mouse = new LogitechG403(hid, 0xFF, 14, 0x8070, new byte[] { 1, 1 }, "G403");
             var red = new Rgb(255, 0, 0); var blue = new Rgb(0, 0, 255);
 
@@ -579,12 +650,12 @@ static class DevicesSuite
             using var mouse = RazerHid.OpenKnown(() => hid, 0x00AA, RazerHid.BasiliskV3Pro);
             if (mouse == null) { t.Check(false, "razer persist: the test mouse opened"); return; }
 
-            t.Check(!mouse.PersistCurrentColor(), "razer persist: nothing to store before any frame");
+            t.Check(!mouse.PersistColor(Enumerable.Repeat(new Rgb(10, 20, 30), mouse.LedCount).ToArray()), "razer persist: nothing to store before any frame");
 
             var flat = Enumerable.Repeat(new Rgb(10, 20, 30), mouse.LedCount).ToArray();
             mouse.SetColors(flat);
             hid.Features.Clear();
-            t.Check(mouse.PersistCurrentColor(), "razer persist: a flat colour is stored");
+            t.Check(mouse.PersistColor(flat), "razer persist: a flat colour is stored");
             var rep = hid.Features.SingleOrDefault(f => f[7] == 0x0F && f[8] == 0x02 && f[6] == 0x09);
             t.Check(rep != null, "razer persist: one static-effect report, class 0x0F cmd 0x02 size 0x09");
             if (rep != null)
@@ -600,22 +671,39 @@ static class DevicesSuite
 
             // Flash is not written twice for the same colour.
             hid.Features.Clear();
-            t.Check(mouse.PersistCurrentColor() && hid.Features.Count == 0,
+            t.Check(mouse.PersistColor(flat) && hid.Features.Count == 0,
                 "razer persist: the same colour again writes no flash, and is still a success");
+
+            // ...including after a static apply, which resets the frame cache
+            // (InvalidateCache) but changes nothing in flash. Clearing the stored
+            // colour there made every settled-colour save a flash write.
+            mouse.InvalidateCache();
+            mouse.SetColors(flat);
+            hid.Features.Clear();
+            t.Check(mouse.PersistColor(flat) && !hid.Features.Any(f => f[7] == 0x0F && f[8] == 0x02 && f[6] == 0x09),
+                "razer persist: a frame-cache reset does not forget what is already stored");
 
             // A per-LED frame has no single colour, and nothing can keep one.
             var mixed = Enumerable.Range(0, mouse.LedCount).Select(i => new Rgb((byte)i, 0, 0)).ToArray();
             mouse.SetColors(mixed);
             hid.Features.Clear();
-            t.Check(!mouse.PersistCurrentColor() && hid.Features.Count == 0,
+            t.Check(!mouse.PersistColor(mixed) && hid.Features.Count == 0,
                 "razer persist: a per-LED frame stores nothing and says so");
 
-            // A refused store is reported, not swallowed.
-            mouse.SetColors(flat);
-            mouse.InvalidateCache();
-            mouse.SetColors(flat);
+            // Asked to keep a colour the mouse is NOT showing (the user's colour
+            // while the lock's black is on it): refused, nothing written.
+            mouse.SetColors(Enumerable.Repeat(Rgb.Black, mouse.LedCount).ToArray());
+            hid.Features.Clear();
+            t.Check(!mouse.PersistColor(Enumerable.Repeat(new Rgb(70, 80, 90), mouse.LedCount).ToArray())
+                    && hid.Features.Count == 0,
+                "razer persist: a colour the mouse is not showing is not stored (was: it stored whatever it was last sent)");
+
+            // A refused store is reported, not swallowed. (A colour not stored
+            // yet: the one already in flash is a success without a write.)
+            var fresh = Enumerable.Repeat(new Rgb(40, 50, 60), mouse.LedCount).ToArray();
+            mouse.SetColors(fresh);
             hid.AcceptFeature = (_, p) => !(p[7] == 0x0F && p[8] == 0x02 && p[6] == 0x09);
-            t.Check(!mouse.PersistCurrentColor(), "razer persist: a refused store reports false");
+            t.Check(!mouse.PersistColor(fresh), "razer persist: a refused store reports false");
             hid.AcceptFeature = null;
         }
 

@@ -1,6 +1,10 @@
+using UnifiedRgb.Core;
 using UnifiedRgb.Core.Native;
 
-namespace UnifiedRgb.Core.Sensors;
+// Lives in the CLI, not Core: a probe that WRITES the board's fan-firmware
+// enable byte, used only by the --fanctl/--fanmap/--gbecdump recipes. In Core
+// it shipped inside the elevated app, which never calls it.
+namespace UnifiedRgb.Cli;
 
 /*-----------------------------------------------------------*\
 | Gigabyte fan-firmware takeover via the ISA-bridge MMIO path  |

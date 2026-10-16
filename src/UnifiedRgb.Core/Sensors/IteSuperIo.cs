@@ -302,8 +302,9 @@ public sealed class IteSuperIo : IDisposable
     }, new Reading(new double?[TempRegs.Length], new int?[FanRegs.Length], new int?[PwmRegs.Length]));   // bus busy: an all-null sweep, not a torn one
 
     /// <summary>The machine-wide ISA-bus mutex hardware monitors share
-    /// (documented in the LpcIO module as a required courtesy).</summary>
-    static Mutex? OpenIsaMutex()
+    /// (documented in the LpcIO module as a required courtesy). Internal:
+    /// LhmFans holds the same mutex around its control writes.</summary>
+    internal static Mutex? OpenIsaMutex()
     {
         try { return new Mutex(false, @"Global\Access_ISABUS.HTP.Method"); }
         catch
@@ -313,7 +314,7 @@ public sealed class IteSuperIo : IDisposable
         }
     }
 
-    static bool TryAcquire(Mutex? m, int ms)
+    internal static bool TryAcquire(Mutex? m, int ms)
     {
         if (m == null) return false;
         try { return m.WaitOne(ms); }

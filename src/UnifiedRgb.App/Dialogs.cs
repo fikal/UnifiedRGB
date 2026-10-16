@@ -129,8 +129,6 @@ public static class Dialogs
         Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap, MaxWidth = 360,
     };
 
-    /// <summary>"Save changes to profile X?" — Yes = save, No = discard,
-    /// Cancel = abort the close.</summary>
     /// <summary>Tell the user something, with the body selectable so a path or
     /// a config file can be copied out. The setup flows lean on this: when
     /// writing a game's config fails, the only useful answer is the exact text
@@ -215,6 +213,8 @@ public static class Dialogs
         return ok;
     }
 
+    /// <summary>"Save changes to profile X?" — Yes = save, No = discard,
+    /// Cancel = abort the close.</summary>
     public static MessageBoxResult AskSaveChanges(Window owner, string profileName)
     {
         var result = MessageBoxResult.Cancel;

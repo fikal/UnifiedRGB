@@ -27,6 +27,16 @@ public interface IOpenRgbHost
     /// <summary>The client is gone: put the user's lighting back.</summary>
     void EndExternal(IRgbDevice device);
 
+    /// <summary>BeginExternal with the server's number for this claim. Numbers
+    /// only grow; the EndExternal that ends the claim carries the same one, so
+    /// a host that applies them asynchronously can tell an old claim's release
+    /// from a newer claim on the same device that got there first. A host
+    /// that applies both in order needs neither.</summary>
+    void BeginExternal(IRgbDevice device, long claim) => BeginExternal(device);
+
+    /// <summary>EndExternal for claim number <paramref name="claim"/>.</summary>
+    void EndExternal(IRgbDevice device, long claim) => EndExternal(device);
+
     /// <summary>Every claim was dropped at once without an EndExternal each,
     /// because the device instances they referred to no longer exist. The host
     /// has to unwind whatever it was holding, or it waits forever for releases
@@ -105,6 +115,27 @@ public sealed class OpenRgbServer : IDisposable
     /// that is how a deadlock gets built.</summary>
     readonly ExternalOwnership<IRgbDevice> _owned;
     readonly object _gate = new();
+
+    /// <summary>The number of each device's current claim, kept with _owned
+    /// under _gate (see IOpenRgbHost.BeginExternal(device, claim)). Assigned
+    /// where the claim is taken and read where it is released, so the numbers
+    /// follow the order the server itself saw - including a lapse swept just
+    /// before a new client's write took the device.</summary>
+    readonly Dictionary<IRgbDevice, long> _claimIds = new();
+    long _claimSeq;
+
+    /// <summary>Caller holds _gate: the devices just released, each with the
+    /// number of the claim that ended.</summary>
+    List<(IRgbDevice Device, long Claim)> Ended(List<IRgbDevice> devices)
+    {
+        var ended = new List<(IRgbDevice, long)>(devices.Count);
+        foreach (var d in devices)
+        {
+            _claimIds.Remove(d, out long id);
+            ended.Add((d, id));
+        }
+        return ended;
+    }
     readonly List<Client> _clients = new();
 
     /// <summary>Every thread currently inside Serve, so Stop can wait for them.
@@ -230,9 +261,9 @@ public sealed class OpenRgbServer : IDisposable
         // out the whole budget for nothing.
         JoinServingThreads();
 
-        List<IRgbDevice> held;
-        lock (_gate) held = _owned.ReleaseAll();
-        foreach (var device in held) SafeEnd(device);
+        List<(IRgbDevice Device, long Claim)> held;
+        lock (_gate) held = Ended(_owned.ReleaseAll());
+        foreach (var (device, claim) in held) SafeEnd(device, claim);
         ClientsChanged?.Invoke();
     }
 
@@ -257,7 +288,7 @@ public sealed class OpenRgbServer : IDisposable
     /// are gone, so drop every claim and tell clients to re-read the list.</summary>
     public void DeviceListChanged()
     {
-        lock (_gate) _owned.ReleaseAll();   // the old instances: nothing to restore onto
+        lock (_gate) { _owned.ReleaseAll(); _claimIds.Clear(); }   // the old instances: nothing to restore onto
         // Those releases skipped EndExternal, so the host is still counting
         // devices that no longer exist. Without this it never reaches zero
         // again and the user's lighting is never restored, not even when the
@@ -359,12 +390,12 @@ public sealed class OpenRgbServer : IDisposable
         }
         finally
         {
-            List<IRgbDevice> held;
-            lock (_gate) { _clients.Remove(client); held = _owned.ReleaseClient(client.Id); }
-            foreach (var device in held)
+            List<(IRgbDevice Device, long Claim)> held;
+            lock (_gate) { _clients.Remove(client); held = Ended(_owned.ReleaseClient(client.Id)); }
+            foreach (var (device, claim) in held)
             {
                 Log.Info("orgb-server", $"{device.Name}: '{client.Name}' disconnected, restoring your lighting");
-                SafeEnd(device);
+                SafeEnd(device, claim);
             }
             client.Close();
             ClientsChanged?.Invoke();
@@ -527,28 +558,33 @@ public sealed class OpenRgbServer : IDisposable
     void Claimed(Client client, IRgbDevice device)
     {
         bool taken;
-        lock (_gate) taken = _owned.Claim(device, client.Id, Now);
+        long claim = 0;
+        lock (_gate)
+        {
+            taken = _owned.Claim(device, client.Id, Now);
+            if (taken) _claimIds[device] = claim = ++_claimSeq;
+        }
         if (!taken) return;
         Log.Info("orgb-server", $"'{client.Name}' is now driving {device.Name}");
-        try { _host.BeginExternal(device); }
+        try { _host.BeginExternal(device, claim); }
         catch (Exception ex) { Log.Warn("orgb-server", $"begin {device.Name}: {ex.Message}"); }
     }
 
     void SweepExpired()
     {
         if (_stopping) return;
-        List<IRgbDevice> lapsed;
-        lock (_gate) lapsed = _owned.Expire(Now);
-        foreach (var device in lapsed)
+        List<(IRgbDevice Device, long Claim)> lapsed;
+        lock (_gate) lapsed = Ended(_owned.Expire(Now));
+        foreach (var (device, claim) in lapsed)
         {
             Log.Info("orgb-server", $"{device.Name}: client went quiet, restoring your lighting");
-            SafeEnd(device);
+            SafeEnd(device, claim);
         }
     }
 
-    void SafeEnd(IRgbDevice device)
+    void SafeEnd(IRgbDevice device, long claim)
     {
-        try { _host.EndExternal(device); }
+        try { _host.EndExternal(device, claim); }
         catch (Exception ex) { Log.Warn("orgb-server", $"restore {device.Name}: {ex.Message}"); }
     }
 

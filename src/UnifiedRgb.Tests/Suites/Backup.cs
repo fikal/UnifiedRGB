@@ -624,6 +624,8 @@ static class BackupSuite
                 Field("_wallpaperChoice", MainViewModel.NoWallpaper);
                 var bake = new LianBakeService(null!, () => Array.Empty<UnifiedRgb.Core.Devices.LianLiWireless>());
                 Field("_bake", bake);
+                // Only its "settings were replaced" hook runs here.
+                Field("<Cooling>k__BackingField", System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(CoolingViewModel)));
                 main.AutoRules.Add(new UnifiedRgb.Core.Automation.AutomationRule { Process = "old", Profile = "old" });
                 main.CustomColors.Add(new Rgb(255, 0, 0));
                 var importedSettings = new SettingsData
@@ -669,18 +671,27 @@ static class BackupSuite
     {
         t.Section("a preview does not write, quarantine or disable anything");
         CleanConfig();
-        string profiles = AppPaths.Config("profiles.json");
-        File.WriteAllText(profiles, "{ this is not a profile list");
-        int corruptBefore = Directory.GetFiles(AppPaths.ConfigDir, "profiles.json.corrupt-*").Length;
+        // Every store the preview compares against, each damaged. scenes.json
+        // and lcd.json were read through their stores' own loaders until the
+        // 2026-10-14 review (F1), and canvas.json's loader copies a damaged
+        // file aside too.
+        const string damaged = "{ this is not a store";
+        string[] names = { "profiles.json", "scenes.json", "lcd.json", "canvas.json" };
+        foreach (string name in names) File.WriteAllText(AppPaths.Config(name), damaged);
+        int corruptBefore = Directory.GetFiles(AppPaths.ConfigDir, "*.corrupt-*").Length;
 
         var preview = SetupBundle.Preview(bundlePath, Array.Empty<IRgbDevice>());
-        t.Check(preview.Ok, $"the bundle still previews over a corrupt profiles.json ({preview.Problem})");
-        t.Equal(corruptBefore, Directory.GetFiles(AppPaths.ConfigDir, "profiles.json.corrupt-*").Length,
-            "the preview left no .corrupt- copy beside the user's file");
-        t.Equal("{ this is not a profile list", File.ReadAllText(profiles),
-            "...and did not touch the file itself");
-        t.Check(!ProfileStore.IsUnreadable(profiles),
-            "...and did not disable saves to it for the session");
+        t.Check(preview.Ok, $"the bundle still previews over damaged stores ({preview.Problem})");
+        t.Check(preview.Screens.Count > 0 && preview.CurrentScreen != null && preview.Canvas != null,
+            "...having compared screens, the live screen and the desk layout against them");
+        t.Equal(corruptBefore, Directory.GetFiles(AppPaths.ConfigDir, "*.corrupt-*").Length,
+            "the preview left no .corrupt- copy beside the user's files");
+        foreach (string name in names)
+        {
+            string path = AppPaths.Config(name);
+            t.Equal(damaged, File.ReadAllText(path), $"...and did not touch {name} itself");
+            t.Check(!ProfileStore.IsUnreadable(path), $"...and did not disable saves to {name} for the session");
+        }
         CleanConfig();
     }
 

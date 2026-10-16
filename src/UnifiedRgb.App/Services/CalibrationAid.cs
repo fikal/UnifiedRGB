@@ -91,6 +91,10 @@ public sealed class CalibrationAid
             if (d != null && d.LedCount > 0) _devices.Add(d);
         if (_devices.Count == 0) return;
         _capture?.Invoke();
+        // Opened inside a dark window (or under a lock somebody saw past): the
+        // user is asking for the patches, so they may light for THIS dark span.
+        // A dark that begins after this does not get overruled (see Push).
+        _darkEpoch = _lighting.Suppressed ? _lighting.DarkEpoch : 0;
 
         if (!Active) Interlocked.Increment(ref s_active);
         Active = true;
@@ -142,12 +146,19 @@ public sealed class CalibrationAid
             {
                 // The whole device, not a zone: the aid painted the whole
                 // device, so a zone restore would leave the patch lit outside
-                // whatever zone the caller happened to have selected.
-                try { _lighting.PushFrame(d); }
+                // whatever zone the caller happened to have selected. In the
+                // dark the statics are not what it should show - the black is
+                // (a PushFrame would be refused there and leave the patch up).
+                try
+                {
+                    if (_lighting.Suppressed) _lighting.PushBlack(d);
+                    else _lighting.PushFrame(d);
+                }
                 catch (Exception ex) { Log.Warn("calibration", $"{d.Name}: could not restore statics after calibration: {ex.Message}"); }
             }
             Log.Info("calibration", "calibration aid stopped; statics restored");
         }
+        _darkEpoch = 0;
         _devices.Clear();
         Active = false;
         if (wasActive) Interlocked.Decrement(ref s_active);
@@ -176,9 +187,19 @@ public sealed class CalibrationAid
     public Rgb SwatchFor(IRgbDevice dev, string? zone)
         => Calibration.Apply(dev, zone, CalibrationReferences.ColorOf(Reference));
 
+    /// <summary>The dark span this session was opened in, or 0 when it was
+    /// opened with the lights on. A patch may light the hardware while the
+    /// lights are off only inside that span.</summary>
+    int _darkEpoch;
+
+    /// <summary>Every slider move ends here. When the dark began UNDER an open
+    /// calibration (a lock, 23:00 arriving) its black wins, and a later slider
+    /// move or Next used to put the white patch straight back up for the rest
+    /// of the night; the write boundary refuses that now, and the restore on
+    /// Stop leaves the device black.</summary>
     void Push()
     {
         var color = CalibrationReferences.ColorOf(Reference);
-        foreach (var d in _devices) _lighting.PushReference(d, color);
+        foreach (var d in _devices) _lighting.PushReference(d, color, _darkEpoch);
     }
 }

@@ -8,7 +8,7 @@ namespace UnifiedRgb.Core.Devices;
 /// register is set to IDLE, then select STATIC; each register write is padded
 /// with the controller's required settle delay. One logical LED (the card's
 /// lighting runs as a single zone in this mode). No elevation required.</summary>
-public sealed class MsiGpu : IRgbDevice
+public sealed class MsiGpu : IRgbDevice, ISelfRevertingLighting
 {
     const byte ADDR = 0x68;
     const byte REG_MODE = 0x22;
@@ -130,6 +130,37 @@ public sealed class MsiGpu : IRgbDevice
                 return WritePolicy.Refused($"msigpu:{Name}", "MsiGpu",
                     "I2C write failed - will retry on the next frame");
             return true;
+        }
+    }
+
+    /// <summary>Learned on the first read after a write: whether this card's
+    /// controller reads its mode register back as the STATIC we wrote. Only a
+    /// card that does can tell us later that it reverted; on one that reads
+    /// back something else, every check would look like a revert.</summary>
+    bool? _readbackWorks;
+
+    public bool CanTell { get { lock (_writeLock) return _readbackWorks != false; } }
+
+    public bool? ShowingOurs()
+    {
+        lock (_writeLock)
+        {
+            // Nothing landed yet (or the last write failed): nothing to compare.
+            if (_last == null || _readbackWorks == false) return null;
+            Span<byte> mode = stackalloc byte[1];
+            // The bus is busy or the driver is resetting: ask again next time.
+            if (!NvApi.I2CRead(_gpu, ADDR, REG_MODE, mode)) return null;
+            if (_readbackWorks == null)
+            {
+                _readbackWorks = mode[0] == MODE_STATIC;
+                Log.Info("MsiGpu", _readbackWorks == true
+                    ? $"'{Name}': the controller reads its mode back, so a reset that drops our lighting will be noticed"
+                    : $"'{Name}': the mode register reads 0x{mode[0]:X2} after our write, not 0x{MODE_STATIC:X2} - not checking this card for resets");
+                return _readbackWorks == true ? true : null;
+            }
+            if (mode[0] == MODE_STATIC) return true;
+            _last = null;   // it reverted: the next frame is written, not deduped
+            return false;
         }
     }
 

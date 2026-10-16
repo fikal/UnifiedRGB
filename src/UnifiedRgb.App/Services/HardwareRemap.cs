@@ -33,9 +33,26 @@ public sealed class HardwareRemap
     public HardwareRemap(IRgbDevice dev, ZoneSpan[]? savedZones, int savedLeds)
     {
         _live = dev.Zones ?? Array.Empty<RgbZone>();
-        _saved = savedZones ?? Array.Empty<ZoneSpan>();
+        _saved = Usable(savedZones);
         _savedLeds = savedLeds;
         _liveLeds = dev.LedCount;
+    }
+
+    /// <summary>The saved layout without the entries nothing could mean: null
+    /// ones, a negative offset, an empty or negative count, or a range past the
+    /// end of the integers. The app never writes such a span, but profiles.json
+    /// is a file people edit and import - and a null entry threw out of
+    /// LayoutChanged, a negative offset out of MapFrame's copy, all inside
+    /// LoadProfile, i.e. at startup with the startup profile. A dropped entry
+    /// costs only that zone's re-anchoring; the rest of the layout still works.</summary>
+    static ZoneSpan[] Usable(ZoneSpan?[]? spans)
+    {
+        if (spans == null || spans.Length == 0) return Array.Empty<ZoneSpan>();
+        var kept = new List<ZoneSpan>(spans.Length);
+        foreach (var s in spans)
+            if (s is { Offset: >= 0, Count: > 0 } && (long)s.Offset + s.Count <= int.MaxValue)
+                kept.Add(s);
+        return kept.ToArray();
     }
 
     /// <summary>The device is laid out differently than when this was saved.
@@ -59,7 +76,9 @@ public sealed class HardwareRemap
     /// placed and the effect has to be dropped.</summary>
     public (int Offset, int Count)? Map(int offset, int count)
     {
-        if (offset < 0 || count <= 0) return null;
+        // The end is computed in long: a hand-edited offset near int.MaxValue
+        // wrapped negative and passed the "fits the device" test below.
+        if (offset < 0 || count <= 0 || (long)offset + count > int.MaxValue) return null;
         if (!LayoutChanged) return offset + count <= _liveLeds ? (offset, count) : null;
 
         // The range IS a zone. The ordinary case: every effect the UI assigns

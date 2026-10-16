@@ -41,8 +41,14 @@ public sealed class LhmFans : IDisposable
         public double? Value => Sensor.Value is float v ? v : null;
     }
 
-    readonly Computer _computer;
+    // Null only for the harness's board (see the fan-list constructor).
+    readonly Computer? _computer;
     readonly UpdateVisitor _visitor = new();
+    // The machine-wide ISA bus mutex, held around every control write (see
+    // WithIsaBus). Null where it cannot be opened; writes then go ahead
+    // unguarded, as they always did.
+    readonly Mutex? _isa;
+    const int IsaWaitMs = 300;
     readonly List<Fan> _fans = new();
     readonly List<Temp> _temps = new();
     readonly List<Temp> _voltages = new();   // same shape: name + value
@@ -51,11 +57,27 @@ public sealed class LhmFans : IDisposable
     public IReadOnlyList<Temp> Temps => _temps;
     public IReadOnlyList<Temp> Voltages => _voltages;
 
-    LhmFans(Computer c) => _computer = c;
+    LhmFans(Computer c)
+    {
+        _computer = c;
+        _isa = IteSuperIo.OpenIsaMutex();
+    }
+
+    /// <summary>For the harness: a board made of these fans (fake controls)
+    /// with no Computer, no driver and no ISA bus mutex behind it, so the fan
+    /// hub's real paths can run against it without reaching a chip - or
+    /// holding up HWiNFO or the running app on the machine-wide mutex.</summary>
+    internal LhmFans(IEnumerable<Fan> fans)
+    {
+        _computer = null;
+        _isa = null;
+        _fans.AddRange(fans);
+    }
 
     public static LhmFans? TryOpen()
     {
         Computer? c = null;
+        LhmFans? f = null;
         try
         {
             c = new Computer
@@ -71,12 +93,13 @@ public sealed class LhmFans : IDisposable
                 IsBatteryEnabled = false,
             };
             c.Open();
-            var f = new LhmFans(c);
+            f = new LhmFans(c);
             f.Collect();
             if (f._fans.Count == 0 && f._temps.Count == 0)
             {
                 Log.Info("lhm", "no fan/temp sensors found on the motherboard");
                 c.Close();
+                f._isa?.Dispose();
                 return null;
             }
             Log.Info("lhm", $"motherboard: {f._fans.Count} fans "
@@ -91,12 +114,14 @@ public sealed class LhmFans : IDisposable
             // the ISA mutex stay held for the process lifetime while the ITE
             // fallback opens the same Super-I/O on top of them.
             try { c?.Close(); } catch { }
+            f?._isa?.Dispose();
             return null;
         }
     }
 
     void Collect()
     {
+        if (_computer == null) return;   // the harness's board: its fans came in through the constructor
         _computer.Accept(_visitor);
         foreach (var hw in _computer.Hardware)
             foreach (var sub in Flatten(hw))
@@ -163,8 +188,38 @@ public sealed class LhmFans : IDisposable
 
     public void Refresh()
     {
-        try { _computer.Accept(_visitor); } catch { }
+        try { _computer?.Accept(_visitor); } catch { }
     }
+
+    /// <summary>Run one control write while holding the machine-wide ISA bus
+    /// mutex ourselves. LHM's IT87 write path waits only 10 ms for that mutex
+    /// and, when another monitor (HWiNFO, a vendor tool) holds it, drops the
+    /// write without a word, while SetSoftware/SetDefault return normally. A
+    /// handback was then reported done with the header still on our duty, and
+    /// the dirty-start marker deleted on that report. Windows mutexes are
+    /// recursive per thread, so with the mutex held here LHM's own short wait
+    /// on this thread succeeds at once and its write cannot be dropped.
+    /// False = the bus was not ours within the timeout and nothing was written
+    /// (the hub retries). A missing mutex runs the body unguarded, as before.
+    /// Internal and static for the tests.</summary>
+    internal static bool WithIsaBus(Mutex? isa, int timeoutMs, Func<bool> body)
+    {
+        bool held = IteSuperIo.TryAcquire(isa, timeoutMs);
+        if (isa != null && !held) return false;
+        try { return body(); }
+        finally
+        {
+            if (held)
+            {
+                try { isa!.ReleaseMutex(); }
+                catch (Exception ex) { Log.Occasional("lhm-isa-release", "lhm", $"ISA bus mutex release failed: {ex.Message}"); }
+            }
+        }
+    }
+
+    void NoteBusBusy(int index, string what)
+        => Log.Occasional($"lhm-busy:{index}", "lhm",
+            $"'{_fans[index].Name}': another monitor held the ISA bus for {IsaWaitMs} ms, {what} not written - retrying");
 
     /// <summary>Drive a fan to a fixed duty percent (0-100). LHM performs the
     /// board's control takeover under the hood.</summary>
@@ -176,16 +231,21 @@ public sealed class LhmFans : IDisposable
         try
         {
             float clamped = Math.Clamp(percent, 0, 100);
-            // LHM writes the chip only from its own change events, and both of
-            // Control's setters dedup: re-asserting the value it already holds
-            // (the hub does so every ReassertTicks, for a driver reset or a
-            // resume, and after a write the ISA mutex made it drop) reached
-            // nothing. The nudge is two events - the same register byte twice,
-            // so no visible step - and the second one is the real write.
-            if (ctl.ControlMode == ControlMode.Software && ctl.SoftwareValue == clamped)
-                ctl.SetSoftware(clamped + 0.1f);
-            ctl.SetSoftware(clamped);
-            return true;
+            bool landed = WithIsaBus(_isa, IsaWaitMs, () =>
+            {
+                // LHM writes the chip only from its own change events, and both
+                // of Control's setters dedup: re-asserting the value it already
+                // holds (the hub does so every ReassertTicks, for a driver reset
+                // or a resume) reached nothing. The nudge is two events - the
+                // same register byte twice, so no visible step - and the second
+                // one is the real write.
+                if (ctl.ControlMode == ControlMode.Software && ctl.SoftwareValue == clamped)
+                    ctl.SetSoftware(clamped + 0.1f);
+                ctl.SetSoftware(clamped);
+                return true;
+            });
+            if (!landed) NoteBusBusy(index, "the duty was");
+            return landed;
         }
         catch (Exception ex) { Log.Warn("lhm", $"set duty failed: {ex.Message}"); return false; }
     }
@@ -206,9 +266,19 @@ public sealed class LhmFans : IDisposable
         {
             var ctl = _fans[index].Control;
             if (ctl == null) return true;
-            if (force && ctl.ControlMode == ControlMode.Default) ctl.SetSoftware(ctl.SoftwareValue);
-            ctl.SetDefault();
-            return true;
+            // Never taken by us: SetDefault on it writes nothing, so it needs no
+            // bus. Waiting for the bus anyway turned a busy bus (another monitor
+            // holding it) into a "board refused" handback for a header we never
+            // touched - a false error, a retry, and a stale-marker warning.
+            if (!force && ctl.ControlMode != ControlMode.Software) return true;
+            bool done = WithIsaBus(_isa, IsaWaitMs, () =>
+            {
+                if (force && ctl.ControlMode == ControlMode.Default) ctl.SetSoftware(ctl.SoftwareValue);
+                ctl.SetDefault();
+                return true;
+            });
+            if (!done) NoteBusBusy(index, "the handback was");
+            return done;
         }
         catch (Exception ex)
         {
@@ -232,6 +302,12 @@ public sealed class LhmFans : IDisposable
         return failed;
     }
 
+    /// <summary>Set by Dispose: every header went back to the board (or none
+    /// was ever ours). False after a close that left one on our duty, which
+    /// stays there until a reboot - SensorHub keeps the dirty-start marker
+    /// for it instead of deleting it.</summary>
+    public bool ClosedClean { get; private set; }
+
     public void Dispose()
     {
         // Last chance before the driver goes: a header still under software
@@ -239,11 +315,13 @@ public sealed class LhmFans : IDisposable
         try
         {
             var failed = RestoreAll();
+            ClosedClean = failed.Count == 0;
             if (failed.Count > 0)
                 Log.Warn("lhm", "closing with fans still under software control: "
                     + string.Join(", ", failed.Select(f => $"'{f.Name}'")));
         }
-        catch { }
-        try { _computer.Close(); } catch { }
+        catch (Exception ex) { Log.Warn("lhm", $"handing the fans back on close failed: {ex.Message}"); }
+        try { _computer?.Close(); } catch { }   // closing anyway; nothing left to hand back through it
+        _isa?.Dispose();
     }
 }

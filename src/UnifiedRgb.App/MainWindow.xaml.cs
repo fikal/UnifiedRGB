@@ -66,6 +66,10 @@ public partial class MainWindow : Window
             _wizardShown = true;
             Dispatcher.BeginInvoke(new Action(() =>
             {
+                // An autostart launch is shown for a moment and hidden again by
+                // Loaded before this runs. The wizard used to pop up over that
+                // hidden window at login; now it waits for the first real open.
+                if (!IsVisible) { _wizardShown = false; return; }
                 if (_vm.NeedsFirstRun) new WizardWindow(_vm) { Owner = this }.ShowDialog();
             }), System.Windows.Threading.DispatcherPriority.Background);
         };
@@ -119,7 +123,7 @@ public partial class MainWindow : Window
     | Ctrl+Alt+Up/Down = master brightness. Registered on    |
     | our (elevated) window, so they work over games too.    |
     \*-----------------------------------------------------*/
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
     static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     static extern bool UnregisterHotKey(IntPtr hWnd, int id);
@@ -132,10 +136,20 @@ public partial class MainWindow : Window
     void RegisterHotkeys(IntPtr hwnd)
     {
         _hotkeyHwnd = hwnd;
+        // A combination another program already holds is refused, and the key
+        // then simply did nothing with no trace of why. One line names them.
+        var refused = new List<string>();
+        void Register(int id, uint mods, uint vk, string name)
+        {
+            if (!RegisterHotKey(hwnd, id, mods, vk))
+                refused.Add($"{name} (error {System.Runtime.InteropServices.Marshal.GetLastWin32Error()})");
+        }
         for (int i = 0; i < 9; i++)
-            RegisterHotKey(hwnd, HkProfileBase + i, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, (uint)('1' + i));
-        RegisterHotKey(hwnd, HkBrightUp, MOD_CONTROL | MOD_ALT, 0x26);     // VK_UP
-        RegisterHotKey(hwnd, HkBrightDown, MOD_CONTROL | MOD_ALT, 0x28);   // VK_DOWN
+            Register(HkProfileBase + i, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, (uint)('1' + i), $"Ctrl+Alt+{i + 1}");
+        Register(HkBrightUp, MOD_CONTROL | MOD_ALT, 0x26, "Ctrl+Alt+Up");       // VK_UP
+        Register(HkBrightDown, MOD_CONTROL | MOD_ALT, 0x28, "Ctrl+Alt+Down");   // VK_DOWN
+        if (refused.Count > 0)
+            Log.Warn("hotkeys", $"not registered, probably held by another program: {string.Join(", ", refused)}");
     }
 
     void UnregisterHotkeys()

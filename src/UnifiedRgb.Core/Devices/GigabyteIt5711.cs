@@ -340,6 +340,7 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
         if (_disposed) return false;   // a write that outlives Dispose (a slow drain): refuse quietly, per the contract
         lock (_writeLock)
         {
+            if (_disposed) return false;   // and again under the lock: Dispose may have run while we waited for it
             for (int z = 0; z < ZoneDefs.Length; z++)
             {
                 var def = ZoneDefs[z];
@@ -386,6 +387,7 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
         if (end <= start) return true;
         lock (_writeLock)
         {
+            if (_disposed) return false;   // and again under the lock: Dispose may have run while we waited for it
             for (int i = start; i < end; i++) _shadow[i] = colors[i - offset];
             return WriteZones(start, end);
         }
@@ -564,6 +566,7 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
         if (_disposed) return false;   // a write that outlives Dispose (a slow drain): refuse quietly, per the contract
         lock (_writeLock)
         {
+            if (_disposed) return false;   // and again under the lock: Dispose may have run while we waited for it
             // Every step is attempted even after a refusal - a board left with
             // some headers handed back and others still in direct mode is the
             // worst of the three states - but the verdict is the AND of all of
@@ -603,6 +606,8 @@ public sealed class GigabyteIt5711 : IRgbDevice, IZoneWritable, IHardwareModes
         if (header is < 1 or > 4) throw new ArgumentOutOfRangeException(nameof(header));
         lock (_writeLock)
         {
+            // The header-config dialog's Test can outlive a rescan's Dispose.
+            if (_disposed) return;
             var (_, mask) = HeaderInfo(header);
             // Keep the other headers' configured counts: zeroing them downgraded
             // a >32-LED header's count enum, and nothing re-sent it afterwards.

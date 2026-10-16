@@ -154,10 +154,14 @@ for everything else.
   for CPU temperature, SMBus (DRAM RGB), and fan control. That is real kernel
   access; understand it before you run it.
 - DRAM lighting talks **raw SMBus**. The implementation follows OpenRGB's
-  proven ENE detection (remap-then-probe at known-safe addresses), but as
-  with every tool in this category: writing to the wrong SMBus device can
-  permanently damage hardware. Nothing here writes outside the detected ENE
-  controllers.
+  proven ENE detection (remap-then-probe at known-safe addresses), with one
+  addition: whatever answers at the shared address 0x77 must identify as an
+  ENE controller, by reads only, before the remap writes go to it. As with
+  every tool in this category, writing to the wrong SMBus device can
+  permanently damage hardware; nothing here writes to an SMBus address that
+  has not identified as ENE. (Detection elsewhere may send a protocol's own
+  read-only identification query, such as Logitech's HID++ feature lookup,
+  but never a write to an unidentified device.)
 - Protocols were reverse-engineered for interoperability (USB captures and
   behavioral analysis), and several drivers began as ports of
   [OpenRGB](https://gitlab.com/CalcProgrammer1/OpenRGB)'s GPLv2 device code —
