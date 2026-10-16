@@ -272,6 +272,11 @@ internal sealed class ChromaPipeServer : IDisposable
     const uint FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000;
     const uint FILE_FLAG_OVERLAPPED = 0x40000000;
     const uint PIPE_TYPE_BYTE = 0, PIPE_WAIT = 0;
+    // The ACL lets Everyone write (the shim runs inside Wallpaper Engine and
+    // games, as whoever is signed in), and Everyone includes a network logon:
+    // without this, another machine could open the pipe over SMB and paint the
+    // desk. Only processes on this PC may connect.
+    internal const uint PIPE_REJECT_REMOTE_CLIENTS = 0x8;
     const uint PIPE_UNLIMITED_INSTANCES = 255;
     const int ERROR_ACCESS_DENIED = 5;
 
@@ -305,7 +310,7 @@ internal sealed class ChromaPipeServer : IDisposable
             uint openMode = PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED
                           | (_firstInstance ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0);
             var h = CreateNamedPipeW(@"\\.\pipe\" + _name, openMode,
-                PIPE_TYPE_BYTE | PIPE_WAIT, PIPE_UNLIMITED_INSTANCES, 0, 1 << 20, 0, ref sa);
+                PIPE_TYPE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, PIPE_UNLIMITED_INSTANCES, 0, 1 << 20, 0, ref sa);
             if (h.IsInvalid) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
             _firstInstance = false;
             // isConnected:false - the handle is a fresh, unconnected pipe; with

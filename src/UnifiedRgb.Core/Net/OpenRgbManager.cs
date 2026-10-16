@@ -355,7 +355,7 @@ public static class OpenRgbManager
         _proc = Process.Start(new ProcessStartInfo
         {
             FileName = exe,
-            Arguments = $"--server --server-port {Port} --loglevel 6 --config \"{ConfigDir}\"",
+            Arguments = LaunchArguments(ConfigDir),
             UseShellExecute = true,
             WindowStyle = ProcessWindowStyle.Hidden,
             WorkingDirectory = Path.GetDirectoryName(exe)!,
@@ -442,6 +442,13 @@ public static class OpenRgbManager
         status?.Invoke("stopped");
         return LaunchResult.Failed;
     }
+
+    /// <summary>The bundled server's command line. --server-host 127.0.0.1:
+    /// the SDK protocol has no password, and anyone who reaches the port drives
+    /// every device OpenRGB found. OpenRGB 1.0 already defaults to loopback,
+    /// but only until its config says otherwise; this does not depend on that.</summary>
+    internal static string LaunchArguments(string configDir) =>
+        $"--server --server-host 127.0.0.1 --server-port {Port} --loglevel 6 --config \"{configDir}\"";
 
     /// <summary>Did the bundled server die the way a detector crash dies (access
     /// violation, fast-fail, abort) rather than quit? Feeding an ordinary exit

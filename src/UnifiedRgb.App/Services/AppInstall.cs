@@ -67,7 +67,9 @@ public static class AppInstall
 
     /// <summary>A released build: one self-contained single-file exe, whose
     /// assemblies have no file of their own. Debug and `dotnet run` trees do.</summary>
+#pragma warning disable IL3000 // empty in a single-file bundle, which is exactly what this asks
     public static bool IsPackaged => string.IsNullOrEmpty(typeof(AppInstall).Assembly.Location);
+#pragma warning restore IL3000
 
     public static bool RunningInstalled =>
         IsPackaged && Environment.ProcessPath is string p && SamePath(p, InstalledExe);

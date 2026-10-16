@@ -50,9 +50,16 @@
                     <Grid Margin="0,0,0,8">
                         <TextBlock x:Name="SelectionText" Opacity="0.8" FontSize="12"
                                    VerticalAlignment="Center" TextWrapping="Wrap"/>
-                        <Button x:Name="IdentifyBtn" Content="Identify" Padding="12,5"
-                                HorizontalAlignment="Right" Click="Identify_Click"
-                                ToolTip="Blink this device white, so you can tell it from an identical one"/>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <!-- Only for a device that is not attached: one that is
+                                 would be placed again the next time this opens. -->
+                            <Button x:Name="ForgetBtn" Content="Forget" Style="{StaticResource Danger}"
+                                    Padding="12,5" Margin="0,0,8,0" Visibility="Collapsed" Click="Forget_Click"
+                                    ToolTip="Take this device off the desk. If it is plugged in again, it comes back in a starting place (Delete)"/>
+                            <Button x:Name="IdentifyBtn" Content="Identify" Padding="12,5"
+                                    Click="Identify_Click"
+                                    ToolTip="Blink this device white, so you can tell it from an identical one"/>
+                        </StackPanel>
                     </Grid>
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="x" VerticalAlignment="Center" Margin="0,0,6,0" Opacity="0.75" FontSize="12"/>

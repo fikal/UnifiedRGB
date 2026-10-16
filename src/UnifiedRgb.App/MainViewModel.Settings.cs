@@ -871,9 +871,16 @@ public sealed partial class MainViewModel
         }
     }
 
+    /// <summary>Counts the placed devices that are attached: the desk also
+    /// remembers ones that are away, and those render nothing. It said "all 11"
+    /// on a desk of 7 while four old mice sat in the file.</summary>
     public string CanvasStatus => Canvas.Enabled
-        ? $"On. Effects render across all {Canvas.Items.Count} device(s) as one image."
+        ? $"On. Effects render across all {Canvas.Items.Count(i => Devices.Any(d => d.Name == i.Device))} device(s) as one image."
         : "Off. Effects render per device, exactly as they always have.";
+
+    /// <summary>The desk editor adds, moves and forgets devices without going
+    /// through a property here, so Settings asks again when it closes.</summary>
+    public void RefreshCanvasStatus() => OnChanged(nameof(CanvasStatus));
 
     /// <summary>Pick up a setup that was just imported over the top of us.
     ///

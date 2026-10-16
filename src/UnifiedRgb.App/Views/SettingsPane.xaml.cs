@@ -164,6 +164,7 @@ public partial class SettingsPane : UserControl
     {
         var owner = Owner;
         Dialogs.ShowBlurred(owner, new CanvasWindow(VM) { Owner = owner });
+        VM.RefreshCanvasStatus();
     }
 
     void InstallCs2_Click(object sender, RoutedEventArgs e)

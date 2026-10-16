@@ -350,6 +350,22 @@ public partial class CanvasWindow : Window
         UpdateSelectionUi();
     }
 
+    /// <summary>Take an away device off the desk. Nothing else ever removes one:
+    /// Auto arrange only moves what is attached, so a mouse given back or a
+    /// pad with no lights stayed on the desk for good. Undo brings it back.</summary>
+    void Forget_Click(object sender, RoutedEventArgs e) => ForgetSelected();
+
+    void ForgetSelected()
+    {
+        if (_selected == null || _vm.Devices.Any(d => d.Name == _selected.Device)) return;
+        PushUndo();
+        _layout.Items.Remove(_selected);
+        _selected = null;
+        Commit();
+        Redraw();
+        UpdateSelectionUi();
+    }
+
     void Identify_Click(object sender, RoutedEventArgs e)
     {
         if (_selected == null) return;
@@ -437,10 +453,12 @@ public partial class CanvasWindow : Window
                 ColsBox.Text = ""; RowsBox.Text = ""; SerpentineBox.IsChecked = false;
                 XBox.Text = YBox.Text = WBox.Text = HBox.Text = "";
                 SetEnabled(false, false);
+                ForgetBtn.Visibility = Visibility.Collapsed;
                 return;
             }
 
             var device = _vm.Devices.FirstOrDefault(d => d.Name == _selected.Device);
+            ForgetBtn.Visibility = device == null ? Visibility.Visible : Visibility.Collapsed;
             string leds = device == null ? "not attached" : $"{device.LedCount} LEDs";
             string turned = _selected.Rotation == 0 ? "" : $", turned {_selected.Rotation}";
             string flipped = (_selected.FlipX ? ", flipped across" : "")
@@ -466,6 +484,7 @@ public partial class CanvasWindow : Window
             // "snakes back" under "As detected" wrote a layout of null and then
             // read the tick straight back off it as false.
             SetEnabled(true, ShapePick.SelectedIndex == 3);
+            IdentifyBtn.IsEnabled = device != null;   // nothing to blink
         }
         finally { _suppressShapeEvents = false; }
     }
@@ -524,6 +543,7 @@ public partial class CanvasWindow : Window
         if (Keyboard.FocusedElement is TextBox) return;
         if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.Z) { Step(true); e.Handled = true; }
         else if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.Y) { Step(false); e.Handled = true; }
+        else if (e.Key == Key.Delete && ForgetBtn.Visibility == Visibility.Visible) { ForgetSelected(); e.Handled = true; }
         else if (e.Key == Key.Escape) Close();
     }
 

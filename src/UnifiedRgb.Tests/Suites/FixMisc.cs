@@ -212,6 +212,12 @@ static class FixMiscSuite
         // A release asset, not a CI job artifact: GitLab deletes job artifacts
         // after 30 days, so every master pin expired and left new machines with
         // no way to install the bridge.
+        t.Check(OpenRgbManager.LaunchArguments(@"C:\x").Contains("--server-host 127.0.0.1", StringComparison.Ordinal),
+            "the bundled OpenRGB's SDK server is bound to loopback explicitly (the protocol has no password)");
+        t.Check((ChromaPipeServer.PIPE_REJECT_REMOTE_CLIENTS & 0x8) != 0
+                && (TestHelpers.SourceOf("src/UnifiedRgb.Core/Effects/ChromaSync.cs") is not string src
+                    || src.Contains("PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS", StringComparison.Ordinal)),
+            "the Chroma pipe refuses clients on other machines");
         t.Check(OpenRgbManager.PinnedUrl.StartsWith("https://codeberg.org/OpenRGB/OpenRGB/releases/download/", StringComparison.Ordinal),
             "the pin is a permanent OpenRGB release asset, not an expiring CI artifact");
         var m = System.Text.RegularExpressions.Regex.Match(OpenRgbManager.PinnedUrl, @"/OpenRGB_([0-9.]+)_Windows_64_([0-9a-f]+)\.zip$");
