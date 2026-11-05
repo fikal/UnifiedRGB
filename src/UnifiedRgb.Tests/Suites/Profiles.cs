@@ -509,6 +509,15 @@ static class ProfilesSuite
             // The control channel would take it, do nothing and say nothing.
             t.Check(!UnifiedRgb.App.Services.WallpaperEngine.Apply(null), "no wallpaper asked for is not a request");
             t.Check(!UnifiedRgb.App.Services.WallpaperEngine.Apply("   "), "nor is a blank one");
+
+            // config.json still names the last profile after Wallpaper Engine has
+            // exited (11/5: after a reboot the Wow wallpaper was never asked for).
+            t.Check(UnifiedRgb.App.Services.WallpaperEngine.IsAlreadyUp("Wow", "wow", running: true),
+                "the profile on screen is left alone");
+            t.Check(!UnifiedRgb.App.Services.WallpaperEngine.IsAlreadyUp("Wow", "Wow", running: false),
+                "a profile the config names is NOT up when Wallpaper Engine is not running");
+            t.Check(!UnifiedRgb.App.Services.WallpaperEngine.IsAlreadyUp("Diablo", "Wow", running: true),
+                "a different profile is not up");
         }
         finally
         {

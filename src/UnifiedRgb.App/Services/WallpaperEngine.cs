@@ -500,11 +500,22 @@ public static class WallpaperEngine
         // tick, an app rule, each step of a show - so re-asking is not a one-off
         // stutter, it is a reload each time. True, because the request is
         // satisfied: the same answer a show already running gives.
-        if (string.Equals(ActiveProfile, profile, StringComparison.OrdinalIgnoreCase))
+        //
+        // But only while Wallpaper Engine is RUNNING. config.json keeps naming
+        // the last profile after the program has exited, so right after a
+        // reboot (this app starts before Steam brings Wallpaper Engine up) the
+        // check read "Wow is up" with no wallpaper on screen and sent nothing.
+        // 11/5: that is how the Wow wallpaper never loaded. Sending the
+        // request when it is not running is also what STARTS it: the control
+        // host launches Wallpaper Engine and applies the profile.
+        bool running = IsRunning();
+        if (IsAlreadyUp(ActiveProfile, profile, running))
         {
             Log.Info("wallpaper", $"wallpaper profile '{profile}' is already up, leaving it alone");
             return true;
         }
+        if (!running)
+            Log.Info("wallpaper", $"Wallpaper Engine is not running; starting it with profile '{profile}'");
 
         try
         {
@@ -558,6 +569,31 @@ public static class WallpaperEngine
             Log.Warn("wallpaper", $"could not ask Wallpaper Engine for profile '{profile}': {ex.Message}");
             return false;
         }
+    }
+
+    /// <summary>The skip rule on its own, so it can be tested without a real
+    /// Wallpaper Engine: the profile counts as up only when the config names it
+    /// AND the program is running to show it.</summary>
+    internal static bool IsAlreadyUp(string? active, string profile, bool running)
+        => running && string.Equals(active, profile, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Whether a Wallpaper Engine host process is up in any session we
+    /// can see. A failed lookup counts as NOT running, so the cost of a wrong
+    /// answer is one extra reload rather than a missing wallpaper.</summary>
+    static bool IsRunning()
+    {
+        foreach (string host in Hosts)
+        {
+            try
+            {
+                var procs = Process.GetProcessesByName(Path.GetFileNameWithoutExtension(host));
+                bool any = procs.Length > 0;
+                foreach (var p in procs) p.Dispose();
+                if (any) return true;
+            }
+            catch { /* treated as not running */ }
+        }
+        return false;
     }
 
     /// <summary>Test seam: forget what was found so the next read looks again.
