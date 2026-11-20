@@ -10,11 +10,18 @@ public static class UpdateClient
     /// <summary>Where releases are published. Public information.</summary>
     public const string GitHubRepo = "fikal/UnifiedRGB";
 
-    /// <summary>For the release JSON and the .sha256 asset.</summary>
-    static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(30) };
+    /// <summary>For the release JSON and the .sha256 asset. Both clients race a
+    /// host's addresses (RacingConnect): GitHub's download host has several, and
+    /// one that never answers used to cost the full 21 s connect timeout before
+    /// the next was tried - twice per install, on a badge that said nothing.</summary>
+    static readonly HttpClient Http = new(Net.RacingConnect.Handler()) { Timeout = TimeSpan.FromSeconds(30) };
 
     /// <summary>For the release exe itself (~270 MB).</summary>
-    static readonly HttpClient HttpDownload = new() { Timeout = TimeSpan.FromMinutes(15) };
+    static readonly HttpClient HttpDownload = new(Net.RacingConnect.Handler()) { Timeout = TimeSpan.FromMinutes(15) };
+
+    /// <summary>How often a download reports progress: often enough that the
+    /// bar visibly moves, rarely enough to cost the UI nothing.</summary>
+    public static readonly TimeSpan ProgressEvery = TimeSpan.FromMilliseconds(150);
 
     /// <summary>Sha256 is null until <see cref="ResolveShaAsync"/> runs: the
     /// startup check is ONE request (the release JSON); the .sha256 asset is
@@ -32,8 +39,8 @@ public static class UpdateClient
             {
                 using var shaReq = new HttpRequestMessage(HttpMethod.Get, build.ShaUrl);
                 shaReq.Headers.TryAddWithoutValidation("User-Agent", "UnifiedRGB-updater");
-                using var resp = await Http.SendAsync(shaReq);
-                var sha = ExtractSha(await resp.Content.ReadAsStringAsync());
+                using var resp = await Http.SendAsync(shaReq).ConfigureAwait(false);
+                var sha = ExtractSha(await resp.Content.ReadAsStringAsync().ConfigureAwait(false));
                 if (sha != null) return sha;
             }
             catch { /* fall through to notes scan */ }
@@ -53,13 +60,13 @@ public static class UpdateClient
                 $"https://api.github.com/repos/{GitHubRepo}/releases/latest");
             req.Headers.TryAddWithoutValidation("User-Agent", "UnifiedRGB-updater");
             req.Headers.TryAddWithoutValidation("Accept", "application/vnd.github+json");
-            using var response = await Http.SendAsync(req);
+            using var response = await Http.SendAsync(req).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 Log.Warn("update", $"github release check: {(int)response.StatusCode}");
                 return null;
             }
-            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync().ConfigureAwait(false));
             var root = doc.RootElement;
             if (!root.TryGetProperty("tag_name", out var t) || t.ValueKind != JsonValueKind.String)
                 return null;
@@ -120,36 +127,43 @@ public static class UpdateClient
         return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(fs)).ToLowerInvariant();
     }
 
-    /// <summary>Download a release exe (its GitHub asset URL) to destPath,
-    /// reporting whole-percent progress. Returns null on success, else the
-    /// failure reason.</summary>
-    public static async Task<string?> DownloadAsync(string url, string destPath, Action<int>? percent = null)
+    /// <summary>Download a release exe (its GitHub asset URL) to destPath.
+    /// Returns null on success, else the failure reason.
+    ///
+    /// Runs entirely on the thread pool (ConfigureAwait(false) on every await):
+    /// called from a click, the ~4,000 chunk continuations of a 270 MB download
+    /// used to come back to the UI thread one by one, and the window crawled
+    /// for the whole minute it took.</summary>
+    /// <param name="progress">Bytes so far and the total (0 when the server
+    /// sends no length), at most every <see cref="ProgressEvery"/> and once at
+    /// the end. Called on a pool thread: marshal before touching the UI.</param>
+    public static async Task<string?> DownloadAsync(string url, string destPath, Action<long, long>? progress = null)
     {
         try
         {
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.TryAddWithoutValidation("User-Agent", "UnifiedRGB-updater");
             using var response = await HttpDownload.SendAsync(req,
-                HttpCompletionOption.ResponseHeadersRead);
+                HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
                 return $"server said {(int)response.StatusCode}";
 
             long total = response.Content.Headers.ContentLength ?? 0;
-            await using var src = await response.Content.ReadAsStreamAsync();
-            await using var dst = File.Create(destPath);
-            var buffer = new byte[1 << 16];
+            progress?.Invoke(0, total);
+            await using var src = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+            await using var dst = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None,
+                1 << 20, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            var buffer = new byte[1 << 18];
             long done = 0;
-            int lastPct = -1, n;
-            while ((n = await src.ReadAsync(buffer)) > 0)
+            int n;
+            var since = System.Diagnostics.Stopwatch.StartNew();
+            while ((n = await src.ReadAsync(buffer).ConfigureAwait(false)) > 0)
             {
-                await dst.WriteAsync(buffer.AsMemory(0, n));
+                await dst.WriteAsync(buffer.AsMemory(0, n)).ConfigureAwait(false);
                 done += n;
-                if (total > 0)
-                {
-                    int pct = (int)(done * 100 / total);
-                    if (pct != lastPct) { lastPct = pct; percent?.Invoke(pct); }
-                }
+                if (since.Elapsed >= ProgressEvery) { since.Restart(); progress?.Invoke(done, total); }
             }
+            progress?.Invoke(done, total);
             Log.Info("update", $"downloaded {done:n0} bytes to {destPath}");
             return null;
         }

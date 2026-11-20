@@ -28,8 +28,44 @@ namespace UnifiedRgb.Tests;
 \*-----------------------------------------------------------*/
 static class NetSuite
 {
+    /// <summary>2026-11-20: GitHub's download host had addresses that never
+    /// answered, and .NET's one-at-a-time connect sat out 21 s on each before
+    /// trying the next. The race must reach a live address behind a dead one
+    /// in well under that.</summary>
+    static void RacingConnectSection(Harness t)
+    {
+        t.Section("2026-11-20: connect races a host's addresses (a dead one first costs a stagger, not 21 s)");
+        var v4a = System.Net.IPAddress.Parse("192.0.2.1");     // TEST-NET-1: nothing answers there
+        var v4b = System.Net.IPAddress.Parse("127.0.0.1");
+        var v6 = System.Net.IPAddress.Parse("2001:db8::1");     // documentation range
+        var order = RacingConnect.Interleave(new[] { v4a, v4b, v6 });
+        t.Equal("2001:db8::1,192.0.2.1,127.0.0.1", string.Join(",", order), "families alternate, IPv6 first, each in DNS order");
+
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            int port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            using var socket = RacingConnect.ConnectAsync(new[] { v4a, v4b }, port, cts.Token).GetAwaiter().GetResult();
+            t.Check(socket.Connected && ((System.Net.IPEndPoint)socket.RemoteEndPoint!).Address.Equals(v4b),
+                "the live address behind a dead one is the one connected");
+            t.Check(sw.Elapsed < TimeSpan.FromSeconds(3),
+                $"...in {sw.ElapsedMilliseconds} ms, not the dead address's full connect timeout");
+
+            sw.Restart();
+            Exception? none = null;
+            try { RacingConnect.ConnectAsync(Array.Empty<System.Net.IPAddress>(), port, CancellationToken.None).GetAwaiter().GetResult(); }
+            catch (Exception ex) { none = ex; }
+            t.Check(none is System.Net.Sockets.SocketException, "no addresses at all is a socket error, not a hang");
+        }
+        finally { listener.Stop(); }
+    }
+
     public static void Run(Harness t)
     {
+        RacingConnectSection(t);
         t.Section("OpenRGB v1 device blob parsing");
         {
             // Build a synthetic v1 controller blob byte-for-byte, mirroring the wire

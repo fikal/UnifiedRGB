@@ -6,8 +6,13 @@ namespace UnifiedRgb.App.Services;
 
 /// <summary>Self-update: startup check against GitHub Releases, and the download →
 /// verify → batch-swap → restart install flow. Extracted from the view model;
-/// status flows back through the two callbacks.</summary>
-public sealed class UpdateService(Action<string> setText, Action<bool> setAvailable)
+/// status flows back through the callbacks.</summary>
+/// <param name="setProgress">The download's fraction done (0..1), or null for
+/// "no bar". Drives the fill in the title-bar badge.</param>
+/// <param name="setBusy">An install is under way: the badge stops taking clicks
+/// (a second click did nothing anyway) without greying out.</param>
+public sealed class UpdateService(Action<string> setText, Action<bool> setAvailable,
+                                  Action<double?>? setProgress = null, Action<bool>? setBusy = null)
 {
 
     /// <summary>Delete a file we are finished with. A failure here is the one
@@ -21,6 +26,21 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
         try { File.Delete(path); } catch { /* see the summary: cleanup only, and PruneStale gets it later */ }
     }
     bool _running;
+
+    /// <summary>Every way an attempt ends that is not the hand-off sets this
+    /// false, so the badge's busy state and progress fill are cleared in one
+    /// place rather than at each of the seven exits.</summary>
+    bool Running
+    {
+        set
+        {
+            _running = value;
+            setBusy?.Invoke(value);
+            if (!value) setProgress?.Invoke(null);
+        }
+    }
+
+    static string Mb(long bytes) => (bytes / 1_048_576.0).ToString("0");
 
     // Every install-attempt file lives NEXT TO the exe (see InstallAsync for
     // why not %TEMP%): the pending marker is fixed-name, the swap result is
@@ -119,7 +139,12 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
     public async Task InstallAsync()
     {
         if (_running) return;
-        _running = true;
+        Running = true;
+        // Said the moment the badge is clicked. The release lookup and the
+        // checksum fetch come first and take a second or two; the badge used to
+        // sit unchanged through them, which read as a click that did nothing.
+        setText("Preparing update…");
+        setProgress?.Invoke(0);
         string? staged = null, script = null;   // for the failure path in the catch below
         bool handedOff = false;
         try
@@ -154,31 +179,46 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             {
                 Log.Warn("update", $"release {latest?.Version ?? "(unknown)"} has no usable published SHA-256 ('{sha ?? "null"}') - not downloading; current install left intact");
                 setText("update could not be verified — try again later");
-                _running = false;
+                Running = false;
                 return;
             }
             staged = temp;
-            setText("downloading 0%");
-            string? err = await UpdateClient.DownloadAsync(latest.DownloadUrl, temp,
-                pct => Application.Current.Dispatcher.Invoke(() => setText($"downloading {pct}%")));
+            setText(latest.Size > 0 ? $"Downloading 0 of {Mb(latest.Size)} MB" : "Downloading…");
+            // Progress arrives on a pool thread (the download never touches the
+            // UI thread). BeginInvoke, not Invoke: the download must not wait on
+            // the window to repaint before it reads the next chunk.
+            var ui = Application.Current.Dispatcher;
+            string? err = await UpdateClient.DownloadAsync(latest.DownloadUrl, temp, (done, total) =>
+                ui.BeginInvoke(() =>
+                {
+                    if (!_running) return;   // a report that lands after the attempt ended
+                    if (total > 0)
+                    {
+                        setProgress?.Invoke(Math.Clamp(done / (double)total, 0, 1));
+                        setText($"Downloading {done * 100 / total}% · {Mb(done)} of {Mb(total)} MB");
+                    }
+                    else setText($"Downloading {Mb(done)} MB");
+                }));
             if (err != null)
             {
                 // A dropped connection leaves a partial payload; never strand
                 // it beside the exe (every retry would add another).
                 TryDelete(temp);
-                setText(err); _running = false; return;
+                setText(err); Running = false; return;
             }
 
             // Integrity: the publisher registered the build's SHA-256; refuse
             // a download that doesn't match (corruption or tampering). Never
             // skipped - a missing hash already ended the attempt above.
+            setText("Verifying download…");
+            setProgress?.Invoke(1);
             string got = await Task.Run(() => UpdateClient.HashFile(temp));
             if (!string.Equals(got, sha, StringComparison.OrdinalIgnoreCase))
             {
                 Log.Error("update", $"download hash mismatch: expected {sha}, got {got}");
                 TryDelete(temp);
                 setText("update failed integrity check — try again");
-                _running = false;
+                Running = false;
                 return;
             }
 
@@ -197,7 +237,7 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
                     Log.Error("update", $"downloaded build has no readable version ('{vi.FileVersion}') — refusing swap");
                     TryDelete(temp);
                     setText("update payload looked wrong — not installed");
-                    _running = false;
+                    Running = false;
                     return;
                 }
                 var dl = new Version(raw.Major, raw.Minor, raw.Build);
@@ -206,7 +246,7 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
                     Log.Error("update", $"downloaded build is {dl} — not newer than installed {LocalVersion}; the '{latest?.Version}' feed entry points at a stale binary. Refusing swap (bad publish).");
                     TryDelete(temp);
                     setText($"update payload was v{dl}, not newer — not installed");
-                    _running = false;
+                    Running = false;
                     return;
                 }
                 if (Version.TryParse(latest?.Version, out var feed)
@@ -224,8 +264,9 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             // relaunched the OLD version. If the swap never succeeds (user
             // cancelled the close, exe folder needs admin), start nothing —
             // a second instance would fight the first for devices — but WRITE
-            // the outcome so the next launch can log what happened. 90 tries
-            // = a 3-minute window for slow shutdowns (save prompt, HID teardown).
+            // the outcome so the next launch can log what happened. 180 tries
+            // a second apart = a 3-minute window for slow shutdowns (save
+            // prompt, HID teardown).
             // Field case (1.0.5→1.0.6): the window closes but the process
             // can outlive it holding the exe lock (device/bridge teardown), so
             // after a minute of failed moves the script force-kills our exact
@@ -252,17 +293,23 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             // (a stderr redirect - empty file) and n=12 became `1 0>file`
             // (stdin from a missing file - nothing written). Only n=1 ever
             // reported. Do not move the `>` back after the text.
+            // Tries at once, then once a second: the restart used to sit out a
+            // fixed 2 s before the first attempt even when the old process had
+            // already gone. 180 tries at 1 s keeps the same 3-minute window, and
+            // the taskkill still comes after a minute.
             File.WriteAllText(bat, $"""
                 @echo off
                 set n=0
                 :loop
                 set /a n+=1
-                if %n% gtr 90 goto fail
-                if %n% equ 30 "{sys}\taskkill.exe" /f /pid {Environment.ProcessId} /fi "IMAGENAME eq {imageName}" >nul 2>&1
-                "{sys}\timeout.exe" /t 2 /nobreak >nul
+                if %n% gtr 180 goto fail
+                if %n% equ 60 "{sys}\taskkill.exe" /f /pid {Environment.ProcessId} /fi "IMAGENAME eq {imageName}" >nul 2>&1
                 {verify}
                 move /y "{temp}" "{target}" >nul 2>&1
-                if errorlevel 1 goto loop
+                if not errorlevel 1 goto moved
+                "{sys}\timeout.exe" /t 1 /nobreak >nul
+                goto loop
+                :moved
                 >"{swapResult}" echo ok %n%
                 start "" "{target}"
                 goto done
@@ -299,12 +346,12 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             {
                 TryDelete(temp);
                 TryDelete(bat);
-                _running = false;
+                Running = false;
                 setText($"Update v{latest?.Version} — install");
                 Log.Info("update", "install cancelled at the close prompt - nothing swapped");
             }
 
-            setText("restarting...");
+            setText("Restarting into the new version…");
             var win = Application.Current.MainWindow;
             if (win == null) { StartSwap(); return; }
             // Start the swap script only once the window has ACTUALLY closed.
@@ -334,7 +381,7 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
                 TryDelete(staged);
                 TryDelete(script);
             }
-            _running = false;
+            Running = false;
             throw;
         }
     }

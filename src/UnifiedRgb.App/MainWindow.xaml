@@ -36,11 +36,42 @@
                            Foreground="#FFD8DAE2" Margin="9,0,0,0" VerticalAlignment="Center"/>
                 <TextBlock Text="{Binding AppVersion}" FontSize="11" Foreground="#FF6A6E7A"
                            Margin="7,1,0,0" VerticalAlignment="Center"/>
-                <Button Content="{Binding UpdateText}" Style="{StaticResource Accent}"
-                        FontSize="11" Padding="10,4" Margin="14,0,0,0" VerticalAlignment="Center"
+                <!-- The badge is its own progress bar: it fills as the download
+                     runs and says each step (preparing, downloading N% of MB,
+                     verifying, restarting). It used to keep its label through
+                     the release lookup and show only a small percentage after,
+                     which read as a stalled click. While an install runs it
+                     takes no clicks; it does not grey out, it is working. -->
+                <Button FontSize="11" Padding="0" Margin="14,0,0,0" VerticalAlignment="Center"
                         WindowChrome.IsHitTestVisibleInChrome="True" Command="{Binding InstallUpdateCommand}"
-                        Visibility="{Binding UpdateAvailable, Converter={StaticResource BoolToVis}}"
-                        ToolTip="Download the new build and restart"/>
+                        Visibility="{Binding UpdateAvailable, Converter={StaticResource BoolToVis}}">
+                    <Button.Style>
+                        <Style TargetType="Button" BasedOn="{StaticResource Accent}">
+                            <Setter Property="ToolTip" Value="Download the new build and restart"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding UpdateBusy}" Value="True">
+                                    <Setter Property="IsHitTestVisible" Value="False"/>
+                                    <Setter Property="ToolTip" Value="{x:Null}"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                    <Grid>
+                        <!-- A hard edge in a full-width gradient, not a scaled
+                             shape: scaling a rounded rect squashed its corners
+                             and they poked out past the badge's own. -->
+                        <Border CornerRadius="7">
+                            <Border.Background>
+                                <LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.5">
+                                    <GradientStop Color="#47FFFFFF" Offset="0"/>
+                                    <GradientStop Color="#47FFFFFF" Offset="{Binding UpdateProgressScale}"/>
+                                    <GradientStop Color="#00FFFFFF" Offset="{Binding UpdateProgressScale}"/>
+                                </LinearGradientBrush>
+                            </Border.Background>
+                        </Border>
+                        <TextBlock Text="{Binding UpdateText}" Margin="10,4" Foreground="#FFF0F0F0"/>
+                    </Grid>
+                </Button>
             </StackPanel>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
                         WindowChrome.IsHitTestVisibleInChrome="True">

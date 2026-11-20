@@ -29,9 +29,25 @@ public sealed partial class MainViewModel
     string _updateText = "";
     public string UpdateText { get => _updateText; set { _updateText = value; OnChanged(); } }
 
+    /// <summary>How far the update download is, 0..1, or null for no bar: the
+    /// title-bar badge fills with it.</summary>
+    double? _updateProgress;
+    public double? UpdateProgress
+    {
+        get => _updateProgress;
+        set { _updateProgress = value; OnChanged(); OnChanged(nameof(UpdateProgressScale)); }
+    }
+    /// <summary>The fill's width as a scale, 0 when there is no bar.</summary>
+    public double UpdateProgressScale => _updateProgress ?? 0;
+
+    /// <summary>An install is running: the badge shows it and ignores clicks.</summary>
+    bool _updateBusy;
+    public bool UpdateBusy { get => _updateBusy; set { _updateBusy = value; OnChanged(); } }
+
     Services.UpdateService? _updateService;
     Services.UpdateService Updates => _updateService ??= new Services.UpdateService(
-        t => UpdateText = t, a => UpdateAvailable = a);
+        t => UpdateText = t, a => UpdateAvailable = a,
+        p => UpdateProgress = p, b => UpdateBusy = b);
 
     async void CheckForUpdate()
     {
