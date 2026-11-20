@@ -28,6 +28,7 @@ const string Usage = """
   --gpu --gpurgb --gpufan0 --gpufanctl                   GPU probes (NvAPI)
   --fanctl --fanmap --lhmfan --cputemp --superio --sioldn --gbecdump   fan / sensor probes
   --wireview [seconds]           WireView Pro II GPU power connector readings
+  --wireview-log [dir]           log WireView + GPU power once a second, flushed to disk (default %LOCALAPPDATA%\PowerLog)
   --ram --mouse --keys --audio --staticfade              other device probes
   Exit codes: 0 ok, 1 a device refused, 2 bad command line, 130 cancelled (Ctrl+C).
 """;
@@ -755,6 +756,86 @@ if (args.Length >= 1 && args[0] == "--wireview")
     }
     finally { UnifiedRgb.Core.Sensors.WireView.Shutdown(); }
     return;
+}
+
+// --wireview-log [dir]: the flight recorder for sudden power-offs (11/5).
+// One CSV row a second: WireView totals, every pin, adapter temps, fault bits,
+// plus the GPU's own view from nvidia-smi. Each row is written through to disk,
+// so after a hard power cut the file ends at the last second before it.
+// Rows are written even with no WireView, so the last timestamp is always the
+// moment the PC died. Daily files, 30 days kept. One instance (named mutex).
+if (args.Length >= 1 && args[0] == "--wireview-log")
+{
+    string dir = args.Length > 1 ? args[1]
+        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PowerLog");
+    Directory.CreateDirectory(dir);
+    using var single = new Mutex(true, @"Local\UnifiedRgb.WireViewLog", out bool mine);
+    if (!mine) { Console.WriteLine("Already logging."); return; }
+
+    const string GpuQuery = "power.draw.instant,power.draw.average,temperature.gpu,clocks.gr,fan.speed,clocks_event_reasons.active,pstate";
+    string gpu = ",,,,,,";
+    System.Diagnostics.Process? smi = null;
+    void StartSmi()
+    {
+        try
+        {
+            smi = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("nvidia-smi",
+                $"--query-gpu={GpuQuery} --format=csv,noheader,nounits -lms 1000")
+            { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true });
+            if (smi == null) return;
+            smi.OutputDataReceived += (_, e) => { if (e.Data is string l && l.Contains(',')) Volatile.Write(ref gpu, l.Replace(" ", "")); };
+            smi.BeginOutputReadLine();
+        }
+        catch (Exception ex) { Console.WriteLine($"nvidia-smi: {ex.Message}"); smi = null; }
+    }
+
+    const string Header = "time,state,watts,amps,volts,p1_a,p2_a,p3_a,p4_a,p5_a,p6_a,pin_v_min,pin_v_max,in_c,out_c,ext1_c,ext2_c,"
+        + "fan_pct,cable_cap_w,faults,fault_log,gpu_w_instant,gpu_w_avg,gpu_c,gpu_mhz,gpu_fan_pct,gpu_throttle,gpu_pstate";
+    FileStream? fs = null; StreamWriter? w = null; string day = "";
+    var inv = System.Globalization.CultureInfo.InvariantCulture;
+    string F(double? v) => v?.ToString("0.###", inv) ?? "";
+    Console.WriteLine($"Logging to {dir} (Ctrl+C to stop)");
+    try
+    {
+        while (true)
+        {
+            if (smi == null || smi.HasExited) { smi?.Dispose(); smi = null; StartSmi(); }
+            var now = DateTime.Now;
+            string today = now.ToString("yyyyMMdd");
+            if (today != day)
+            {
+                w?.Dispose(); fs?.Dispose();
+                string file = Path.Combine(dir, $"power-{today}.csv");
+                bool fresh = !File.Exists(file);
+                fs = new FileStream(file, FileMode.Append, FileAccess.Write, FileShare.ReadWrite, 4096, FileOptions.WriteThrough);
+                w = new StreamWriter(fs);
+                if (fresh) w.WriteLine(Header);
+                day = today;
+                foreach (var old in Directory.GetFiles(dir, "power-*.csv"))
+                    if (File.GetLastWriteTime(old) < now.AddDays(-30)) try { File.Delete(old); } catch { }
+            }
+
+            UnifiedRgb.Core.Sensors.WireView.Touch();
+            var r = UnifiedRgb.Core.Sensors.WireView.Latest;
+            string row = r == null
+                ? $"{now:yyyy-MM-dd HH:mm:ss.fff},{UnifiedRgb.Core.Sensors.WireView.Status},,,,,,,,,,,,,,,,,,,"
+                : $"{now:yyyy-MM-dd HH:mm:ss.fff},ok,{F(r.Watts)},{F(r.Amps)},{F(r.Volts)},"
+                  + string.Join(",", r.Pins.Select(p => F(p.Amps))) + ","
+                  + $"{F(r.Pins.Min(p => p.Volts))},{F(r.Pins.Max(p => p.Volts))},"
+                  + $"{F(r.OnboardInC)},{F(r.OnboardOutC)},{F(r.External1C)},{F(r.External2C)},"
+                  + $"{r.FanPercent},{r.PsuCapWatts},{(r.Faults == 0 ? "" : r.Faults.ToString().Replace(", ", "|"))},"
+                  + $"{(r.FaultLog == 0 ? "" : r.FaultLog.ToString().Replace(", ", "|"))}";
+            w!.WriteLine(row + "," + Volatile.Read(ref gpu));
+            w.Flush(); fs!.Flush(true);   // FlushFileBuffers: on disk before the next second
+            Sleep(1000);
+        }
+    }
+    finally
+    {
+        w?.Dispose(); fs?.Dispose();
+        try { if (smi is { HasExited: false }) smi.Kill(); } catch { }
+        UnifiedRgb.Core.Sensors.WireView.Shutdown();
+    }
 }
 
 // --lcdusb: the USB device the app would restart if the pump LCD wedged.
