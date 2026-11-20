@@ -5,10 +5,10 @@ using UnifiedRgb.Core;
 | UnifiedRGB Diagnostic                                       |
 |                                                             |
 | Double-click, approve the admin prompt (optional), and the  |
-| report is written next to this exe + your Desktop, with an  |
-| offer to send it straight to the developer. Everything it   |
-| does is READ-ONLY: it enumerates devices and probes a few   |
-| well-known read registers; it never changes device state.   |
+| report is written next to this exe + your Desktop, ready to |
+| attach to a GitHub issue. Everything it does is READ-ONLY:  |
+| it enumerates devices and probes a few well-known read      |
+| registers; it never changes device state.                   |
 |                                                             |
 | All collection logic lives in Core.DiagnosticReport so the  |
 | app's Settings -> Support page produces the same report.    |
@@ -90,38 +90,6 @@ else foreach (var p in saved) Console.WriteLine($">>> Report saved to: {p}");
 Console.WriteLine("==============================================");
 if (report.StartsWith("!!! DIAGNOSTIC CRASHED", StringComparison.Ordinal) || saved.Count == 0) Environment.ExitCode = 1;
 
-// Public builds have no support endpoint: the upload prompt could only ever
-// answer "Could not send", so don't ask.
-bool send = false;
-if (Backend.Configured)
-{
-    Console.WriteLine();
-    Console.WriteLine("Send this report to the developer automatically?");
-    Console.Write("Press ENTER to send, or S to skip: ");
-    send = true;
-    try
-    {
-        var key = Console.ReadKey();
-        Console.WriteLine();
-        if (key.Key == ConsoleKey.S) send = false;
-    }
-    catch { }
-}
-
-if (send)
-{
-    Console.WriteLine("Sending...");
-    var (ok, msg) = SupportUpload.SendAsync("diag", report, null, "diag").GetAwaiter().GetResult();
-    Console.WriteLine(ok ? ">>> Sent - all done, you can close this window."
-                         : $">>> Could not send ({msg}). Please send the file above instead.");
-}
-else if (Backend.Configured)
-{
-    Console.WriteLine(">>> Skipped - send the file above manually if needed.");
-}
-else
-{
-    Console.WriteLine(">>> Attach the saved file to a GitHub issue (Settings -> Support in the app does the same).");
-}
+Console.WriteLine(">>> Attach the saved file to a GitHub issue (Settings -> Support in the app does the same).");
 Console.WriteLine("Press any key to close.");
 try { Console.ReadKey(); } catch { }

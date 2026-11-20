@@ -15,7 +15,7 @@ using UnifiedRgb.Core.Net;
 
 namespace UnifiedRgb.App;
 
-// Auto-update + support upload + admin inbox — split out of the 3,500-line MainViewModel (mechanical
+// Auto-update + the support bundle — split out of the 3,500-line MainViewModel (mechanical
 // partial-class move, no behavior change).
 public sealed partial class MainViewModel
 {
@@ -39,14 +39,12 @@ public sealed partial class MainViewModel
         catch (Exception ex) { Log.Error("update", ex); }
     }
 
-    /// <summary>Settings toggle for the public-build GitHub release check.
-    /// Only shown when no private feed is configured (feed builds don't use it).</summary>
+    /// <summary>Settings toggle for the startup GitHub release check.</summary>
     public bool GithubUpdateCheck
     {
         get => _store.Settings.GithubUpdateCheck;
         set => SetSetting(_store.Settings.GithubUpdateCheck, value, v => _store.Settings.GithubUpdateCheck = v);
     }
-    public bool ShowGithubUpdateToggle => !Backend.Configured;
 
     /// <summary>Where releases live, built from the repo constant the update
     /// check itself uses. Typed into the XAML it would be a second copy of the
@@ -185,7 +183,7 @@ public sealed partial class MainViewModel
         catch (Exception ex)
         {
             Log.Error("support", ex);
-            UploadStatus = $"send failed: {ex.Message}";
+            UploadStatus = $"could not save the report: {ex.Message}";
         }
     }
 

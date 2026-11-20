@@ -106,8 +106,8 @@ static class BackupSuite
 
         // A file we never publish, even sitting in the right folder.
         t.Check(UnifiedRgb.App.Services.SetupBundle.TargetPathFor(
-            E(UnifiedRgb.App.Services.SetupBundle.RootConfig, "backend.json", "settings")) == null,
-            "a config file we deliberately never export cannot be written by a bundle");
+            E(UnifiedRgb.App.Services.SetupBundle.RootConfig, "unifiedrgb.log", "settings")) == null,
+            "a file of ours we deliberately never export (the log) cannot be written by a bundle");
         t.Check(UnifiedRgb.App.Services.SetupBundle.TargetPathFor(
             E(UnifiedRgb.App.Services.SetupBundle.RootConfig, "anything.json", "settings")) == null,
             "a file name we do not publish at all is refused");

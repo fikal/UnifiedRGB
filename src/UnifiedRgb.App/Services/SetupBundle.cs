@@ -80,9 +80,8 @@ public static partial class SetupBundle
     /// part of the setup it is.
     ///
     /// Deliberately not "every file in the folder". unifiedrgb.log is a
-    /// diagnostic, not a setting. backend.json holds an endpoint key and is
-    /// per-install by design, so it must never ride along to another machine.
-    /// A *.corrupt-* copy is wreckage kept for evidence. Adding a file here
+    /// diagnostic, not a setting. A *.corrupt-* copy is wreckage kept for
+    /// evidence. Adding a file here
     /// later is safe in both directions: new bundles carry it, and an older
     /// build reading such a bundle skips the group it does not know.</summary>
     static readonly (string Root, string Name, string Group)[] Files =

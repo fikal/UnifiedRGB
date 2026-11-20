@@ -28,7 +28,7 @@ namespace UnifiedRgb.Tests;
 | allowed into the log the bundle then carries, and the title  |
 | arrives from another process, so it is capped and stripped   |
 | of the control characters that would otherwise forge a log   |
-| line. UpdateClient.SizeOf parses a field from a server reply |
+| line. UpdateClient.SizeOf parses a field from GitHub's reply |
 | and has to answer 0 rather than throw for anything it does   |
 | not recognise, because a failed parse on the update path is  |
 | what a support bundle gets opened about.                     |

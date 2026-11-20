@@ -52,8 +52,8 @@ try {
     dotnet run --project src/UnifiedRgb.Tests -c Release
     if ($LASTEXITCODE -ne 0) { throw "Tests failed" }
 
-    # Self-contained single-file build. No backend props are passed, so this is a
-    # public build: it updates from GitHub Releases and uploads nothing.
+    # Self-contained single-file build. It updates from GitHub Releases and
+    # uploads nothing.
     dotnet publish src/UnifiedRgb.App -c Release -r win-x64 --self-contained `
         -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
     if ($LASTEXITCODE -ne 0) { throw "Publish failed" }

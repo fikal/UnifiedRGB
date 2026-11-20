@@ -42,9 +42,8 @@ public static class AppPaths
     /// into HKCU, no elevation - and this app runs ELEVATED. LocalDir is where
     /// the bundled OpenRGB lives, and that executable gets LAUNCHED, so an
     /// ungated variable would let an unprivileged process choose a binary for
-    /// the administrator process to run at every logon. That is a worse version
-    /// of the backend.json hole closed below, and it is not worth a shortcut in
-    /// test plumbing. An attacker cannot rename their way into being
+    /// the administrator process to run at every logon, and that is not worth a
+    /// shortcut in test plumbing. An attacker cannot rename their way into being
     /// UnifiedRgb.Tests, because the check is on OUR entry assembly, not on
     /// anything they supply.</summary>
     /// A METHOD, not a static readonly field: field initializers run in
@@ -81,117 +80,4 @@ public static class AppPaths
         try { Directory.CreateDirectory(ConfigDir); } catch { }
         try { Directory.CreateDirectory(LocalDir); } catch { }
     }
-}
-
-/// <summary>The support/update backend — OPTIONAL. Public/open-source builds
-/// carry no endpoint at all: update checks quietly skip and support bundles
-/// save to a local file. Configuration resolves in order:
-///   1. %APPDATA%\UnifiedRgb\backend.json  →  { "url": "...", "key": "..." }
-///      (the developer's override, honoured by DEBUG private-feed builds only)
-///   2. Build-time injection for private-feed builds:
-///        dotnet publish -p:RgbBackendUrl=... -p:RgbBackendKey=...
-///      (the values land in this assembly's AssemblyMetadata; nothing is
-///       hardcoded in the source tree)
-/// The key is a spam guard, not a secret — but it doesn't belong in a public
-/// repo, where it would invite abuse of a private server.</summary>
-public static class Backend
-{
-    public static readonly string? BaseUrl;
-    public static readonly string? ClientKey;
-
-    /// <summary>True when an update/support endpoint is available to talk to.</summary>
-    public static bool Configured => BaseUrl != null && ClientKey != null;
-
-    static Backend()
-    {
-        // The build's own endpoint, if it was given one at publish time.
-        string? url = Meta("RgbBackendUrl"), key = Meta("RgbBackendKey");
-        // BOTH halves, or it is not a configured private feed - a build with
-        // only one injected would otherwise honour the file for the other.
-        bool privateBuild = !string.IsNullOrWhiteSpace(url) && !string.IsNullOrWhiteSpace(key);
-
-        // %APPDATA%\UnifiedRgb\backend.json can point a PRIVATE-FEED build
-        // somewhere else - a developer aiming at a staging server.
-        //
-        // It is deliberately ignored in a public build. That file is writable
-        // by any process running as the user, while this app runs ELEVATED, and
-        // what the endpoint gets to decide is the update payload AND the hash
-        // that payload is checked against - so an unprivileged process could
-        // plant one file and have the administrator process download and run
-        // its executable, which the /RL HIGHEST logon task would then re-run at
-        // every boot. Since the shipped build takes its updates from GitHub and
-        // carries no endpoint, honoring the file there buys nothing and costs
-        // that. A fork wanting its own feed builds with -p:RgbBackendUrl=...,
-        // which is a decision made in the build rather than in a writable file.
-        //
-        // And ignored in a RELEASE private-feed build too, for the same reason
-        // with the same file: a private build handed to somebody else runs
-        // elevated on their machine, and the hash the feed publishes proves
-        // only that the payload is the one the feed points at - not who
-        // published it. Aiming at staging is a developer's activity, done on a
-        // Debug build, so that is the only build that reads the file.
-#if DEBUG
-        const bool debugBuild = true;
-#else
-        const bool debugBuild = false;
-#endif
-        bool honourFile = privateBuild && debugBuild;
-        string f = AppPaths.Config("backend.json");
-        bool present = false;
-        try { present = File.Exists(f); } catch { }
-
-        if (present && !privateBuild)
-        {
-            Log.Warn("backend", $"ignoring {f}: this build has no private feed of its own, "
-                              + "so updates come from GitHub and a file cannot redirect them");
-        }
-        else if (present && !honourFile)
-        {
-            Log.Warn("backend", $"ignoring {f}: a release build takes its feed from the build alone, "
-                              + "and a file writable by any process cannot redirect it");
-        }
-        else if (present)
-        {
-            try
-            {
-                using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(f));
-                string? fu = null, fk = null;
-                if (doc.RootElement.TryGetProperty("url", out var u)) fu = u.GetString();
-                if (doc.RootElement.TryGetProperty("key", out var k)) fk = k.GetString();
-                if (!string.IsNullOrWhiteSpace(fu)) url = fu;
-                if (!string.IsNullOrWhiteSpace(fk)) key = fk;
-                // Still elevated, still user-writable: a redirected feed is the
-                // first thing to rule out when an "update" looks wrong, so it
-                // has to be visible in any support bundle.
-                if (!string.IsNullOrWhiteSpace(fu))
-                    Log.Warn("backend", $"feed/support endpoint overridden by {f}: {fu}");
-            }
-            catch (Exception ex) { Log.Warn("backend", $"backend.json unreadable: {ex.Message}"); }
-        }
-
-        // Only https (or plain http to this machine, for a local dev backend)
-        // is honored: the updater trusts the feed for the payload's hash, and
-        // the support upload carries the session log — neither goes in the clear.
-        if (!string.IsNullOrWhiteSpace(url)
-            && !(Uri.TryCreate(url, UriKind.Absolute, out var uri)
-                 && (uri.Scheme == Uri.UriSchemeHttps || (uri.Scheme == Uri.UriSchemeHttp && uri.IsLoopback))))
-        {
-            Log.Warn("backend", $"endpoint ignored (must be https, or http on loopback): {url}");
-            url = null;
-        }
-
-        BaseUrl = string.IsNullOrWhiteSpace(url) ? null : url.TrimEnd('/');
-        ClientKey = string.IsNullOrWhiteSpace(key) ? null : key.Trim();
-    }
-
-    static string? Meta(string name) => typeof(Backend).Assembly
-        .GetCustomAttributes(typeof(System.Reflection.AssemblyMetadataAttribute), inherit: false)
-        .OfType<System.Reflection.AssemblyMetadataAttribute>()
-        .FirstOrDefault(a => a.Key == name)?.Value;
-
-    /// <summary>For API calls (version checks, report upload/list).</summary>
-    public static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(30) };
-
-    /// <summary>For large binary downloads (the ~260MB update exe).</summary>
-    public static readonly HttpClient HttpDownload = new() { Timeout = TimeSpan.FromMinutes(15) };
 }

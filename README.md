@@ -289,9 +289,7 @@ allow that.
 
 **Report a problem** writes a diagnostic file to your Desktop and opens a
 prefilled GitHub issue for you to attach it to; nothing is uploaded unless you
-post it. (The source also supports a private update feed selected by
-build-time properties. Official builds don't use one; it exists so forks can
-run their own.)
+post it.
 
 ## Building
 

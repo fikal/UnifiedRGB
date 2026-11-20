@@ -11,7 +11,7 @@ public sealed class SupportService
 {
     static string AppVersion => AppInfo.VersionString;
 
-    /// <summary>Full hardware survey + session log + note, as one upload.
+    /// <summary>Full hardware survey + session log + note, as one file.
     /// Collection shells out to WMI, so call from off the UI thread context;
     /// progress lands in the status callback.</summary>
     /// <param name="appState">What the app itself is doing right now. The
@@ -73,15 +73,9 @@ public sealed class SupportService
 
         bundle = Redact(bundle);
 
-        if (SupportUpload.CanUpload)
-        {
-            status("sending...");
-            return await SupportUpload.SendAsync("diag", bundle, note, AppVersion);
-        }
-
-        // No backend (public/open-source build): save the bundle locally and
-        // open a prefilled GitHub issue — the user drags the file in. Nothing
-        // leaves the machine except what they choose to post.
+        // Save the bundle locally and open a prefilled GitHub issue — the user
+        // drags the file in. Nothing leaves the machine except what they
+        // choose to post.
         status("saving bundle...");
         try
         {

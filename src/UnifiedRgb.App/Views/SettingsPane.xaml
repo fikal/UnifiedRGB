@@ -162,7 +162,7 @@
                                   ToolTip="A login launch always opens to the tray, not on screen. Installs this version in Program Files, where only administrators can change it, because the login launch runs as administrator"/>
                         <CheckBox Content="Start minimized to the tray" IsChecked="{Binding StartMinimized}" Margin="0,8,0,0"
                                   ToolTip="Opens to the tray when you launch it yourself too"/>
-                        <StackPanel Visibility="{Binding ShowGithubUpdateToggle, Converter={StaticResource BoolToVis}}">
+                        <StackPanel>
                             <CheckBox Content="Check GitHub for new releases at startup" IsChecked="{Binding GithubUpdateCheck}" Margin="0,8,0,0"/>
                             <!-- The link rather than a sentence about the link.
                                  Both halves of what this said are visible

@@ -93,8 +93,6 @@ jobs:
             Write-Host "$($t.Name) shim OK: all $($expected.Count) exports present, $kb KB"
           }
 
-      # Public CI builds carry NO backend (see AppPaths.Backend): update
-      # checks skip and support bundles save locally. That is by design.
       # Whole solution: the CLI, Diag and Tests projects only compiled via Core
       # before, so they could rot unnoticed.
       - name: Build

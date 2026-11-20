@@ -49,13 +49,4 @@
     <InternalsVisibleTo Include="UnifiedRgb.Tests" />
   </ItemGroup>
 
-  <!-- Private-feed builds inject their update/support backend at build time:
-         dotnet publish -p:RgbBackendUrl=https://... -p:RgbBackendKey=...
-       Nothing is hardcoded in the tree; builds without these properties have
-       NO backend (updates skip, support bundles save locally). -->
-  <ItemGroup Condition="'$(RgbBackendUrl)' != '' and '$(RgbBackendKey)' != ''">
-    <AssemblyMetadata Include="RgbBackendUrl" Value="$(RgbBackendUrl)" />
-    <AssemblyMetadata Include="RgbBackendKey" Value="$(RgbBackendKey)" />
-  </ItemGroup>
-
 </Project>

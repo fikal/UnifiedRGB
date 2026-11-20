@@ -4,7 +4,7 @@ using UnifiedRgb.Core;
 
 namespace UnifiedRgb.App.Services;
 
-/// <summary>Self-update: startup check against the feed, and the download →
+/// <summary>Self-update: startup check against GitHub Releases, and the download →
 /// verify → batch-swap → restart install flow. Extracted from the view model;
 /// status flows back through the two callbacks.</summary>
 public sealed class UpdateService(Action<string> setText, Action<bool> setAvailable)
@@ -42,9 +42,9 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
         string? dir = string.IsNullOrEmpty(exe) ? null : Path.GetDirectoryName(exe);
         if (dir != null) ReportPreviousInstall(dir);
 
-        // Public builds check GitHub Releases; that's the one outbound request
-        // an unconfigured build makes, and the user can turn it off.
-        if (!Backend.Configured && !allowGitHub) return;
+        // The GitHub release check is the one outbound request the app makes
+        // on its own, and the user can turn it off.
+        if (!allowGitHub) return;
 
         var latest = await UpdateClient.GetLatestAsync();
         if (latest == null || !Version.TryParse(latest.Version, out var serverRaw)) return;
@@ -150,7 +150,7 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             // retryable because the usual cause is a release whose .sha256
             // asset has not finished publishing yet.
             string? sha = latest != null ? await UpdateClient.ResolveShaAsync(latest) : null;
-            if (!IsSha256(sha))
+            if (latest?.DownloadUrl is null || !IsSha256(sha))
             {
                 Log.Warn("update", $"release {latest?.Version ?? "(unknown)"} has no usable published SHA-256 ('{sha ?? "null"}') - not downloading; current install left intact");
                 setText("update could not be verified — try again later");
@@ -159,9 +159,8 @@ public sealed class UpdateService(Action<string> setText, Action<bool> setAvaila
             }
             staged = temp;
             setText("downloading 0%");
-            string? err = await UpdateClient.DownloadAsync(temp,
-                pct => Application.Current.Dispatcher.Invoke(() => setText($"downloading {pct}%")),
-                latest?.DownloadUrl);   // GitHub asset when that's the source; feed otherwise
+            string? err = await UpdateClient.DownloadAsync(latest.DownloadUrl, temp,
+                pct => Application.Current.Dispatcher.Invoke(() => setText($"downloading {pct}%")));
             if (err != null)
             {
                 // A dropped connection leaves a partial payload; never strand

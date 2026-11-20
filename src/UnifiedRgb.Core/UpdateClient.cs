@@ -3,15 +3,18 @@ using System.Text.Json;
 
 namespace UnifiedRgb.Core;
 
-/// <summary>Checks for a newer published build and downloads it. Two sources:
-/// the private feed when a backend is configured (maintainer-distributed
-/// builds), otherwise GitHub Releases — so public builds get the same
-/// one-click update, served from the repo's own releases. Publishing happens
-/// elsewhere (the publisher tool / gh release).</summary>
+/// <summary>Checks GitHub Releases for a newer published build and downloads
+/// it. Publishing happens in release.ps1 (gh release create).</summary>
 public static class UpdateClient
 {
-    /// <summary>Where public builds look for releases. Public information.</summary>
+    /// <summary>Where releases are published. Public information.</summary>
     public const string GitHubRepo = "fikal/UnifiedRGB";
+
+    /// <summary>For the release JSON and the .sha256 asset.</summary>
+    static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(30) };
+
+    /// <summary>For the release exe itself (~270 MB).</summary>
+    static readonly HttpClient HttpDownload = new() { Timeout = TimeSpan.FromMinutes(15) };
 
     /// <summary>Sha256 is null until <see cref="ResolveShaAsync"/> runs: the
     /// startup check is ONE request (the release JSON); the .sha256 asset is
@@ -29,7 +32,7 @@ public static class UpdateClient
             {
                 using var shaReq = new HttpRequestMessage(HttpMethod.Get, build.ShaUrl);
                 shaReq.Headers.TryAddWithoutValidation("User-Agent", "UnifiedRGB-updater");
-                using var resp = await Backend.Http.SendAsync(shaReq);
+                using var resp = await Http.SendAsync(shaReq);
                 var sha = ExtractSha(await resp.Content.ReadAsStringAsync());
                 if (sha != null) return sha;
             }
@@ -37,43 +40,12 @@ public static class UpdateClient
         return ExtractSha(build.Notes);
     }
 
-    /// <summary>Latest published build, or null when none / unreachable.
-    /// Private feed when configured; GitHub Releases otherwise.</summary>
-    public static Task<LatestBuild?> GetLatestAsync()
-        => Backend.Configured ? GetLatestFromFeedAsync() : GetLatestFromGitHubAsync();
-
-    static async Task<LatestBuild?> GetLatestFromFeedAsync()
-    {
-        try
-        {
-            using var req = new HttpRequestMessage(HttpMethod.Get, $"{Backend.BaseUrl}/version");
-            req.Headers.Add("X-Rgb-Key", Backend.ClientKey!);   // gated by Configured above
-            using var response = await Backend.Http.SendAsync(req);
-            if (!response.IsSuccessStatusCode) return null;
-            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-            var root = doc.RootElement;
-            if (root.TryGetProperty("version", out var v) && v.ValueKind == JsonValueKind.String)
-            {
-                return new LatestBuild(
-                    v.GetString()!,
-                    root.TryGetProperty("notes", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() : null,
-                    SizeOf(root),
-                    root.TryGetProperty("sha256", out var h) && h.ValueKind == JsonValueKind.String ? h.GetString() : null);
-            }
-            return null;
-        }
-        catch (Exception ex)
-        {
-            Log.Warn("update", $"version check failed: {ex.Message}");
-            return null;
-        }
-    }
-
-    /// <summary>Latest GitHub release: version from the tag (leading 'v'
-    /// stripped), the .exe asset's direct URL + size, and its SHA-256 — from a
-    /// companion .sha256 asset when one exists, else a 64-hex token in the
-    /// release notes. Unauthenticated; GitHub requires a User-Agent.</summary>
-    static async Task<LatestBuild?> GetLatestFromGitHubAsync()
+    /// <summary>Latest GitHub release, or null when none / unreachable: version
+    /// from the tag (leading 'v' stripped), the .exe asset's direct URL + size,
+    /// and its SHA-256 — from a companion .sha256 asset when one exists, else a
+    /// 64-hex token in the release notes. Unauthenticated; GitHub requires a
+    /// User-Agent.</summary>
+    public static async Task<LatestBuild?> GetLatestAsync()
     {
         try
         {
@@ -81,7 +53,7 @@ public static class UpdateClient
                 $"https://api.github.com/repos/{GitHubRepo}/releases/latest");
             req.Headers.TryAddWithoutValidation("User-Agent", "UnifiedRGB-updater");
             req.Headers.TryAddWithoutValidation("Accept", "application/vnd.github+json");
-            using var response = await Backend.Http.SendAsync(req);
+            using var response = await Http.SendAsync(req);
             if (!response.IsSuccessStatusCode)
             {
                 Log.Warn("update", $"github release check: {(int)response.StatusCode}");
@@ -125,7 +97,7 @@ public static class UpdateClient
     }
 
     /// <summary>The object's "size" when it is an integral number, else 0: the
-    /// field is cosmetic (progress text), so a feed that emits it as a string
+    /// field is cosmetic (progress text), so a reply that emits it as a string
     /// or null must not fail the whole version check. Internal for the harness.</summary>
     internal static long SizeOf(JsonElement obj)
         => obj.TryGetProperty("size", out var s) && s.ValueKind == JsonValueKind.Number && s.TryGetInt64(out var size)
@@ -141,29 +113,23 @@ public static class UpdateClient
     }
 
     /// <summary>SHA-256 (lowercase hex) of a downloaded file, for verifying
-    /// against the hash the publisher registered.</summary>
+    /// against the hash the release published.</summary>
     public static string HashFile(string path)
     {
         using var fs = File.OpenRead(path);
         return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(fs)).ToLowerInvariant();
     }
 
-    /// <summary>Download the published exe to destPath, reporting whole-percent
-    /// progress. Returns null on success, else the failure reason. With a
-    /// directUrl (a GitHub release asset) fetches that; otherwise the feed.</summary>
-    public static async Task<string?> DownloadAsync(string destPath, Action<int>? percent = null,
-        string? directUrl = null)
+    /// <summary>Download a release exe (its GitHub asset URL) to destPath,
+    /// reporting whole-percent progress. Returns null on success, else the
+    /// failure reason.</summary>
+    public static async Task<string?> DownloadAsync(string url, string destPath, Action<int>? percent = null)
     {
-        if (directUrl is null && !Backend.Configured) return "no update feed configured";
         try
         {
-            using var req = new HttpRequestMessage(HttpMethod.Get,
-                directUrl ?? $"{Backend.BaseUrl}/download");
-            if (directUrl is null)
-                req.Headers.Add("X-Rgb-Key", Backend.ClientKey!);   // gated by Configured above
-            else
-                req.Headers.TryAddWithoutValidation("User-Agent", "UnifiedRGB-updater");
-            using var response = await Backend.HttpDownload.SendAsync(req,
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.TryAddWithoutValidation("User-Agent", "UnifiedRGB-updater");
+            using var response = await HttpDownload.SendAsync(req,
                 HttpCompletionOption.ResponseHeadersRead);
             if (!response.IsSuccessStatusCode)
                 return $"server said {(int)response.StatusCode}";
