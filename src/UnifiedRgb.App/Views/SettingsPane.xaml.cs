@@ -43,6 +43,57 @@ public partial class SettingsPane : UserControl
 
     void PauseShow_Click(object sender, RoutedEventArgs e) => VM.Shows.TogglePaused();
 
+    /// <summary>A profile picked from the list goes on, the way the old Load
+    /// button did it. Changes to the one being left are asked about first, as
+    /// closing the app asks: Save keeps them, Don't Save drops them, Cancel
+    /// stays put.</summary>
+    void Profile_Picked(object? sender, Controls.NamedPickEventArgs e)
+    {
+        if (e.Item is not Profile next) return;
+        if (VM.NeedsSavePrompt && VM.SelectedProfile is Profile current && Owner is Window owner)
+        {
+            var answer = Dialogs.AskSaveChanges(owner, current.Name);
+            if (answer == MessageBoxResult.Cancel) return;
+            if (answer == MessageBoxResult.Yes && !VM.SaveActiveProfile()) return;
+        }
+        VM.ApplyProfile(next);
+    }
+
+    /// <summary>Save into the picked profile. With none picked (there are no
+    /// profiles yet, or the picked one was deleted) the desk is saved as a new
+    /// one, which needs a name.</summary>
+    void ProfileSave_Click(object? sender, EventArgs e)
+    {
+        if (VM.SelectedProfile == null) { ProfileNew_Click(sender, e); return; }
+        VM.SaveActiveProfile();
+    }
+
+    void ProfileNew_Click(object? sender, EventArgs e)
+    {
+        if (Owner is not Window owner) return;
+        string? name = Dialogs.AskName(owner, "New profile",
+            "Saves the lighting on your desk right now, with the pump screen, show and wallpaper picked below.",
+            VM.SuggestProfileName(), "Create", n => VM.ProfileNameProblem(n));
+        if (name != null) VM.CreateProfile(name);
+    }
+
+    void ProfileRename_Click(object? sender, EventArgs e)
+    {
+        if (VM.SelectedProfile is not Profile profile || Owner is not Window owner) return;
+        string? name = Dialogs.AskName(owner, "Rename profile",
+            "Rules, schedules, shows and the startup setting that use it follow the new name.",
+            profile.Name, "Rename", n => VM.ProfileNameProblem(n, profile));
+        if (name != null) VM.RenameProfile(profile, name);
+    }
+
+    /// <summary>Put the picked profile back on as saved: unsaved edits dropped,
+    /// a show's step or a rule's leftovers replaced. What the old Load button
+    /// did for the profile already picked, which picking it again cannot do.</summary>
+    void ProfileRevert_Click(object? sender, EventArgs e)
+    {
+        if (VM.SelectedProfile is Profile profile) VM.ApplyProfile(profile);
+    }
+
     /// <summary>Delete, but say what the name is still holding up first.
     ///
     /// Nothing breaks loudly when a profile goes: a show step or a rule asking
@@ -53,7 +104,7 @@ public partial class SettingsPane : UserControl
     ///
     /// No prompt when nothing points at it - a confirmation on every delete
     /// trains people to click through the one that mattered.</summary>
-    void DeleteProfile_Click(object sender, RoutedEventArgs e)
+    void DeleteProfile_Click(object? sender, EventArgs e)
     {
         var profile = VM.SelectedProfile;
         if (profile == null) return;

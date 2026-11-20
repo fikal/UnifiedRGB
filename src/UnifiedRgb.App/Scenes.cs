@@ -86,9 +86,17 @@ public sealed class SceneAction : INotifyPropertyChanged
     [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 }
 
-public sealed class SceneSequence
+public sealed class SceneSequence : INotifyPropertyChanged
 {
-    public string Name { get; set; } = "";
+    string _name = "";
+    /// <summary>Raises a change so a rename shows in the show list at once:
+    /// the list displays this property, and the object stays the same one.</summary>
+    public string Name
+    {
+        get => _name;
+        set { _name = value ?? ""; PropertyChanged?.Invoke(this, new(nameof(Name))); }
+    }
+    public event PropertyChangedEventHandler? PropertyChanged;
     public List<SceneAction> Actions { get; set; } = new();
     public override string ToString() => Name;
 
@@ -314,6 +322,9 @@ public sealed class SceneStore
     // Through the shared store writer: a scenes.json that could not be read
     // at startup must not be overwritten by the defaults (see ProfileStore.LoadJson).
     public void Save() => ProfileStore.Save(Path, this, "scenes.json");
+    /// <summary>Save, and say whether it landed: a rename has to put the old
+    /// name back when the file was not written.</summary>
+    internal bool TrySave() => ProfileStore.TrySave(Path, this, "scenes.json");
 
     /// <summary>Deep-clone a design via JSON round-trip (scenes must never
     /// share element instances with the live editor).</summary>

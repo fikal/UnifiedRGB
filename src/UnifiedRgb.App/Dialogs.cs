@@ -215,7 +215,7 @@ public static class Dialogs
 
     /// <summary>"Save changes to profile X?" — Yes = save, No = discard,
     /// Cancel = abort the close.</summary>
-    public static MessageBoxResult AskSaveChanges(Window owner, string profileName)
+    public static MessageBoxResult AskSaveChanges(Window owner, string profileName, string kind = "Profile")
     {
         var result = MessageBoxResult.Cancel;
         Window win = null!;
@@ -231,8 +231,85 @@ public static class Dialogs
         buttons.Children.Add(Btn("Save", true, () => Done(MessageBoxResult.Yes)));
 
         body.Children.Add(Title("Save changes?"));
-        body.Children.Add(Message($"Profile “{profileName}” has unsaved changes."));
+        body.Children.Add(Message($"{kind} “{profileName}” has unsaved changes."));
         body.Children.Add(buttons);
+
+        ShowBlurred(owner, win);
+        return result;
+    }
+
+    /// <summary>Ask for a name: a new profile, screen or show, or a new name for
+    /// one. Returns the trimmed name, or null when cancelled.
+    ///
+    /// <paramref name="problem"/> is asked on every keystroke and its answer is
+    /// shown under the box, so a name that is taken says so while it is being
+    /// typed rather than after the click. While there is a problem the confirm
+    /// button does nothing and Enter does nothing; Escape always cancels.</summary>
+    public static string? AskName(Window owner, string title, string message, string initial,
+                                  string confirmText, Func<string, string?> problem)
+    {
+        string? result = null;
+        Window win = null!;
+        TextBox nameBox = null!;
+        TextBlock error = null!;
+        UIElement confirm = null!;
+
+        string? Problem() => problem(nameBox.Text.Trim());
+        void Confirm()
+        {
+            if (Problem() != null) return;
+            result = nameBox.Text.Trim();
+            win.Close();
+        }
+
+        (win, var body) = MakeDialog(owner, onEscape: () => win.Close(), onEnter: Confirm);
+
+        nameBox = new TextBox
+        {
+            Text = initial,
+            Background = new SolidColorBrush(Color.FromRgb(0x26, 0x29, 0x32)),
+            Foreground = Brushes.White,
+            CaretBrush = Brushes.White,
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x3A, 0x3D, 0x48)),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(10, 8, 10, 8),
+            FontSize = 13,
+            Margin = new Thickness(0, 14, 0, 0),
+            MaxLength = 60,
+        };
+        error = new TextBlock
+        {
+            Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x8A, 0x8A)),
+            FontSize = 12,
+            Margin = new Thickness(0, 6, 0, 0),
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 360,
+        };
+
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 18, 0, 0) };
+        buttons.Children.Add(Btn("Cancel", false, () => win.Close()));
+        confirm = Btn(confirmText, true, Confirm);
+        buttons.Children.Add(confirm);
+
+        void Check()
+        {
+            string? p = Problem();
+            // An empty box is not an error worth a red line, only a reason the
+            // button cannot be used yet.
+            error.Text = string.IsNullOrWhiteSpace(nameBox.Text) ? "" : p ?? "";
+            error.Visibility = error.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+            confirm.Opacity = p == null ? 1 : 0.45;
+        }
+        nameBox.TextChanged += (_, _) => Check();
+
+        body.Children.Add(Title(title));
+        if (!string.IsNullOrWhiteSpace(message)) body.Children.Add(Message(message));
+        body.Children.Add(nameBox);
+        body.Children.Add(error);
+        body.Children.Add(buttons);
+
+        win.Loaded += (_, _) => { nameBox.Focus(); nameBox.SelectAll(); };
+        Check();
 
         ShowBlurred(owner, win);
         return result;

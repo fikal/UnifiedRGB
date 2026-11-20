@@ -303,32 +303,20 @@
                           <ScrollViewer VerticalScrollBarVisibility="Auto">
                             <StackPanel Margin="0,2,14,0" MaxWidth="480" HorizontalAlignment="Left">
                                 <TextBlock Opacity="0.6" TextWrapping="Wrap"
-                                           Text="A screen is a saved layout for the pump display. Load one to edit it, or save what you have now."/>
+                                           Text="A screen is a saved layout for the pump display. Pick one to put it on the canvas and edit it."/>
 
-                                <TextBlock Text="LOAD" FontSize="11" FontWeight="SemiBold"
-                                           Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,16,0,8"/>
-                                <StackPanel Orientation="Horizontal">
-                                    <ComboBox Width="180" Height="28" VerticalAlignment="Center"
-                                              ItemsSource="{Binding SceneNames}"
-                                              SelectedItem="{Binding SelectedSceneName}"
-                                              ToolTip="Pick a screen to load it"/>
-                                    <Button Content="Delete" Style="{StaticResource Danger}" Padding="14,0"
-                                            Height="28" VerticalAlignment="Center"
-                                            Margin="8,0,0,0" Command="{Binding DeleteSceneCommand}"/>
-                                </StackPanel>
-
-                                <TextBlock Text="SAVE" FontSize="11" FontWeight="SemiBold"
-                                           Foreground="#FF9AA3B2" Opacity="0.8" Margin="0,16,0,8"/>
-                                <StackPanel Orientation="Horizontal">
-                                    <TextBox Width="180" MinHeight="28" Padding="6,3" VerticalAlignment="Center"
-                                             Text="{Binding SceneNameInput, UpdateSourceTrigger=PropertyChanged}"
-                                             ToolTip="Name for the screen"/>
-                                    <Button Content="Save screen" Style="{StaticResource Accent}" Padding="14,0"
-                                            Height="28" VerticalAlignment="Center"
-                                            Margin="8,0,0,0" Command="{Binding SaveSceneCommand}"/>
-                                </StackPanel>
-                                <TextBlock Text="New name = new screen. Empty name = update the loaded one."
-                                           Opacity="0.45" FontSize="11" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                                <controls:NamedPicker Noun="screen" Margin="0,14,0,0"
+                                                      ItemsSource="{Binding SceneNames}"
+                                                      SelectedItem="{Binding SelectedSceneName, Mode=OneWay}"
+                                                      SaveEnabled="{Binding CanSaveScreen}"
+                                                      HasChanges="{Binding ScreenHasChanges}"
+                                                      ShowRevert="True"
+                                                      Picked="Screen_Picked"
+                                                      RevertRequested="ScreenRevert_Click"
+                                                      SaveRequested="ScreenSave_Click"
+                                                      NewRequested="ScreenNew_Click"
+                                                      RenameRequested="ScreenRename_Click"
+                                                      DeleteRequested="ScreenDelete_Click"/>
                             </StackPanel>
                           </ScrollViewer>
                         </TabItem>

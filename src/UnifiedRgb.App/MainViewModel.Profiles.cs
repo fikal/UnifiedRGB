@@ -24,7 +24,190 @@ public sealed partial class MainViewModel
     | Profiles                                              |
     \*-----------------------------------------------------*/
     // True once colors changed since the selected profile was loaded/saved.
+    // Written only through SetDirty, so the Save button and the "Unsaved
+    // changes" line follow it.
     bool _dirty;
+
+    /// <summary>A pump-screen, show or wallpaper pick changed since the last
+    /// full apply. Those picks put nothing on the desk (they are saved with the
+    /// profile, not applied), and a save keeps the applied name - so without
+    /// this the profile read as "already on" while its new screen, show or
+    /// wallpaper had never gone up, and the automation then never re-applied
+    /// it. Cleared only by LoadProfile, the one path that applies all of it.</summary>
+    bool _pickersSinceApply;
+
+    /// <summary>The desk is this profile in every part a profile apply sets:
+    /// it was the last thing applied, no hand edit since (MarkDirty clears the
+    /// name), and no pump/show/wallpaper pick since either.</summary>
+    public bool IsAppliedExactly(string name)
+        => !_pickersSinceApply && string.Equals(_appliedProfile, name, StringComparison.OrdinalIgnoreCase);
+
+    void SetDirty(bool value)
+    {
+        if (_dirty == value) return;
+        _dirty = value;
+        NotifySaveState();
+    }
+
+    void NotifySaveState()
+    {
+        OnChanged(nameof(HasUnsavedChanges));
+        OnChanged(nameof(CanSaveProfile));
+    }
+
+    /// <summary>The picked profile has changes Save would keep. The same
+    /// question the close prompt asks.</summary>
+    public bool HasUnsavedChanges => NeedsSavePrompt;
+
+    /// <summary>Save does something: it updates the picked profile when that
+    /// has changes, and with nothing picked it saves the desk as a new one.</summary>
+    public bool CanSaveProfile => SelectedProfile == null || _dirty;
+
+    /*--- naming: one rule for New and Rename, asked while the name is typed ---*/
+
+    /// <summary>Why a profile cannot have this name, or null when it can.
+    /// <paramref name="renaming"/> is the profile being renamed: its own name,
+    /// in any case, is not a clash.</summary>
+    public string? ProfileNameProblem(string? name, Profile? renaming = null)
+    {
+        string n = name?.Trim() ?? "";
+        if (n.Length == 0) return "Type a name.";
+        // Both lists: the file's is the one a clash would overwrite in.
+        // The two share their Profile objects, so the one being renamed is
+        // skipped in both.
+        var other = Profiles.Concat(_store.Profiles).FirstOrDefault(p => !ReferenceEquals(p, renaming)
+                                                && p.Name.Equals(n, StringComparison.OrdinalIgnoreCase));
+        return other == null ? null : $"There is already a profile called “{other.Name}”.";
+    }
+
+    /// <summary>Profile renames this session, for copies that still carry an
+    /// old name (see RenameMap).</summary>
+    readonly RenameMap _profileRenames = new();
+
+    string? FollowProfileRename(string? name)
+        => _profileRenames.Follow(name, n => Profiles.Any(p => p.Name.Equals(n, StringComparison.OrdinalIgnoreCase)));
+
+    /// <summary>A name for a new profile nobody has used yet.</summary>
+    public string SuggestProfileName()
+    {
+        for (int n = Profiles.Count + 1; ; n++)
+            if (ProfileNameProblem($"Profile {n}") == null) return $"Profile {n}";
+    }
+
+    /// <summary>Save the desk as it is now as a new profile under exactly this
+    /// name. False when the name is taken or the file could not be written.</summary>
+    public bool CreateProfile(string name)
+    {
+        if (ProfileNameProblem(name) != null) return false;
+        int before = Profiles.Count;
+        ProfileName = name.Trim();
+        SaveProfileAsNew();
+        return Profiles.Count > before;
+    }
+
+    /// <summary>Give a profile a new name and nothing else. The old Save-with-a-
+    /// changed-name was a rename AND a save of whatever was on the desk, so
+    /// renaming a profile you had been trying colours on quietly kept the
+    /// experiment. This carries the saved profile across untouched; unsaved
+    /// changes stay unsaved.
+    ///
+    /// Same order as every rename here: the new name is written first, then
+    /// everything that points at the old one (rules, schedules, show steps, the
+    /// startup profile), and only then is the old name removed. A failure part
+    /// way leaves both names, never a reference to a name that is gone.</summary>
+    public bool RenameProfile(Profile profile, string newName)
+    {
+        newName = newName?.Trim() ?? "";
+        if (ProfileNameProblem(newName, profile) != null) return false;
+        string oldName = profile.Name;
+        if (oldName == newName) return true;
+        bool caseOnly = oldName.Equals(newName, StringComparison.OrdinalIgnoreCase);
+        bool wasPicked = ReferenceEquals(SelectedProfile, profile);
+
+        var renamed = _store.TryRenamed(profile, newName);
+        if (renamed == null) { NoteSaveFailed(newName); return false; }
+
+        int at = Profiles.IndexOf(profile);
+        if (caseOnly)
+        {
+            // The store put it in the same slot (names compare without case).
+            if (at >= 0) Profiles[at] = renamed; else Profiles.Add(renamed);
+            RenameProfileReferences(oldName, newName);
+        }
+        else
+        {
+            if (at >= 0) Profiles.Insert(at, renamed); else Profiles.Add(renamed);
+            if (RenameProfileReferences(oldName, newName) && _store.TryRemoveRenamedProfile(oldName))
+                Profiles.Remove(profile);
+            else
+                UnifiedRgb.Core.Automation.ActivityLog.Note(UnifiedRgb.Core.Automation.ActivityKind.Problem,
+                    $"'{oldName}' could not be renamed to '{newName}' - the new name was saved, "
+                    + "but the old one is still there. Check that the settings folder is writable, then delete it.");
+        }
+        // Not through the SelectedProfile setter: that re-reads the pump, show
+        // and wallpaper pickers from the profile, and would throw away picks
+        // that are not saved yet. The profile is the same profile.
+        if (wasPicked) SelectProfileRestored(renamed);
+        _profileRenames.Record(oldName, newName);
+        UnifiedRgb.Core.Log.Info("profiles", $"renamed profile '{oldName}' to '{newName}'");
+        return true;
+    }
+
+    /*--- what points at a screen or a show, and keeping it pointed after a rename ---*/
+
+    /// <summary>The profiles that put this screen on the pump panel.</summary>
+    public IReadOnlyList<string> WhatUsesScreen(string? name) =>
+        string.IsNullOrWhiteSpace(name) ? Array.Empty<string>()
+        : Profiles.Where(p => string.Equals(p.Screen?.Trim(), name.Trim(), StringComparison.OrdinalIgnoreCase))
+                  .Select(p => $"the profile “{p.Name}”").ToList();
+
+    /// <summary>The profiles that start this show.</summary>
+    public IReadOnlyList<string> WhatUsesShow(string? name) =>
+        string.IsNullOrWhiteSpace(name) ? Array.Empty<string>()
+        : Profiles.Where(p => string.Equals(p.Show?.Trim(), name.Trim(), StringComparison.OrdinalIgnoreCase))
+                  .Select(p => $"the profile “{p.Name}”").ToList();
+
+    /// <summary>A screen was renamed: every profile that shows it follows. The
+    /// open profile's pump pick follows too, before the screen list changes:
+    /// a pick naming a screen that is not in the list any more turns into an
+    /// "(unavailable)" row, and the next Save would keep that.</summary>
+    internal bool RenameScreenReferences(string oldName, string newName)
+    {
+        bool Matches(string? s) => string.Equals(s?.Trim(), oldName, StringComparison.OrdinalIgnoreCase);
+        var changed = _store.Profiles.Concat(Profiles).Distinct().Where(p => Matches(p.Screen))
+                            .Select(p => (Profile: p, Was: p.Screen)).ToList();
+        foreach (var c in changed) c.Profile.Screen = newName;
+        if (changed.Count > 0 && !_store.TrySaveProfiles())
+        {
+            foreach (var c in changed) c.Profile.Screen = c.Was;   // exactly as they were
+            return false;
+        }
+        if (Matches(_pumpChoice.Screen))
+        {
+            _pumpChoice = new PumpRow(newName, newName);
+            OnChanged(nameof(PumpChoice));
+        }
+        return true;
+    }
+
+    /// <summary>A show was renamed: every profile that starts it follows, and so
+    /// does the open profile's show pick. The show list is re-read after, since
+    /// a rename changes no collection and nothing else would.</summary>
+    internal bool RenameShowReferences(string oldName, string newName)
+    {
+        bool Matches(string? s) => string.Equals(s?.Trim(), oldName, StringComparison.OrdinalIgnoreCase);
+        var changed = _store.Profiles.Concat(Profiles).Distinct().Where(p => Matches(p.Show))
+                            .Select(p => (Profile: p, Was: p.Show)).ToList();
+        foreach (var c in changed) c.Profile.Show = newName;
+        if (changed.Count > 0 && !_store.TrySaveProfiles())
+        {
+            foreach (var c in changed) c.Profile.Show = c.Was;   // exactly as they were
+            return false;
+        }
+        if (Matches(_showChoice)) _showChoice = newName;
+        RefreshPumpRows();
+        return true;
+    }
 
     /// <summary>The user changed something the profile records. When the
     /// LIGHTING moved (a colour, an effect, a palette, a speed - anything but
@@ -38,8 +221,8 @@ public sealed partial class MainViewModel
     void MarkDirty(bool lightingChanged = true)
     {
         if (_initializing) return;
-        _dirty = true;
-        if (!lightingChanged) return;
+        SetDirty(true);
+        if (!lightingChanged) { _pickersSinceApply = true; return; }
         _appliedProfile = null;
         LightingApplied?.Invoke();
     }
@@ -388,12 +571,13 @@ public sealed partial class MainViewModel
             PumpRows.Clear();
             foreach (var r in wantScreens) PumpRows.Add(r);
         }
-        // OrdinalIgnoreCase, matching the "is it missing?" test above. With the
-        // two disagreeing, a show whose name differed only in case counted as
-        // present when deciding whether to add it and as different when deciding
-        // whether to rebuild. It cancels out today only because SyncPumpChoice
-        // always adopts the row's own spelling.
-        if (!ShowRows.SequenceEqual(wantShows, StringComparer.OrdinalIgnoreCase))
+        // Rebuilt on any difference, case included: a show renamed only in case
+        // ("evening" to "Evening") left the old spelling listed, and the exact
+        // match below then threw the pick away. Whether a pick is MISSING is
+        // still decided without case (above), and the pick adopts the row's
+        // own spelling (below), so a pick that differs from its show only in
+        // case is kept rather than listed twice or dropped.
+        if (!ShowRows.SequenceEqual(wantShows, StringComparer.Ordinal))
         {
             ShowRows.Clear();
             foreach (var r in wantShows) ShowRows.Add(r);
@@ -403,7 +587,8 @@ public sealed partial class MainViewModel
         // that is no longer in its list, which a ComboBox shows as blank.
         if (!PumpRows.Contains(_pumpChoice))
             _pumpChoice = PumpRows.FirstOrDefault(r => string.Equals(r.Screen, _pumpChoice.Screen, StringComparison.OrdinalIgnoreCase)) ?? PumpNone;
-        if (!ShowRows.Contains(_showChoice)) _showChoice = NoShow;
+        if (!ShowRows.Contains(_showChoice))
+            _showChoice = ShowRows.FirstOrDefault(r => string.Equals(r, _showChoice, StringComparison.OrdinalIgnoreCase)) ?? NoShow;
 
         OnChanged(nameof(PumpAvailable));
         OnChanged(nameof(ShowAvailable));
@@ -543,7 +728,7 @@ public sealed partial class MainViewModel
         // selected"), and a direct field write afterwards left Delete greyed
         // and the startup checkbox stale until the profile was re-picked.
         SelectedProfile = p;
-        _dirty = false;
+        SetDirty(false);
         // The lighting now IS this profile - that is what saving means - so
         // say so rather than clearing it. Nulling it cost ApplyStep its "do not
         // re-apply what is already on" skip, so a show whose next step named the
@@ -650,7 +835,7 @@ public sealed partial class MainViewModel
         }
         SelectedProfile = p;
         ProfileName = "";                       // saved: clear the name box
-        _dirty = false;
+        SetDirty(false);
         // The lighting IS this profile now - unless a show is running, when it
         // is still whatever step is up (see SaveActiveProfile).
         if (!showOwnsLighting) _appliedProfile = p.Name;
@@ -683,8 +868,10 @@ public sealed partial class MainViewModel
         Profiles.Add(p);
         SelectedProfile = p;
         ProfileName = "";
-        _dirty = false;
-        _appliedProfile = p.Name;   // the lighting IS this profile now
+        SetDirty(false);
+        // The lighting IS this profile now - unless a show is playing, when
+        // the desk is its current step (see SaveActiveProfile).
+        if (!ShowOwnsLighting) _appliedProfile = p.Name;
         OnChanged(nameof(IsStartupProfile));
     }
 
@@ -820,8 +1007,9 @@ public sealed partial class MainViewModel
         bool wallpaperSent = ApplyWallpaperProfile(p.Wallpaper);
         // Shows change output while the editor remains on the user's selected
         // profile. Its unsaved choices must survive timed steps too.
-        if (!fromShow) _dirty = false;
+        if (!fromShow) SetDirty(false);
         _appliedProfile = p.Name;
+        _pickersSinceApply = false;   // its screen, show and wallpaper went up just now
         UnifiedRgb.Core.Log.Info("lighting",
             $"applied profile '{p.Name}': {p.Effects?.Count ?? 0} effect(s) on "
             + $"{p.DeviceFrames?.Count ?? 0} device(s)"
@@ -918,7 +1106,7 @@ public sealed partial class MainViewModel
         Profiles.Remove(SelectedProfile);
         SelectedProfile = null;
         ProfileName = "";       // the deleted name lingering in the box invites a confusing re-save
-        _dirty = false;
+        SetDirty(false);
         // The desk no longer IS a profile by that name. Left in place, a new
         // show step defaulted to the deleted name (AddStep takes the lit
         // profile), and every cycle then reported the step's missing profile.

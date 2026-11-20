@@ -617,6 +617,24 @@ public sealed class ProfileStore
         return next;
     }
 
+    /// <summary>A copy of <paramref name="from"/> under a new name and nothing
+    /// else changed, written in the old one's place (a rename that only changes
+    /// case) or just before it (any other rename; the caller removes the old
+    /// one once everything that names it has moved). Null when profiles.json
+    /// could not be written, and then nothing in memory has changed either.
+    /// Copied through JSON so the saved profile, unknown fields included, is
+    /// exactly what carries over.</summary>
+    internal Profile? TryRenamed(Profile from, string newName)
+    {
+        var copy = JsonSerializer.Deserialize<Profile>(JsonSerializer.Serialize(from, JsonOpts), JsonOpts);
+        if (copy == null) return null;
+        copy.Name = newName;
+        var next = Placed(copy, from);
+        if (!TrySave(ProfilesPath, next, "profiles.json")) return null;
+        Profiles.Clear(); Profiles.AddRange(next);
+        return copy;
+    }
+
     internal bool TryRemoveRenamedProfile(string name)
     {
         var next = Profiles.Where(x => !x.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).ToList();

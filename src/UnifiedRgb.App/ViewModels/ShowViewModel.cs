@@ -71,9 +71,15 @@ public sealed class ShowViewModel : INotifyPropertyChanged, IDisposable
         {
             var list = new List<string> { KeepChoice };
             list.AddRange(_profileNames());
+            // EXACT match, not case-blind: the step's dropdown finds its item
+            // by exact string, so a step saying "Wow" beside a profile now
+            // called "WOW" (a rename that only changed case, or a hand-edited
+            // file) has to have its own spelling listed. Matched without case,
+            // it was judged present, the dropdown found nothing, and pushed
+            // null into the step - the same wipe the comment above describes.
             foreach (var step in Steps)
                 if (!string.IsNullOrWhiteSpace(step.Profile)
-                    && !list.Any(n => n.Equals(step.Profile, StringComparison.OrdinalIgnoreCase)))
+                    && !list.Any(n => n.Equals(step.Profile, StringComparison.Ordinal)))
                     list.Add(step.Profile);
             return list;
         }
@@ -232,7 +238,8 @@ public sealed class ShowViewModel : INotifyPropertyChanged, IDisposable
         Stop();
         if (state == null) return;
         if (_sequencer == null) Init();
-        var seq = Shows.FirstOrDefault(s => s.Name.Equals(state.Name, StringComparison.OrdinalIgnoreCase));
+        string name = FollowShowRename(state.Name) ?? state.Name;   // renamed since the capture
+        var seq = Shows.FirstOrDefault(s => s.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
         if (seq == null)
         {
             Log.Warn("scenes", $"cannot restore deleted show '{state.Name}'");
@@ -315,6 +322,81 @@ public sealed class ShowViewModel : INotifyPropertyChanged, IDisposable
     }
 
     /*--- editing ---*/
+
+    /// <summary>Why a show cannot have this name, or null when it can.
+    /// <paramref name="renaming"/> is the show being renamed: its own name, in
+    /// any case, is not a clash.</summary>
+    public string? ShowNameProblem(string? name, SceneSequence? renaming = null)
+    {
+        string n = name?.Trim() ?? "";
+        if (n.Length == 0) return "Type a name.";
+        var other = _store().Sequences.Concat(Shows).FirstOrDefault(x => x != null && !ReferenceEquals(x, renaming)
+                                                            && x.Name.Equals(n, StringComparison.OrdinalIgnoreCase));
+        return other == null ? null : $"There is already a show called “{other.Name}”.";
+    }
+
+    public string SuggestShowName()
+    {
+        for (int n = Shows.Count + 1; ; n++)
+            if (ShowNameProblem($"Show {n}") == null) return $"Show {n}";
+    }
+
+    /// <summary>A new, empty show under exactly this name, picked.</summary>
+    public bool Create(string name)
+    {
+        if (ShowNameProblem(name) != null) return false;
+        NameInput = name.Trim();
+        New();
+        return true;
+    }
+
+    /// <summary>Set by the main view model: profiles that start a show name it,
+    /// and have to follow a rename. False when they could not be written.</summary>
+    internal Func<string, string, bool>? ShowRenamed { get; set; }
+
+    /// <summary>Show renames this session, for copies that still carry an old
+    /// name: a playback captured by the automation, a profile's show pick in a
+    /// snapshot (see RenameMap).</summary>
+    readonly RenameMap _renames = new();
+
+    public string? FollowShowRename(string? name)
+        => _renames.Follow(name, n => Shows.Any(s => s != null && s.Name.Equals(n, StringComparison.OrdinalIgnoreCase)));
+
+    /// <summary>Give a show a new name. Its steps are untouched, a running show
+    /// keeps running, and the profiles that start it follow.
+    ///
+    /// All or nothing: when the profiles that start it cannot be saved under
+    /// the new name, the show gets its old name back, so no profile ever asks
+    /// for a show that is not there.</summary>
+    public bool Rename(SceneSequence show, string newName)
+    {
+        newName = newName?.Trim() ?? "";
+        if (ShowNameProblem(newName, show) != null) return false;
+        string oldName = show.Name;
+        if (oldName == newName) return true;
+        show.Name = newName;
+        if (!_store().TrySave())
+        {
+            show.Name = oldName;
+            return false;
+        }
+        if (ShowRenamed?.Invoke(oldName, newName) == false)
+        {
+            show.Name = oldName;
+            bool back = _store().TrySave();
+            UnifiedRgb.Core.Automation.ActivityLog.Note(UnifiedRgb.Core.Automation.ActivityKind.Problem, back
+                ? $"The show '{oldName}' could not be renamed: the profiles that start it could not be saved. "
+                  + "Check that the settings folder is writable."
+                : $"The show '{oldName}' could not be renamed, and putting its old name back could not be saved either. "
+                  + $"After a restart it may be called '{newName}' while profiles still ask for '{oldName}'. "
+                  + "Check that the settings folder is writable.");
+            return false;
+        }
+        _renames.Record(oldName, newName);
+        NotifyRunState();   // the running line names it
+        Log.Info("scenes", $"renamed show '{oldName}' to '{newName}'");
+        return true;
+    }
 
     public void New()
     {

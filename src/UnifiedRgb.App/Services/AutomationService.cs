@@ -745,6 +745,9 @@ public sealed class AutomationService : IDisposable
         }
 
         bool goingDark = next is AutomationMode.Locked or AutomationMode.ScheduleOff;
+        // Read before the gate below is opened: after that the desk no longer
+        // says whether it was dark, and a dark desk must always be repainted.
+        bool wasDark = _lightsOff || _vm.LightsSuppressed;
         // Coming out of the dark (or staying lit): open the gate BEFORE
         // painting. The write boundary refuses every lit write while the
         // lights are off, so a restore or a profile applied first would only
@@ -782,19 +785,28 @@ public sealed class AutomationService : IDisposable
             case AutomationMode.ScheduleProfile:
             case AutomationMode.App:
                 _vm.SetPumpLcdOn(true);   // unlocking straight into a rule must relight the LCD
-                if (profile != null && _vm.ApplyProfileByName(profile))
+                bool ruleAlreadyOn = profile != null && AlreadyLit(profile, wasDark);
+                if (profile != null && (ruleAlreadyOn || _vm.ApplyProfileByName(profile)))
                 {
                     _lightsOff = false;
                     _ruleSinceBase = true;
-                    _vm.RuleOwnsLighting = true;   // not stored in a mouse's memory (see PersistSettledLighting)
+                    // Only when the rule actually painted. Left on the profile
+                    // that was already up, the desk is still whoever's it was:
+                    // marking it the rule's dropped a pending save of the
+                    // user's own colours into the mouse's memory, and nothing
+                    // on the skip back re-armed it.
+                    if (!ruleAlreadyOn) _vm.RuleOwnsLighting = true;   // not stored in a mouse's memory (see PersistSettledLighting)
                     // Over the user's own choice, if they had made one: the
                     // way back to Base has to put that back (see there).
-                    if (_userTookOver) _ruleRepainted = true;
+                    // A skip painted nothing over it.
+                    if (_userTookOver && !ruleAlreadyOn) _ruleRepainted = true;
+                    string done = ruleAlreadyOn ? $"profile '{profile}' is already on, left it running"
+                                                : $"applied profile '{profile}'";
                     Log.Info("auto", next switch
                     {
-                        AutomationMode.Sensor => $"sensor rule fired, applied profile '{profile}'",
-                        AutomationMode.ScheduleProfile => $"scheduled window, applied profile '{profile}'",
-                        _ => $"foreground app rule matched, applied profile '{profile}'",
+                        AutomationMode.Sensor => $"sensor rule fired, {done}",
+                        AutomationMode.ScheduleProfile => $"scheduled window, {done}",
+                        _ => $"foreground app rule matched, {done}",
                     });
                     // The status already says which rule and which profile, so
                     // the entry's category ("Rule activated") is the only thing
@@ -880,6 +892,14 @@ public sealed class AutomationService : IDisposable
                             $"{why}, and you changed the lighting while a rule was running, so that is what you keep.");
                     }
                 }
+                else if (!string.IsNullOrWhiteSpace(startup) && AlreadyLit(startup, wasDark))
+                {
+                    // The rule's profile IS the startup profile (a game rule
+                    // pointing at the profile you start with): nothing to change.
+                    Log.Info("auto", $"no rule matches, your startup profile '{startup}' is already on, left it running");
+                    ActivityLog.Note(ActivityKind.BackToBase,
+                        $"{why}, and your startup profile '{startup}' was already on, so nothing changed.");
+                }
                 else if (!string.IsNullOrWhiteSpace(startup) && _vm.ApplyProfileByName(startup))
                 {
                     Log.Info("auto", $"no rule matches, back to your startup profile '{startup}'");
@@ -928,6 +948,27 @@ public sealed class AutomationService : IDisposable
         _vm.NightLightsOff = next == AutomationMode.ScheduleOff;   // drives the wake banner
         _vm.LightsSuppressed = goingDark;   // scene sequences hold while off; LightsOff has set it already
     }
+
+    /// <summary>The desk already IS this profile, so applying it again would
+    /// change nothing but cost a blink. An apply stops every effect, writes
+    /// the saved statics and starts the effects again, and that gap is visible.
+    /// With a game rule pointing at the startup profile (the 'Wow' rule with
+    /// 'Wow' as the startup profile, 2026-11-20) the whole desk blinked on
+    /// every switch into and out of the game, many times an hour.
+    ///
+    /// "Already is" means all of these hold. The profile was the last thing
+    /// applied, with no hand edit since (MarkDirty clears the name) and no
+    /// pump-screen, show or wallpaper pick since either: those are saved with
+    /// the profile but put nothing up, and the next apply is what shows them.
+    /// The desk was not dark before this switch: a dark desk has to be
+    /// repainted, and the suppression has to be read before the gate opens.
+    /// No show is running: a show's step sets the name too, and a real apply
+    /// is what stops or restarts the show.</summary>
+    bool AlreadyLit(string profile, bool wasDark) =>
+        !wasDark
+        && !_vm.Shows.Running
+        && _vm.IsAppliedExactly(profile)
+        && _vm.HasProfile(profile);
 
     /// <summary>What a saved baseline actually is, for the log. A profile name
     /// when one was selected, otherwise how much hand-set lighting it holds:

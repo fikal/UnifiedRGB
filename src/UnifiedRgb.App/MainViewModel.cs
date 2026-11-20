@@ -1322,6 +1322,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             _selectedProfile = value;
             OnChanged(); OnChanged(nameof(IsStartupProfile)); OnChanged(nameof(CanDeleteProfile));
+            NotifySaveState();
             if (value != null) { _profileName = value.Name; OnChanged(nameof(ProfileName)); }
             // The wallpaper picker follows the selection the way the name box
             // does, so Save writes back what is on screen rather than whatever
@@ -1344,6 +1345,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         _profileName = p?.Name ?? "";
         OnChanged(nameof(SelectedProfile)); OnChanged(nameof(ProfileName));
         OnChanged(nameof(IsStartupProfile)); OnChanged(nameof(CanDeleteProfile));
+        NotifySaveState();
     }
 
     /// <summary>One-time moves for the two things a show used to own itself.
@@ -1599,6 +1601,10 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
             applyProfile: n => ApplyProfileByName(n, fromShow: true),
             profileNames: () => Profiles.Select(p => p.Name),
             currentProfile: () => _appliedProfile);
+        // Profiles name the screen they show and the show they start, so a
+        // rename on either page has to reach the profiles too.
+        Lcd.ScreenRenamed = RenameScreenReferences;
+        Shows.ShowRenamed = RenameShowReferences;
         // The one-line handlers, verbatim: same call, no CanExecute added, so
         // every one of these behaves exactly as the Click it replaced. The
         // buttons that were already disabled by an IsEnabled binding keep it.

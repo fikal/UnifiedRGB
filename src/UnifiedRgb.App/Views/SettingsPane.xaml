@@ -73,23 +73,22 @@
                                         ToolTip="Holds the show where it is, keeping its place and the time already served on this step. Stop, on the show page, forgets it instead."/>
                             </StackPanel>
                         </Border>
-                        <StackPanel Orientation="Horizontal">
-                            <ComboBox Width="200" ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfile}"
-                                      DisplayMemberPath="Name"/>
-                            <TextBox Width="160" Text="{Binding ProfileName, UpdateSourceTrigger=PropertyChanged}"
-                                     Margin="10,0,0,0" VerticalAlignment="Center" ToolTip="Profile name"/>
-                        </StackPanel>
-                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                            <Button Content="Save" Style="{StaticResource Accent}" Command="{Binding SaveProfileCommand}"
-                                    ToolTip="Update the selected profile with the current lighting (a changed name renames it)"/>
-                            <Button Content="Save as new" Margin="8,0,0,0" Command="{Binding SaveProfileAsNewCommand}"
-                                    ToolTip="Create a new profile with this name"/>
-                            <Button Content="Load" Margin="8,0,0,0" Command="{Binding LoadProfileCommand}"/>
-                            <Button Content="Delete" Style="{StaticResource Danger}" Margin="8,0,0,0"
-                                    Click="DeleteProfile_Click"
-                                    IsEnabled="{Binding CanDeleteProfile}"/>
-                        </StackPanel>
-                        <CheckBox Content="Apply the selected profile at startup" IsChecked="{Binding IsStartupProfile}"
+                        <!-- Picking a profile puts it on. Save keeps changes in
+                             the picked one; New, Rename and Delete are behind the
+                             dots and ask for a name when they need one. -->
+                        <controls:NamedPicker Noun="profile" PickerWidth="240" DisplayMemberPath="Name"
+                                              ItemsSource="{Binding Profiles}"
+                                              SelectedItem="{Binding SelectedProfile, Mode=OneWay}"
+                                              SaveEnabled="{Binding CanSaveProfile}"
+                                              HasChanges="{Binding HasUnsavedChanges}"
+                                              ShowRevert="True"
+                                              Picked="Profile_Picked"
+                                              RevertRequested="ProfileRevert_Click"
+                                              SaveRequested="ProfileSave_Click"
+                                              NewRequested="ProfileNew_Click"
+                                              RenameRequested="ProfileRename_Click"
+                                              DeleteRequested="DeleteProfile_Click"/>
+                        <CheckBox Content="Apply this profile at startup" IsChecked="{Binding IsStartupProfile}"
                                   Margin="0,12,0,0"/>
                         <!-- The pump panel, as a pick rather than a ritual. It
                              used to be bound only by loading a screen on another

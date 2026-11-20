@@ -267,6 +267,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         _lcd.Ticked += RefreshDisplays;
         _lcd.Start();
         OnChanged(nameof(Available));
+        NotifyScreenState();   // Save works again now there is a panel to save from
         OnChanged(nameof(CpuTempUnavailable));
         OnChanged(nameof(LcdBackground)); OnChanged(nameof(LcdBackgroundName)); OnChanged(nameof(LcdHasBackground));
         if (returning)
@@ -312,6 +313,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         old.Lost -= OnPanelLost;
         old.Detach();                       // the timer half, here on the UI thread
         _lcd = null;                        // Available and every setter short-circuit from here on
+        NotifyScreenState();                // ...and Save, which needs the panel
         string? wedged = WedgedPanelPath(old);
         // The join and the handle close can each wait out a stalled write;
         // off the UI thread so the window does not freeze for the unplug.
@@ -615,7 +617,9 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         // The Screens dropdown follows the canvas, as it does for a restore:
         // undoing past a screen pick must not leave that screen selected over a
         // design that is no longer it (an empty-name "Save screen" would then
-        // overwrite it).
+        // overwrite it). An undo step from before a rename names the old
+        // name; it is the same screen.
+        d.SceneName = FollowScreenRename(d.SceneName);
         _selectedSceneName = d.SceneName != null && SceneNames.Contains(d.SceneName) ? d.SceneName : null;
         OnChanged(nameof(SelectedSceneName));
         LoadDesignIntoEditor(d, fromShow: false);
@@ -656,6 +660,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         _clockSecond = -1;
         _lcd?.Refresh();
         _lcdSave.Stop(); _lcdSave.Start();
+        NotifyScreenState();
     }
 
     /// <summary>Rendered text for an element (used by the WYSIWYG editor).</summary>
@@ -763,6 +768,13 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         _bgNatW = Math.Max(1, w);
         _bgNatH = Math.Max(1, h);
         if (d.BgW > 0.5) return;
+        FillDefaultBgRect(d);
+    }
+
+    /// <summary>The cover rect a design without one is given (see EnsureBgRect),
+    /// for the background currently loaded.</summary>
+    void FillDefaultBgRect(LcdDesign d)
+    {
         double scale = Math.Max(320.0 / _bgNatW, 240.0 / _bgNatH);
         d.BgW = Math.Round(_bgNatW * scale);
         d.BgH = Math.Round(_bgNatH * scale);
@@ -901,6 +913,9 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         set
         {
             _userEdits++;   // the dropdown: the user's choice
+            // A pick held while the panel was away can name a screen renamed
+            // since; it means the screen, whatever it is called now.
+            value = FollowScreenRename(value);
             _selectedSceneName = value;
             OnChanged();
             // Selecting a scene loads it into the editor (and onto the pump).
@@ -940,6 +955,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
     /// live here, which is the one place both callers pass through.</param>
     public bool ShowScreen(string name, bool fromShow = false)
     {
+        name = FollowScreenRename(name) ?? name;   // a request held from before a rename
         var sc = _scenes.Scenes.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
         if (sc == null)
         {
@@ -1040,6 +1056,7 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         }
         if (Fingerprint(_lcd.Design) == Fingerprint(snap.Design) && _liveIsShowScene == snap.FromShow) return;
         var d = SceneStore.Clone(snap.Design);
+        d.SceneName = FollowScreenRename(d.SceneName);   // renamed since the snapshot
         // The Screens dropdown follows the canvas: a saved screen selects
         // itself, an unnamed design selects nothing - leaving the rule's screen
         // selected let an empty-name "Save screen" overwrite it with this canvas.
@@ -1134,8 +1151,166 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         // while the Screens dropdown kept saying Boot - and an empty-name "Save
         // screen" then overwrote Boot with it.
         _undoSettle.Stop(); _baseline = Snapshot();
-        if (fromShow) { _liveIsShowScene = true; _clockSecond = -1; _lcd.Refresh(); }
+        if (fromShow) { _liveIsShowScene = true; _clockSecond = -1; _lcd.Refresh(); NotifyScreenState(); }
         else MarkCanvas();   // not a user edit in itself: the caller decides that
+    }
+
+    /*--- the Screens tab: pick, Save, New, Rename, Delete (see NamedPicker) ---*/
+
+    /// <summary>The canvas differs from the saved screen it came from. Compared
+    /// by content, so an edit undone by hand reads as no change again.</summary>
+    public bool ScreenHasChanges
+    {
+        get
+        {
+            if (_selectedSceneName == null || LiveDesign is not LcdDesign live) return false;
+            var sc = _scenes.Scenes.FirstOrDefault(x => x.Name == _selectedSceneName);
+            return sc != null && Fingerprint(live) != SavedFingerprint(sc, live);
+        }
+    }
+
+    /// <summary>The saved screen as the canvas would hold it, cached: it is
+    /// asked on every canvas edit (a drag is one per mouse move) and only
+    /// changes when the screen is saved (a new Design object) or the canvas
+    /// background changes.
+    ///
+    /// "As the canvas would hold it": a screen saved before backgrounds had an
+    /// explicit rect is given one the moment it loads (EnsureBgRect), so the
+    /// raw saved copy differed from the canvas at once and the screen read as
+    /// edited before anybody touched it.</summary>
+    string SavedFingerprint(LcdScene sc, LcdDesign live)
+    {
+        var key = (sc.Design, live.BackgroundImagePath, _bgNatW, _bgNatH);
+        if (_savedPrint.Print != null && Equals(_savedPrint.Key, key)) return _savedPrint.Print;
+        var c = SceneStore.Clone(sc.Design);
+        if (c.BgW <= 0.5 && _lcd?.Background != null
+            && string.Equals(c.BackgroundImagePath, live.BackgroundImagePath, StringComparison.OrdinalIgnoreCase))
+            FillDefaultBgRect(c);
+        string print = Fingerprint(c);
+        _savedPrint = (key, print);
+        return print;
+    }
+    ((LcdDesign?, string?, double, double) Key, string? Print) _savedPrint;
+
+    /// <summary>Save does something: it updates the picked screen when the
+    /// canvas has changed, and with no screen picked it saves the canvas as a
+    /// new one. Nothing without a panel to save from.</summary>
+    public bool CanSaveScreen => _lcd != null && (_selectedSceneName == null || ScreenHasChanges);
+
+    /// <summary>Why a screen cannot have this name, or null when it can.
+    /// <paramref name="renaming"/> is the screen being renamed: its own name,
+    /// in any case, is not a clash.</summary>
+    public string? ScreenNameProblem(string? name, string? renaming = null)
+    {
+        string n = name?.Trim() ?? "";
+        if (n.Length == 0) return "Type a name.";
+        var other = _scenes.Scenes.FirstOrDefault(x => x.Name != renaming
+                                                      && x.Name.Equals(n, StringComparison.OrdinalIgnoreCase));
+        return other == null ? null : $"There is already a screen called “{other.Name}”.";
+    }
+
+    public string SuggestScreenName()
+    {
+        for (int n = _scenes.Scenes.Count + 1; ; n++)
+            if (ScreenNameProblem($"Screen {n}") == null) return $"Screen {n}";
+    }
+
+    /// <summary>Save the canvas as a new screen under exactly this name.</summary>
+    public bool CreateScreen(string name)
+    {
+        if (_lcd == null || ScreenNameProblem(name) != null) return false;
+        return SaveSceneAs(name.Trim());
+    }
+
+    /// <summary>Save the canvas into the picked screen. False when there is
+    /// no panel, no screen picked, or scenes.json could not be written.</summary>
+    public bool SaveScreen()
+    {
+        if (_lcd == null || _selectedSceneName is not string name) return false;
+        return SaveSceneAs(name);
+    }
+
+    /// <summary>A screen can be made or saved: there is a panel to take the
+    /// canvas from.</summary>
+    public bool PanelConnected => _lcd != null;
+
+    /// <summary>Put the picked screen's saved layout back on the canvas,
+    /// dropping the edits made since. Undo still has them.</summary>
+    public void RevertScreen()
+    {
+        if (_selectedSceneName is string name) SelectedSceneName = name;
+    }
+
+    /// <summary>Set by the main view model: the profiles that show a screen
+    /// name it, and have to follow a rename. False when they could not be
+    /// written.</summary>
+    internal Func<string, string, bool>? ScreenRenamed { get; set; }
+
+    /// <summary>Screen renames this session, for copies that still carry an old
+    /// name: an automation snapshot of the panel, an undo step, a screen asked
+    /// for while the panel was away (see RenameMap).</summary>
+    readonly RenameMap _screenRenames = new();
+
+    public string? FollowScreenRename(string? name)
+        => _screenRenames.Follow(name, n => _scenes.Scenes.Any(x => x.Name.Equals(n, StringComparison.OrdinalIgnoreCase)));
+
+    /// <summary>Give a screen a new name and nothing else: the saved layout is
+    /// untouched, and an edited canvas stays edited. The profiles that show it
+    /// follow, so the pump panel does not go blank on the next profile change
+    /// because a profile asks for a name that is gone.</summary>
+    public bool RenameScreen(string oldName, string newName)
+    {
+        newName = newName?.Trim() ?? "";
+        var sc = _scenes.Scenes.FirstOrDefault(x => x.Name == oldName);
+        if (sc == null || ScreenNameProblem(newName, oldName) != null) return false;
+        if (oldName == newName) return true;
+
+        void Name(string n) { sc.Name = n; if (sc.Design != null) sc.Design.SceneName = n; }
+        Name(newName);
+        if (!_scenes.TrySave()) { Name(oldName); return false; }
+        // Before the list changes: the profile page's pump pick has to name the
+        // new screen by the time the list it picks from is rebuilt. All or
+        // nothing: when the profiles cannot be saved the screen takes its old
+        // name back, so no profile asks for a screen that is not there.
+        if (ScreenRenamed?.Invoke(oldName, newName) == false)
+        {
+            Name(oldName);
+            bool back = _scenes.TrySave();
+            UnifiedRgb.Core.Automation.ActivityLog.Note(UnifiedRgb.Core.Automation.ActivityKind.Problem, back
+                ? $"The screen '{oldName}' could not be renamed: the profiles that show it could not be saved. "
+                  + "Check that the settings folder is writable."
+                : $"The screen '{oldName}' could not be renamed, and putting its old name back could not be saved either. "
+                  + $"After a restart it may be called '{newName}' while profiles still ask for '{oldName}'. "
+                  + "Check that the settings folder is writable.");
+            return false;
+        }
+        _screenRenames.Record(oldName, newName);
+
+        // The canvas remembers which screen it is, so Save keeps updating it.
+        // Which copy is the canvas depends on who put the panel's design up:
+        // with a show's step showing, the live design is the SHOW's (never
+        // saved as the canvas) and the user's own canvas is the one on disk.
+        // Saving the live one there would write the show's screen over it.
+        if (LiveDesign is LcdDesign live && live.SceneName == oldName)
+        {
+            live.SceneName = newName;
+            if (!_liveIsShowScene) live.Save();   // the retained design of an away panel included
+        }
+        if (_liveIsShowScene)
+        {
+            var canvas = LcdDesign.Load();
+            if (canvas.SceneName == oldName) { canvas.SceneName = newName; canvas.Save(); }
+        }
+        int at = SceneNames.IndexOf(oldName);
+        if (at >= 0) SceneNames[at] = newName;
+        if (_selectedSceneName == oldName)
+        {
+            _selectedSceneName = newName;
+            OnChanged(nameof(SelectedSceneName));
+        }
+        OnChanged(nameof(SceneChoices));
+        Log.Info("scenes", $"renamed screen '{oldName}' to '{newName}'");
+        return true;
     }
 
     /// <summary>Save the canvas as a scene: under the typed name if given,
@@ -1146,6 +1321,17 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         string name = !string.IsNullOrWhiteSpace(SceneNameInput) ? SceneNameInput.Trim()
                     : _selectedSceneName ?? "";
         if (string.IsNullOrWhiteSpace(name)) return;
+        SaveSceneAs(name);
+        SceneNameInput = "";
+    }
+
+    /// <returns>Whether scenes.json was written. A failed write has already
+    /// said so in the activity history (ProfileStore.TrySave); the caller needs
+    /// to know too, so a "Save, then open the next screen" does not open the
+    /// next screen over edits that were never kept.</returns>
+    bool SaveSceneAs(string name)
+    {
+        if (_lcd == null) return false;
         var sc = _scenes.Scenes.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
         if (sc == null)
         {
@@ -1158,20 +1344,21 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
         _userEdits++;
         _lcd.Design.SceneName = sc.Name;
         sc.Design = SceneStore.Clone(_lcd.Design);
-        _scenes.Save();
+        bool saved = _scenes.TrySave();
         _lcd.Design.Save();
-        SceneNameInput = "";
         _selectedSceneName = sc.Name;
         OnChanged(nameof(SelectedSceneName)); OnChanged(nameof(SceneChoices));
+        return saved;
     }
 
     public void DeleteScene()
     {
         if (_selectedSceneName is not string name) return;
         _userEdits++;
-        // Own the name locally: removing it from SceneNames makes the bound
-        // ComboBox push a null selection back through the setter at once, so
-        // anything read from _selectedSceneName after that line is already gone.
+        // Own the name locally. The Screens picker binds one-way now and never
+        // writes back, but a two-way bound list pushes null through the setter
+        // the moment its item is removed, and this must not depend on which
+        // kind of binding happens to be on it.
         _selectedSceneName = null;
         // The design stays on the pump, it just is not a saved screen anymore.
         if (_lcd != null && _lcd.Design.SceneName == name) _lcd.Design.SceneName = null;
@@ -1204,5 +1391,17 @@ public sealed class LcdDesignerViewModel : INotifyPropertyChanged, IDisposable
 
     public event PropertyChangedEventHandler? PropertyChanged;
     void OnChanged([CallerMemberName] string? n = null)
-        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(n));
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(n));
+        // Whether the canvas differs from the screen it came from depends on
+        // which screen that is, and the picked screen moves in a dozen places
+        // that each raise this one name.
+        if (n == nameof(SelectedSceneName)) NotifyScreenState();
+    }
+
+    void NotifyScreenState()
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ScreenHasChanges)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CanSaveScreen)));
+    }
 }

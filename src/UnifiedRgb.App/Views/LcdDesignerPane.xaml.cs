@@ -217,5 +217,81 @@ public partial class LcdDesignerPane : UserControl
     /*--- scenes & sequences ---*/
     // The show handlers left with the show: see ShowPane.
 
+    /*--- the Screens tab (see NamedPicker) ---*/
+
+    Window? Owner => Window.GetWindow(this);
+    /// <summary>The profiles live on the main view model, which is the
+    /// window's; this pane's own DataContext is the designer.</summary>
+    MainViewModel? Main => Owner?.DataContext as MainViewModel;
+
+    /// <summary>Picking a screen puts it on the canvas, replacing what is
+    /// there, so edits to the screen being left are asked about first.</summary>
+    void Screen_Picked(object? sender, Controls.NamedPickEventArgs e)
+    {
+        if (e.Item is not string next) return;
+        if (VM.ScreenHasChanges && VM.SelectedSceneName is string current && Owner is Window owner)
+        {
+            var answer = Dialogs.AskSaveChanges(owner, current, "Screen");
+            if (answer == MessageBoxResult.Cancel) return;
+            // Not kept (the file could not be written): stay on this screen
+            // rather than replace the canvas holding the only copy.
+            if (answer == MessageBoxResult.Yes && !VM.SaveScreen()) return;
+        }
+        VM.SelectedSceneName = next;
+    }
+
+    void ScreenSave_Click(object? sender, EventArgs e)
+    {
+        if (VM.SelectedSceneName == null) { ScreenNew_Click(sender, e); return; }
+        VM.SaveScreen();
+    }
+
+    /// <summary>Back to the picked screen as saved. Undo still has the edits.</summary>
+    void ScreenRevert_Click(object? sender, EventArgs e) => VM.RevertScreen();
+
+    void ScreenNew_Click(object? sender, EventArgs e)
+    {
+        if (Owner is not Window owner) return;
+        // A screen is made from the canvas the panel is showing; with no panel
+        // there is nothing to take, and accepting a name to then do nothing
+        // was the silent failure.
+        if (!VM.PanelConnected)
+        {
+            Dialogs.Info(owner, "New screen", "The pump panel is not connected, so there is no canvas to save as a screen. Plug it in and try again.");
+            return;
+        }
+        string? name = Dialogs.AskName(owner, "New screen",
+            "Saves what is on the canvas now as a screen of its own.",
+            VM.SuggestScreenName(), "Create", n => VM.ScreenNameProblem(n));
+        if (name != null) VM.CreateScreen(name);
+    }
+
+    void ScreenRename_Click(object? sender, EventArgs e)
+    {
+        if (VM.SelectedSceneName is not string current || Owner is not Window owner) return;
+        string? name = Dialogs.AskName(owner, "Rename screen",
+            "Profiles that show it follow the new name.",
+            current, "Rename", n => VM.ScreenNameProblem(n, current));
+        if (name != null) VM.RenameScreen(current, name);
+    }
+
+    /// <summary>Delete, asking first only when profiles still show it: they
+    /// would put nothing on the panel from then on, and say so only in the log.</summary>
+    void ScreenDelete_Click(object? sender, EventArgs e)
+    {
+        if (VM.SelectedSceneName is not string current) return;
+        var uses = Main?.WhatUsesScreen(current) ?? Array.Empty<string>();
+        if (uses.Count > 0 && Owner is Window owner)
+        {
+            string list = string.Join("\n", uses.Select(u => "   • " + u));
+            if (!Dialogs.Confirm(owner, $"Delete “{current}”?",
+                    $"{uses.Count} profile{(uses.Count == 1 ? "" : "s")} still show it:\n\n{list}\n\n"
+                    + "They keep the name and leave the pump panel alone until you pick another screen for them.",
+                    "Delete Anyway"))
+                return;
+        }
+        VM.DeleteScene();
+    }
+
     static double Clamp(double v, double lo, double hi) => v < lo ? lo : v > hi ? hi : v;
 }

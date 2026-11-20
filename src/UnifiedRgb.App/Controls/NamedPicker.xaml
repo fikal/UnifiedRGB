@@ -1,0 +1,116 @@
+<UserControl x:Class="UnifiedRgb.App.Controls.NamedPicker"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:UnifiedRgb.App.Controls">
+    <!-- One way to pick, save, make, rename and delete a named thing: a profile,
+         a pump screen, a show. Each page used to grow its own version of this -
+         a name box whose meaning changed with what was typed in it ("empty =
+         update the loaded one, a new name = a new one, a changed name = a
+         rename"), a Load button beside a list that did not load, uppercase
+         labels - and no two of them agreed. Picking loads. Save saves what is
+         picked, in place. Everything that needs a name asks for one. -->
+    <UserControl.Resources>
+        <!-- The menu behind the dots. Scoped here rather than app-wide: an
+             implicit ContextMenu style would also restyle the cut/copy/paste
+             menu of every text box in the app. -->
+        <Style x:Key="PickerMenu" TargetType="ContextMenu">
+            <Setter Property="Placement" Value="Bottom"/>
+            <Setter Property="HasDropShadow" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ContextMenu">
+                        <Border Background="#FF20232B" BorderBrush="#FF3A3E4A" BorderThickness="1"
+                                CornerRadius="8" Padding="4" Margin="0,4,8,8">
+                            <Border.Effect>
+                                <DropShadowEffect Color="#000000" BlurRadius="14" ShadowDepth="2" Opacity="0.5"/>
+                            </Border.Effect>
+                            <StackPanel IsItemsHost="True"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="PickerMenuItem" TargetType="MenuItem">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="MenuItem">
+                        <Border x:Name="bd" Background="Transparent" CornerRadius="6"
+                                Padding="12,7" MinWidth="170">
+                            <ContentPresenter ContentSource="Header" RecognizesAccessKey="False"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="#FF2E3240"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.4"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="PickerSeparator" TargetType="Separator">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Separator">
+                        <Border Height="1" Background="#FF33374A" Margin="6,4"/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </UserControl.Resources>
+
+    <StackPanel Orientation="Horizontal">
+        <ComboBox x:Name="List" Height="28" VerticalAlignment="Center"
+                  Width="{Binding PickerWidth, RelativeSource={RelativeSource AncestorType=controls:NamedPicker}}"
+                  ItemsSource="{Binding ItemsSource, RelativeSource={RelativeSource AncestorType=controls:NamedPicker}}"
+                  DisplayMemberPath="{Binding DisplayMemberPath, RelativeSource={RelativeSource AncestorType=controls:NamedPicker}}"
+                  SelectedItem="{Binding SelectedItem, Mode=OneWay, RelativeSource={RelativeSource AncestorType=controls:NamedPicker}}"
+                  DropDownClosed="List_DropDownClosed"/>
+
+        <Button x:Name="SaveButton" Content="Save" Style="{StaticResource Accent}"
+                Margin="8,0,0,0" Height="28" Padding="16,0"
+                VerticalAlignment="Center" Click="Save_Click"
+                Visibility="{Binding ShowSave, Converter={StaticResource BoolToVis}, RelativeSource={RelativeSource AncestorType=controls:NamedPicker}}"
+                IsEnabled="{Binding SaveEnabled, RelativeSource={RelativeSource AncestorType=controls:NamedPicker}}"/>
+
+        <!-- Three dots drawn, not typed: the ellipsis character sits on the
+             baseline and reads as text that was cut off. -->
+        <Button x:Name="MoreButton" Margin="8,0,0,0" Height="28" Width="34" Padding="0"
+                VerticalAlignment="Center" Click="More_Click" ToolTip="More">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <Ellipse Width="4" Height="4" Fill="#FFD6DAE4"/>
+                <Ellipse Width="4" Height="4" Fill="#FFD6DAE4" Margin="3,0"/>
+                <Ellipse Width="4" Height="4" Fill="#FFD6DAE4"/>
+            </StackPanel>
+            <Button.ContextMenu>
+                <ContextMenu x:Name="Menu" Style="{StaticResource PickerMenu}">
+                    <MenuItem x:Name="NewItem" Style="{StaticResource PickerMenuItem}" Click="New_Click"/>
+                    <MenuItem x:Name="RenameItem" Style="{StaticResource PickerMenuItem}" Header="Rename…" Click="Rename_Click"/>
+                    <!-- Put the saved version back: what the old Load button did
+                         for the picked item, and the only way to drop unsaved
+                         edits now that picking an item is how it loads. -->
+                    <MenuItem x:Name="RevertItem" Style="{StaticResource PickerMenuItem}" Header="Revert to saved"
+                              Click="Revert_Click" Visibility="Collapsed"/>
+                    <Separator Style="{StaticResource PickerSeparator}"/>
+                    <MenuItem x:Name="DeleteItem" Style="{StaticResource PickerMenuItem}" Click="Delete_Click">
+                        <!-- A local Foreground: the app-wide TextBlock style would
+                             otherwise paint the header the usual grey. -->
+                        <MenuItem.Header>
+                            <TextBlock Text="Delete" Foreground="#FFFF7A85"/>
+                        </MenuItem.Header>
+                    </MenuItem>
+                </ContextMenu>
+            </Button.ContextMenu>
+        </Button>
+
+        <StackPanel Orientation="Horizontal" Margin="12,0,0,0" VerticalAlignment="Center"
+                    Visibility="{Binding HasChanges, Converter={StaticResource BoolToVis}, RelativeSource={RelativeSource AncestorType=controls:NamedPicker}}">
+            <Ellipse Width="7" Height="7" Fill="#FFE8B04B" VerticalAlignment="Center"/>
+            <TextBlock Text="Unsaved changes" Margin="6,0,0,0" FontSize="12" Opacity="0.75"
+                       VerticalAlignment="Center"/>
+        </StackPanel>
+    </StackPanel>
+</UserControl>

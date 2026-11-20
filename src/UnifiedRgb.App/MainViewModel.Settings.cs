@@ -215,6 +215,9 @@ public sealed partial class MainViewModel
         public required List<EffectAssignment> Effects { get; init; }
         public string? ProfileName { get; init; }
         public string? AppliedProfileName { get; init; }
+        /// <summary>See _pickersSinceApply: the name above is the LEDs, not
+        /// necessarily the panel, show or wallpaper the profile now asks for.</summary>
+        public bool PickersSinceApply { get; init; }
         public SceneSequencer.Playback? ShowPlayback { get; init; }
         public string WallpaperChoice { get; init; } = NoWallpaper;
         public PumpRow PumpChoice { get; init; } = PumpNone;
@@ -261,6 +264,7 @@ public sealed partial class MainViewModel
             Effects = _recoveryLighting.Effects.ToList(),
             ProfileName = SelectedProfile?.Name,
             AppliedProfileName = _appliedProfile,
+            PickersSinceApply = _pickersSinceApply,
             ShowPlayback = Shows.CapturePlayback(),
             WallpaperChoice = _wallpaperChoice,
             PumpChoice = _pumpChoice,
@@ -429,13 +433,22 @@ public sealed partial class MainViewModel
         RestoreEffects(s.Effects);
         // Restore the selection exactly - including "no profile selected" (an
         // app rule's profile used to stay selected over restored ad-hoc lighting).
-        SelectProfileRestored(s.ProfileName is null ? null : Profiles.FirstOrDefault(p => p.Name == s.ProfileName));
+        // A snapshot can be hours old (an automation's return point), and the
+        // profile, screen or show it names may have been renamed since: every
+        // name is followed to what it is called now (see RenameMap).
+        string? picked = FollowProfileRename(s.ProfileName);
+        SelectProfileRestored(picked is null ? null
+            : Profiles.FirstOrDefault(p => p.Name == picked)
+              ?? Profiles.FirstOrDefault(p => p.Name.Equals(picked, StringComparison.OrdinalIgnoreCase)));
         _wallpaperChoice = s.WallpaperChoice;
-        _pumpChoice = s.PumpChoice;
-        _showChoice = s.ShowChoice;
-        _appliedProfile = s.AppliedProfileName;
+        _pumpChoice = s.PumpChoice.Screen is string screen && Lcd.FollowScreenRename(screen) is string now && now != screen
+            ? new PumpRow(now, now) : s.PumpChoice;
+        _showChoice = Shows.FollowShowRename(s.ShowChoice) ?? NoShow;
+        RefreshPumpRows();   // so a restored pick is a row the pickers actually list
+        _appliedProfile = FollowProfileRename(s.AppliedProfileName);
+        _pickersSinceApply = s.PickersSinceApply;
         Shows.RestorePlayback(s.ShowPlayback);
-        _dirty = s.Dirty;
+        SetDirty(s.Dirty);
         OnChanged(nameof(WallpaperChoice));
         OnChanged(nameof(PumpChoice));
         OnChanged(nameof(ShowChoice));

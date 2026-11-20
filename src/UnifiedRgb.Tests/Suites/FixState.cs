@@ -50,6 +50,8 @@ static class FixStateSuite
                 ImportReload(t);
                 LatePanelHonoursTheBlank(t);
                 HandEditOutlivesARepaint(t);
+                SameProfileIsNotReapplied(t);
+                NamingFlows(t);
                 WakeEndsWithItsWindow(t);
                 CalibrationHoldsTheSwitch(t);
                 // Last: they install a synchronization context on this thread.
@@ -484,6 +486,203 @@ static class FixStateSuite
             vm.Hex = "FF00FF";
             Transition(automation, AutomationMode.Base, null);
             t.Equal("FF00FF", Shown(), "the edit is what stays");
+        }
+        finally { Stop(vm); }
+    }
+
+    /*---------------- 2026-11-20: a rule whose profile is already on ----------------*/
+
+    static void SameProfileIsNotReapplied(Harness t)
+    {
+        var vm = new MainViewModel(startServices: false);
+        try
+        {
+            var dev = new FakeDevice { Name = "Same-profile desk", LedCount = 2 };
+            vm.Devices.Add(dev); vm.Profiles.Clear();
+            var game = new Profile
+            {
+                Name = "Same game",
+                DeviceFrames = new() { [dev.Name] = new[] { "7B2CFF", "7B2CFF" } },
+                Effects = new() { new EffectAssignment { Device = dev.Name, Offset = 0, Count = 2, Effect = "Breathing", BaseColor = "7B2CFF" } },
+            };
+            vm.Profiles.Add(game);
+            vm.SettingsData.StartupProfile = game.Name;
+            vm.SettingsData.ReturnToStartupProfile = true;
+            vm.ApplyProfile(game); vm.Lighting.Applier.Drain(2000);
+            using var automation = new AutomationService(vm, monitor: false);
+            object Running() => vm.Lighting.Engine.ChannelsFor(dev).Single();
+            // Every real profile apply raises this (the automation's own included);
+            // a skip raises nothing. The effect channel alone cannot tell them
+            // apart after a lock: the relight restarts pending effects either way.
+            int applies = 0;
+            vm.LightingApplied += () => applies++;
+
+            t.Section("2026-11-20: a rule whose profile is already on leaves it running");
+            var first = Running();
+            Transition(automation, AutomationMode.App, game.Name);
+            t.Equal(0, applies, "switching into the game applies nothing (was: a full re-apply, a blink on every alt-tab)");
+            t.Check(ReferenceEquals(first, Running()), "...and the running effect is the same one");
+            Transition(automation, AutomationMode.Base, null);
+            t.Equal(0, applies, "...and so does switching out, back to the same startup profile");
+            t.Check(ReferenceEquals(first, Running()), "...still the same effect");
+            t.Equal(game.Name, vm.AppliedProfileName, "the desk is still the profile");
+
+            t.Section("2026-11-20: a dark desk is still repainted");
+            Transition(automation, AutomationMode.App, game.Name);
+            Transition(automation, AutomationMode.Locked, null);
+            applies = 0;
+            Transition(automation, AutomationMode.App, game.Name);
+            t.Equal(1, applies, "unlocking into the rule is a real apply, not a skip");
+            t.Equal(1, vm.Lighting.Engine.ChannelsFor(dev).Count, "...and the effect is running");
+            Transition(automation, AutomationMode.Base, null);
+
+            t.Section("2026-11-20: a hand edit is still replaced by the rule's profile");
+            vm.SelectedDevice = dev;
+            vm.Hex = "00FF00";
+            vm.Lighting.Applier.Drain(2000);
+            t.Check(vm.AppliedProfileName == null, "the hand edit makes the desk ad-hoc lighting");
+            applies = 0;
+            Transition(automation, AutomationMode.App, game.Name);
+            t.Equal(game.Name, vm.AppliedProfileName, "the rule put its profile back on");
+            t.Equal(1, applies, "...with a real apply");
+            Transition(automation, AutomationMode.Base, null);
+
+            t.Section("2026-11-20: a pump screen picked and saved goes up on the next switch");
+            t.Equal(game.Name, vm.SelectedProfile?.Name, "the profile is the picked one");
+            if (!vm.Lcd.SceneNames.Contains("Clock"))
+            {
+                vm.Lcd.Scenes.Scenes.Add(new LcdScene { Name = "Clock" });
+                vm.Lcd.SceneNames.Add("Clock");
+            }
+            vm.RefreshPumpRows();   // the pump picker lists it (the live app re-reads on every change)
+            vm.PumpChoice = vm.PumpRows.Single(r => r.Screen == "Clock");   // saved with the profile, puts nothing up
+            t.Check(vm.SaveActiveProfile(), "saved");
+            t.Equal("Clock", vm.Profiles.Single(p => p.Name == game.Name).Screen, "the profile now names the screen");
+            applies = 0;
+            Transition(automation, AutomationMode.App, game.Name);
+            t.Equal(1, applies, "the rule applies it, which is what puts the new screen up (was: skipped, the screen never showed)");
+            Transition(automation, AutomationMode.Base, null);
+            t.Equal(1, applies, "...and after that the profile is all on, so the way out skips");
+
+            t.Section("2026-11-20: a skip leaves the desk the user's, for the mouse's memory");
+            Transition(automation, AutomationMode.App, game.Name);
+            t.Check(!(bool)typeof(MainViewModel).GetProperty("RuleOwnsLighting", Instance)!.GetValue(vm)!,
+                "the rule painted nothing, so the lighting is not marked as the rule's");
+            Transition(automation, AutomationMode.Base, null);
+        }
+        finally { Stop(vm); }
+    }
+
+    /*---------------- 2026-11-20: New / Rename / Delete for profiles, screens, shows ----------------*/
+
+    static void NamingFlows(Harness t)
+    {
+        var vm = new MainViewModel(startServices: false);
+        try
+        {
+            var dev = new FakeDevice { Name = "Naming desk", LedCount = 2 };
+            vm.Devices.Add(dev); vm.Profiles.Clear();
+            vm.SelectedDevice = dev;
+            int saveStateNotes = 0;
+            vm.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(MainViewModel.HasUnsavedChanges)) saveStateNotes++; };
+
+            t.Section("2026-11-20: a new profile takes exactly the name typed, and only a free one");
+            vm.Hex = "112233";
+            t.Check(vm.CreateProfile("Evening"), "a free name creates the profile");
+            var evening = vm.Profiles.Single(p => p.Name == "Evening");
+            t.Equal("Evening", vm.SelectedProfile?.Name, "...and picks it");
+            t.Check(vm.ProfileNameProblem("evening") != null, "the same name in another case is taken");
+            t.Check(!vm.CreateProfile("EVENING"), "...so it is refused (was: a silent 'Evening 2')");
+            t.Check(vm.ProfileNameProblem("   ") != null, "a blank name is refused");
+            t.Check(!vm.HasUnsavedChanges, "a profile just made has nothing to save");
+
+            t.Section("2026-11-20: rename changes the name and nothing else");
+            var loop = new SceneSequence { Name = "Loop", Actions = new() { new SceneAction { Profile = "Evening" } } };
+            vm.Lcd.Scenes.Sequences.Add(loop); vm.Shows.Shows.Add(loop);
+            vm.SettingsData.StartupProfile = "Evening";
+            var rule = new AutomationRule { Process = "game", Profile = "Evening" };
+            vm.SettingsData.AutomationRules = new() { rule };
+            int notesBefore = saveStateNotes;
+            vm.Hex = "445566";   // an experiment, not saved
+            t.Check(vm.HasUnsavedChanges, "a hand edit is unsaved");
+            t.Check(saveStateNotes > notesBefore, "...and the Save button was told");
+            int at = vm.Profiles.IndexOf(evening);
+            t.Check(vm.RenameProfile(evening, "Night"), "the rename goes through");
+            var night = vm.Profiles.Single(p => p.Name == "Night");
+            t.Check(!vm.Profiles.Any(p => p.Name == "Evening"), "the old name is gone");
+            t.Equal(at, vm.Profiles.IndexOf(night), "it keeps its place (the hotkeys follow the order)");
+            t.Equal("112233", night.DeviceFrames[dev.Name][0],
+                "the saved colours carry over (was: the rename also saved the unsaved experiment)");
+            t.Check(vm.HasUnsavedChanges, "the experiment is still unsaved");
+            t.Equal("Night", vm.SelectedProfile?.Name, "the renamed profile is still the picked one");
+            t.Equal("Night", vm.SettingsData.StartupProfile, "the startup setting follows");
+            t.Equal("Night", rule.Profile, "the app rule follows");
+            t.Equal("Night", loop.Actions[0].Profile, "the show step follows");
+
+            t.Section("2026-11-20: a rename that only changes case keeps one profile");
+            t.Check(vm.RenameProfile(night, "NIGHT"), "the case change goes through");
+            t.Equal(1, vm.Profiles.Count(p => p.Name.Equals("night", StringComparison.OrdinalIgnoreCase)), "one in the list");
+            t.Equal(1, StoreOf(vm).Profiles.Count(p => p.Name.Equals("night", StringComparison.OrdinalIgnoreCase)),
+                "one in the file (the old-name cleanup must not delete the renamed one)");
+            var upper = vm.Profiles.Single(p => p.Name == "NIGHT");
+            t.Check(vm.CreateProfile("Morning"), "another profile");
+            t.Check(!vm.RenameProfile(vm.Profiles.Single(p => p.Name == "Morning"), "night"),
+                "renaming onto a name another profile has is refused");
+
+            t.Section("2026-11-20: renaming a screen moves the profiles that show it");
+            vm.Lcd.Scenes.Scenes.Add(new LcdScene { Name = "Clock" });
+            vm.Lcd.SceneNames.Add("Clock");
+            upper.Screen = "Clock";
+            t.Equal(1, vm.WhatUsesScreen("clock").Count, "the profile that shows it is found");
+            t.Check(vm.Lcd.RenameScreen("Clock", "Big clock"), "the screen rename goes through");
+            t.Equal("Big clock", upper.Screen, "the profile follows");
+            t.Check(vm.Lcd.SceneNames.Contains("Big clock") && !vm.Lcd.SceneNames.Contains("Clock"), "the list shows the new name");
+            t.Check(vm.Lcd.ScreenNameProblem("big CLOCK") != null, "the new name is taken for a new screen");
+            t.Check(vm.Lcd.ScreenNameProblem("big CLOCK", "Big clock") == null, "...but not for itself");
+
+            t.Section("2026-11-20: renaming a show moves the profiles that start it");
+            upper.Show = "Loop";
+            t.Equal(1, vm.WhatUsesShow("Loop").Count, "the profile that starts it is found");
+            t.Check(vm.Shows.Rename(loop, "Party"), "the show rename goes through");
+            t.Equal("Party", loop.Name, "the show has the new name");
+            t.Equal("Party", upper.Show, "the profile follows");
+            t.Check(vm.Shows.ShowNameProblem("party") != null && vm.Shows.ShowNameProblem("party", loop) == null,
+                "the name is taken, except by the show itself");
+            t.Check(vm.Shows.Create("Quiet") && vm.Shows.SelectedShow?.Name == "Quiet", "a new show takes its name and is picked");
+            t.Check(!vm.Shows.Create("quiet"), "...and the same name again is refused");
+
+            t.Section("2026-11-20 review: renames that only change case keep what points at them");
+            vm.Shows.SelectedShow = loop;
+            loop.Actions[0].Profile = "night";   // a step spelled differently from its profile "NIGHT"
+            t.Check(vm.Shows.ProfileChoices.Contains("night"),
+                "a step's own spelling is listed, so its dropdown cannot push null into it (was: matched without case, dropped)");
+            vm.RefreshPumpRows();
+            vm.ShowChoice = "Party";
+            t.Check(vm.Shows.Rename(loop, "PARTY"), "a show renamed only in case");
+            t.Equal("PARTY", vm.ShowChoice, "the open profile's show pick follows (was: reset to no show, and Save dropped it)");
+
+            t.Section("2026-11-20 review: a snapshot from before a rename finds the renamed profile");
+            var morning = vm.Profiles.Single(p => p.Name == "Morning");
+            vm.SelectedProfile = morning;
+            vm.ApplyProfile(morning);
+            var snap = vm.CaptureState();
+            t.Check(vm.RenameProfile(morning, "Dawn"), "renamed after the snapshot");
+            vm.RestoreState(snap);
+            t.Equal("Dawn", vm.SelectedProfile?.Name, "the restore picks the profile under its new name (was: nothing picked)");
+            t.Equal("Dawn", vm.AppliedProfileName, "...and knows the desk is that profile");
+
+            t.Section("2026-11-20 review: the rename record");
+            var map = new RenameMap();
+            var live = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "C" };
+            map.Record("A", "B"); map.Record("B", "C");
+            t.Equal("C", map.Follow("A", live.Contains), "a chain of renames is followed to the end");
+            live.Add("A");
+            t.Equal("A", map.Follow("A", live.Contains), "a name that exists again is itself, not where the old one went");
+            map.Record("C", "A"); live.Remove("C");
+            t.Equal("A", map.Follow("B", n => n == "A"), "renaming back is followed too");
+            var cases = new RenameMap();
+            cases.Record("Wow", "WOW");
+            t.Equal("WOW", cases.Follow("Wow", n => n == "WOW"), "a case-only rename resolves, and stops");
         }
         finally { Stop(vm); }
     }
