@@ -966,6 +966,11 @@ public sealed partial class MainViewModel
                 + "moved back onto the zones they were picked for, but anything new to this machine is not "
                 + $"set by this profile. Set it up the way you want it now and save it again. ({detail})");
         }
+        // A zone-by-zone profile must not read as Static. Not for a show step:
+        // the selection is the user's place in the editor (see ApplyProfile),
+        // and a show steps every few seconds - a deliberate "Entire device"
+        // pick was moved back to a zone on every step.
+        if (!fromShow) LandOnRunningZone();
         SyncWheelToSelection();     // wheel reflects what the profile applied
         // The pump screen too. Every profile apply comes through here - the
         // button, a hotkey, an app rule, a schedule, a show step - so this is

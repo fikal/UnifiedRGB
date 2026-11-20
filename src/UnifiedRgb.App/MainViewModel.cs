@@ -1243,6 +1243,8 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
                 if (value is ILianFanDevice && value is IRgbDevice rd)
                     SelectLianPart(_engine.ChannelsFor(rd).Any(c => c.Offset == 0 && c.Count == rd.LedCount)
                         ? -1 : 0);
+                else
+                    LandOnRunningZone();
             }
             finally { _selectionChanging = false; }
         }
@@ -2401,6 +2403,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         BuildLeftItems();                                      // devices + pump LCD row
         RestoreEffects(savedEffects);                          // pending, in the dark (EffectBlocked)
         LandOnRunningLianTarget();
+        LandOnRunningZone();
         SyncWheelToSelection();
     }
 
@@ -2451,6 +2454,23 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IDisposable
         if (SelectedDevice is ILianFanDevice and IRgbDevice dev && _lianSel is { Fan: 0, Part: 0 }
             && _engine.ChannelsFor(dev).Any(c => c.Offset == 0 && c.Count == dev.LedCount))
             SelectLianPart(-1);
+    }
+
+    /// <summary>The same landing for every other zoned device. Selecting one
+    /// always lands on "Entire device", and a profile that gives each zone its
+    /// own effect (the Wow set: board ribbons, fan headers, mouse wheel + logo)
+    /// runs nothing on the whole range - so the pills read Static while every
+    /// zone animated. Move a still-"Entire device" selection to the first zone
+    /// that is actually running something.</summary>
+    void LandOnRunningZone()
+    {
+        if (SelectedDevice is not IRgbDevice dev || dev is ILianFanDevice) return;
+        if (SelectedTarget is not { Zone: null } || Targets.Count < 2) return;
+        var chans = _engine.ChannelsFor(dev);
+        if (chans.Count == 0 || chans.Any(c => c.Offset == 0 && c.Count == dev.LedCount)) return;
+        var hit = Targets.FirstOrDefault(t => t.Zone is { } z
+            && chans.Any(c => c.Offset == z.Offset && c.Count == z.Count));
+        if (hit != null) SelectedTarget = hit;
     }
 
     /// <summary>"All devices" just started a whole-device channel on the
